@@ -21,9 +21,23 @@ the usual places. These five are the parts it is actually built around:
 |---|---|
 | **Effects and capabilities** | A function's signature states what it may do (`uses io, alloc, rand`). One mechanism covers determinism, allocation-free hot paths, sandboxed plugins, compile-time evaluation and server/client separation. |
 | **Units in the type system** | `dimension` and `unit` declarations make `10m / 2s` a velocity and `Quat.FromAxis(up, 90deg)` reject radians. Checked at compile time, free at runtime. |
-| **Layout polymorphism** | `@layout(soa)` switches a struct between array-of-structs and struct-of-arrays without touching the code that uses it; `foreach` maps the loop onto SIMD lanes. |
+| **Layout polymorphism** | `soa [Particle]` stores one array per field; `aos [Particle]` stores records. Layout belongs to the storage, so the same type works both ways and `foreach` maps the loop onto SIMD lanes either way. |
 | **State machines and timelines** | `machine`, `state`, `on ... after 3s ->` are language constructs, checked for unreachable states, survivable across hot reload. |
 | **Reactive values** | `derived` fields recompute when their inputs change, which is what UI and stat aggregation actually need. |
+
+Two smaller things it does differently. `T?` may be absent and `T!` may fail —
+both postfix, so a type reads left to right and `Pawn?!` means either; and
+optionals need no `Some`/`None` vocabulary, because `x?` and `null` already
+say it:
+
+```wolang
+fn Lookup(key: str) -> Pawn?!
+
+match count {
+  n? => n
+  null => 0
+}
+```
 
 Memory is hybrid by design: value semantics with second-class references,
 `Box`/`Rc` for owned and shared heap data, `region` blocks for frame arenas, and
@@ -73,6 +87,7 @@ docs/             specification, architecture, roadmap, diagnostics, style
 ## Documentation
 
 - [docs/spec.md](docs/spec.md) — language specification
+- [docs/decisions.md](docs/decisions.md) — every design decision, with the reason
 - [docs/packages.md](docs/packages.md) — packages, modules and the manifest
 - [docs/architecture.md](docs/architecture.md) — how the compiler is built
 - [docs/roadmap.md](docs/roadmap.md) — waves and exit criteria

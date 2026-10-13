@@ -1,0 +1,199 @@
+# Design decisions
+
+Every decision that shapes the language or the compiler, with the reason.
+Numbered so that code comments and `STATUS.md` can point at one. A decision is
+revisited only when something new is known, not because it was inconvenient.
+
+## The project
+
+**D1. Wolang is its own project, not an engine module.** The language is for
+general use; a game engine is one host among several, and its adapter arrives
+in wave 15. Keeping the core engine-free is what stops engine concepts from
+leaking into the type system.
+
+**D2. The compiler stays C++20 — self-hosting is not a goal.** Rewriting the
+compiler in Wolang needs the finished language first and doubles the work for
+years. It remains an option after phase D, not a commitment.
+
+**D3. The standard library is written in Wolang** above a thin non-Wolang
+floor: a C++ platform layer for syscalls, and compiler intrinsics for what the
+language cannot express (`memcpy`, atomics, SIMD, `sqrt`). `core` becomes
+possible in wave 7, when the interpreter can run it.
+
+**D4. The interpreter is the reference semantics**, not a stepping stone. The
+JIT, the AOT tier and the WASM backend are mechanical lowerings of the same
+verified IR, and differential fuzzing across all four is what keeps them
+honest.
+
+**D5. arm64 before x64** for the dev-tier code generator, because that is the
+development machine.
+
+**D6. Chromium C++ style everywhere, no exceptions and no RTTI.** Commits are
+Conventional Commits, one line, no body, no trailers.
+
+**D7. `docs/` is in English, `STATUS.md` is in Russian.** The docs are public
+artifacts of the language; `STATUS.md` is the working log.
+
+## Memory
+
+**D8. Hybrid memory, optional collector.** Values with mutable value
+semantics; references are second class, so they may be parameters and locals
+but not fields — memory safety without a borrow checker. `Box<T>` for unique
+ownership, `Rc`/`Arc` for shared, `region { }` for frame arenas, and `class`
+with a garbage collector as a **separate optional component**. A program that
+declares no `class` links no collector, which is what makes WASM and embedded
+targets practical.
+
+## Types
+
+**D9. Integer literals have arbitrary precision until used.** A literal takes
+the type its context expects, defaulting to `int`. `0xFFFFFFFFFFFF` needs no
+suffix, `comptime` arithmetic is exact, and a literal that does not fit its
+destination is an error rather than a silent wrap.
+
+**D10. `[T; N]` and `[T]` are language constructs; `Array<T>` is a library
+type.** Fixed arrays and slices allocate nothing and `core` needs them, so
+they belong to the language. A growable array needs an allocator, so it
+belongs to `std` (wave 13).
+
+**D11. `T?` *is* `Option<T>`.** One concept, one implementation, flow typing
+that works the same for values and references. The compiler niche-optimizes
+it, so `Actor?` is a nullable pointer at runtime.
+
+**D12. Optionals need no `Some`/`None` vocabulary.** The language already
+spells presence and absence: `T?` in a type, `x?` in a pattern, `null` for
+absence, `??` for a default. Importing two more words for a concept already
+expressible is a cost with no benefit.
+
+**D13. Error sets are inferred, and `T!` is postfix.** `fn Load() -> Level!`
+collects the errors the body can produce, so `?` never needs a conversion
+between error types. Postfix matches `T?`, so a type reads left to right and
+the two combine as `Pawn?!`. An error is a tag without data; a payload means
+writing `Result<T, E>` explicitly.
+
+**D14. Enum variants are members of their type, with a short form in
+`match`.** `Shape.Circle(r)` everywhere, and bare `Circle(r)` inside a `match`
+whose scrutinee type is known. No name collisions between enums, and no type
+name repeated on every arm.
+
+**D15. No `fixed` type.** `@Deterministic` code puts floats in a strict mode:
+no FMA contraction, no fast-math, fixed operation order. IEEE-754 is itself
+deterministic — the nondeterminism comes from the compiler, not the hardware.
+A library `Fixed<N>` can arrive in wave 13 if measurements call for it.
+
+## Syntax
+
+**D16. Control flow is expression-shaped.** `if`, `match`, `loop`, `while`,
+`for`, `foreach`, `unsafe`, `region` and blocks are all expressions, so
+`let x = if c { a } else { b }` needs no special case.
+
+**D17. An operator at the start of a line begins a new statement.** A line
+starting with `-` is a unary minus, never a continuation, so two statements
+can never silently fold into one. `.` and `?.` are exempt, because
+leading-dot method chains are normal style.
+
+**D18. No turbofish.** `f<T>(x)` is resolved by scanning ahead for balanced
+angle brackets followed by `(`. The cost is that a function type cannot be an
+explicit generic argument in expression position; both affected forms are rare
+enough to be worth the simpler rule.
+
+**D19. A dot in an expression is always member access.** `World.Spawn` becomes
+a path during name resolution, which is what languages without a `::`
+separator do.
+
+**D20. `as` is the cast operator**, binding tighter than any binary operator.
+
+**D21. `extend T` and `extend T as Trait` replace `impl`.** The target comes
+first either way, so the declaration reads as a sentence. `impl Trait for
+Type` is a known stumbling block: its word order matches neither English nor
+intuition. `impl` is reserved, so the Rust spelling gets a message rather than
+a confusing parse failure.
+
+**D22. Storage layout is a property of the storage, not of the type.**
+`soa [Particle]` rather than `@layout(soa) struct Particle`. This is a
+capability difference, not a spelling one: the same type can be one value in
+one place and a struct-of-arrays in another, and the choice can be flipped
+where it is measured.
+
+**D23. Declaration-introducing words are contextual keywords** — `state`,
+`unit`, `machine`, `derived`, `effect`, `dimension`, `enter`, `exit`,
+`always`, `with`, `without`, `soa`, `aos`. Gameplay code names variables
+`state` and `unit` constantly; stealing those spellings would be a daily cost
+for a one-time grammar convenience.
+
+**D24. A unit suffix on a number is just a symbol.** Units are user declared,
+so the lexer records the spelling and sema resolves it.
+
+**D25. Block comments nest.** The only reason to reach for `/* */` is to
+comment out a region, and a region often already contains a comment.
+
+**D26. Identifiers are Unicode XID and must already be in NFC.** Letters from
+any script, but no emoji, symbols or invisible characters — a zero-width space
+in a name would hide one name inside another. Non-NFC names are rejected
+rather than normalized, which is what guarantees one name has one spelling. A
+combining mark that cannot compose is accepted, so Devanagari, Thai and
+Vietnamese names work.
+
+## Modules and the build
+
+**D27. A module is a directory, not a file.** Its name is the package name
+plus the path below the source root. Adding a file never requires editing a
+module declaration, and the layout matches how a game splits into plugins.
+
+**D28. The manifest is declarative TOML.** External tools — CI, a registry, a
+dependency bot — must be able to read a package's name and version without a
+Wolang interpreter. A build script (`build.wo`) can arrive *beside* the
+manifest in wave 7+, exactly as `build.rs` sits beside `Cargo.toml`.
+
+**D29. Package discovery is not a query.** The query engine can only track
+facts it is told about, and the filesystem is not one of them. A workspace is
+loaded explicitly, and loading one bumps the `Workspace` input.
+
+## Incremental compilation
+
+**D30. Query dependencies are discovered, not declared.** Every `Get()` a
+computation makes is recorded, so a computation and its dependency list can
+never drift apart.
+
+**D31. A cached value may never carry a source position.** Positions belong to
+the revision they were taken in; anything that reports a diagnostic resolves
+its spans against the current syntax tree.
+
+**D32. The item tree holds no positions and no syntax handles.** Both shift
+when a body is edited, and an item tree that changes after a body-only edit
+would defeat its own purpose.
+
+**D33. The cache stores item trees only, and is never trusted.** Tokens and
+trees are large and are needed only when the file is about to be read anyway.
+A stale, corrupt, truncated or foreign cache is discarded.
+
+**D34. A file outside a package resolves no imports.** Checking a single file
+is a legitimate thing to do and must not invent errors.
+
+## Effects
+
+**D35. Effects and capabilities are one mechanism**, inferred inside a module
+and explicit on `pub` signatures. One mechanism covers determinism,
+allocation-free hot paths, mod sandboxing, `comptime` purity and server/client
+separation — five unrelated attribute checks collapse into one.
+
+## Runtime policies
+
+**D36. Hot reload restarts an incompatible coroutine.** Predictable and
+explainable in one sentence, which matters more for editor iteration than
+preserving state. `@HotReload(FinishOld)` or `@HotReload(Cancel)` overrides it
+per function.
+
+**D37. A fault in a shipping build isolates the culprit.** The coroutine or
+system that faulted stops, the rest of the game keeps running, and a report
+goes to telemetry. One broken enemy beats a drop to the menu. A project
+switches the policy in its manifest; a server usually should.
+
+**D38. Mods ship as `.wo` source.** Readable, reviewable, patchable, and
+learnable from — which is how strong modding communities actually work.
+Compiled by the dev tier on the player's machine, or by the IR interpreter
+where a JIT is not allowed.
+
+**D39. The dev tier gets a real register allocator (linear scan) from the
+start.** Longer to build than accumulator stencils, but better code from day
+one rather than a rewrite once the benchmarks disappoint.

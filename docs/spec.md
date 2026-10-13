@@ -30,39 +30,49 @@ the parser and the formatter read.
 // a comment, ignored
 /// documentation, attached to the declaration that follows
 //// four or more slashes is an ordinary comment again
+/* a block comment, which /* may nest */ so a region containing one
+   can still be commented out */
 ```
 
-There are no block comments. Documentation comments are tokens, because they
-belong to the declaration they precede; ordinary comments are trivia, recorded
-separately for the formatter.
+Documentation comments are tokens, because they belong to the declaration they
+precede; ordinary comments are trivia, recorded separately for the formatter.
 
 ### 1.4 Identifiers
 
-An identifier starts with an ASCII letter, `_`, or a non-ASCII code point, and
-continues with those plus ASCII digits. `_` on its own is not an identifier but
-a pattern wildcard.
+An identifier starts with `_` or a code point with the Unicode `XID_Start`
+property, and continues with `_` or `XID_Continue`. `_` on its own is not an
+identifier but a pattern wildcard.
 
-> Non-ASCII identifiers currently accept any well-formed UTF-8 code point.
-> Restricting them to the Unicode XID property is deferred; the rule can only
-> get stricter, never looser.
+Letters from any script are identifiers; emoji, symbols and invisible
+formatting characters are not (`E0013`). The restriction is not about taste:
+an identifier containing a zero-width space would hide one name inside
+another, and two names that render identically would be different symbols.
+
+Identifiers must already be in Unicode Normalization Form C (`E0014`). The
+compiler rejects a non-NFC name rather than normalizing it, which is what
+guarantees one name has one spelling: `й` written as U+0439 is accepted, and
+the same letter written as U+0438 U+0306 is not. A combining mark that cannot
+compose with what precedes it is already NFC and is accepted, so Devanagari,
+Thai and Vietnamese names work.
 
 ### 1.5 Keywords
 
 ```
 after    as       async    await    before   break    class    component
-comptime continue defer    else     enum     extern   false    fn
-for      foreach  if       impl     import   in       let      loop
-match    mut      null     on       override priv     pub      region
-return   self     signal   spawn    struct   system   tag      trait
-true     type     unsafe   uses     var      virtual  where    while
+comptime continue defer    else     enum     error    extend   extern
+false    fn       for      foreach  if       import   in       let
+loop     match    mut      null     on       override priv     pub
+region   return   self     signal   spawn    struct   system   tag
+trait    true     type     unsafe   uses     var      virtual  where
+while
 ```
 
 **Contextual keywords** are lexed as identifiers and only recognized by the
 parser where they introduce a declaration:
 
 ```
-always   derived  dimension  effect  enter  exit  machine  state  unit
-with     without
+always   aos      derived  dimension  effect  enter  exit  machine
+soa      state    unit     with       without
 ```
 
 This is deliberate. Gameplay code names variables `state`, `unit` and `machine`
@@ -76,7 +86,7 @@ them later cannot break existing code:
 
 ```
 abstract actor  case   catch   const  delete do      final  goto
-interface is    kernel lazy    macro  module namespace new   nil
+impl   interface is    kernel lazy  macro  module namespace new   nil
 operator package private protected public rollback shader sizeof
 static  super  switch template this  throw  transactional try
 typedef typeof union  using   void   yield
@@ -203,7 +213,33 @@ Prefix operators (`-`, `!`, `~`, `*`, `&`, `&mut`, `await`, `spawn`) bind
 tighter than any binary operator. Postfix forms — call, index, `.name`,
 `?.name`, `?`, and an initializer block — bind tightest of all.
 
-### 2.3 Casts
+### 2.3 Ranges and loop labels
+
+A range may omit either bound, which is what makes slicing readable:
+
+```wolang
+xs[2..]    xs[..5]    xs[..]    xs[1..=3]
+```
+
+In the subject of a loop or a condition, `{` opens the body, so `for i in 2..`
+followed by a block is a range with no upper bound and not a range ending in a
+block.
+
+A loop may be labelled, and `break` and `continue` may name it. A label must
+be on the same line as the `break`, so a following statement that happens to
+start with an identifier is not swallowed. Naming a loop that does not exist
+is an error (`E0044`).
+
+```wolang
+outer: for row in grid {
+  for cell in row[1..] {
+    if cell.blocked { break outer }
+    continue outer
+  }
+}
+```
+
+### 2.4 Casts
 
 `as` performs an explicit conversion and takes a type on its right:
 
@@ -211,7 +247,7 @@ tighter than any binary operator. Postfix forms — call, index, `.name`,
 let index = position as i64
 ```
 
-### 2.4 Two deliberate ambiguities
+### 2.5 Two deliberate ambiguities
 
 **Generic arguments versus comparison.** There is no turbofish. On `<` after a
 value, the parser scans ahead: if the angle brackets balance and a `(`
@@ -239,7 +275,7 @@ World.Spawn<Projectile>(at, dir) { speed = 40.0 }
 Inside the subject of `if`, `while`, `for`, `foreach` and `match`, a `{` opens
 the body instead, so `if ready { Fire() }` needs no parentheses.
 
-### 2.5 Error recovery
+### 2.6 Error recovery
 
 Parsing never fails. A construct that cannot be parsed becomes an error node,
 one diagnostic is reported, and the parser resynchronizes on the next
@@ -280,12 +316,23 @@ trait Damageable {
   fn TakeDamage(amount: float, from: Actor?)
 }
 
-impl Damageable for Barrel {
+extend Vec3 {
+  fn Flat() -> Vec3 => Vec3(x, 0.0, z)
+}
+
+extend Barrel as Damageable {
   fn TakeDamage(amount: float, from: Actor?) { Explode() }
 }
 
 type Health = int
+
+error NotFound, Corrupt
 ```
+
+`extend T` adds inherent members to a type; `extend T as Trait` implements a
+trait for it. The target comes first either way, so the declaration reads as a
+sentence. (`impl` is reserved, so the Rust spelling produces a message rather
+than a confusing parse failure.)
 
 `let` binds immutably, `var` mutably. Visibility is module-private by default,
 `pub` across modules, `priv` within one file. Methods are statically dispatched
@@ -303,18 +350,82 @@ the coroutine or actor rather than unwinding.
 | Floats | `float` (= `f32`), `f64` |
 | Other scalars | `bool`, `char` |
 | Strings | `String` owning, `str` borrowed |
-| Collections | `Array<T>`, `Map<K, V>`, `Set<T>`, `Span<T>` |
-| Optionals | `T?`, non-nullable by default |
+| Fixed arrays | `[T; N]`, a language construct: no allocation |
+| Slices | `[T]`, a borrowed view: no allocation |
+| Collections | `Array<T>`, `Map<K, V>`, `Set<T>` — library types |
+| Optionals | `T?`, which *is* `Option<T>`; references are non-nullable by default |
+| Fallible | `T!`, a value or one of an inferred set of errors |
 | Ownership | `Box<T>`, `Rc<T>`, `Arc<T>`, `Weak<T>` |
 | Functions | `fn(int) -> bool`, closures |
-| Results | `Result<T, E>`, `Option<T>` |
 
-Flow typing narrows optionals:
+`[T; N]` and `[T]` are part of the language because `core` needs them and
+because they allocate nothing, which is what makes them usable on WASM and on
+embedded targets. A growable `Array<T>` needs an allocator, so it is a library
+type from wave 13 onwards.
+
+### 4.1 Integer literals
+
+An integer literal has arbitrary precision until it is used, and then takes
+the type the context expects, defaulting to `int`:
+
+```wolang
+let a = 1                   // int
+let b: u8 = 200             // the literal takes u8
+let big = 0xFFFFFFFFFFFF    // fits, with no suffix
+comptime let c = 1 << 100   // exact, no overflow
+TakeU8(300)                 // E0101: does not fit in u8
+```
+
+### 4.2 Optionals
+
+`T?` is spelling for `Option<T>`: one concept, one implementation, and flow
+typing that works the same for values and references. The compiler applies a
+niche optimization, so `Actor?` is a nullable pointer at runtime while `int?`
+carries a tag.
+
+Optionals need no `Some`/`None` vocabulary, because the language already
+spells presence and absence: `T?` in a type, `x?` in a pattern, `null` for
+absence, `??` for a default.
 
 ```wolang
 if let t = target { t.TakeDamage(10) }
 let name = target?.display_name ?? "none"
+
+match count {
+  n? => n
+  null => 0
+}
 ```
+
+### 4.3 Errors
+
+`T!` means "a `T`, or one of the errors this function can produce". The error
+set is inferred from the body, so `?` never needs a conversion between error
+types. Both markers are postfix, so a type reads left to right and they
+combine:
+
+```wolang
+error NotFound, Corrupt
+
+fn Find(id: int) -> Pawn?                 // may be absent
+fn Load(path: str) -> Level! uses io      // may fail
+fn Lookup(key: str) -> Pawn?!             // either
+
+fn Load(path: str) -> Level! uses io {
+  let bytes = ReadFile(path)?             // errors join the set
+  if bytes.len == 0 { return Corrupt }
+  return Parse(bytes)
+}
+
+match Load(p) {
+  Ok(level) => Use(level)
+  NotFound => Default()
+  Corrupt => Report()
+}
+```
+
+An error is a tag without data. When an error has to carry a payload, write
+`Result<T, E>` explicitly.
 
 ## 5. Effects and capabilities — draft
 
@@ -353,20 +464,27 @@ so unit-safe code costs nothing at runtime.
 ## 7. Data layout — draft
 
 ```wolang
-@layout(soa)
 struct Particle {
   var position: Vec3
   var velocity: Vec3
   var life: float
 }
 
-foreach p in particles {
+var burst: soa [Particle]    // seven parallel arrays
+var prototype: Particle      // one value, laid out as written
+
+foreach p in burst {         // the same code either way
   p.position += p.velocity * dt
 }
 ```
 
-The attribute decides the physical layout; `foreach` maps the loop body onto
-SIMD lanes when the body allows it. The code that reads and writes fields is
+Layout is a property of the **storage**, not of the element type. That is what
+lets the same `Particle` be a single value in one place and a struct-of-arrays
+in another, and it means the choice can be flipped where it is measured rather
+than decided when the type is first written.
+
+`foreach` maps the loop body onto SIMD lanes when the body allows it, and
+reports why when it cannot (`P0107`). The code that reads and writes fields is
 identical either way, so the layout is a measurement, not a rewrite.
 
 ## 8. Concurrency — draft

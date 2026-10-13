@@ -21,6 +21,10 @@ most often:
 `.clang-format` in the repository root carries `BasedOnStyle: Chromium`; run
 `clang-format -i` on anything you touch.
 
+Generated files say so in their header and are produced by a committed script
+under `tools/gen/`. `include/wolang/base/unicode_tables.inc` is the only one
+today; regenerate it rather than editing it.
+
 **No exceptions and no RTTI.** `-fno-exceptions -fno-rtti` is set for every
 target, which means:
 

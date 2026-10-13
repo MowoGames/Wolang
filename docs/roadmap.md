@@ -17,7 +17,7 @@ Dates are not fixed. Scope is.
 | **1** | CMake project, test harness, base layer (arenas, interning, source manager, diagnostics with a rustc-style renderer), **lexer** | `wolang tokens` and `wolang check` work; lexer covered by tests ✅ |
 | **2** | AST in flat arrays, recursive-descent parser with a Pratt expression parser, error recovery, s-expression tree printer | every construct in `docs/spec.md` parses; golden AST tests ✅ |
 | **3** | Query database (red-green incremental), module and package graph, `wolang.toml`, on-disk cache, `wolang fmt` | editing a function body recomputes that function only ✅ |
-| **4** | Types: generics, traits, nullability, flow typing, **units and dimensions** | the Rosetta examples type check; unit mismatches are errors |
+| **4** | Grammar completion (`extend`, `T!`, `[T]`, `soa`, labels, Unicode identifiers) ✅, then types: generics, traits, nullability, flow typing, **units and dimensions** | the examples type check; unit mismatches are errors |
 | **5** | **Effects and capabilities**, checker v1 (`E01xx`, `E02xx`, `W01xx`, `H01xx`), quick fixes | diagnostic catalog v1, each lint with a "fires" and a "does not fire" test |
 | **6** | Typed SSA IR, lowering, verifier, mid-level optimizations | IR dump stable, verifier green on every test input |
 

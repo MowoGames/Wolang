@@ -43,6 +43,9 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0009` | invalid Unicode escape | `"\u41"`, `"\u{110000}"`, `"\u{D800}"` |
 | `E0010` | invalid numeric suffix | `1f128`, `1.5u8`, `0xFFm` |
 | `E0011` | reserved word used as an identifier | `let transactional = 1` |
+| `E0012` | unterminated block comment | `/*` with no `*/` |
+| `E0013` | code point cannot appear in an identifier | `let 🚀 = 1` |
+| `E0014` | identifier is not in Unicode NFC form | `и` plus a combining breve |
 
 Lexing never stops at the first problem: a malformed token is reported, flagged
 with `TokenFlags::kHasError`, and replaced with the best recovery value, so one
@@ -71,6 +74,8 @@ character.
 | `E0041` | nesting too deep | hundreds of nested parentheses |
 | `E0042` | unknown type parameter in a `where` clause | `fn f<T>() where U: A {}` |
 | `E0043` | unexpected token after an expression | `"{a b}"` |
+| `E0044` | no enclosing loop carries that label | `break nowhere` |
+| `E0045` | expected an array length | `[int; ]` |
 
 `E0026` carries two labels: the primary one where the closing delimiter was
 expected, and a secondary one on the delimiter that was left open.
