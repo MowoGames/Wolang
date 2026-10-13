@@ -198,6 +198,29 @@ and explicit on `offer` signatures. One mechanism covers determinism,
 allocation-free hot paths, mod sandboxing, `comptime` purity and server/client
 separation — five unrelated attribute checks collapse into one.
 
+**D35a. Effect inference is one query per module, not one per declaration.**
+A per-declaration query turns mutual recursion into a query cycle, and the
+engine's cycle detection would then give an answer that depends on which
+declaration was asked about first. Order-dependent results in an incremental
+compiler are not a performance problem, they are a correctness one. The
+fixpoint therefore runs over a whole module at once, and reporting is a third
+query so that type checking — which collects the rows — does not depend on
+the module-wide answer it feeds.
+
+**D35b. An `offer` function with effects must state them.** Inference stops
+at the module boundary, because inferring across it would need
+`ModuleEffects(A)` to ask `ModuleEffects(B)` and back again. Stating the row
+on the signature is what the boundary buys, and it is where a reader looks
+anyway.
+
+**D35c. An empty effect row is a claim, not ignorance.** `comptime` needs to
+say "nothing observable"; "not stated" is the absence of an entry. Conflating
+the two would make every unannotated function look pure.
+
+**D35d. Trait conformance is declared, not structural.** `extend T as Trait`
+is the declaration. A type that happens to have the right methods has not
+promised anything, and a bound is a promise.
+
 ## Runtime policies
 
 **D36. Hot reload restarts an incompatible coroutine.** Predictable and

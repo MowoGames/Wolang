@@ -15,21 +15,22 @@ searched for. Codes never change meaning; retired codes are not reused.
 | Range | Owner | Status |
 |---|---|---|
 | `E0001`–`E0019` | lexer | implemented (wave 1) |
-| `E0070` | diagnostic suppression | implemented (wave 5) |
 | `E0020`–`E0049` | parser | implemented (wave 2) |
 | `E0050`–`E0069` | manifests, modules, packages | implemented (wave 3) |
+| `E0070` | diagnostic suppression | implemented (wave 5) |
 | `E0101`–`E0119` | types and name resolution | implemented (wave 4) |
-| `E10xx` | units and dimensions | implemented (wave 4) |
+| `E0120`–`E0123` | memory and references | `E0120` implemented (wave 5) |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E03xx` | coroutines | wave 10 |
 | `E0401`–`E0403` | inheritance, traits, bounds | implemented (waves 4–5) |
-| `E0120` | second-class references | implemented (wave 5) |
-| `W0101`–`W0102` | unused names, unreachable code | implemented (wave 5) |
 | `E05xx` | entities and systems | wave 11 |
 | `E06xx` | networking | wave 16 |
-| `E07xx` | effects, determinism, capabilities | wave 5 |
-| `E08xx` | unsafe and sandboxing | wave 5 |
+| `E0701`–`E0704` | effects, determinism, capabilities | implemented (wave 5) |
+| `E0801` | forbidden `unsafe` | implemented (wave 5) |
 | `E09xx` | compile-time evaluation | wave 7 |
+| `E10xx` | units and dimensions | implemented (wave 4) |
+| `W0101`–`W0102` | unused names, unreachable code | implemented (wave 5) |
+| `W01xx` | the rest of the warnings | waves 6+ |
 
 ## Implemented: lexical errors
 
@@ -137,6 +138,26 @@ resolution, because only type checking knows what a file actually named. A
 bare `need a.b` brings in a whole module, so there is no one name to call
 unused.
 
+## Implemented: effects and capabilities
+
+| Code | Message | Example |
+|---|---|---|
+| `E0701` | a declaration does an effect it does not state | `fun f() uses io` whose body reaches `rand` |
+| `E0702` | this context forbids the effect | `@Deterministic` reaching `rand` |
+| `E0703` | the package was not granted the capability | `uses net` under `capabilities = "io"` |
+| `E0704` | an offered signature does not state its effects | `offer fun f()` whose body does `io` |
+| `E0801` | `unsafe` where the package forbids it | `unsafe { }` under `unsafe = "deny"` |
+
+A row is inferred inside a module and stated on offered signatures. A
+declaration that states nothing is not contradicted, but its inferred row
+still reaches its callers — the exception is `offer`, because inference stops
+at the module boundary and a caller elsewhere has nothing else to read.
+
+`E0702` outranks a signature: declaring an effect does not make it allowed in
+a context that forbids it. `E0703` is not a mistake in the code but a
+permission the package was not given, which is the distinction that makes
+mod sandboxing explainable.
+
 ## Suppression
 
 ```wolang
@@ -217,10 +238,6 @@ in use appear in the implemented tables above, not here.
 | `E0502` | cycle in system ordering |
 | `E0601` | server-only function called from a client context |
 | `E0602` | RPC parameter type is not serializable |
-| `E0701` | effect not declared in the signature |
-| `E0702` | effect not permitted here (deterministic or hot context) |
-| `E0703` | capability not granted to this module |
-| `E0801` | `unsafe` in a module that forbids it |
 | `E0901` | `comptime` assertion failed |
 | `E0902` | `comptime` evaluation needs an effect |
 

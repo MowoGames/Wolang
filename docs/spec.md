@@ -513,21 +513,83 @@ match shape {
 A bare name that is a variant of the subject's enum is the short form of that
 variant, not a new binding.
 
-## 5. Effects and capabilities — draft
+## 5. Effects and capabilities — normative
 
-Effects are inferred inside a module and explicit on public signatures.
+An effect is something a function does that is not visible in its type:
+allocating, touching the filesystem, reading the clock. A function's **effect
+row** is the set of effects it may produce.
 
 ```wolang
 effect Telemetry
 
-offer fun LoadLevel(path: str) -> Result<Level> uses io, alloc
+offer fun LoadLevel(path: str) -> Level! uses io, alloc
 offer fun Report(event: str) uses Telemetry
 ```
 
 Built-in effects: `alloc`, `io`, `rand`, `time`, `net`, `gpu`, `unsafe`,
-`panic`. A `comptime` function has no effects by construction. A deterministic
-module forbids `rand` and `time`. A hot path forbids `alloc`. A sandboxed module
-is granted a capability set and nothing more.
+`panic`. An `unsafe { }` block *is* the `unsafe` effect, so a caller that
+forbids it does not have to look inside. `effect Name` declares one more, and
+a declared effect is interned by its declaration — so a project's own
+`effect io` is a different effect from the built-in one.
+
+### 5.1 Inference and the module boundary
+
+A row is **inferred inside a module** and **stated on offered signatures**.
+
+Inference is a fixpoint over the whole module at once, so a set of mutually
+recursive functions gets one answer rather than one that depends on which
+declaration was looked at first:
+
+```wolang
+fun Ping() uses io { Pong() }
+fun Pong() { Ping(); Emit() }     // no row of its own
+fun Emit() uses Telemetry {}
+```
+
+Here `Pong` and `Ping` both do `io, Telemetry`, and `Ping` is an error
+(`E0701`) because it states only `io`.
+
+A declaration that states nothing is not contradicted — there is nothing to
+contradict — but its inferred row still propagates to its callers. The one
+exception is a function other modules can call: inference stops at the module
+boundary, so an `offer fun` with effects has to say what they are (`E0704`).
+
+### 5.2 Contexts that forbid effects
+
+A context outranks a signature: declaring an effect does not make it allowed.
+
+| Context | Forbids |
+|---|---|
+| `comptime` | everything but `panic` — it runs inside the compiler |
+| `@Deterministic` | `rand`, `time`, `net` |
+| `@Hot` | `alloc` |
+
+```wolang
+@Deterministic
+fun Simulate() uses rand {        // E0702: not allowed here
+  Roll()
+}
+```
+
+This is one mechanism rather than three attribute checks, which is the whole
+reason effects exist as a language feature rather than a lint.
+
+### 5.3 Capabilities
+
+A package may be granted a capability set and nothing more:
+
+```toml
+[build]
+capabilities = "io, alloc"
+```
+
+Anything outside the grant is `E0703` — not a mistake in the code, but a
+permission the package was not given. Omitting the key leaves a package
+unrestricted; `capabilities = ""` sandboxes it completely. `unsafe = "deny"`
+is the same idea for one effect, reported as `E0801`.
+
+This is what makes mods safe to run: a mod package is granted what it needs,
+and the compiler refuses anything else before a line of it executes.
 
 ## 6. Units and dimensions — normative
 

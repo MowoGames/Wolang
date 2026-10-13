@@ -51,6 +51,9 @@ P0101 = "error"
 [build]
 # "deny" forbids `unsafe` blocks anywhere in this package.
 unsafe = "allow"
+# What this package may do at all. Omit the key to leave it unrestricted;
+# an empty string sandboxes it completely.
+capabilities = "io, alloc"
 ```
 
 Only `[package].name` is required. Unknown keys and tables are reported rather
@@ -93,6 +96,21 @@ declare is `E0056`; importing one it declares but does not export is `E0058`.
 Cycles between packages are an error (`E0059`). Cycles between modules inside
 one package are fine: a module's names are known from its declarations, which
 do not depend on the modules it imports.
+
+## Capabilities
+
+`capabilities` is how a package is sandboxed. The value is an effect list,
+spelled the way a `uses` clause is, and anything outside it is `E0703` —
+not a mistake in the code, but a permission the package was not given.
+
+```toml
+[build]
+capabilities = "io"
+```
+
+Omitting the key leaves a package unrestricted. `capabilities = ""` grants
+nothing, which is the setting a mod loaded from a player's machine gets.
+`unsafe = "deny"` is the same idea narrowed to one effect.
 
 ## Checking without a package
 
