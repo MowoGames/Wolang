@@ -256,6 +256,34 @@ void ManifestParser::ApplyBuildField(const Field& field, Manifest* manifest) {
     }
     return;
   }
+  if (field.key == "capabilities") {
+    std::string granted;
+    if (!ReadString(field, &granted)) {
+      return;
+    }
+    manifest->has_capabilities = true;
+    // A comma separated list, spelled the way a `uses` clause is.
+    size_t begin = 0;
+    while (begin <= granted.size()) {
+      size_t end = granted.find(',', begin);
+      if (end == std::string::npos) {
+        end = granted.size();
+      }
+      std::string_view name(granted.data() + begin, end - begin);
+      while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) {
+        name.remove_prefix(1);
+      }
+      while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) {
+        name.remove_suffix(1);
+      }
+      if (!name.empty()) {
+        manifest->capabilities.emplace_back(name);
+      }
+      begin = end + 1;
+    }
+    return;
+  }
+
   std::string message = "unknown key `";
   message.append(field.key);
   message.append("` in `[build]`");

@@ -192,6 +192,54 @@ WOLANG_TEST(Workspace, AnAllowingManifestPermitsUnsafe) {
   WOLANG_EXPECT(db.AllDiagnostics().empty());
 }
 
+WOLANG_TEST(Workspace, ACapabilityGrantLimitsWhatAPackageMayDo) {
+  // A sandboxed package is granted a set and nothing more, which is the same
+  // mechanism as effects rather than a separate one.
+  TempTree tree("sandbox");
+  tree.Write("wolang.toml",
+             "[package]\nname = \"mod\"\n"
+             "[build]\ncapabilities = \"io, alloc\"\n");
+  tree.Write("src/main.wo",
+             "fun Log() uses io {}\n"
+             "fun Grow() uses alloc {}\n"
+             "fun Roll() uses rand {}\n"
+             "fun Pure() -> int => 1\n");
+
+  Database db;
+  DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(LoadPackage(&db, tree.path(), &diagnostics));
+
+  const std::vector<Diagnostic> all = db.AllDiagnostics();
+  WOLANG_ASSERT_EQ(all.size(), size_t{1});
+  WOLANG_EXPECT_EQ(all.front().code, "E0703");
+  WOLANG_EXPECT(all.front().message.find("`Roll` needs `rand`") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(Workspace, AnEmptyGrantIsNotTheSameAsNoGrant) {
+  // `capabilities = ""` sandboxes completely; omitting the key leaves the
+  // package unrestricted.
+  TempTree granted("nogrant");
+  granted.Write("wolang.toml", "[package]\nname = \"mod\"\n");
+  granted.Write("src/main.wo", "fun Log() uses io {}\n");
+
+  Database open;
+  DiagnosticEngine open_diagnostics;
+  WOLANG_ASSERT(LoadPackage(&open, granted.path(), &open_diagnostics));
+  WOLANG_EXPECT(open.AllDiagnostics().empty());
+
+  TempTree sealed("emptygrant");
+  sealed.Write("wolang.toml",
+               "[package]\nname = \"mod\"\n"
+               "[build]\ncapabilities = \"\"\n");
+  sealed.Write("src/main.wo", "fun Log() uses io {}\n");
+
+  Database shut;
+  DiagnosticEngine shut_diagnostics;
+  WOLANG_ASSERT(LoadPackage(&shut, sealed.path(), &shut_diagnostics));
+  WOLANG_EXPECT_EQ(shut.AllDiagnostics().size(), size_t{1});
+}
+
 WOLANG_TEST(Workspace, ReportsCyclicPackageDependencies) {
   TempTree tree("cycle");
   tree.Write("a/wolang.toml",

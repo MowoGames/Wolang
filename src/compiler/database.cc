@@ -76,6 +76,7 @@ constexpr std::string_view kUndeclaredEffect = "E0701";
 constexpr std::string_view kUnstatedPublicEffect = "E0704";
 constexpr std::string_view kForbiddenEffect = "E0702";
 constexpr std::string_view kUnsafeForbidden = "E0801";
+constexpr std::string_view kUngrantedCapability = "E0703";
 
 }  // namespace
 
@@ -663,6 +664,26 @@ void Database::RegisterQueries() {
         const bool unsafe_denied =
             manifest != nullptr && !manifest->allow_unsafe;
 
+        // A sandboxed package is granted a capability set and nothing more.
+        // An unlisted effect is not a mistake in the code -- it is a
+        // permission the package was not given.
+        EffectRow granted;
+        const bool sandboxed = manifest != nullptr &&
+                               manifest->has_capabilities;
+        if (sandboxed) {
+          for (const std::string& name : manifest->capabilities) {
+            const BuiltinEffect builtin = LookupBuiltinEffect(name);
+            if (builtin != BuiltinEffect::kCount) {
+              granted.Add(types_.BuiltinEffectId(builtin));
+              continue;
+            }
+            const Symbol symbol = interner_.Lookup(name);
+            if (symbol.is_valid()) {
+              granted.Add(resolved->FindEffect(symbol, interner_));
+            }
+          }
+        }
+
         const Ast& ast = parsed->ast;
         DiagnosticEngine diagnostics;
 
@@ -745,6 +766,28 @@ void Database::RegisterQueries() {
               diagnostics.Error(kForbiddenEffect, std::move(message))
                   .Primary(ast.Get(declaration).name_span,
                            "this context forbids it");
+            }
+          }
+
+          if (actual != nullptr && sandboxed && ast.Contains(declaration)) {
+            // Declared as well as inferred: `fun Roll() uses rand {}` claims
+            // a permission the package does not have, even with an empty
+            // body today.
+            EffectRow claimed = *actual;
+            if (const EffectRow* stated = resolved->DeclaredRow(arg, index);
+                stated != nullptr) {
+              claimed.Merge(*stated);
+            }
+            const EffectRow ungranted = granted.Missing(claimed);
+            if (!ungranted.empty()) {
+              std::string message = "`";
+              message.append(interner_.Text(ast.Get(declaration).name));
+              message.append("` needs `");
+              message.append(types_.Describe(interner_, ungranted));
+              message.append("`, which this package was not granted");
+              diagnostics.Error(kUngrantedCapability, std::move(message))
+                  .Primary(ast.Get(declaration).name_span,
+                           "the manifest lists what it may use");
             }
           }
 

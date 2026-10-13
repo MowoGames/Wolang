@@ -40,6 +40,12 @@ struct Manifest {
   std::vector<LintOverride> lints;
   // `unsafe = "deny"` in `[build]` forbids `unsafe` blocks in this package.
   bool allow_unsafe = true;
+  // `capabilities = "io, alloc"` in `[build]` grants this package those
+  // effects and nothing else. Empty means unrestricted, which is not the
+  // same as granting nothing -- a sandboxed package writes
+  // `capabilities = ""`, and `has_capabilities` is what tells them apart.
+  std::vector<std::string> capabilities;
+  bool has_capabilities = false;
 
   bool is_valid() const { return !name.empty(); }
 
