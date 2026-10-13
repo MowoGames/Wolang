@@ -22,8 +22,8 @@ std::string_view ItemKindName(ItemKind kind) {
       return "variant";
     case ItemKind::kTrait:
       return "trait";
-    case ItemKind::kImpl:
-      return "impl";
+    case ItemKind::kExtend:
+      return "extend";
     case ItemKind::kComponent:
       return "component";
     case ItemKind::kTag:
@@ -44,6 +44,8 @@ std::string_view ItemKindName(ItemKind kind) {
       return "unit";
     case ItemKind::kEffect:
       return "effect";
+    case ItemKind::kErrorSet:
+      return "error";
     case ItemKind::kMachine:
       return "machine";
   }
@@ -158,6 +160,8 @@ std::string_view TypeRefKindName(TypeRefKind kind) {
       return "type";
     case TypeRefKind::kOptional:
       return "optional";
+    case TypeRefKind::kFallible:
+      return "fallible";
     case TypeRefKind::kFunction:
       return "fn-type";
     case TypeRefKind::kPointer:
@@ -166,6 +170,10 @@ std::string_view TypeRefKindName(TypeRefKind kind) {
       return "reference";
     case TypeRefKind::kTuple:
       return "tuple-type";
+    case TypeRefKind::kSlice:
+      return "slice";
+    case TypeRefKind::kArray:
+      return "array-type";
     case TypeRefKind::kMut:
       return "mut";
     case TypeRefKind::kWith:
@@ -194,6 +202,8 @@ std::string_view PatternKindName(PatternKind kind) {
       return "struct-pattern";
     case PatternKind::kRest:
       return "rest";
+    case PatternKind::kPresent:
+      return "present";
   }
   return "error";
 }

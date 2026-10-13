@@ -32,6 +32,62 @@ constexpr std::string_view kExpectedStatementEnd = "E0040";
 constexpr std::string_view kNestingTooDeep = "E0041";
 constexpr std::string_view kUnknownTypeParameter = "E0042";
 constexpr std::string_view kTrailingTokens = "E0043";
+constexpr std::string_view kUnknownLabel = "E0044";
+constexpr std::string_view kExpectedArraySize = "E0045";
+
+// True for tokens that can begin an expression. Used to tell `a..b` from
+// `a..`, where the range simply ends. |allow_brace| is false in a loop or
+// condition subject, where `{` opens the body instead.
+bool StartsExpression(TokenKind kind, bool allow_brace) {
+  if (kind == TokenKind::kLeftBrace) {
+    return allow_brace;
+  }
+  switch (kind) {
+    case TokenKind::kIdentifier:
+    case TokenKind::kIntLiteral:
+    case TokenKind::kFloatLiteral:
+    case TokenKind::kStringLiteral:
+    case TokenKind::kCharLiteral:
+    case TokenKind::kKwTrue:
+    case TokenKind::kKwFalse:
+    case TokenKind::kKwNull:
+    case TokenKind::kKwSelf:
+    case TokenKind::kLeftParen:
+    case TokenKind::kLeftBracket:
+    case TokenKind::kMinus:
+    case TokenKind::kBang:
+    case TokenKind::kTilde:
+    case TokenKind::kStar:
+    case TokenKind::kAmp:
+    case TokenKind::kPipe:
+    case TokenKind::kPipePipe:
+    case TokenKind::kKwAwait:
+    case TokenKind::kKwSpawn:
+    case TokenKind::kKwIf:
+    case TokenKind::kKwMatch:
+    case TokenKind::kKwLoop:
+    case TokenKind::kKwWhile:
+    case TokenKind::kKwFor:
+    case TokenKind::kKwForeach:
+    case TokenKind::kKwUnsafe:
+    case TokenKind::kKwRegion:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool StartsLoop(TokenKind kind) {
+  switch (kind) {
+    case TokenKind::kKwLoop:
+    case TokenKind::kKwWhile:
+    case TokenKind::kKwFor:
+    case TokenKind::kKwForeach:
+      return true;
+    default:
+      return false;
+  }
+}
 
 bool StartsItem(TokenKind kind) {
   switch (kind) {
@@ -48,7 +104,7 @@ bool StartsItem(TokenKind kind) {
     case TokenKind::kKwStruct:
     case TokenKind::kKwEnum:
     case TokenKind::kKwTrait:
-    case TokenKind::kKwImpl:
+    case TokenKind::kKwExtend:
     case TokenKind::kKwComponent:
     case TokenKind::kKwTag:
     case TokenKind::kKwSystem:
@@ -56,6 +112,7 @@ bool StartsItem(TokenKind kind) {
     case TokenKind::kKwOn:
     case TokenKind::kKwImport:
     case TokenKind::kKwType:
+    case TokenKind::kKwError:
       return true;
     default:
       return false;
@@ -195,7 +252,8 @@ class Parser {
   ItemId ParseFunction(Item item, size_t start);
   ItemId ParseAggregate(Item item, size_t start, ItemKind kind);
   ItemId ParseEnum(Item item, size_t start);
-  ItemId ParseImpl(Item item, size_t start);
+  ItemId ParseExtend(Item item, size_t start);
+  ItemId ParseErrorSet(Item item, size_t start);
   ItemId ParseTag(Item item, size_t start);
   ItemId ParseSystem(Item item, size_t start);
   ItemId ParseSignal(Item item, size_t start);
@@ -227,7 +285,7 @@ class Parser {
   ExprId ParsePrimary();
   ExprId ParseIf();
   ExprId ParseMatch();
-  ExprId ParseLoopLike(TokenKind keyword);
+  ExprId ParseLoopLike(TokenKind keyword, Symbol label = Symbol{});
   ExprId ParseClosure();
   ExprId ParseStringLiteral();
   ExprId ParseInterpolation(SourceSpan span);
@@ -241,6 +299,8 @@ class Parser {
   // ------------------------------------------------------------ patterns --
 
   bool AtPatternStart() const;
+  // Consumes one `?` of an optional pattern, splitting a `??` token.
+  bool EatPatternQuestion();
   PatternId ParsePattern();
   AstRange<PatternId> ParsePatternAlternatives();
 
@@ -269,15 +329,23 @@ class Parser {
   // Set after consuming the first half of a `>>` token that closed a nested
   // generic argument list.
   bool pending_angle_close_ = false;
+  // Set after consuming the first half of a `??` token in a pattern.
+  bool pending_question_ = false;
   // Cleared while parsing the subject of `if`, `while`, `for`, `foreach` and
   // `match`, where `{` starts the body rather than a struct literal.
   bool allow_struct_literal_ = true;
 
   std::array<Symbol, static_cast<size_t>(ContextualKeyword::kCount)>
       contextual_{};
+  // Labels of the loops currently being parsed, innermost last.
+  std::vector<Symbol> labels_;
 };
 
 constexpr uint32_t kMaxNesting = 192;
+
+Precedence Tighter(Precedence precedence) {
+  return static_cast<Precedence>(static_cast<int>(precedence) + 1);
+}
 
 // Restores a boolean on scope exit, for the struct-literal context flag.
 class ScopedFlag {
@@ -628,8 +696,8 @@ ItemId Parser::ParseItem(bool allow_error_item) {
       return ParseAggregate(std::move(item), start, ItemKind::kComponent);
     case TokenKind::kKwEnum:
       return ParseEnum(std::move(item), start);
-    case TokenKind::kKwImpl:
-      return ParseImpl(std::move(item), start);
+    case TokenKind::kKwExtend:
+      return ParseExtend(std::move(item), start);
     case TokenKind::kKwTag:
       return ParseTag(std::move(item), start);
     case TokenKind::kKwSystem:
@@ -643,6 +711,8 @@ ItemId Parser::ParseItem(bool allow_error_item) {
       return ParseBinding(std::move(item), start);
     case TokenKind::kKwType:
       return ParseTypeAlias(std::move(item), start);
+    case TokenKind::kKwError:
+      return ParseErrorSet(std::move(item), start);
     default:
       break;
   }
@@ -1023,22 +1093,22 @@ ItemId Parser::ParseEnum(Item item, size_t start) {
   return ast_->Add(std::move(item));
 }
 
-ItemId Parser::ParseImpl(Item item, size_t start) {
-  Advance();  // `impl`
-  item.kind = ItemKind::kImpl;
+ItemId Parser::ParseExtend(Item item, size_t start) {
+  Advance();  // `extend`
+  item.kind = ItemKind::kExtend;
 
   std::vector<GenericParamId> generics;
   for (GenericParamId id : ast_->Get(ParseGenericParameters())) {
     generics.push_back(id);
   }
 
-  const TypeRefId first = ParseType();
-  if (Eat(TokenKind::kKwFor)) {
+  // `extend T` adds inherent members; `extend T as Trait` implements a trait
+  // for it. The target comes first either way, which is what makes the form
+  // read as a sentence.
+  item.target_type = ParseType();
+  if (Eat(TokenKind::kKwAs)) {
     item.flags |= ItemFlags::kTraitImpl;
-    item.super_type = first;
-    item.target_type = ParseType();
-  } else {
-    item.target_type = first;
+    item.super_type = ParseType();
   }
 
   if (item.target_type.is_valid()) {
@@ -1215,6 +1285,31 @@ ItemId Parser::ParseUnit(Item item, size_t start) {
     item.flags |= ItemFlags::kHasError;
   }
 
+  item.span = SpanFrom(start);
+  return ast_->Add(std::move(item));
+}
+
+ItemId Parser::ParseErrorSet(Item item, size_t start) {
+  Advance();  // `error`
+  item.kind = ItemKind::kErrorSet;
+
+  std::vector<Symbol> names;
+  for (;;) {
+    SourceSpan name_span;
+    const Symbol name = ExpectIdentifier(&name_span);
+    if (!name.is_valid()) {
+      break;
+    }
+    if (names.empty()) {
+      item.name = name;
+      item.name_span = name_span;
+    }
+    names.push_back(name);
+    if (!Eat(TokenKind::kComma)) {
+      break;
+    }
+  }
+  item.names = ast_->AddRange(std::span<const Symbol>(names));
   item.span = SpanFrom(start);
   return ast_->Add(std::move(item));
 }
@@ -1402,6 +1497,25 @@ StmtId Parser::ParseStatement() {
       stmt.kind = At(TokenKind::kKwBreak) ? StmtKind::kBreak
                                           : StmtKind::kContinue;
       Advance();
+      // A label must be on the same line, so a following statement that
+      // happens to start with an identifier is not swallowed.
+      if (At(TokenKind::kIdentifier) && !Peek().starts_line()) {
+        const SourceSpan label_span = CurrentSpan();
+        stmt.label = tokens_.IdentifierOf(Advance());
+        bool known = false;
+        for (Symbol label : labels_) {
+          if (label == stmt.label) {
+            known = true;
+            break;
+          }
+        }
+        if (!known) {
+          std::string message = "no enclosing loop is labelled `";
+          message.append(interner_->Text(stmt.label));
+          message.append("`");
+          Report(kUnknownLabel, std::move(message), label_span);
+        }
+      }
       stmt.span = SpanFrom(start);
       ExpectStatementEnd();
       return ast_->Add(stmt);
@@ -1470,6 +1584,24 @@ ExprId Parser::ParseExpression(Precedence min_precedence) {
   }
 
   const size_t start = pos_;
+
+  // A range with no lower bound: `..b` and a bare `..`.
+  if (At(TokenKind::kDotDot) || At(TokenKind::kDotDotEq)) {
+    const TokenKind op = PeekKind();
+    Advance();
+    Expr range;
+    range.kind = ExprKind::kRange;
+    range.op = op;
+    if (op == TokenKind::kDotDotEq) {
+      range.flags |= ExprFlags::kInclusive;
+    }
+    if (StartsExpression(PeekKind(), allow_struct_literal_)) {
+      range.rhs = ParseExpression(Tighter(Precedence::kRange));
+    }
+    range.span = SpanFrom(start);
+    return ast_->Add(std::move(range));
+  }
+
   ExprId left = ParseUnary();
 
   for (;;) {
@@ -1497,6 +1629,22 @@ ExprId Parser::ParseExpression(Precedence min_precedence) {
       cast.type = ParseType();
       cast.span = SpanFrom(start);
       left = ast_->Add(std::move(cast));
+      continue;
+    }
+
+    // A range with no upper bound: `a..` followed by anything that cannot
+    // start an expression.
+    if ((op == TokenKind::kDotDot || op == TokenKind::kDotDotEq) &&
+        !StartsExpression(PeekKind(), allow_struct_literal_)) {
+      Expr range;
+      range.kind = ExprKind::kRange;
+      range.op = op;
+      if (op == TokenKind::kDotDotEq) {
+        range.flags |= ExprFlags::kInclusive;
+      }
+      range.lhs = left;
+      range.span = SpanFrom(start);
+      left = ast_->Add(std::move(range));
       continue;
     }
 
@@ -1766,11 +1914,13 @@ bool Parser::LooksLikeGenericCall() const {
 }
 
 ExprId Parser::ParseConditionWithOptionalBinding(PatternId* pattern) {
-  ScopedFlag allow(&allow_struct_literal_, false);
   if (Eat(TokenKind::kKwLet)) {
+    // A pattern position: `{` here can only start a struct pattern, never a
+    // block, so `if let Point { x } = p` parses.
     *pattern = ParsePattern();
     ExpectToken(TokenKind::kEq);
   }
+  ScopedFlag allow(&allow_struct_literal_, false);
   return ParseExpression();
 }
 
@@ -1857,11 +2007,12 @@ ExprId Parser::ParseMatch() {
   return ast_->Add(std::move(expr));
 }
 
-ExprId Parser::ParseLoopLike(TokenKind keyword) {
+ExprId Parser::ParseLoopLike(TokenKind keyword, Symbol label) {
   const size_t start = pos_;
   Advance();  // `loop`, `while`, `for` or `foreach`
 
   Expr expr;
+  expr.label = label;
   switch (keyword) {
     case TokenKind::kKwLoop:
       expr.kind = ExprKind::kLoop;
@@ -2093,15 +2244,6 @@ ExprId Parser::ParsePrimary() {
       return ast_->Add(std::move(expr));
     }
 
-    case TokenKind::kIdentifier: {
-      const Token& token = Advance();
-      Expr expr;
-      expr.kind = ExprKind::kPath;
-      expr.name = tokens_.IdentifierOf(token);
-      expr.span = SpanOf(token);
-      return ast_->Add(std::move(expr));
-    }
-
     case TokenKind::kLeftParen:
       return ParseParenthesized();
     case TokenKind::kLeftBracket:
@@ -2117,6 +2259,19 @@ ExprId Parser::ParsePrimary() {
     case TokenKind::kKwFor:
     case TokenKind::kKwForeach:
       return ParseLoopLike(PeekKind());
+
+    case TokenKind::kIdentifier: {
+      // `outer: loop { ... }` labels the loop so `break outer` can name it.
+      if (PeekKind(1) != TokenKind::kColon || !StartsLoop(PeekKind(2))) {
+        break;
+      }
+      const Symbol label = tokens_.IdentifierOf(Advance());
+      Advance();  // `:`
+      labels_.push_back(label);
+      const ExprId loop = ParseLoopLike(PeekKind(), label);
+      labels_.pop_back();
+      return loop;
+    }
     case TokenKind::kPipe:
     case TokenKind::kPipePipe:
       return ParseClosure();
@@ -2136,6 +2291,15 @@ ExprId Parser::ParsePrimary() {
       break;
   }
 
+  if (At(TokenKind::kIdentifier)) {
+    const Token& token = Advance();
+    Expr expr;
+    expr.kind = ExprKind::kPath;
+    expr.name = tokens_.IdentifierOf(token);
+    expr.span = SpanOf(token);
+    return ast_->Add(std::move(expr));
+  }
+
   std::string message = "expected an expression, found ";
   message.append(DescribeCurrent());
   Report(kExpectedExpression, std::move(message), CurrentSpan());
@@ -2143,6 +2307,23 @@ ExprId Parser::ParsePrimary() {
 }
 
 // ------------------------------------------------------------- patterns -----
+
+bool Parser::EatPatternQuestion() {
+  if (pending_question_) {
+    pending_question_ = false;
+    return true;
+  }
+  if (Eat(TokenKind::kQuestion)) {
+    return true;
+  }
+  if (At(TokenKind::kQuestionQuestion)) {
+    // `inner??` is one token that unwraps two levels of optional.
+    Advance();
+    pending_question_ = true;
+    return true;
+  }
+  return false;
+}
 
 bool Parser::AtPatternStart() const {
   switch (PeekKind()) {
@@ -2188,11 +2369,23 @@ PatternId Parser::ParsePattern() {
   Pattern pattern;
 
   switch (PeekKind()) {
-    case TokenKind::kUnderscore:
+    case TokenKind::kUnderscore: {
       Advance();
       pattern.kind = PatternKind::kWildcard;
       pattern.span = SpanFrom(start);
-      return ast_->Add(pattern);
+      PatternId current = ast_->Add(pattern);
+      // `_?` matches any present optional without binding it.
+      while (EatPatternQuestion()) {
+        Pattern present;
+        present.kind = PatternKind::kPresent;
+        std::array<PatternId, 1> elements = {current};
+        present.elements =
+            ast_->AddRange(std::span<const PatternId>(elements));
+        present.span = SpanFrom(start);
+        current = ast_->Add(present);
+      }
+      return current;
+    }
 
     case TokenKind::kDotDot:
       Advance();
@@ -2259,6 +2452,29 @@ PatternId Parser::ParsePattern() {
   const AstRange<Symbol> path = ParseDottedPath();
   const std::span<const Symbol> segments = ast_->Get(path);
 
+  // `n?` matches a present optional and binds its contents, which is the
+  // counterpart of the `null` literal pattern. No Some/None vocabulary is
+  // needed: the type spells it `T?` and the pattern spells it `n?`.
+  if ((At(TokenKind::kQuestion) || At(TokenKind::kQuestionQuestion)) &&
+      segments.size() == 1) {
+    Pattern inner;
+    inner.kind = PatternKind::kBinding;
+    inner.name = segments.front();
+    inner.span = SpanFrom(start);
+    PatternId current = ast_->Add(inner);
+
+    while (EatPatternQuestion()) {
+      Pattern present;
+      present.kind = PatternKind::kPresent;
+      std::array<PatternId, 1> elements = {current};
+      present.elements =
+          ast_->AddRange(std::span<const PatternId>(elements));
+      present.span = SpanFrom(start);
+      current = ast_->Add(present);
+    }
+    return current;
+  }
+
   if (At(TokenKind::kLeftParen)) {
     Advance();
     pattern.kind = PatternKind::kVariant;
@@ -2280,7 +2496,7 @@ PatternId Parser::ParsePattern() {
     return ast_->Add(pattern);
   }
 
-  if (At(TokenKind::kLeftBrace) && allow_struct_literal_) {
+  if (At(TokenKind::kLeftBrace)) {
     const SourceSpan open = CurrentSpan();
     Advance();
     pattern.kind = PatternKind::kStruct;
@@ -2466,6 +2682,24 @@ TypeRefId Parser::ParseTypeNoSuffix() {
       return ast_->Add(type);
     }
 
+    case TokenKind::kLeftBracket: {
+      Advance();
+      type.element = ParseType();
+      if (Eat(TokenKind::kSemicolon)) {
+        type.kind = TypeRefKind::kArray;
+        type.length = ParseExpression();
+        if (!type.length.is_valid()) {
+          Report(kExpectedArraySize, "expected an array length",
+                 CurrentSpan());
+        }
+      } else {
+        type.kind = TypeRefKind::kSlice;
+      }
+      ExpectToken(TokenKind::kRightBracket);
+      type.span = SpanFrom(start);
+      return ast_->Add(type);
+    }
+
     case TokenKind::kIdentifier:
       break;
 
@@ -2478,6 +2712,24 @@ TypeRefId Parser::ParseTypeNoSuffix() {
       type.span = SpanFrom(start);
       return ast_->Add(type);
     }
+  }
+
+  // `soa [Particle]` and `aos [Particle]` choose the storage layout. The
+  // modifier belongs to the storage, so the element type stays usable on its
+  // own and the choice can be flipped where it is measured.
+  if ((AtContextual(ContextualKeyword::kSoa) ||
+       AtContextual(ContextualKeyword::kAos)) &&
+      (PeekKind(1) == TokenKind::kLeftBracket ||
+       PeekKind(1) == TokenKind::kIdentifier)) {
+    const bool is_soa = AtContextual(ContextualKeyword::kSoa);
+    Advance();
+    TypeRefId storage = ParseType();
+    if (ast_->Contains(storage)) {
+      TypeRef& stored = ast_->GetMutable(storage);
+      stored.flags |= is_soa ? TypeRefFlags::kSoa : TypeRefFlags::kAos;
+      stored.span = SpanFrom(start);
+    }
+    return storage;
   }
 
   // Query filters are contextual: `with Tag` and `without Tag` are only
@@ -2517,13 +2769,28 @@ TypeRefId Parser::ParseType() {
   const size_t start = pos_;
   TypeRefId inner = ParseTypeNoSuffix();
 
-  while (At(TokenKind::kQuestion)) {
-    Advance();
-    TypeRef optional;
-    optional.kind = TypeRefKind::kOptional;
-    optional.element = inner;
-    optional.span = SpanFrom(start);
-    inner = ast_->Add(optional);
+  // `T?` and `T!` are both postfix, so a type reads left to right: `Pawn?!`
+  // is "a Pawn, possibly absent, fallibly".
+  for (;;) {
+    if (At(TokenKind::kQuestion)) {
+      Advance();
+      TypeRef optional;
+      optional.kind = TypeRefKind::kOptional;
+      optional.element = inner;
+      optional.span = SpanFrom(start);
+      inner = ast_->Add(optional);
+      continue;
+    }
+    if (At(TokenKind::kBang)) {
+      Advance();
+      TypeRef fallible;
+      fallible.kind = TypeRefKind::kFallible;
+      fallible.element = inner;
+      fallible.span = SpanFrom(start);
+      inner = ast_->Add(fallible);
+      continue;
+    }
+    break;
   }
   return inner;
 }

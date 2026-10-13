@@ -83,7 +83,7 @@ enum class ItemKind : uint8_t {
   kEnum,
   kVariant,   // A member of an enum.
   kTrait,
-  kImpl,
+  kExtend,
   kComponent,
   kTag,
   kSystem,
@@ -94,6 +94,7 @@ enum class ItemKind : uint8_t {
   kDimension,
   kUnit,
   kEffect,
+  kErrorSet,  // `error NotFound, Corrupt`
   kMachine,
 };
 
@@ -113,7 +114,7 @@ enum class ItemFlags : uint16_t {
   kExpressionBody = 1 << 9,
   // The parser recovered inside this item; its children are incomplete.
   kHasError = 1 << 10,
-  // `impl Trait for Type` rather than `impl Type`.
+  // `extend T as Trait` rather than `extend T`.
   kTraitImpl = 1 << 11,
   // `import a.b.{c, d}` rather than `import a.b`.
   kImportList = 1 << 12,
@@ -190,11 +191,14 @@ enum class StmtFlags : uint16_t {
 enum class TypeRefKind : uint8_t {
   kError,
   kPath,
-  kOptional,   // `T?`
+  kOptional,   // `T?` -- may be absent
+  kFallible,   // `T!` -- may fail
   kFunction,   // `fn(A, B) -> C`
   kPointer,    // `*T`, `*mut T`
   kReference,  // `&T`, `&mut T`
   kTuple,
+  kSlice,      // `[T]`
+  kArray,      // `[T; N]`
   kMut,        // `mut T` inside a query or parameter list
   kWith,       // `with Tag` inside a query
   kWithout,    // `without Tag` inside a query
@@ -204,6 +208,11 @@ enum class TypeRefFlags : uint16_t {
   kNone = 0,
   kHasError = 1 << 0,
   kMutable = 1 << 1,
+  // Storage layout: one array per field rather than one array of records.
+  // A property of the storage, not of the element type, so the same struct
+  // can be stored both ways and the choice can be measured.
+  kSoa = 1 << 2,
+  kAos = 1 << 3,
 };
 
 enum class PatternKind : uint8_t {
@@ -215,6 +224,9 @@ enum class PatternKind : uint8_t {
   kVariant,   // `Path(sub, sub)`
   kStruct,    // `Path { field: sub }`
   kRest,      // `..`
+  // `x?` -- present, binding the contained value. The counterpart is the
+  // `null` literal pattern, so optionals need no Some/None vocabulary.
+  kPresent,
 };
 
 enum class PatternFlags : uint16_t {
@@ -329,6 +341,8 @@ struct Expr {
 
   // The binding of `if let`, `for`, `foreach` and `while let`.
   PatternId pattern;
+  // The label of a loop, or the target of `break`/`continue`.
+  Symbol label;
   // The target type of a cast.
   TypeRefId type;
 
@@ -342,6 +356,8 @@ struct Stmt {
   StmtKind kind = StmtKind::kError;
   StmtFlags flags = StmtFlags::kNone;
   SourceSpan span;
+  // The loop named by `break outer` or `continue outer`.
+  Symbol label;
   // `let` and `var` binding.
   PatternId pattern;
   TypeRefId type;
@@ -358,9 +374,11 @@ struct TypeRef {
   AstRange<Symbol> path;
   // Generic arguments, tuple elements, or function parameter types.
   AstRange<TypeRefId> args;
-  // The inner type of an optional, pointer, reference, `mut`, `with` or
-  // `without`, or the return type of a function type.
+  // The inner type of an optional, fallible, pointer, reference, slice,
+  // array, `mut`, `with` or `without`, or the return type of a function type.
   TypeRefId element;
+  // The length of `[T; N]`.
+  ExprId length;
 };
 
 struct Pattern {

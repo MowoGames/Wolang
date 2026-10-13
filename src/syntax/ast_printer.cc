@@ -193,7 +193,7 @@ class Printer {
 
     if (item.super_type.is_valid()) {
       Break();
-      Open(child, HasFlag(item.flags, ItemFlags::kTraitImpl) ? "trait"
+      Open(child, HasFlag(item.flags, ItemFlags::kTraitImpl) ? "as"
                                                              : "extends");
       Break();
       PrintType(item.super_type, Step(child));
@@ -407,6 +407,9 @@ class Printer {
     const Stmt& stmt = ast_.Get(id);
     const int child = Step(indent);
     Open(indent, StmtKindName(stmt.kind));
+    if (stmt.label.is_valid()) {
+      Name(stmt.label);
+    }
     Span(stmt.span);
 
     if (stmt.pattern.is_valid()) {
@@ -479,6 +482,11 @@ class Printer {
         break;
     }
 
+    if (expr.label.is_valid()) {
+      std::string text = "label=";
+      text.append(interner_.Text(expr.label));
+      Atom(text);
+    }
     if (HasFlag(expr.flags, ExprFlags::kMutable)) {
       Atom("mut");
     }
@@ -500,6 +508,27 @@ class Printer {
         PrintParam(param, Step(child));
       }
       Close();
+    }
+
+    if (expr.kind == ExprKind::kRange) {
+      // A bound may be absent on either side, so each one is labelled: an
+      // unlabelled child would make `2..` and `..5` print identically.
+      if (expr.lhs.is_valid()) {
+        Break();
+        Open(child, "from");
+        Break();
+        PrintExprNode(expr.lhs, Step(child));
+        Close();
+      }
+      if (expr.rhs.is_valid()) {
+        Break();
+        Open(child, "to");
+        Break();
+        PrintExprNode(expr.rhs, Step(child));
+        Close();
+      }
+      Close();
+      return;
     }
 
     if (expr.lhs.is_valid()) {
@@ -653,6 +682,12 @@ class Printer {
     if (type.kind == TypeRefKind::kPath) {
       Atom(PathText(type.path));
     }
+    if (HasFlag(type.flags, TypeRefFlags::kSoa)) {
+      Atom("soa");
+    }
+    if (HasFlag(type.flags, TypeRefFlags::kAos)) {
+      Atom("aos");
+    }
     if (HasFlag(type.flags, TypeRefFlags::kMutable) &&
         type.kind != TypeRefKind::kMut) {
       Atom("mut");
@@ -666,6 +701,13 @@ class Printer {
     if (type.element.is_valid()) {
       Break();
       PrintType(type.element, Step(indent));
+    }
+    if (type.length.is_valid()) {
+      Break();
+      Open(Step(indent), "length");
+      Break();
+      PrintExprNode(type.length, Step(Step(indent)));
+      Close();
     }
     Close();
   }
