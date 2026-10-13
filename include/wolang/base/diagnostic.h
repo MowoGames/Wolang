@@ -42,18 +42,32 @@ struct DiagnosticLabel {
   SourceSpan span;
   std::string message;
   bool is_primary = false;
+
+  friend bool operator==(const DiagnosticLabel& lhs,
+                         const DiagnosticLabel& rhs) {
+    return lhs.span == rhs.span && lhs.message == rhs.message &&
+           lhs.is_primary == rhs.is_primary;
+  }
 };
 
 // One text replacement of a machine applicable fix.
 struct FixEdit {
   SourceSpan span;
   std::string new_text;
+
+  friend bool operator==(const FixEdit& lhs, const FixEdit& rhs) {
+    return lhs.span == rhs.span && lhs.new_text == rhs.new_text;
+  }
 };
 
 // A suggested change. Fixes are offered to the editor and to `wolang fix`.
 struct Fix {
   std::string message;
   std::vector<FixEdit> edits;
+
+  friend bool operator==(const Fix& lhs, const Fix& rhs) {
+    return lhs.message == rhs.message && lhs.edits == rhs.edits;
+  }
 };
 
 struct Diagnostic {
@@ -69,6 +83,16 @@ struct Diagnostic {
   // Returns the span of the primary label, or of the first label, or an
   // invalid span when the diagnostic has no labels.
   SourceSpan PrimarySpan() const;
+
+  // Two diagnostics are the same when they would print the same, positions
+  // included. That is what lets a query holding diagnostics be compared, so
+  // an edit that produces the same messages in the same places leaves
+  // everything downstream of it green.
+  friend bool operator==(const Diagnostic& lhs, const Diagnostic& rhs) {
+    return lhs.severity == rhs.severity && lhs.code == rhs.code &&
+           lhs.message == rhs.message && lhs.labels == rhs.labels &&
+           lhs.notes == rhs.notes && lhs.fixes == rhs.fixes;
+  }
 };
 
 class DiagnosticEngine;
