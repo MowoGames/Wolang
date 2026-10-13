@@ -95,6 +95,15 @@ it points into. Without this, printing an interpolated string — the most
 common operation in any language — would not type check, and requiring a
 sigil for it would buy nothing a borrow checker is not already providing.
 
+**D15c. Arithmetic is not pure, because overflow traps.** Integer overflow
+and division by zero are traps, and a trap is a defined outcome the program
+can observe. Deleting an unused `a + b` would therefore turn a program that
+faults into one that does not, so dead-code elimination may not remove it
+without a proof that it cannot trap. That proof is range analysis and
+belongs with the optimizer proper. The alternative — wrapping silently, so
+that arithmetic becomes pure — buys optimizations by turning an arithmetic
+bug into a wrong answer somewhere else.
+
 ## Syntax
 
 **D16. Control flow is expression-shaped.** `if`, `match`, `loop`, `while`,

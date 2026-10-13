@@ -145,12 +145,22 @@ cache problem is ruled out.
 
 ```sh
 wolang check <paths>      # files or package directories
+wolang run <paths>        # run `main` through the interpreter
+wolang test <paths>       # run every `@Test` function
 wolang modules <dir>      # print the package and module graph
 wolang fmt <files>        # print the formatted form
 wolang fmt --check <f>    # fail if a file is not formatted
 wolang fmt --write <f>    # rewrite in place
+wolang ir <files>         # print the IR
 wolang ast <files>        # print the syntax tree
 wolang tokens <files>     # print the token stream
 ```
 
-`examples/package` is a working package to try these on.
+`examples/package` is a working package to try these on, `lib/core` is the
+standard library's first module, and `wolang run examples/hello.wo` prints
+`hello, world`.
+
+`run` and `test` go through the interpreter, which is the reference
+semantics. `run` executes the program twice — once on the IR as lowering
+left it and once after the passes — and reports a difference as an internal
+error, because a difference there is a miscompile.

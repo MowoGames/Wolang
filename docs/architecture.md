@@ -189,6 +189,54 @@ The IR is verified **twice** — as lowering left it, and after the passes —
 because a pass that breaks an invariant and a lowering that breaks one are
 different bugs and have to be distinguishable.
 
+## The interpreter
+
+The reference semantics (D4), not a stepping stone. Every later tier is a
+lowering of the same IR and is checked against this.
+
+**A trap is a defined outcome, not a crash.** Division by zero, integer
+overflow, an index outside an array, reading an absent optional, reaching an
+`unreachable`: each stops execution with a named kind and a location. That is
+what makes "this program faults" something the JIT and the AOT tier can be
+compared against.
+
+**Overflow traps rather than wraps.** A language that wraps silently turns an
+arithmetic bug into a wrong answer somewhere else. The consequence reaches
+the optimizer: arithmetic is not pure, so dead-code elimination cannot remove
+an unused `a + b` without proving it cannot overflow.
+
+**The step limit belongs to the run, not the program.** A `comptime`
+evaluation runs inside the compiler, so it gets a small budget; a program run
+gets a large one. Either way an endless loop stops being the compiler's
+problem.
+
+**Values are simple rather than compact.** An integer is 64 bits with its
+declared width remembered separately, so wrapping is a decision taken in one
+place. An f32 rounds through a `float` after every operation, because doing
+f32 arithmetic at double precision would make this tier disagree with every
+other one.
+
+### Differential execution
+
+`wolang run` executes the program twice — on the IR as lowering left it, and
+after the passes — and compares the result, the trap and what was printed. A
+difference is a miscompile, which is the most serious bug this compiler can
+have, so it is checked on every run rather than in a nightly job. Every
+interpreter test does the same.
+
+That check is what found dead-code elimination removing a division by zero.
+
+### The platform floor
+
+A body-less declaration whose name matches an intrinsic is implemented by the
+host: `Print`, `ConcatStr`, `IntToStr`, `FloatToStr`, `BoolToStr`. The list
+is deliberately tiny — everything the language can say about itself is
+written in Wolang, and `lib/core` is where that starts.
+
+An interpolated string lowers to conversions and concatenations of these,
+which is why `lib/std/src/io` declares them even though source code rarely
+names them.
+
 ## Memory model
 
 Decided in wave 0, implemented in wave 9:
