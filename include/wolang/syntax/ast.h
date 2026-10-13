@@ -263,6 +263,9 @@ struct Item {
   Symbol name;
   // Covers the whole declaration, attributes included.
   SourceSpan span;
+  // Covers just the declared name, which is where a diagnostic about the
+  // declaration itself belongs.
+  SourceSpan name_span;
   // The `///` lines attached to this declaration, or an invalid span.
   SourceSpan doc;
 
@@ -364,8 +367,12 @@ struct Pattern {
   PatternKind kind = PatternKind::kError;
   PatternFlags flags = PatternFlags::kNone;
   SourceSpan span;
-  // Binding name, or the field name when this pattern is a struct field.
+  // The name this pattern binds.
   Symbol name;
+  // When this pattern is a field of a struct pattern, the field it matches.
+  // Separate from |name| because `Point { y: inner }` binds `inner` while
+  // matching `y`, and conflating the two loses one of them.
+  Symbol field;
   AstRange<Symbol> path;
   AstRange<PatternId> elements;
   ExprId literal;

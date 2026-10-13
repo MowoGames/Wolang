@@ -33,83 +33,6 @@ constexpr std::string_view kNestingTooDeep = "E0041";
 constexpr std::string_view kUnknownTypeParameter = "E0042";
 constexpr std::string_view kTrailingTokens = "E0043";
 
-// Binding powers, loosest first. Postfix and prefix operators are handled
-// outside the table.
-enum Precedence : int {
-  kPrecedenceNone = 0,
-  kPrecedenceAssign,      // = += -= ...
-  kPrecedenceRange,       // .. ..=
-  kPrecedenceCoalesce,    // ??
-  kPrecedenceOr,          // ||
-  kPrecedenceAnd,         // &&
-  kPrecedenceCompare,     // == != < <= > >=
-  kPrecedenceBitOr,       // |
-  kPrecedenceBitXor,      // ^
-  kPrecedenceBitAnd,      // &
-  kPrecedenceShift,       // << >>
-  kPrecedenceAdd,         // + -
-  kPrecedenceMultiply,    // * / %
-  kPrecedenceCast,        // as
-};
-
-int InfixPrecedence(TokenKind kind) {
-  switch (kind) {
-    case TokenKind::kEq:
-    case TokenKind::kPlusEq:
-    case TokenKind::kMinusEq:
-    case TokenKind::kStarEq:
-    case TokenKind::kSlashEq:
-    case TokenKind::kPercentEq:
-    case TokenKind::kAmpEq:
-    case TokenKind::kPipeEq:
-    case TokenKind::kCaretEq:
-    case TokenKind::kShlEq:
-    case TokenKind::kShrEq:
-    case TokenKind::kQuestionQuestionEq:
-      return kPrecedenceAssign;
-    case TokenKind::kDotDot:
-    case TokenKind::kDotDotEq:
-      return kPrecedenceRange;
-    case TokenKind::kQuestionQuestion:
-      return kPrecedenceCoalesce;
-    case TokenKind::kPipePipe:
-      return kPrecedenceOr;
-    case TokenKind::kAmpAmp:
-      return kPrecedenceAnd;
-    case TokenKind::kEqEq:
-    case TokenKind::kBangEq:
-    case TokenKind::kLess:
-    case TokenKind::kLessEq:
-    case TokenKind::kGreater:
-    case TokenKind::kGreaterEq:
-      return kPrecedenceCompare;
-    case TokenKind::kPipe:
-      return kPrecedenceBitOr;
-    case TokenKind::kCaret:
-      return kPrecedenceBitXor;
-    case TokenKind::kAmp:
-      return kPrecedenceBitAnd;
-    case TokenKind::kShl:
-    case TokenKind::kShr:
-      return kPrecedenceShift;
-    case TokenKind::kPlus:
-    case TokenKind::kMinus:
-      return kPrecedenceAdd;
-    case TokenKind::kStar:
-    case TokenKind::kSlash:
-    case TokenKind::kPercent:
-      return kPrecedenceMultiply;
-    case TokenKind::kKwAs:
-      return kPrecedenceCast;
-    default:
-      return kPrecedenceNone;
-  }
-}
-
-bool IsAssignment(TokenKind kind) {
-  return InfixPrecedence(kind) == kPrecedenceAssign;
-}
-
 bool StartsItem(TokenKind kind) {
   switch (kind) {
     case TokenKind::kAt:
@@ -249,7 +172,8 @@ class Parser {
 
   std::string DescribeCurrent() const;
   bool ExpectToken(TokenKind kind);
-  Symbol ExpectIdentifier();
+  // Stores the span of the identifier in |span| when it is not null.
+  Symbol ExpectIdentifier(SourceSpan* span = nullptr);
   // Consumes a closing brace, blaming |open| when it is missing.
   bool ExpectCloseBrace(SourceSpan open);
   void ExpectStatementEnd();
@@ -297,7 +221,7 @@ class Parser {
 
   // --------------------------------------------------------- expressions --
 
-  ExprId ParseExpression(int min_precedence = kPrecedenceAssign);
+  ExprId ParseExpression(Precedence min_precedence = Precedence::kAssign);
   ExprId ParseUnary();
   ExprId ParsePostfix(ExprId operand, size_t start);
   ExprId ParsePrimary();
@@ -421,7 +345,10 @@ bool Parser::ExpectToken(TokenKind kind) {
   return false;
 }
 
-Symbol Parser::ExpectIdentifier() {
+Symbol Parser::ExpectIdentifier(SourceSpan* span) {
+  if (span != nullptr) {
+    *span = CurrentSpan();
+  }
   if (At(TokenKind::kIdentifier)) {
     return tokens_.IdentifierOf(Advance());
   }
@@ -981,7 +908,7 @@ AstRange<TypeRefId> Parser::ParseEffectList() {
 ItemId Parser::ParseFunction(Item item, size_t start) {
   Advance();  // `fn`
   item.kind = ItemKind::kFunction;
-  item.name = ExpectIdentifier();
+  item.name = ExpectIdentifier(&item.name_span);
 
   std::vector<GenericParamId> generics;
   for (GenericParamId id : ast_->Get(ParseGenericParameters())) {
@@ -1027,7 +954,7 @@ ItemId Parser::ParseFunction(Item item, size_t start) {
 ItemId Parser::ParseAggregate(Item item, size_t start, ItemKind kind) {
   Advance();  // `class`, `struct`, `trait` or `component`
   item.kind = kind;
-  item.name = ExpectIdentifier();
+  item.name = ExpectIdentifier(&item.name_span);
 
   std::vector<GenericParamId> generics;
   for (GenericParamId id : ast_->Get(ParseGenericParameters())) {
@@ -1054,7 +981,7 @@ ItemId Parser::ParseAggregate(Item item, size_t start, ItemKind kind) {
 ItemId Parser::ParseEnum(Item item, size_t start) {
   Advance();  // `enum`
   item.kind = ItemKind::kEnum;
-  item.name = ExpectIdentifier();
+  item.name = ExpectIdentifier(&item.name_span);
   item.generics = ParseGenericParameters();
 
   const SourceSpan open = CurrentSpan();
@@ -1076,7 +1003,7 @@ ItemId Parser::ParseEnum(Item item, size_t start) {
     variant.attributes =
         ast_->AddRange(std::span<const AttributeId>(attributes));
 
-    variant.name = ExpectIdentifier();
+    variant.name = ExpectIdentifier(&variant.name_span);
     if (!variant.name.is_valid()) {
       SkipToItemBoundary();
       break;
@@ -1139,7 +1066,7 @@ ItemId Parser::ParseImpl(Item item, size_t start) {
 ItemId Parser::ParseTag(Item item, size_t start) {
   Advance();  // `tag`
   item.kind = ItemKind::kTag;
-  item.name = ExpectIdentifier();
+  item.name = ExpectIdentifier(&item.name_span);
   item.span = SpanFrom(start);
   return ast_->Add(std::move(item));
 }
@@ -1147,7 +1074,7 @@ ItemId Parser::ParseTag(Item item, size_t start) {
 ItemId Parser::ParseSystem(Item item, size_t start) {
   Advance();  // `system`
   item.kind = ItemKind::kSystem;
-  item.name = ExpectIdentifier();
+  item.name = ExpectIdentifier(&item.name_span);
   item.params = ParseParameterList(/*types_required=*/true);
   item.effects = ParseEffectList();
 
@@ -1185,7 +1112,7 @@ ItemId Parser::ParseSystem(Item item, size_t start) {
 ItemId Parser::ParseSignal(Item item, size_t start) {
   Advance();  // `signal`
   item.kind = ItemKind::kSignal;
-  item.name = ExpectIdentifier();
+  item.name = ExpectIdentifier(&item.name_span);
   item.params = ParseParameterList(/*types_required=*/true);
   item.span = SpanFrom(start);
   return ast_->Add(std::move(item));
@@ -1221,7 +1148,7 @@ ItemId Parser::ParseBinding(Item item, size_t start) {
   }
   Advance();  // `let` or `var`
 
-  item.name = ExpectIdentifier();
+  item.name = ExpectIdentifier(&item.name_span);
   if (Eat(TokenKind::kColon)) {
     item.type = ParseType();
   }
@@ -1239,7 +1166,7 @@ ItemId Parser::ParseBinding(Item item, size_t start) {
 ItemId Parser::ParseTypeAlias(Item item, size_t start) {
   Advance();  // `type`
   item.kind = ItemKind::kTypeAlias;
-  item.name = ExpectIdentifier();
+  item.name = ExpectIdentifier(&item.name_span);
   item.generics = ParseGenericParameters();
   if (ExpectToken(TokenKind::kEq)) {
     item.type = ParseType();
@@ -1274,7 +1201,7 @@ ItemId Parser::ParseDimension(Item item, size_t start) {
 ItemId Parser::ParseUnit(Item item, size_t start) {
   Advance();  // `unit`
   item.kind = ItemKind::kUnit;
-  item.name = ExpectIdentifier();
+  item.name = ExpectIdentifier(&item.name_span);
 
   if (Eat(TokenKind::kColon)) {
     item.path = ParseDottedPath();
@@ -1295,7 +1222,7 @@ ItemId Parser::ParseUnit(Item item, size_t start) {
 ItemId Parser::ParseEffect(Item item, size_t start) {
   Advance();  // `effect`
   item.kind = ItemKind::kEffect;
-  item.name = ExpectIdentifier();
+  item.name = ExpectIdentifier(&item.name_span);
   item.span = SpanFrom(start);
   return ast_->Add(std::move(item));
 }
@@ -1303,7 +1230,7 @@ ItemId Parser::ParseEffect(Item item, size_t start) {
 ItemId Parser::ParseMachine(Item item, size_t start) {
   Advance();  // `machine`
   item.kind = ItemKind::kMachine;
-  item.name = ExpectIdentifier();
+  item.name = ExpectIdentifier(&item.name_span);
 
   const SourceSpan open = CurrentSpan();
   if (!ExpectToken(TokenKind::kLeftBrace)) {
@@ -1530,7 +1457,7 @@ ExprId Parser::MakeError(size_t start) {
   return ast_->Add(std::move(expr));
 }
 
-ExprId Parser::ParseExpression(int min_precedence) {
+ExprId Parser::ParseExpression(Precedence min_precedence) {
   ScopedDepth depth(&depth_);
   if (depth_ > kMaxNesting) {
     const size_t start = pos_;
@@ -1547,8 +1474,8 @@ ExprId Parser::ParseExpression(int min_precedence) {
 
   for (;;) {
     const Token& token = Peek();
-    const int precedence = InfixPrecedence(token.kind);
-    if (precedence == kPrecedenceNone || precedence < min_precedence) {
+    const Precedence precedence = InfixPrecedence(token.kind);
+    if (precedence == Precedence::kNone || precedence < min_precedence) {
       break;
     }
     // An operator that opens a line starts a new statement instead of
@@ -1574,12 +1501,14 @@ ExprId Parser::ParseExpression(int min_precedence) {
     }
 
     // Assignment is right associative; everything else is left associative.
-    const int next_precedence =
-        IsAssignment(op) ? precedence : precedence + 1;
+    const Precedence next_precedence =
+        IsAssignmentOperator(op)
+            ? precedence
+            : static_cast<Precedence>(static_cast<int>(precedence) + 1);
     const ExprId right = ParseExpression(next_precedence);
 
     Expr expr;
-    if (IsAssignment(op)) {
+    if (IsAssignmentOperator(op)) {
       expr.kind = ExprKind::kAssign;
     } else if (op == TokenKind::kDotDot || op == TokenKind::kDotDotEq) {
       expr.kind = ExprKind::kRange;
@@ -2375,7 +2304,7 @@ PatternId Parser::ParsePattern() {
         value = ast_->Add(binding);
       }
       if (value.is_valid()) {
-        ast_->GetMutable(value).name = name;
+        ast_->GetMutable(value).field = name;
         fields.push_back(value);
       }
       if (!Eat(TokenKind::kComma)) {

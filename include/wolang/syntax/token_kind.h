@@ -48,6 +48,36 @@ std::string_view ContextualKeywordSpelling(ContextualKeyword keyword);
 // identifiers, so that adding them later cannot break existing code.
 bool IsReservedWord(std::string_view text);
 
+// Binding power of a binary operator, loosest first. Shared by the parser,
+// which uses it to build the tree, and the formatter, which uses it to decide
+// where parentheses are needed -- grouping parentheses are not stored in the
+// tree, so they have to be derived from precedence alone.
+enum class Precedence : int {
+  kNone = 0,
+  kAssign,     // = += -= ...
+  kRange,      // .. ..=
+  kCoalesce,   // ??
+  kOr,         // ||
+  kAnd,        // &&
+  kCompare,    // == != < <= > >=
+  kBitOr,      // |
+  kBitXor,     // ^
+  kBitAnd,     // &
+  kShift,      // << >>
+  kAdd,        // + -
+  kMultiply,   // * / %
+  kCast,       // as
+  // Prefix and postfix operators bind tighter than any of the above.
+  kUnary,
+};
+
+// Returns the precedence of |kind| as a binary operator, or Precedence::kNone
+// when it is not one.
+Precedence InfixPrecedence(TokenKind kind);
+
+// True for `=` and the compound assignments, which are right associative.
+bool IsAssignmentOperator(TokenKind kind);
+
 }  // namespace wolang
 
 #endif  // WOLANG_SYNTAX_TOKEN_KIND_H_

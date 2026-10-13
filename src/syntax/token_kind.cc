@@ -132,4 +132,62 @@ bool IsReservedWord(std::string_view text) {
   return words->find(text) != words->end();
 }
 
+Precedence InfixPrecedence(TokenKind kind) {
+  switch (kind) {
+    case TokenKind::kEq:
+    case TokenKind::kPlusEq:
+    case TokenKind::kMinusEq:
+    case TokenKind::kStarEq:
+    case TokenKind::kSlashEq:
+    case TokenKind::kPercentEq:
+    case TokenKind::kAmpEq:
+    case TokenKind::kPipeEq:
+    case TokenKind::kCaretEq:
+    case TokenKind::kShlEq:
+    case TokenKind::kShrEq:
+    case TokenKind::kQuestionQuestionEq:
+      return Precedence::kAssign;
+    case TokenKind::kDotDot:
+    case TokenKind::kDotDotEq:
+      return Precedence::kRange;
+    case TokenKind::kQuestionQuestion:
+      return Precedence::kCoalesce;
+    case TokenKind::kPipePipe:
+      return Precedence::kOr;
+    case TokenKind::kAmpAmp:
+      return Precedence::kAnd;
+    case TokenKind::kEqEq:
+    case TokenKind::kBangEq:
+    case TokenKind::kLess:
+    case TokenKind::kLessEq:
+    case TokenKind::kGreater:
+    case TokenKind::kGreaterEq:
+      return Precedence::kCompare;
+    case TokenKind::kPipe:
+      return Precedence::kBitOr;
+    case TokenKind::kCaret:
+      return Precedence::kBitXor;
+    case TokenKind::kAmp:
+      return Precedence::kBitAnd;
+    case TokenKind::kShl:
+    case TokenKind::kShr:
+      return Precedence::kShift;
+    case TokenKind::kPlus:
+    case TokenKind::kMinus:
+      return Precedence::kAdd;
+    case TokenKind::kStar:
+    case TokenKind::kSlash:
+    case TokenKind::kPercent:
+      return Precedence::kMultiply;
+    case TokenKind::kKwAs:
+      return Precedence::kCast;
+    default:
+      return Precedence::kNone;
+  }
+}
+
+bool IsAssignmentOperator(TokenKind kind) {
+  return InfixPrecedence(kind) == Precedence::kAssign;
+}
+
 }  // namespace wolang
