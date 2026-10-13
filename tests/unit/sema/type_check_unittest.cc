@@ -1336,5 +1336,137 @@ struct Vec3 { var x: float }
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+
+// --------------------------------------------------- slices and arrays -----
+
+WOLANG_TEST(TypeCheck, AnArrayFitsWhereASliceIsWanted) {
+  // A slice is a view of an array. Without this a slice has nothing to be a
+  // view of.
+  Fixture f(R"(
+fun take(xs: [int]) -> int => xs[0]
+
+fun use() -> int {
+  let arr: [int; 3] = [1, 2, 3]
+  let view: [int] = arr
+  return take(arr) + view[0]
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, LayoutHasToAgreeForAView) {
+  // A struct-of-arrays view of an array of structs is a different memory
+  // shape, not a view of it.
+  Fixture f(R"(
+fun take(xs: soa [int]) {}
+
+fun use() {
+  let arr: [int; 2] = [1, 2]
+  take(arr)
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0101"));
+}
+
+// ------------------------------------------------- recursive data types ----
+
+WOLANG_TEST(TypeCheck, AValueTypeMayNotContainItself) {
+  Fixture f(R"(
+struct Direct {
+  var next: Direct
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0117"));
+  WOLANG_EXPECT(f.Messages().find("has no size") != std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, ContainingItselfThroughAWrapperStillHasNoSize) {
+  // An optional of a value type is that value plus a tag, and an array of it
+  // is N of them: both are still stored inline.
+  WOLANG_EXPECT(Fixture("struct S { var next: S? }").HasCode("E0117"));
+  WOLANG_EXPECT(Fixture("struct S { var all: [S; 4] }").HasCode("E0117"));
+  WOLANG_EXPECT(Fixture("struct S { var pair: (int, S) }").HasCode("E0117"));
+}
+
+WOLANG_TEST(TypeCheck, AMutualCycleHasNoSizeEither) {
+  Fixture f("struct A { var b: B }\nstruct B { var a: A }\n");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0117,E0117");
+}
+
+WOLANG_TEST(TypeCheck, OneIndirectionIsEnoughToHaveASize) {
+  // A slice is a pointer and a length; a class is a reference to a heap
+  // object. Neither stores the type inline.
+  WOLANG_EXPECT_EQ(Fixture("struct S { var all: [S] }").Codes(), "");
+  WOLANG_EXPECT_EQ(Fixture("class C { var next: C }").Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, APlainEnumIsNotSelfContaining) {
+  // A variant's own type is its enum, so counting one as a field would make
+  // every enum look infinite.
+  Fixture f(R"(
+enum Shape {
+  Circle(radius: float)
+  Point
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AClassMayNotDeriveFromItself) {
+  WOLANG_EXPECT(Fixture("class A : A {}").HasCode("E0118"));
+
+  Fixture chain("class B : C {}\nclass C : B {}\n");
+  WOLANG_EXPECT_EQ(chain.Codes(), "E0118,E0118");
+}
+
+// ---------------------------------------------------- generic members ------
+
+WOLANG_TEST(TypeCheck, AGenericTypeParameterIsInScopeForItsMembers) {
+  Fixture f(R"(
+struct Holder<T> {
+  var value: T
+}
+
+class Box<T> {
+  var item: T
+
+  fun Get() -> T => item
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AFieldOfAGenericInstanceIsSubstituted) {
+  Fixture f(R"(
+struct Holder<T> {
+  var value: T
+}
+
+fun use(h: Holder<int>) {
+  let good = h.value
+  let bad: bool = h.value
+  let missing = h.nothing
+}
+)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("good"), "i32");
+  WOLANG_EXPECT(f.HasCode("E0101"));
+  WOLANG_EXPECT(f.HasCode("E0112"));
+}
+
+
+WOLANG_TEST(TypeCheck, ACyclicDimensionIsReported) {
+  // Evaluation runs in declaration order, so a cycle would quietly produce
+  // whichever answer that order happened to give.
+  WOLANG_EXPECT(Fixture("dimension D = D").HasCode("E0118"));
+
+  Fixture pair("dimension A = B\ndimension B = A\n");
+  WOLANG_EXPECT(pair.HasCode("E0118"));
+
+  // A real derived dimension still works.
+  Fixture fine(
+      "dimension L\ndimension T\ndimension V = L / T\n");
+  WOLANG_EXPECT_EQ(fine.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang

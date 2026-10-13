@@ -18,6 +18,8 @@ constexpr std::string_view kAssignToLet = "E0105";
 constexpr std::string_view kNotCallable = "E0106";
 constexpr std::string_view kNotIndexable = "E0107";
 constexpr std::string_view kUnknownMember = "E0112";
+constexpr std::string_view kInfiniteType = "E0117";
+constexpr std::string_view kCyclicDeclaration = "E0118";
 constexpr std::string_view kNonExhaustive = "E0201";
 constexpr std::string_view kBadOverride = "E0401";
 constexpr std::string_view kMissingTraitMethod = "E0402";
@@ -78,12 +80,14 @@ class Checker {
   Checker(TypeStore* types,
           const StringInterner* interner,
           const FileResolution* resolution,
-          const Ast& ast)
+          const Ast& ast,
+          const ItemIndexMap* item_indices)
       : types_(types),
         interner_(interner),
         resolution_(resolution),
         ast_(ast),
-        resolver_(types, interner, resolution, &diagnostics_) {
+        resolver_(types, interner, resolution, &diagnostics_),
+        item_indices_(item_indices) {
     result_.expr_types.assign(ast.expr_count(), TypeId{});
     // A name in type position counts as a use just as much as one in
     // expression position.
@@ -94,6 +98,15 @@ class Checker {
 
  private:
   // ----------------------------------------------------------- reporting --
+
+  // The item tree index of |id|, or kNoItem when it is not known.
+  uint32_t IndexOf(ItemId id) const {
+    if (item_indices_ == nullptr || !id.is_valid() ||
+        id.index >= item_indices_->size()) {
+      return Binding::kNoItem;
+    }
+    return (*item_indices_)[id.index];
+  }
 
   // True when an enclosing declaration carries `@allow` for |code|.
   bool IsAllowed(std::string_view code) const {
@@ -200,7 +213,12 @@ class Checker {
   // --------------------------------------------------------- declarations --
 
   void CheckItem(ItemId id);
-  void CheckFunction(const Item& item);
+  void CheckFunction(const Item& item, uint32_t owner);
+
+  // Interns a declaration's type parameters against |owner| -- the index the
+  // signature pass used -- and puts them in scope. Returns how many were
+  // pushed.
+  size_t PushGenerics(const Item& item, uint32_t owner);
   void CheckBinding(const Item& item);
 
   // ---------------------------------------------------------- statements --
@@ -247,6 +265,12 @@ class Checker {
   TypeId CheckMatch(const Expr& expr, TypeId expected);
   void CheckExhaustive(const Expr& expr, TypeId subject);
   void CheckTraitConformance(const Item& item, TypeId target);
+
+  // Reports a value type that contains itself, which would have no size.
+  void CheckSized(const Item& item, TypeId type);
+  void CheckBaseChain(const Item& item, TypeId type);
+  // True when |type| reaches |target| through fields stored inline.
+  bool ReachesByValue(TypeId type, TypeId target, int depth) const;
   void CheckOverride(const Item& item);
   void CheckBounds(const TypeStore::Substitution& substitution,
                    SourceSpan span);
@@ -275,6 +299,9 @@ class Checker {
   const Ast& ast_;
   DiagnosticEngine diagnostics_;
   TypeResolver resolver_;
+  // ItemId to item tree index, so a type parameter is interned against the
+  // same owner the signature pass used.
+  const ItemIndexMap* item_indices_ = nullptr;
   TypedBody result_;
   std::vector<Scope> scopes_;
   // The declared return type of the function being checked.
@@ -361,6 +388,18 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
   // pawn` work without a wrapper call.
   if (types_->IsOptional(expected)) {
     return Accepts(types_->ElementOf(expected), found);
+  }
+  // A slice is a view of an array, so an array fits wherever one is wanted.
+  // Without this a slice has nothing to be a view of, and `fun f(xs: [int])`
+  // could not be called with `[1, 2, 3]`.
+  if (types_->KindOf(expected) == TypeKind::kSlice &&
+      types_->KindOf(found) == TypeKind::kArray) {
+    const Type& slice = types_->Get(expected);
+    const Type& array = types_->Get(found);
+    // The layouts have to agree: a struct-of-arrays view of an array of
+    // structs would be a different memory shape, not a view.
+    return slice.is_soa == array.is_soa &&
+           types_->ElementOf(expected) == types_->ElementOf(found);
   }
   return false;
 }
@@ -995,7 +1034,22 @@ TypeId Checker::CheckField(const Expr& expr) {
       expr.kind != ExprKind::kField && types_->IsOptional(object);
   const TypeId subject =
       through_optional ? types_->ElementOf(object) : object;
-  const TypeId named = types_->StripWrappers(subject);
+  TypeId named = types_->StripWrappers(subject);
+
+  // `Holder<int>` keeps its members on `Holder`, with the instance's
+  // arguments standing in for the declaration's parameters. Without this a
+  // field of a generic type resolves to nothing at all.
+  TypeStore::Substitution substitution;
+  if (types_->KindOf(named) == TypeKind::kInstance) {
+    const TypeId base = types_->Get(named).base;
+    const std::span<const TypeId> parameters =
+        resolution_->ParametersOf(base);
+    const std::vector<TypeId> arguments = types_->ArgumentsOf(named);
+    for (size_t i = 0; i < parameters.size() && i < arguments.size(); ++i) {
+      substitution.emplace_back(parameters[i], arguments[i]);
+    }
+    named = base;
+  }
 
   if (types_->IsError(named)) {
     return types_->error();
@@ -1016,7 +1070,8 @@ TypeId Checker::CheckField(const Expr& expr) {
     return types_->error();
   }
 
-  return through_optional ? types_->Optional(member->type) : member->type;
+  const TypeId type = types_->Substitute(member->type, substitution);
+  return through_optional ? types_->Optional(type) : type;
 }
 
 // `if p != null { ... }` narrows `p` for the body, the same way `if let`
@@ -1725,17 +1780,10 @@ void Checker::CheckBlock(ExprId id, TypeId expected) {
 
 // ---------------------------------------------------------- declarations ----
 
-void Checker::CheckFunction(const Item& item) {
+void Checker::CheckFunction(const Item& item, uint32_t owner) {
   PushScope();
 
-  size_t pushed = 0;
-  for (GenericParamId generic_id : ast_.Get(item.generics)) {
-    const GenericParam& generic = ast_.Get(generic_id);
-    const TypeId parameter =
-        types_->Parameter(generic.name, 0, static_cast<uint32_t>(pushed));
-    resolver_.PushTypeParameter(generic.name, parameter);
-    ++pushed;
-  }
+  const size_t pushed = PushGenerics(item, owner);
 
   for (ParamId param_id : ast_.Get(item.params)) {
     const Param& param = ast_.Get(param_id);
@@ -1775,6 +1823,23 @@ void Checker::CheckFunction(const Item& item) {
   return_type_ = previous_return;
   resolver_.PopTypeParameters(pushed);
   PopScope();
+}
+
+size_t Checker::PushGenerics(const Item& item, uint32_t owner) {
+  size_t pushed = 0;
+  for (GenericParamId generic_id : ast_.Get(item.generics)) {
+    const GenericParam& generic = ast_.Get(generic_id);
+    std::vector<TypeId> bounds;
+    for (TypeRefId bound : ast_.Get(generic.bounds)) {
+      bounds.push_back(resolver_.Resolve(ast_, bound));
+    }
+    resolver_.PushTypeParameter(
+        generic.name,
+        types_->Parameter(generic.name, owner,
+                          static_cast<uint32_t>(pushed), bounds));
+    ++pushed;
+  }
+  return pushed;
 }
 
 void Checker::CheckBinding(const Item& item) {
@@ -1854,6 +1919,107 @@ void Checker::CheckOverride(const Item& item) {
     message.append(interner_->Text(item.name));
     message.append("` overrides a method that is not `virtual`");
     Report(kBadOverride, std::move(message), item.name_span);
+  }
+}
+
+// A value type stores its fields inline, so one of them being the type
+// itself -- directly or through other value types -- describes something of
+// infinite size. A class is a reference to a heap object, so it may contain
+// itself; so may a slice, a pointer or a reference, all of which are one
+// indirection wide.
+bool Checker::ReachesByValue(TypeId type, TypeId target, int depth) const {
+  // The depth guard is load-bearing, not defensive: a cycle that does not
+  // involve |target| -- `B` containing `B` while asking about `A` -- would
+  // otherwise walk forever. `B` is reported on its own pass.
+  if (!type.is_valid() || depth > 64) {
+    return false;
+  }
+  if (type == target) {
+    return true;
+  }
+
+  switch (types_->KindOf(type)) {
+    case TypeKind::kOptional:
+    case TypeKind::kFallible:
+    case TypeKind::kArray:
+    case TypeKind::kQuantity:
+      // Still stored inline: `Node?` inside a struct is a Node plus a tag.
+      return ReachesByValue(types_->ElementOf(type), target, depth + 1);
+
+    case TypeKind::kTuple:
+    case TypeKind::kInstance:
+      for (TypeId argument : types_->ArgumentsOf(type)) {
+        if (argument == target ||
+            ReachesByValue(argument, target, depth + 1)) {
+          return true;
+        }
+      }
+      return false;
+
+    case TypeKind::kNamed:
+      if (!resolution_->IsValueType(type)) {
+        return false;
+      }
+      for (const Member& member : resolution_->MembersOf(type)) {
+        // Only fields. A variant's own type is its enum, so counting one
+        // would make every enum look self-containing; what a variant
+        // actually stores is its parameters, which the member table does not
+        // carry yet.
+        if (member.kind != MemberKind::kField) {
+          continue;
+        }
+        if (ReachesByValue(member.type, target, depth + 1)) {
+          return true;
+        }
+      }
+      return false;
+
+    default:
+      // A slice, pointer, reference or function is one indirection wide.
+      return false;
+  }
+}
+
+// A class that derives from itself, directly or through a chain, has no base
+// to resolve against. The lookups that walk the chain are already bounded, so
+// this is about reporting the declaration rather than about terminating.
+void Checker::CheckBaseChain(const Item& item, TypeId type) {
+  if (!type.is_valid()) {
+    return;
+  }
+  TypeId current = resolution_->BaseOf(type);
+  for (size_t depth = 0; current.is_valid(); ++depth) {
+    if (current == type) {
+      std::string message = "`";
+      message.append(Describe(type));
+      message.append("` derives from itself");
+      Report(kCyclicDeclaration, std::move(message), item.name_span);
+      return;
+    }
+    if (depth > 64) {
+      return;
+    }
+    current = resolution_->BaseOf(current);
+  }
+}
+
+void Checker::CheckSized(const Item& item, TypeId type) {
+  if (!type.is_valid() || !resolution_->IsValueType(type)) {
+    return;
+  }
+  for (const Member& member : resolution_->MembersOf(type)) {
+    if (member.kind != MemberKind::kField) {
+      continue;
+    }
+    if (!ReachesByValue(member.type, type, 0)) {
+      continue;
+    }
+    std::string message = "`";
+    message.append(Describe(type));
+    message.append("` contains itself, so it has no size");
+    Report(kInfiniteType, std::move(message), item.name_span,
+           "store it behind a `Box<T>`, a slice or a reference");
+    return;
   }
 }
 
@@ -1963,12 +2129,12 @@ void Checker::CheckItem(ItemId id) {
       // Only a method can override anything, and `self_type_` is what says
       // whether this is one.
       CheckOverride(item);
-      CheckFunction(item);
+      CheckFunction(item, IndexOf(id));
       return;
 
     case ItemKind::kSystem:
     case ItemKind::kOn:
-      CheckFunction(item);
+      CheckFunction(item, IndexOf(id));
       return;
 
     case ItemKind::kBinding:
@@ -1981,6 +2147,11 @@ void Checker::CheckItem(ItemId id) {
     case ItemKind::kComponent:
     case ItemKind::kEnum:
     case ItemKind::kExtend: {
+      // A generic type's parameters stay in scope for its members: the `T`
+      // of `struct Holder<T>` is what the type of its `value` field names,
+      // and what a method's signature names too.
+      const size_t pushed = PushGenerics(item, IndexOf(id));
+
       // Inside a type's members, `self` is that type.
       const TypeId previous_self = self_type_;
       if (item.kind == ItemKind::kExtend) {
@@ -1993,11 +2164,14 @@ void Checker::CheckItem(ItemId id) {
       } else {
         const Binding* binding = Lookup(item.name);
         self_type_ = binding != nullptr ? binding->type : TypeId{};
+        CheckBaseChain(item, self_type_);
+        CheckSized(item, self_type_);
       }
       for (ItemId member : ast_.Get(item.members)) {
         CheckItem(member);
       }
       self_type_ = previous_self;
+      resolver_.PopTypeParameters(pushed);
       return;
     }
 
@@ -2026,8 +2200,9 @@ TypedBody TypeCheckItem(TypeStore* types,
                         const FileResolution* resolution,
                         const Ast& ast,
                         ItemId item,
-                        uint32_t item_index) {
-  Checker checker(types, interner, resolution, ast);
+                        uint32_t item_index,
+                        const ItemIndexMap* item_indices) {
+  Checker checker(types, interner, resolution, ast, item_indices);
   return checker.Run(item, item_index);
 }
 

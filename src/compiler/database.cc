@@ -502,6 +502,18 @@ void Database::RegisterQueries() {
         // each body carries the index a caller elsewhere will name it by.
         const ItemTree* tree = db.GetAs<ItemTree>(ItemTreeKey(file));
         const size_t entry_count = tree == nullptr ? 0 : tree->entries.size();
+
+        // A type parameter is interned against the declaration that owns it,
+        // so the checker has to name that declaration the same way the
+        // signature pass did. Built once per file rather than per item.
+        ItemIndexMap item_indices(ast.item_count(), 0xFFFFFFFFu);
+        for (uint32_t index = 0; index < entry_count; ++index) {
+          const ItemId id = ResolveItem(ast, index);
+          if (id.is_valid() && id.index < item_indices.size()) {
+            item_indices[id.index] = index;
+          }
+        }
+
         for (uint32_t index = 0; index < entry_count; ++index) {
           if (tree->entries[index].parent != ItemTreeEntry::kNoParent) {
             continue;
@@ -511,7 +523,7 @@ void Database::RegisterQueries() {
             continue;
           }
           TypedBody body = TypeCheckItem(&types_, &interner_, &resolution,
-                                         ast, id, index);
+                                         ast, id, index, &item_indices);
           result.diagnostics.insert(result.diagnostics.end(),
                                     body.diagnostics.begin(),
                                     body.diagnostics.end());

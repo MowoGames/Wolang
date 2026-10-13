@@ -17,6 +17,7 @@ constexpr std::string_view kDuplicateName = "E0113";
 constexpr std::string_view kUnknownDimension = "E0114";
 constexpr std::string_view kBadUnitFactor = "E0115";
 constexpr std::string_view kBadDimensionProduct = "E0116";
+constexpr std::string_view kCyclicDimension = "E0118";
 
 // The names the language provides without any declaration. Spelled out here
 // rather than injected as a synthetic module, because they have no
@@ -96,6 +97,24 @@ Dimensions FileResolution::ProductOf(DimensionId dimension) const {
   for (const auto& [id, product] : dimension_products) {
     if (id == dimension) {
       return product;
+    }
+  }
+  return {};
+}
+
+bool FileResolution::IsValueType(TypeId type) const {
+  for (const TypeMembers& table : type_members) {
+    if (table.type == type) {
+      return table.is_value;
+    }
+  }
+  return false;
+}
+
+std::span<const TypeId> FileResolution::ParametersOf(TypeId type) const {
+  for (const TypeMembers& table : type_members) {
+    if (table.type == type) {
+      return table.parameters;
     }
   }
   return {};
@@ -609,6 +628,17 @@ FileResolution ResolveFile(TypeStore* types,
                                   diagnostics, &product)) {
       continue;
     }
+    // `dimension D = D`, or a pair that defines each other. Evaluation runs
+    // in declaration order, so a cycle would quietly produce whichever
+    // answer the order happened to give.
+    if (product.ExponentOf(binding->dimension) != 0) {
+      std::string message = "`";
+      message.append(interner->Text(item.name));
+      message.append("` is defined in terms of itself");
+      diagnostics->Error(kCyclicDimension, std::move(message))
+          .Primary(item.name_span);
+      continue;
+    }
     for (auto& [id, stored] : resolution.dimension_products) {
       if (id == binding->dimension) {
         stored = product;
@@ -761,20 +791,39 @@ void ResolveSignatures(TypeStore* types,
     // A generic declaration's parameters have to be in scope while its own
     // signature is resolved.
     // A generic declaration's parameters have to be in scope while its own
-    // signature is resolved, and each carries its bounds so a call site can
-    // check them without reaching back into this file.
-    size_t pushed = 0;
-    for (GenericParamId generic_id : ast.Get(item.generics)) {
-      const GenericParam& generic = ast.Get(generic_id);
-      std::vector<TypeId> bounds;
-      for (TypeRefId bound : ast.Get(generic.bounds)) {
-        bounds.push_back(resolver.Resolve(ast, bound));
+    // signature is resolved, and so do an enclosing declaration's: the `T`
+    // of `struct Holder<T>` is what the type of its `value` field names.
+    // Pushed outermost first, so an inner parameter shadows an outer one of
+    // the same name.
+    std::vector<uint32_t> owners;
+    for (uint32_t owner = index; owner != ItemTreeEntry::kNoParent;
+         owner = tree.entries[owner].parent) {
+      owners.push_back(owner);
+      if (owners.size() > tree.entries.size()) {
+        break;
       }
-      resolver.PushTypeParameter(
-          generic.name,
-          types->Parameter(generic.name, index,
-                           static_cast<uint32_t>(pushed), bounds));
-      ++pushed;
+    }
+    std::reverse(owners.begin(), owners.end());
+
+    size_t pushed = 0;
+    for (uint32_t owner : owners) {
+      const ItemId owner_id = ResolveItem(ast, owner);
+      if (!ast.Contains(owner_id)) {
+        continue;
+      }
+      uint32_t position = 0;
+      for (GenericParamId generic_id : ast.Get(ast.Get(owner_id).generics)) {
+        const GenericParam& generic = ast.Get(generic_id);
+        std::vector<TypeId> bounds;
+        for (TypeRefId bound : ast.Get(generic.bounds)) {
+          bounds.push_back(resolver.Resolve(ast, bound));
+        }
+        resolver.PushTypeParameter(
+            generic.name,
+            types->Parameter(generic.name, owner, position, bounds));
+        ++position;
+        ++pushed;
+      }
     }
 
     switch (entry.kind) {
@@ -869,6 +918,21 @@ void ResolveSignatures(TypeStore* types,
     TypeMembers table;
     table.type = resolution->item_types[index];
     table.members = members_of(index);
+    // A class is a reference to a heap object; everything else here stores
+    // its members inline.
+    table.is_value = entry.kind != ItemKind::kClass &&
+                     entry.kind != ItemKind::kTrait;
+    // The declaration's own parameters, interned against it, so that a field
+    // of `Holder<int>` can be worked out by substitution.
+    const ItemId owner_id = ResolveItem(ast, index);
+    if (ast.Contains(owner_id)) {
+      uint32_t position = 0;
+      for (GenericParamId generic_id : ast.Get(ast.Get(owner_id).generics)) {
+        table.parameters.push_back(types->Parameter(
+            ast.Get(generic_id).name, index, position));
+        ++position;
+      }
+    }
 
     resolution->type_members.push_back(std::move(table));
 
@@ -916,7 +980,10 @@ void ResolveSignatures(TypeStore* types,
     if (!merged) {
       // The type is declared in another file, which keeps its own table; the
       // extension still has to be visible here.
-      resolution->type_members.push_back(TypeMembers{target, std::move(added)});
+      TypeMembers extension;
+      extension.type = target;
+      extension.members = std::move(added);
+      resolution->type_members.push_back(std::move(extension));
     }
 
     // `extend T as Trait` is the declaration of conformance.

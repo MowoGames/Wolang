@@ -51,6 +51,11 @@ struct TypedBody {
 // and an inferred type flows up from the expression. That is what lets
 // `let x: u8 = 200` give the literal a type without a suffix, and what lets
 // `f(1)` take its parameter's type.
+// Maps an ItemId to its index in the file's item tree. Built once per file,
+// because a type parameter is interned against the declaration that owns it
+// and the signature pass and the checker have to agree on which that is.
+using ItemIndexMap = std::vector<uint32_t>;
+
 // |item_index| is the declaration's index in its file's item tree, recorded
 // in the result so that a caller elsewhere can be matched to it.
 TypedBody TypeCheckItem(TypeStore* types,
@@ -58,7 +63,8 @@ TypedBody TypeCheckItem(TypeStore* types,
                         const FileResolution* resolution,
                         const Ast& ast,
                         ItemId item,
-                        uint32_t item_index = 0xFFFFFFFFu);
+                        uint32_t item_index = 0xFFFFFFFFu,
+                        const ItemIndexMap* item_indices = nullptr);
 
 }  // namespace wolang
 

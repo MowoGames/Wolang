@@ -71,9 +71,18 @@ struct Binding {
 struct TypeMembers {
   TypeId type;
   std::vector<Member> members;
+  // True for a struct, component, tag or enum: its fields are stored inline,
+  // so one of them being the type itself would have no size. A class holds a
+  // reference, so it may contain itself.
+  bool is_value = false;
+  // The declaration's own type parameters, in order. Needed to work out what
+  // a field of `Holder<int>` is: zip these with the instance's arguments.
+  std::vector<TypeId> parameters;
 
   friend bool operator==(const TypeMembers& lhs, const TypeMembers& rhs) {
-    return lhs.type == rhs.type && lhs.members == rhs.members;
+    return lhs.type == rhs.type && lhs.members == rhs.members &&
+           lhs.is_value == rhs.is_value &&
+           lhs.parameters == rhs.parameters;
   }
 };
 
@@ -138,12 +147,19 @@ struct FileResolution {
 
   const Binding* Find(Symbol name) const;
 
+  // True when |type| stores its members inline. False for a class, a type
+  // from a file this one cannot see, or anything that is not a named type.
+  bool IsValueType(TypeId type) const;
+
   // The members of |type|, or an empty span when none are known -- which is
   // the case for a type declared in a file this one cannot see.
   std::span<const Member> MembersOf(TypeId type) const;
 
   // The member of |type| named |name|, or null.
   const Member* FindMember(TypeId type, Symbol name) const;
+
+  // The type parameters of |type|'s declaration, in order.
+  std::span<const TypeId> ParametersOf(TypeId type) const;
 
   // The type |type| derives from, or an invalid id.
   TypeId BaseOf(TypeId type) const;
