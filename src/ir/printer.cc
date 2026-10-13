@@ -19,14 +19,26 @@ class Printer {
     out_.append("fun @");
     out_.append(interner_.Text(function.name));
     out_.push_back('(');
-    const std::span<const InstId> params = function.ParamsOf(function.entry());
-    for (size_t i = 0; i < params.size(); ++i) {
-      if (i != 0) {
-        out_.append(", ");
+    if (function.is_declaration()) {
+      // No entry block, so the parameter types come from the signature.
+      const std::vector<TypeId> params = types_.ArgumentsOf(function.type);
+      for (size_t i = 0; i < params.size(); ++i) {
+        if (i != 0) {
+          out_.append(", ");
+        }
+        out_.append(types_.Describe(interner_, params[i]));
       }
-      Name(params[i]);
-      out_.append(": ");
-      out_.append(types_.Describe(interner_, function.Get(params[i]).type));
+    } else {
+      const std::span<const InstId> params =
+          function.ParamsOf(function.entry());
+      for (size_t i = 0; i < params.size(); ++i) {
+        if (i != 0) {
+          out_.append(", ");
+        }
+        Name(params[i]);
+        out_.append(": ");
+        out_.append(types_.Describe(interner_, function.Get(params[i]).type));
+      }
     }
     out_.push_back(')');
 
@@ -41,8 +53,15 @@ class Printer {
       out_.append(" uses ");
       out_.append(types_.Describe(interner_, function.effects));
     }
-    out_.append(" {\n");
 
+    // A declaration has a signature and no body, which is exactly how it
+    // reads.
+    if (function.is_declaration()) {
+      out_.append("\n");
+      return;
+    }
+
+    out_.append(" {\n");
     for (uint32_t i = 0; i < function.blocks.size(); ++i) {
       PrintBlock(function, BlockId{i});
     }
@@ -134,6 +153,16 @@ class Printer {
       case Opcode::kInsert:
         out_.push_back(' ');
         out_.append(std::to_string(inst.field));
+        break;
+      case Opcode::kAlloca:
+      case Opcode::kUndef:
+      case Opcode::kConstNull:
+      case Opcode::kMakeStruct:
+      case Opcode::kMakeArray:
+        // These have no operand to infer a type from, so the dump has to
+        // say it or a reader cannot tell what the value is.
+        out_.append(" : ");
+        out_.append(types_.Describe(interner_, inst.type));
         break;
       default:
         break;

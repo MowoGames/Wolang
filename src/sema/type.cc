@@ -321,6 +321,11 @@ TypeKind TypeStore::KindOf(TypeId id) const {
 }
 
 std::vector<TypeId> TypeStore::ArgumentsOf(TypeId id) const {
+  // Asking for the arguments of a type that is not there is a legitimate
+  // "none": a declaration whose signature never resolved still gets walked.
+  if (!id.is_valid()) {
+    return {};
+  }
   const Type& type = Get(id);
   if (type.kind == TypeKind::kErrorSet) {
     return {};

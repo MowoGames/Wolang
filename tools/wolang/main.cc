@@ -24,6 +24,7 @@
 #include "wolang/compiler/database.h"
 #include "wolang/compiler/workspace.h"
 #include "wolang/format/formatter.h"
+#include "wolang/ir/printer.h"
 #include "wolang/syntax/ast.h"
 #include "wolang/syntax/ast_printer.h"
 #include "wolang/syntax/lexer.h"
@@ -266,6 +267,22 @@ int RunSyntaxCommand(const Options& options) {
         PrintTokens(database.sources(), database.interner(), tokens->tokens,
                     options.show_trivia);
       }
+    } else if (options.command == "ir") {
+      const LoweredFile* lowered = database.Lowered(file);
+      if (lowered != nullptr) {
+        std::fputs(ir::PrintModule(database.interner(), database.types(),
+                                   lowered->module)
+                       .c_str(),
+                   stdout);
+        // A verifier complaint is a compiler bug, so it goes to stderr with
+        // the IR still on stdout -- the dump is what the bug report needs.
+        for (const std::string& problem : lowered->problems) {
+          std::fprintf(stderr, "wolang: internal: %s\n", problem.c_str());
+        }
+        if (!lowered->problems.empty()) {
+          return 70;
+        }
+      }
     } else if (options.command == "ast") {
       const ParsedFile* parsed = database.Parse(file);
       if (parsed != nullptr) {
@@ -435,7 +452,7 @@ int Run(int argc, char** argv) {
   const bool needs_inputs =
       options.command == "check" || options.command == "tokens" ||
       options.command == "ast" || options.command == "fmt" ||
-      options.command == "modules";
+      options.command == "ir" || options.command == "modules";
   if (needs_inputs && options.inputs.empty()) {
     std::fprintf(stderr, "wolang: %s needs at least one path\n",
                  options.command.c_str());
@@ -445,7 +462,8 @@ int Run(int argc, char** argv) {
   if (options.command == "check") {
     return RunCheck(options);
   }
-  if (options.command == "tokens" || options.command == "ast") {
+  if (options.command == "tokens" || options.command == "ast" ||
+      options.command == "ir") {
     return RunSyntaxCommand(options);
   }
   if (options.command == "fmt") {

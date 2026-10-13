@@ -173,8 +173,16 @@ struct Function {
                                      inst.cases_count);
   }
 
+  // A declaration with no body -- a trait method, an `extern`, a host
+  // function -- has a signature and no blocks. Everything that walks blocks
+  // has to say so, rather than assuming an entry exists.
+  bool is_declaration() const { return blocks.empty(); }
+
   // The parameters of |block|, which a jump to it has to match.
   std::span<const InstId> ParamsOf(BlockId block) const {
+    if (!Contains(block)) {
+      return {};
+    }
     const Block& target = Get(block);
     return std::span<const InstId>(target.instructions.data(),
                                    target.param_count);

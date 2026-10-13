@@ -4,6 +4,8 @@
 
 #include <utility>
 
+#include "wolang/ir/lower.h"
+#include "wolang/ir/verifier.h"
 #include "wolang/syntax/lexer.h"
 #include "wolang/syntax/parser.h"
 
@@ -54,6 +56,9 @@ QueryKey ResolutionKey(FileId file) {
 }
 
 using ResolvedNames = std::pair<FileResolution, std::vector<Diagnostic>>;
+QueryKey LoweredFileKey(FileId file) {
+  return QueryKey{QueryKind::kLoweredFile, file.index};
+}
 QueryKey ModuleEffectsKey(ModuleId module) {
   return QueryKey{QueryKind::kModuleEffects, module.index};
 }
@@ -542,6 +547,7 @@ void Database::RegisterQueries() {
                                         body.used_names.end());
           result.items.push_back(std::move(body));
         }
+        result.resolution = resolution;
 
         // A `need` nothing refers to is dead weight, and the check belongs
         // here rather than with import resolution: only type checking knows
@@ -851,6 +857,47 @@ void Database::RegisterQueries() {
           result.push_back(diagnostic);
         }
         return MakeComparableResult(std::move(result));
+      });
+
+  // Lowering and verification are one query: IR that does not verify is a
+  // compiler bug, and the only thing to do with it is report it next to the
+  // IR that produced it.
+  engine_.Register(
+      QueryKind::kLoweredFile,
+      [this](QueryEngine& db, uint32_t arg) -> QueryResult {
+        const FileId file{arg};
+        const ParsedFile* parsed = db.GetAs<ParsedFile>(ParsedFileKey(file));
+        const CheckedFile* checked =
+            db.GetAs<CheckedFile>(TypeCheckKey(file));
+        if (parsed == nullptr || checked == nullptr) {
+          return MakeResult(LoweredFile{});
+        }
+
+        // Lowering trusts the checker, so a file the checker complained
+        // about is not lowered at all. Every value would otherwise have to
+        // carry a "maybe" the back ends would inherit.
+        for (const Diagnostic& diagnostic : checked->diagnostics) {
+          if (diagnostic.severity == Severity::kError) {
+            return MakeResult(LoweredFile{});
+          }
+        }
+        for (const Diagnostic& diagnostic : parsed->diagnostics) {
+          if (diagnostic.severity == Severity::kError) {
+            return MakeResult(LoweredFile{});
+          }
+        }
+
+        LoweredFile result;
+        ir::LowerFile(&types_, checked->resolution, parsed->ast,
+                      checked->body, &result.module);
+
+        // Verified on every input rather than on request: the IR is the
+        // contract between the front end and every back end, so a violation
+        // has to surface where it was introduced.
+        const ir::VerificationResult verdict =
+            ir::Verify(interner_, types_, result.module);
+        result.problems = verdict.problems;
+        return MakeResult(std::move(result));
       });
 
   engine_.Register(
@@ -1189,6 +1236,10 @@ const FileResolution* Database::Resolution(FileId file) {
 
 const CheckedFile* Database::Checked(FileId file) {
   return engine_.GetAs<CheckedFile>(TypeCheckKey(file));
+}
+
+const LoweredFile* Database::Lowered(FileId file) {
+  return engine_.GetAs<LoweredFile>(LoweredFileKey(file));
 }
 
 const ParsedFile* Database::Parse(FileId file) {

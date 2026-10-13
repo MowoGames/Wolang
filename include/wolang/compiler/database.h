@@ -14,6 +14,7 @@
 #include "wolang/compiler/item_tree.h"
 #include "wolang/compiler/manifest.h"
 #include "wolang/compiler/module.h"
+#include "wolang/ir/ir.h"
 #include "wolang/query/query_engine.h"
 #include "wolang/sema/resolution.h"
 #include "wolang/sema/type.h"
@@ -60,6 +61,19 @@ struct CheckedFile {
   std::vector<Diagnostic> diagnostics;
   // One entry per top-level declaration, in item tree order.
   std::vector<TypedBody> items;
+  // Everything the file can see, with the member tables and signatures of
+  // its siblings and imports merged in. Kept here because lowering needs
+  // the same view the checker had -- an imported function's signature only
+  // exists after the merge.
+  FileResolution resolution;
+};
+
+// A file's IR, together with whatever the verifier found wrong with it. The
+// two travel together because IR that does not verify is a compiler bug, and
+// the only useful thing to do with it is show it.
+struct LoweredFile {
+  ir::Module module;
+  std::vector<std::string> problems;
 };
 
 // The effect row of one declaration, after the module-wide fixpoint.
@@ -171,6 +185,7 @@ class Database {
   const ResolvedImports* Imports(FileId file);
   const FileResolution* Resolution(FileId file);
   const CheckedFile* Checked(FileId file);
+  const LoweredFile* Lowered(FileId file);
 
   // Every diagnostic reported for one file, in reporting order.
   const std::vector<Diagnostic>* Diagnostics(FileId file);

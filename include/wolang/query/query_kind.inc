@@ -53,6 +53,9 @@ WOLANG_QUERY(ModuleEffects,
 WOLANG_QUERY(EffectDiagnostics,
              "file",
              "what a file's declarations do against what they declare")
+WOLANG_QUERY(LoweredFile,
+             "file",
+             "the IR of a file's declarations, with the verifier's verdict")
 WOLANG_QUERY(FileDiagnostics, "file", "every diagnostic reported for a file")
 
 #undef WOLANG_QUERY_INPUT

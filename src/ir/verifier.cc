@@ -20,8 +20,9 @@ class Verifier {
         function_(function) {}
 
   VerificationResult Run() {
-    if (function_.blocks.empty()) {
-      Fail("function has no entry block");
+    // A declaration has a signature and no body. There is nothing to verify
+    // and nothing wrong with it.
+    if (function_.is_declaration()) {
       return std::move(result_);
     }
 
