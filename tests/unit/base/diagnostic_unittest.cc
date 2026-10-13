@@ -105,12 +105,12 @@ WOLANG_TEST(DiagnosticRenderer, RendersLabelsNotesAndLocation) {
   SourceManager sources;
   const FileId file = sources.AddVirtualFile(
       "combat/turret.wo",
-      "fn Fire() {\n  let t = target\n  await Wait(0.5s)\n}\n");
+      "fun Fire() {\n  let t = target\n  await Wait(0.5s)\n}\n");
 
   DiagnosticEngine diagnostics;
   diagnostics.Warning("W0107", "actor reference `t` held across `await`")
-      .Secondary(SourceSpan{file, 18, 19}, "`t` captured here")
-      .Primary(SourceSpan{file, 31, 47}, "`t` may be destroyed while waiting")
+      .Secondary(SourceSpan{file, 19, 20}, "`t` captured here")
+      .Primary(SourceSpan{file, 32, 48}, "`t` may be destroyed while waiting")
       .Note("re-check liveness after the await");
 
   const std::string expected =
@@ -183,8 +183,8 @@ WOLANG_TEST(DiagnosticRenderer, ExpandsTabsWhenAligningMarkers) {
 
 WOLANG_TEST(DiagnosticRenderer, ReportsLabelsFromOtherFilesAsNotes) {
   SourceManager sources;
-  const FileId primary = sources.AddVirtualFile("a.wo", "fn f() {}\n");
-  const FileId other = sources.AddVirtualFile("b.wo", "fn f() {}\n");
+  const FileId primary = sources.AddVirtualFile("a.wo", "fun f() {}\n");
+  const FileId other = sources.AddVirtualFile("b.wo", "fun f() {}\n");
 
   DiagnosticEngine diagnostics;
   diagnostics.Error("E0401", "duplicate definition of `f`")
