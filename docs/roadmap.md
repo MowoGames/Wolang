@@ -33,7 +33,7 @@ Dates are not fixed. Scope is.
 
 | Wave | Content | Exit criterion |
 |---|---|---|
-| **10** | `async` with structured concurrency, signals, `derived`, **state machines** | 100k concurrently waiting coroutines benchmark |
+| **10** | `async` with structured concurrency, signals, `derived`, **state machines**, a minimal HTTP/1.1 server as the design's driver | 100k concurrently waiting coroutines benchmark; the server serves keep-alive traffic |
 | **11** | ECS, access graph, parallel scheduler, **AoS/SoA layout polymorphism**, SPMD `foreach` | 1M entity integration benchmark; the SoA variant beats the AoS one |
 | **12** | LLVM AOT, WASM target, differential fuzzing across interpreter, JIT and AOT | shipping builds need no JIT; within 1.2x of C++ |
 
@@ -41,10 +41,20 @@ Dates are not fixed. Scope is.
 
 | Wave | Content | Exit criterion |
 |---|---|---|
-| **13** | `std`, `math`, `game` libraries; package manager; documentation generator | a third party package is consumable in one line |
+| **13** | `std`, `math`, `game` libraries; readiness notification (kqueue, epoll, io_uring); `wolang-http` as a real library; package manager; documentation generator | a third party package is consumable in one line |
 | **14** | LSP, debug adapter, profiler, REPL, editor integration | completion, go-to-definition and breakpoints work |
 | **15** | Embedding C API; a MowoEngine host adapter; graph/text bridge | gameplay written in Wolang runs inside the engine |
 | **16** | Transactional and rollback blocks, determinism and replay, mod sandboxing, GPU kernels | rollback netcode on a vertical slice |
+
+`wolang-http` is deliberately spread across three waves rather than placed at
+the end: a minimal server at wave 10 while the concurrency model is still
+soft, a real one at wave 13 once `std` has sockets, and benchmarked at wave 12
+when the AOT tier makes a number mean something. See decision D40.
+
+Game servers are a different workload and are not this: they want UDP,
+deterministic ticks and rollback, which is wave 16. HTTP is for the
+infrastructure around a game — matchmaking, accounts, telemetry — and for
+services generally.
 
 The critical path to "the language is alive" is waves 1–7. The interpreter
 arrives before the JIT on purpose: it is the reference semantics every later

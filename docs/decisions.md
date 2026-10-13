@@ -241,3 +241,28 @@ where a JIT is not allowed.
 **D39. The dev tier gets a real register allocator (linear scan) from the
 start.** Longer to build than accumulator stencils, but better code from day
 one rather than a rewrite once the benchmarks disappoint.
+
+**D40. An HTTP server is a first-party library, and it starts at wave 10 as
+the driver for the async design — not at the end as a showcase.** A server is
+the harshest test a concurrency model gets: thousands of tasks, each mostly
+waiting, with cancellation and deadlines everywhere. Writing a minimal
+HTTP/1.1 server *while* structured concurrency is being designed is what
+keeps the design honest; writing it afterwards only proves the design was
+already fixed.
+
+It lives in its own package (`wolang-http`), consumed through a path
+dependency, which also exercises the package graph. The transport layer —
+kqueue, epoll, io_uring — belongs in `std` (wave 13), not in the HTTP
+library: a server is one user of readiness notification, not its owner.
+
+Three language features make it unusually good rather than merely possible:
+a `region` per request is arena-per-request, which is how the fastest
+servers already work but spelled as a language construct; effects and
+capabilities give per-handler sandboxing checked at compile time, so a route
+declared `uses net` cannot touch the filesystem and a plugin route can be
+granted `capabilities = "net"` and nothing else; inferred error sets mean
+`fun Handle(r: Request) -> Response!` without a hand-written error enum.
+
+TLS is bound, not written — BoringSSL or rustls through the C ABI (wave 9).
+Nobody should write TLS, and pretending otherwise would be the one decision
+here that could not be walked back.
