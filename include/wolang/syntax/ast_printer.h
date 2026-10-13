@@ -30,13 +30,17 @@ struct AstPrintOptions {
 //
 // The format is the golden form used by the parser tests, so it is stable on
 // purpose: changing it means updating those tests deliberately.
-std::string PrintAst(const SourceManager& sources,
+//
+// |sources| is only needed to turn offsets into line and column numbers, so it
+// may be null when `include_spans` is false. That is what lets the item tree
+// render an expression canonically without a source manager in reach.
+std::string PrintAst(const SourceManager* sources,
                      const StringInterner& interner,
                      const Ast& ast,
                      const AstPrintOptions& options = {});
 
 // Renders one subtree. Handy in tests that only care about an expression.
-std::string PrintExpr(const SourceManager& sources,
+std::string PrintExpr(const SourceManager* sources,
                       const StringInterner& interner,
                       const Ast& ast,
                       ExprId expr,

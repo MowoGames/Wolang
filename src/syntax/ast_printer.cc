@@ -52,7 +52,7 @@ std::string Quote(std::string_view text) {
 
 class Printer {
  public:
-  Printer(const SourceManager& sources,
+  Printer(const SourceManager* sources,
           const StringInterner& interner,
           const Ast& ast,
           const AstPrintOptions& options)
@@ -106,10 +106,11 @@ class Printer {
   }
 
   void Span(SourceSpan span) {
-    if (!options_.include_spans || !span.file.is_valid()) {
+    if (!options_.include_spans || sources_ == nullptr ||
+        !span.file.is_valid()) {
       return;
     }
-    const LineColumn position = sources_.Position(span.file, span.begin);
+    const LineColumn position = sources_->Position(span.file, span.begin);
     char buffer[32];
     std::snprintf(buffer, sizeof(buffer), "@%u:%u", position.line,
                   position.column);
@@ -617,6 +618,11 @@ class Printer {
     } else if (pattern.name.is_valid()) {
       Name(pattern.name);
     }
+    if (pattern.field.is_valid()) {
+      std::string text = "field=";
+      text.append(interner_.Text(pattern.field));
+      Atom(text);
+    }
     if (HasFlag(pattern.flags, PatternFlags::kMutable)) {
       Atom("mut");
     }
@@ -664,7 +670,7 @@ class Printer {
     Close();
   }
 
-  const SourceManager& sources_;
+  const SourceManager* sources_;
   const StringInterner& interner_;
   const Ast& ast_;
   AstPrintOptions options_;
@@ -673,7 +679,7 @@ class Printer {
 
 }  // namespace
 
-std::string PrintAst(const SourceManager& sources,
+std::string PrintAst(const SourceManager* sources,
                      const StringInterner& interner,
                      const Ast& ast,
                      const AstPrintOptions& options) {
@@ -681,7 +687,7 @@ std::string PrintAst(const SourceManager& sources,
   return printer.PrintFile();
 }
 
-std::string PrintExpr(const SourceManager& sources,
+std::string PrintExpr(const SourceManager* sources,
                       const StringInterner& interner,
                       const Ast& ast,
                       ExprId expr,
