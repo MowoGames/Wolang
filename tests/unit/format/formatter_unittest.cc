@@ -108,6 +108,31 @@ WOLANG_TEST(Formatter, WritesAnEmptyBodyOnOneLine) {
   WOLANG_EXPECT_EQ(pass.formatted(), "fun f() {}\nclass C {}\n");
 }
 
+WOLANG_TEST(Formatter, KeepsADerivedDimensionProduct) {
+  // Dropping the product would silently turn a derived dimension into a base
+  // one. `^` is a power here, so it is written the way a diagnostic prints
+  // it rather than spaced like a bitwise xor.
+  Pass pass("dimension Length\ndimension Time\n"
+            "dimension Velocity = Length/Time\n"
+            "dimension Area = Length ^ 2\n");
+  WOLANG_EXPECT_EQ(pass.formatted(),
+                   "dimension Length\n"
+                   "dimension Time\n"
+                   "dimension Velocity = Length / Time\n"
+                   "dimension Area = Length^2\n");
+  WOLANG_EXPECT_STABLE("dimension Area = Length^2\n");
+}
+
+WOLANG_TEST(Formatter, KeepsAShebang) {
+  // The lexer skips it as trivia, so it is not in the tree -- and dropping
+  // it would make `fmt --write` stop an executable script from being one.
+  Pass pass("#!/usr/bin/env wolang\nfun main() {}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(),
+                   "#!/usr/bin/env wolang\n"
+                   "fun main() {}\n");
+  WOLANG_EXPECT_STABLE("#!/usr/bin/env wolang\nfun main() {}\n");
+}
+
 WOLANG_TEST(Formatter, PlainNotationWinsTies) {
   // `%g` renders 40.0 as `4e+01`: it round-trips and saves a character, and
   // nobody writes it. Plain notation wins a tie; a magnitude that genuinely

@@ -1,6 +1,6 @@
 # Wave 4 — the type system, units, generics and traits
 
-**Status:** complete. 375 unit tests, all passing in Debug, sanitizers and
+**Status:** complete. 377 unit tests, all passing in Debug, sanitizers and
 Release.
 
 ## Scope
@@ -187,6 +187,11 @@ Two rules keep the output honest:
   coming back expanded.
 - **An unknown `extend` target was reported twice**, once by the member pass
   and once by the trait check.
+- **The formatter dropped a shebang**, so `fmt --write` would stop an
+  executable script from being one.
+- **The formatter dropped a derived dimension's product**, silently turning
+  `dimension Velocity = Length / Time` into a base dimension. Running `fmt`
+  over the project's own corpus is what found both.
 
 ## Things worth remembering
 

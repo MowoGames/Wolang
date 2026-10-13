@@ -108,6 +108,16 @@ class Formatter {
         text_(sources.Text(tokens.file)) {}
 
   std::string Run() {
+    // The lexer skips a shebang as trivia, so it is not in the tree. It has
+    // to be written back, or `fmt --write` would silently make an executable
+    // script stop being one.
+    if (text_.size() >= 2 && text_[0] == '#' && text_[1] == '!') {
+      const size_t end = text_.find('\n');
+      out_.append(TrimRight(
+          text_.substr(0, end == std::string_view::npos ? text_.size() : end)));
+      out_.push_back('\n');
+    }
+
     for (ItemId id : ast_.Get(ast_.root())) {
       const Item& item = ast_.Get(id);
       FlushCommentsBefore(item.span.begin, !out_.empty());
@@ -679,6 +689,14 @@ class Formatter {
           first = false;
           Put(Name(name));
         }
+        // `dimension Velocity = Length / Time`. Dropping the product would
+        // silently turn a derived dimension into a base one.
+        if (item.init.is_valid()) {
+          Put(" = ");
+          in_dimension_ = true;
+          EmitExpr(item.init);
+          in_dimension_ = false;
+        }
         break;
       }
 
@@ -984,11 +1002,19 @@ class Formatter {
             EmitExpr(expr.rhs, Tighter(precedence));
           }
         } else {
+          // Inside a dimension product `^` is a power, not a bitwise xor,
+          // and `Length^2` is how a dimension is written -- including by the
+          // diagnostic renderer, which the formatter should agree with.
+          const bool power = in_dimension_ && expr.op == TokenKind::kCaret;
           EmitExpr(expr.lhs,
                    right_associative ? Tighter(precedence) : precedence);
-          Put(" ");
+          if (!power) {
+            Put(" ");
+          }
           Put(TokenKindSpelling(expr.op));
-          Put(" ");
+          if (!power) {
+            Put(" ");
+          }
           EmitExpr(expr.rhs,
                    right_associative ? precedence : Tighter(precedence));
         }
@@ -1530,6 +1556,9 @@ class Formatter {
         return;
     }
   }
+
+  // Set while writing a dimension's product, where `^` is a power.
+  bool in_dimension_ = false;
 
   const SourceManager& sources_;
   const StringInterner& interner_;
