@@ -553,16 +553,29 @@ class Formatter {
         break;
       }
 
-      case ItemKind::kImpl: {
-        Put("impl");
+      case ItemKind::kExtend: {
+        Put("extend");
         EmitGenerics(item.generics);
         Put(" ");
-        if (HasFlag(item.flags, ItemFlags::kTraitImpl)) {
-          EmitType(item.super_type);
-          Put(" for ");
-        }
         EmitType(item.target_type);
+        if (HasFlag(item.flags, ItemFlags::kTraitImpl)) {
+          Put(" as ");
+          EmitType(item.super_type);
+        }
         EmitMemberBlock(item.members, item.span.end);
+        break;
+      }
+
+      case ItemKind::kErrorSet: {
+        Put("error ");
+        bool first = true;
+        for (Symbol name : ast_.Get(item.names)) {
+          if (!first) {
+            Put(", ");
+          }
+          first = false;
+          Put(Name(name));
+        }
         break;
       }
 
@@ -794,11 +807,12 @@ class Formatter {
         break;
 
       case StmtKind::kBreak:
-        Put("break");
-        break;
-
       case StmtKind::kContinue:
-        Put("continue");
+        Put(stmt.kind == StmtKind::kBreak ? "break" : "continue");
+        if (stmt.label.is_valid()) {
+          Put(" ");
+          Put(Name(stmt.label));
+        }
         break;
 
       case StmtKind::kDefer:
@@ -930,17 +944,24 @@ class Formatter {
           Put("(");
         }
         const bool right_associative = IsAssignmentOperator(expr.op);
-        EmitExpr(expr.lhs,
-                 right_associative ? Tighter(precedence) : precedence);
         if (expr.kind == ExprKind::kRange) {
+          // Either bound may be absent: `..b`, `a..` and a bare `..`.
+          if (expr.lhs.is_valid()) {
+            EmitExpr(expr.lhs, precedence);
+          }
           Put(TokenKindSpelling(expr.op));
+          if (expr.rhs.is_valid()) {
+            EmitExpr(expr.rhs, Tighter(precedence));
+          }
         } else {
+          EmitExpr(expr.lhs,
+                   right_associative ? Tighter(precedence) : precedence);
           Put(" ");
           Put(TokenKindSpelling(expr.op));
           Put(" ");
+          EmitExpr(expr.rhs,
+                   right_associative ? precedence : Tighter(precedence));
         }
-        EmitExpr(expr.rhs,
-                 right_associative ? precedence : Tighter(precedence));
         if (parenthesize) {
           Put(")");
         }
@@ -1128,11 +1149,13 @@ class Formatter {
       }
 
       case ExprKind::kLoop:
+        EmitLoopLabel(expr.label);
         Put("loop");
         EmitBlockBody(expr.rhs);
         break;
 
       case ExprKind::kWhile:
+        EmitLoopLabel(expr.label);
         Put("while ");
         if (HasFlag(expr.flags, ExprFlags::kHasBinding)) {
           Put("let ");
@@ -1145,6 +1168,7 @@ class Formatter {
 
       case ExprKind::kFor:
       case ExprKind::kForeach:
+        EmitLoopLabel(expr.label);
         Put(expr.kind == ExprKind::kFor ? "for " : "foreach ");
         EmitPattern(expr.pattern);
         Put(" in ");
@@ -1166,6 +1190,14 @@ class Formatter {
         Put("/* unparsable */");
         break;
     }
+  }
+
+  void EmitLoopLabel(Symbol label) {
+    if (!label.is_valid()) {
+      return;
+    }
+    Put(Name(label));
+    Put(": ");
   }
 
   void PutNumberSuffix(const NumberLiteral& number) {
@@ -1348,6 +1380,14 @@ class Formatter {
         Put(first ? "}" : " }");
         return;
       }
+      case PatternKind::kPresent: {
+        const std::span<const PatternId> elements = ast_.Get(pattern.elements);
+        if (!elements.empty()) {
+          EmitPattern(elements.front());
+        }
+        Put("?");
+        return;
+      }
       case PatternKind::kError:
         Put("_");
         return;
@@ -1362,6 +1402,11 @@ class Formatter {
       return;
     }
     const TypeRef& type = ast_.Get(id);
+    if (HasFlag(type.flags, TypeRefFlags::kSoa)) {
+      Put("soa ");
+    } else if (HasFlag(type.flags, TypeRefFlags::kAos)) {
+      Put("aos ");
+    }
     switch (type.kind) {
       case TypeRefKind::kPath: {
         PutPath(type.path);
@@ -1383,6 +1428,22 @@ class Formatter {
       case TypeRefKind::kOptional:
         EmitType(type.element);
         Put("?");
+        return;
+      case TypeRefKind::kFallible:
+        EmitType(type.element);
+        Put("!");
+        return;
+      case TypeRefKind::kSlice:
+        Put("[");
+        EmitType(type.element);
+        Put("]");
+        return;
+      case TypeRefKind::kArray:
+        Put("[");
+        EmitType(type.element);
+        Put("; ");
+        EmitExpr(type.length);
+        Put("]");
         return;
       case TypeRefKind::kFunction: {
         Put("fn(");

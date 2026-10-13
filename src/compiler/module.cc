@@ -26,6 +26,7 @@ bool DeclaresAModuleName(ItemKind kind) {
     case ItemKind::kDimension:
     case ItemKind::kUnit:
     case ItemKind::kEffect:
+    case ItemKind::kErrorSet:
     case ItemKind::kMachine:
       return true;
     default:

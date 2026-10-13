@@ -85,6 +85,11 @@ class SignatureWriter {
       return;
     }
     const TypeRef& type = ast_.Get(id);
+    if (HasFlag(type.flags, TypeRefFlags::kSoa)) {
+      Put("soa ");
+    } else if (HasFlag(type.flags, TypeRefFlags::kAos)) {
+      Put("aos ");
+    }
     switch (type.kind) {
       case TypeRefKind::kError:
         Put("<error>");
@@ -107,6 +112,22 @@ class SignatureWriter {
       case TypeRefKind::kOptional:
         PutType(type.element);
         out_.push_back('?');
+        return;
+      case TypeRefKind::kFallible:
+        PutType(type.element);
+        out_.push_back('!');
+        return;
+      case TypeRefKind::kSlice:
+        out_.push_back('[');
+        PutType(type.element);
+        out_.push_back(']');
+        return;
+      case TypeRefKind::kArray:
+        out_.push_back('[');
+        PutType(type.element);
+        Put("; ");
+        PutExpr(type.length);
+        out_.push_back(']');
         return;
       case TypeRefKind::kFunction: {
         Put("fn(");
