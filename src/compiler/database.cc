@@ -74,6 +74,8 @@ constexpr std::string_view kPrivateName = "E0058";
 constexpr std::string_view kUnusedName = "W0101";
 constexpr std::string_view kUndeclaredEffect = "E0701";
 constexpr std::string_view kUnstatedPublicEffect = "E0704";
+constexpr std::string_view kForbiddenEffect = "E0702";
+constexpr std::string_view kUnsafeForbidden = "E0801";
 
 }  // namespace
 
@@ -655,16 +657,97 @@ void Database::RegisterQueries() {
           return MakeComparableResult(std::move(result));
         }
 
+        // `[build] unsafe = "deny"` is a package-wide ban, and `unsafe` is
+        // an effect, so the ban is one more row the module may not have.
+        const Manifest* manifest = ManifestFor(file);
+        const bool unsafe_denied =
+            manifest != nullptr && !manifest->allow_unsafe;
+
         const Ast& ast = parsed->ast;
         DiagnosticEngine diagnostics;
+
+        // A context that forbids effects: the row a declaration may not
+        // have, whatever it declares. One mechanism covers determinism,
+        // allocation-free hot paths and `comptime` purity, which is the
+        // whole point of having effects rather than three attribute checks.
+        const auto forbidden_by = [this, &ast](const Item& item) {
+          EffectRow row;
+          const auto add = [&row](BuiltinEffect effect) {
+            row.Add(EffectId{static_cast<uint32_t>(effect)});
+          };
+
+          if (HasFlag(item.flags, ItemFlags::kComptime)) {
+            // A `comptime` function runs inside the compiler, where none of
+            // these exist.
+            add(BuiltinEffect::kAlloc);
+            add(BuiltinEffect::kIo);
+            add(BuiltinEffect::kRand);
+            add(BuiltinEffect::kTime);
+            add(BuiltinEffect::kNet);
+            add(BuiltinEffect::kGpu);
+            add(BuiltinEffect::kUnsafe);
+          }
+
+          for (AttributeId id : ast.Get(item.attributes)) {
+            const std::string_view name =
+                interner_.Text(ast.Get(id).name);
+            if (name == "Deterministic") {
+              // The same input has to give the same output, on every machine
+              // and every run.
+              add(BuiltinEffect::kRand);
+              add(BuiltinEffect::kTime);
+              add(BuiltinEffect::kNet);
+            } else if (name == "Hot") {
+              add(BuiltinEffect::kAlloc);
+            }
+          }
+          return row;
+        };
+
         for (uint32_t index = 0; index < tree->entries.size(); ++index) {
           if (tree->entries[index].parent != ItemTreeEntry::kNoParent) {
             continue;
           }
           const EffectRow* actual = rows->Find(arg, index);
+          if (actual != nullptr && unsafe_denied &&
+              actual->Contains(BuiltinEffect::kUnsafe)) {
+            const ItemId id = ResolveItem(ast, index);
+            if (ast.Contains(id)) {
+              std::string message = "`";
+              message.append(interner_.Text(ast.Get(id).name));
+              message.append("` uses `unsafe`, which this package forbids");
+              diagnostics.Error(kUnsafeForbidden, std::move(message))
+                  .Primary(ast.Get(id).name_span,
+                           "the manifest sets `unsafe = \"deny\"`");
+            }
+          }
           if (actual == nullptr) {
             continue;
           }
+          // A forbidding context outranks whatever the signature says: a
+          // `@Deterministic` function may not reach `rand` even if it
+          // declares it.
+          const ItemId declaration = ResolveItem(ast, index);
+          if (actual != nullptr && ast.Contains(declaration)) {
+            const EffectRow forbidden = forbidden_by(ast.Get(declaration));
+            EffectRow offending;
+            for (EffectId effect : actual->effects()) {
+              if (forbidden.Contains(effect)) {
+                offending.Add(effect);
+              }
+            }
+            if (!offending.empty()) {
+              std::string message = "`";
+              message.append(interner_.Text(ast.Get(declaration).name));
+              message.append("` does `");
+              message.append(types_.Describe(interner_, offending));
+              message.append("`, which is not allowed here");
+              diagnostics.Error(kForbiddenEffect, std::move(message))
+                  .Primary(ast.Get(declaration).name_span,
+                           "this context forbids it");
+            }
+          }
+
           const EffectRow* declared = resolved->DeclaredRow(arg, index);
 
           if (declared == nullptr) {

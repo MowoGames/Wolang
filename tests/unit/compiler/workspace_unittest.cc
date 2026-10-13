@@ -162,6 +162,36 @@ WOLANG_TEST(Workspace, LoadsPathDependencies) {
   WOLANG_EXPECT(db.AllDiagnostics().empty());
 }
 
+WOLANG_TEST(Workspace, ADenyingManifestForbidsUnsafe) {
+  // `unsafe` is an effect, so a package-wide ban is one more row a module
+  // may not have -- the same mechanism, not a separate check.
+  TempTree tree("nounsafe");
+  tree.Write("wolang.toml",
+             "[package]\nname = \"game\"\n[build]\nunsafe = \"deny\"\n");
+  tree.Write("src/main.wo",
+             "fun Poke() uses unsafe { unsafe { } }\n"
+             "fun Fine() -> int => 1\n");
+
+  Database db;
+  DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(LoadPackage(&db, tree.path(), &diagnostics));
+
+  const std::vector<Diagnostic> all = db.AllDiagnostics();
+  WOLANG_ASSERT_EQ(all.size(), size_t{1});
+  WOLANG_EXPECT_EQ(all.front().code, "E0801");
+}
+
+WOLANG_TEST(Workspace, AnAllowingManifestPermitsUnsafe) {
+  TempTree tree("withunsafe");
+  tree.Write("wolang.toml", "[package]\nname = \"game\"\n");
+  tree.Write("src/main.wo", "fun Poke() uses unsafe { unsafe { } }\n");
+
+  Database db;
+  DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(LoadPackage(&db, tree.path(), &diagnostics));
+  WOLANG_EXPECT(db.AllDiagnostics().empty());
+}
+
 WOLANG_TEST(Workspace, ReportsCyclicPackageDependencies) {
   TempTree tree("cycle");
   tree.Write("a/wolang.toml",

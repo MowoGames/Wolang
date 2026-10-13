@@ -307,6 +307,51 @@ WOLANG_TEST(ModuleScopeTest, AnImportedRowIsReadFromItsSignature) {
   WOLANG_EXPECT(fixture.Messages(main).find("does `io`") != std::string::npos);
 }
 
+WOLANG_TEST(ModuleScopeTest, ADeterministicFunctionMayNotReachRandOrTime) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "@Deterministic\n"
+      "fun Simulate() uses rand { Roll() }\n"
+      "fun Roll() uses rand {}\n");
+
+  // The context outranks the signature: declaring `rand` does not make it
+  // allowed here.
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0702");
+  WOLANG_EXPECT(fixture.Messages(main).find("not allowed here") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(ModuleScopeTest, ADeterministicFunctionWithNoEffectsIsFine) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo", "@Deterministic\nfun Pure() -> int => 1\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AHotFunctionMayNotAllocate) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "@Hot\nfun Tick() { Grow() }\nfun Grow() uses alloc {}\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0702");
+}
+
+WOLANG_TEST(ModuleScopeTest, AComptimeFunctionHasNoEffects) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "comptime fun Validate() { Now() }\nfun Now() uses time {}\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0702");
+}
+
 WOLANG_TEST(ModuleScopeTest, ReportsAnUnknownModule) {
   Fixture fixture;
   const ModuleId game = fixture.AddModule("game");

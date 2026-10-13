@@ -974,5 +974,19 @@ WOLANG_TEST(Parser, ParsesTheBundledExamples) {
   }
 }
 
+
+WOLANG_TEST(Parser, EffectListAcceptsTheUnsafeKeyword) {
+  // `unsafe` is a keyword everywhere else, but it is also a built-in effect.
+  Fixture fixture("fun f() uses io, unsafe {}");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT_EQ(fixture.Tree(),
+                   "(file\n"
+                   "  (fun f\n"
+                   "    (uses\n"
+                   "      (type io)\n"
+                   "      (type unsafe))\n"
+                   "    (block)))\n");
+}
+
 }  // namespace
 }  // namespace wolang

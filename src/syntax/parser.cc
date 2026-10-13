@@ -967,7 +967,19 @@ AstRange<TypeRefId> Parser::ParseEffectList() {
     return ast_->AddRange(std::span<const TypeRefId>(effects));
   }
   for (;;) {
-    effects.push_back(ParseType());
+    // `unsafe` is a keyword everywhere else, but it is also one of the
+    // built-in effects, so an effect list accepts the spelling.
+    if (Peek().kind == TokenKind::kKwUnsafe) {
+      const Token& token = Advance();
+      TypeRef effect;
+      effect.kind = TypeRefKind::kPath;
+      effect.span = SpanOf(token);
+      const Symbol name = interner_->Intern("unsafe");
+      effect.path = ast_->AddRange(std::span<const Symbol>(&name, 1));
+      effects.push_back(ast_->Add(std::move(effect)));
+    } else {
+      effects.push_back(ParseType());
+    }
     if (!Eat(TokenKind::kComma)) {
       break;
     }
