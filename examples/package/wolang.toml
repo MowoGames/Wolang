@@ -1,0 +1,21 @@
+# A minimal Wolang package. Try it with:
+#   wolang modules examples/package
+#   wolang check examples/package
+
+[package]
+name = "demo"
+version = "0.1.0"
+# Defaults to "src"; spelled out here to show the key exists.
+source = "src"
+
+[dependencies]
+# Path dependencies are the only kind for now:
+#   core = { path = "../core" }
+
+[lints]
+# Per-code severity, including "off" to silence a code entirely.
+W0105 = "off"
+P0101 = "error"
+
+[build]
+unsafe = "allow"

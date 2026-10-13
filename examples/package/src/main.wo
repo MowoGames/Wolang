@@ -1,0 +1,7 @@
+// The root module of the package is named after the package itself: `demo`.
+import demo.engine.{Vec3, Length, m}
+
+fn main() {
+  let origin = Vec3()
+  let reach = 3m
+}

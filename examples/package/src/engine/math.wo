@@ -1,0 +1,20 @@
+// A directory below the source root becomes a module named after its path,
+// so this file is part of module `demo.engine`.
+
+pub dimension Length
+
+pub unit m: Length
+pub unit cm = 0.01m
+
+pub struct Vec3 {
+  var x: float = 0.0
+  var y: float = 0.0
+  var z: float = 0.0
+}
+
+pub fn Dot(a: Vec3, b: Vec3) -> float {
+  return a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+// Not `pub`, so importing it from another module is an error.
+fn Internal() {}
