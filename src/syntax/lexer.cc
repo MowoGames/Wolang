@@ -4,12 +4,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "wolang/base/check.h"
+#include "wolang/base/unicode.h"
 
 namespace wolang {
 namespace {
@@ -27,6 +29,9 @@ constexpr std::string_view kIntegerOutOfRange = "E0008";
 constexpr std::string_view kInvalidUnicodeEscape = "E0009";
 constexpr std::string_view kInvalidNumericSuffix = "E0010";
 constexpr std::string_view kReservedWord = "E0011";
+constexpr std::string_view kUnterminatedComment = "E0012";
+constexpr std::string_view kInvalidIdentifier = "E0013";
+constexpr std::string_view kNotNormalized = "E0014";
 
 bool IsAsciiDigit(char c) {
   return c >= '0' && c <= '9';
@@ -105,77 +110,6 @@ bool CanStartToken(char c) {
   return IsAsciiIdentifierStart(c) || IsAsciiDigit(c) || IsNonAscii(c) ||
          IsOperatorStart(c) || c == '"' || c == '\'' || c == ' ' ||
          c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
-}
-
-// Decodes the UTF-8 sequence at |pos|. Returns its length in bytes and stores
-// the code point in |code_point|, or returns 0 for malformed, overlong and
-// surrogate sequences.
-uint32_t DecodeUtf8(std::string_view text,
-                    uint32_t pos,
-                    uint32_t* code_point) {
-  if (pos >= text.size()) {
-    return 0;
-  }
-  const auto first = static_cast<unsigned char>(text[pos]);
-  uint32_t length = 0;
-  uint32_t value = 0;
-  if (first < 0x80) {
-    length = 1;
-    value = first;
-  } else if ((first & 0xE0) == 0xC0) {
-    length = 2;
-    value = first & 0x1Fu;
-  } else if ((first & 0xF0) == 0xE0) {
-    length = 3;
-    value = first & 0x0Fu;
-  } else if ((first & 0xF8) == 0xF0) {
-    length = 4;
-    value = first & 0x07u;
-  } else {
-    return 0;
-  }
-
-  if (pos + length > text.size()) {
-    return 0;
-  }
-  for (uint32_t i = 1; i < length; ++i) {
-    const auto byte = static_cast<unsigned char>(text[pos + i]);
-    if ((byte & 0xC0) != 0x80) {
-      return 0;
-    }
-    value = (value << 6) | (byte & 0x3Fu);
-  }
-
-  // Reject overlong encodings, surrogates and out-of-range code points so that
-  // identifiers and string contents are always well formed UTF-8.
-  static constexpr uint32_t kMinimum[5] = {0, 0, 0x80, 0x800, 0x10000};
-  if (value < kMinimum[length] || value > 0x10FFFF ||
-      (value >= 0xD800 && value <= 0xDFFF)) {
-    return 0;
-  }
-
-  if (code_point) {
-    *code_point = value;
-  }
-  return length;
-}
-
-void AppendUtf8(uint32_t code_point, std::string* out) {
-  if (code_point <= 0x7F) {
-    out->push_back(static_cast<char>(code_point));
-  } else if (code_point <= 0x7FF) {
-    out->push_back(static_cast<char>(0xC0 | (code_point >> 6)));
-    out->push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
-  } else if (code_point <= 0xFFFF) {
-    out->push_back(static_cast<char>(0xE0 | (code_point >> 12)));
-    out->push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
-    out->push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
-  } else {
-    out->push_back(static_cast<char>(0xF0 | (code_point >> 18)));
-    out->push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3F)));
-    out->push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
-    out->push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
-  }
 }
 
 struct SuffixEntry {
@@ -266,6 +200,9 @@ class Lexer {
   void SkipShebang();
   void SkipTrivia();
   bool AtDocComment() const;
+  // Consumes a `/* ... */` comment, which may nest. Returns false when the
+  // comment is never closed.
+  bool SkipBlockComment();
 
   void LexToken();
   void LexDocComment();
@@ -394,6 +331,17 @@ void Lexer::SkipTrivia() {
       }
       continue;
     }
+    if (c == '/' && Peek(1) == '*') {
+      const uint32_t begin = pos_;
+      const bool closed = SkipBlockComment();
+      if (options_.keep_comments) {
+        stream_.comments.push_back(SpanFrom(begin));
+      }
+      if (!closed) {
+        break;
+      }
+      continue;
+    }
     break;
   }
 
@@ -403,6 +351,34 @@ void Lexer::SkipTrivia() {
   if (newlines > 1) {
     pending_flags_ |= TokenFlags::kBlankLineBefore;
   }
+}
+
+bool Lexer::SkipBlockComment() {
+  const uint32_t begin = pos_;
+  pos_ += 2;
+  // Nesting is allowed so that commenting out a region containing a comment
+  // works, which is the only reason to reach for a block comment at all.
+  int depth = 1;
+  while (!AtEnd()) {
+    if (Peek() == '/' && Peek(1) == '*') {
+      ++depth;
+      pos_ += 2;
+      continue;
+    }
+    if (Peek() == '*' && Peek(1) == '/') {
+      --depth;
+      pos_ += 2;
+      if (depth == 0) {
+        return true;
+      }
+      continue;
+    }
+    ++pos_;
+  }
+
+  Report(kUnterminatedComment, "unterminated block comment",
+         Span(begin, begin + 2), "`/*` opened here");
+  return false;
 }
 
 void Lexer::LexToken() {
@@ -424,10 +400,25 @@ void Lexer::LexToken() {
   }
   if (IsNonAscii(c)) {
     uint32_t code_point = 0;
-    if (DecodeUtf8(text_, pos_, &code_point) != 0) {
+    const uint32_t length = DecodeUtf8(text_, pos_, &code_point);
+    if (length == 0) {
+      LexInvalidByte();
+    } else if (IsIdentifierStart(code_point)) {
       LexIdentifierOrKeyword();
     } else {
-      LexInvalidByte();
+      // Well-formed UTF-8 that is not a letter: an emoji, a symbol, or an
+      // invisible formatting character. Naming something with it would make
+      // two different names look identical.
+      const uint32_t begin = pos_;
+      pos_ += length;
+      char buffer[16];
+      std::snprintf(buffer, sizeof(buffer), "U+%04X", code_point);
+      std::string message = "`";
+      message.append(buffer);
+      message.append("` cannot appear in an identifier");
+      Report(kInvalidIdentifier, std::move(message), SpanFrom(begin),
+             "identifiers are letters, digits and `_`");
+      PushToken(TokenKind::kUnknown, begin);
     }
     return;
   }
@@ -483,6 +474,8 @@ void Lexer::LexDocComment() {
 
 void Lexer::LexIdentifierOrKeyword() {
   const uint32_t begin = pos_;
+  // The first code point was already validated as a start character by the
+  // caller; the loop only has to handle continuation.
   while (!AtEnd()) {
     const char c = text_[pos_];
     if (IsAsciiIdentifierContinue(c)) {
@@ -490,8 +483,9 @@ void Lexer::LexIdentifierOrKeyword() {
       continue;
     }
     if (IsNonAscii(c)) {
-      const uint32_t length = DecodeUtf8(text_, pos_, nullptr);
-      if (length == 0) {
+      uint32_t code_point = 0;
+      const uint32_t length = DecodeUtf8(text_, pos_, &code_point);
+      if (length == 0 || !IsIdentifierContinue(code_point)) {
         break;
       }
       pos_ += length;
@@ -501,6 +495,15 @@ void Lexer::LexIdentifierOrKeyword() {
   }
 
   const std::string_view spelling = text_.substr(begin, pos_ - begin);
+
+  // Names must already be in NFC rather than being normalized here: that is
+  // what guarantees one name has one spelling, and a rejected name is an
+  // actionable message instead of a silent rewrite.
+  if (!IsNormalizedNfc(spelling)) {
+    Report(kNotNormalized, "identifier is not in Unicode NFC form",
+           SpanFrom(begin),
+           "write the composed form, as most editors already do");
+  }
   if (spelling == "_") {
     PushToken(TokenKind::kUnderscore, begin);
     return;
