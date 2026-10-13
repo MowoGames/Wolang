@@ -4,7 +4,10 @@ add_library(wolang_core STATIC
     base/diagnostic_renderer.cc
     base/source_manager.cc
     base/string_interner.cc
+    syntax/ast.cc
+    syntax/ast_printer.cc
     syntax/lexer.cc
+    syntax/parser.cc
     syntax/token.cc
     syntax/token_kind.cc)
 
@@ -18,7 +21,10 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/base/diagnostic_renderer.h
         ${PROJECT_SOURCE_DIR}/include/wolang/base/source_manager.h
         ${PROJECT_SOURCE_DIR}/include/wolang/base/string_interner.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/syntax/ast.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/syntax/ast_printer.h
         ${PROJECT_SOURCE_DIR}/include/wolang/syntax/lexer.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/syntax/parser.h
         ${PROJECT_SOURCE_DIR}/include/wolang/syntax/token.h
         ${PROJECT_SOURCE_DIR}/include/wolang/syntax/token_kind.h)
 
