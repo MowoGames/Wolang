@@ -23,6 +23,7 @@ constexpr std::string_view kBadOverride = "E0401";
 constexpr std::string_view kMissingTraitMethod = "E0402";
 constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
+constexpr std::string_view kBadAllow = "E0070";
 constexpr std::string_view kUnusedName = "W0101";
 constexpr std::string_view kUnreachableCode = "W0102";
 constexpr std::string_view kBadOperand = "E0108";
@@ -94,10 +95,23 @@ class Checker {
  private:
   // ----------------------------------------------------------- reporting --
 
+  // True when an enclosing declaration carries `@allow` for |code|.
+  bool IsAllowed(std::string_view code) const {
+    for (const std::string& allowed : allowed_) {
+      if (allowed == code) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void Report(std::string_view code,
               std::string message,
               SourceSpan span,
               std::string label = {}) {
+    if (IsAllowed(code)) {
+      return;
+    }
     diagnostics_.Error(code, std::move(message))
         .Primary(span, std::move(label));
   }
@@ -106,8 +120,31 @@ class Checker {
             std::string message,
             SourceSpan span,
             std::string label = {}) {
+    if (IsAllowed(code)) {
+      return;
+    }
     diagnostics_.Warning(code, std::move(message))
         .Primary(span, std::move(label));
+  }
+
+  // Reads `@allow(CODE, reason = "...")` off a declaration and returns how
+  // many codes it pushed, so CheckItem can pop exactly those again.
+  size_t PushAllowed(const Item& item);
+
+  // Pops what PushAllowed pushed, on every path out of CheckItem.
+  class ScopedAllow {
+   public:
+    ScopedAllow(Checker* checker, size_t count)
+        : checker_(checker), count_(count) {}
+    ~ScopedAllow() { checker_->PopAllowed(count_); }
+
+   private:
+    Checker* checker_;
+    size_t count_;
+  };
+
+  void PopAllowed(size_t count) {
+    allowed_.resize(allowed_.size() - count);
   }
 
   // Passed to Dimensions::Describe so a product prints with its declared
@@ -240,6 +277,8 @@ class Checker {
   TypeId return_type_;
   // The type whose members are in scope, inside a method.
   TypeId self_type_;
+  // Codes suppressed by an enclosing `@allow`, innermost last.
+  std::vector<std::string> allowed_;
   // Nesting depth of loops, so `break` outside one can be reported.
   uint32_t loop_depth_ = 0;
 };
@@ -1817,11 +1856,64 @@ void Checker::CheckTraitConformance(const Item& item, TypeId target) {
   Report(kMissingTraitMethod, std::move(message), item.name_span);
 }
 
+// `@allow(W0101, reason = "...")` silences one code for one declaration. The
+// reason is mandatory: a suppression without one is how a codebase forgets
+// why it stopped checking something.
+size_t Checker::PushAllowed(const Item& item) {
+  size_t pushed = 0;
+  for (AttributeId id : ast_.Get(item.attributes)) {
+    const Attribute& attribute = ast_.Get(id);
+    if (interner_->Text(attribute.name) != "allow") {
+      continue;
+    }
+
+    std::vector<std::string> codes;
+    bool has_reason = false;
+    for (ExprId arg : ast_.Get(attribute.args)) {
+      if (!ast_.Contains(arg)) {
+        continue;
+      }
+      const Expr& value = ast_.Get(arg);
+      if (value.kind == ExprKind::kPath) {
+        codes.emplace_back(interner_->Text(value.name));
+        continue;
+      }
+      // `reason = "..."` parses as an assignment.
+      if (value.kind == ExprKind::kAssign && ast_.Contains(value.lhs) &&
+          ast_.Get(value.lhs).kind == ExprKind::kPath &&
+          interner_->Text(ast_.Get(value.lhs).name) == "reason") {
+        has_reason = ast_.Contains(value.rhs) &&
+                     ast_.Get(value.rhs).kind == ExprKind::kStringLiteral;
+      }
+    }
+
+    if (codes.empty()) {
+      diagnostics_.Error(kBadAllow, "`@allow` needs a diagnostic code")
+          .Primary(attribute.span, "write `@allow(W0101, reason = \"...\")`");
+      continue;
+    }
+    if (!has_reason) {
+      diagnostics_.Error(kBadAllow, "`@allow` needs a reason")
+          .Primary(attribute.span,
+                   "write `reason = \"...\"`, so the next reader knows why");
+      // Suppressing anyway would hide the very code the author named while
+      // they fix the attribute, so the codes are still honoured.
+    }
+    for (std::string& code : codes) {
+      allowed_.push_back(std::move(code));
+      ++pushed;
+    }
+  }
+  return pushed;
+}
+
 void Checker::CheckItem(ItemId id) {
   if (!ast_.Contains(id)) {
     return;
   }
   const Item& item = ast_.Get(id);
+  const size_t allowed = PushAllowed(item);
+  const ScopedAllow restore(this, allowed);
 
   switch (item.kind) {
     case ItemKind::kFunction:

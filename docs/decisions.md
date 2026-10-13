@@ -81,6 +81,13 @@ no FMA contraction, no fast-math, fixed operation order. IEEE-754 is itself
 deterministic — the nondeterminism comes from the compiler, not the hardware.
 A library `Fixed<N>` can arrive in wave 13 if measurements call for it.
 
+**D15a. There are no implicit numeric conversions, not even widening.**
+`let n: i64 = some_i32` is an error; `some_i32 as i64` is how it is written.
+Arbitrary-precision literals (D9) remove the common case that would
+otherwise make this tiresome, and a conversion that is always spelled is a
+conversion that can always be found. This retires the planned `W0114`
+"implicit narrowing" lint: there is no implicit narrowing to warn about.
+
 ## Syntax
 
 **D16. Control flow is expression-shaped.** `if`, `match`, `loop`, `while`,

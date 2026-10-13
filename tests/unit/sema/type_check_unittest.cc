@@ -1271,5 +1271,70 @@ fun f(a: &int) -> int {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+
+// --------------------------------------------------------------- allow -----
+
+WOLANG_TEST(TypeCheck, AllowSilencesOneCodeForOneDeclaration) {
+  Fixture f(R"(
+@allow(W0101, reason = "kept for the ABI")
+fun a() {
+  let unused = 1
+}
+
+fun b() {
+  let unused = 1
+}
+)");
+  // Suppressed in `a`, still reported in `b`.
+  WOLANG_EXPECT_EQ(f.Warnings(), "W0101");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AllowNeedsAReason) {
+  Fixture f(R"(
+@allow(W0101)
+fun a() {
+  let unused = 1
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0070"));
+  WOLANG_EXPECT(f.Messages().find("needs a reason") != std::string::npos);
+  // The code is still honoured while the author fixes the attribute, so the
+  // lint they named does not reappear on top of the complaint.
+  WOLANG_EXPECT_EQ(f.Warnings(), "");
+}
+
+WOLANG_TEST(TypeCheck, AllowNeedsACode) {
+  Fixture f("@allow(reason = \"nothing named\")\nfun a() {}\n");
+  WOLANG_EXPECT(f.HasCode("E0070"));
+  WOLANG_EXPECT(f.Messages().find("needs a diagnostic code") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, AllowTakesSeveralCodes) {
+  Fixture f(R"(
+@allow(W0101, W0102, reason = "generated code")
+fun a() -> int {
+  let unused = 1
+  return 1
+  let dead = 2
+}
+)");
+  WOLANG_EXPECT_EQ(f.Warnings(), "");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AllowSilencesAnErrorToo) {
+  Fixture f(R"(
+@allow(E0112, reason = "the host adds this member at load time")
+fun a(v: Vec3) {
+  let x = v.whatever
+}
+
+struct Vec3 { var x: float }
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang

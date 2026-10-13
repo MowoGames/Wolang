@@ -15,14 +15,16 @@ searched for. Codes never change meaning; retired codes are not reused.
 | Range | Owner | Status |
 |---|---|---|
 | `E0001`–`E0019` | lexer | implemented (wave 1) |
+| `E0070` | diagnostic suppression | implemented (wave 5) |
 | `E0020`–`E0049` | parser | implemented (wave 2) |
 | `E0050`–`E0069` | manifests, modules, packages | implemented (wave 3) |
 | `E0101`–`E0119` | types and name resolution | implemented (wave 4) |
 | `E10xx` | units and dimensions | implemented (wave 4) |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E03xx` | coroutines | wave 10 |
-| `E0402` | traits | implemented (wave 4) |
-| `E0401`, `E04xx` | inheritance | wave 5 |
+| `E0401`–`E0403` | inheritance, traits, bounds | implemented (waves 4–5) |
+| `E0120` | second-class references | implemented (wave 5) |
+| `W0101`–`W0102` | unused names, unreachable code | implemented (wave 5) |
 | `E05xx` | entities and systems | wave 11 |
 | `E06xx` | networking | wave 16 |
 | `E07xx` | effects, determinism, capabilities | wave 5 |
@@ -118,6 +120,39 @@ W0105 = "off"
 P0101 = "error"
 ```
 
+## Implemented: warnings
+
+| Code | Message | Example |
+|---|---|---|
+| `W0101` | a name is never used | an unused local, parameter or `need` |
+| `W0102` | this code is never reached | a statement after `return` |
+
+A name starting with `_` is never reported, which is how an unused parameter
+is marked deliberate. A declaration with no body — a trait method, an
+`extern` — has nowhere to use its parameters, so it is exempt. `W0102` is
+reported once per block rather than once per statement after the jump.
+
+An unused `need` is checked by the type checker rather than by import
+resolution, because only type checking knows what a file actually named. A
+bare `need a.b` brings in a whole module, so there is no one name to call
+unused.
+
+## Suppression
+
+```wolang
+@allow(W0101, reason = "kept for the ABI")
+fun Legacy(unused: int) {}
+```
+
+`@allow` applies to one declaration and everything inside it, takes several
+codes, and **requires a reason** — a suppression without one is how a
+codebase forgets why it stopped checking something. A missing reason is
+`E0070`; the codes are still honoured while the author fixes the attribute,
+so the lint they named does not reappear on top of the complaint.
+
+Per-code severity from the manifest's `[lints]` table still applies, and
+`"off"` there silences a code for a whole package.
+
 ## Implemented: type errors
 
 | Code | Message | Example |
@@ -142,6 +177,10 @@ P0101 = "error"
 | `E1002` | no unit with that name is in scope | `10parsecs` |
 | `E0201` | `match` does not cover every value | a `bool` match with only `true` |
 | `E0402` | a trait method is not implemented | `extend P as T` missing one method |
+| `E0403` | a type argument does not satisfy a bound | `Hurt(rock)` where `T: Damageable` |
+| `E0401` | `override` disagrees with the base method | marked `override` with nothing to override |
+| `E0120` | a field holds a reference | `var r: &int` |
+| `E0070` | `@allow` is missing a code or a reason | `@allow(W0101)` |
 
 An error type propagates silently: one unknown name produces one message, not
 one per use of the value it was assigned to. Type checking is also skipped
@@ -169,13 +208,11 @@ in use appear in the implemented tables above, not here.
 
 | Code | Catches |
 |---|---|
-| `E0120` | reference stored in a field (references are second class) |
 | `E0121` | value escapes its `region` |
 | `E0122` | use after move of a `Box<T>` |
 | `E0123` | use of an uninitialized variable |
 | `E0301` | `await` outside an `async` function |
 | `E0302` | `async` function called without `await` or `spawn` |
-| `E0401` | `override` without a virtual method, or a missing `override` |
 | `E0501` | two systems write the same component without an ordering |
 | `E0502` | cycle in system ordering |
 | `E0601` | server-only function called from a client context |
@@ -191,8 +228,6 @@ in use appear in the implemented tables above, not here.
 
 | Code | Catches |
 |---|---|
-| `W0101` | unused variable, parameter or import |
-| `W0102` | unreachable code, condition always true or false |
 | `W0103` | local variable shadows a field |
 | `W0104` | ignored result of a `@MustUse` function |
 | `W0105` | floats compared with `==` |
@@ -204,7 +239,6 @@ in use appear in the implemented tables above, not here.
 | `W0111` | `self` used after `Destroy()` |
 | `W0112` | recursion with no base case |
 | `W0113` | weak reference dereferenced without a liveness check |
-| `W0114` | implicit narrowing that loses data |
 | `W0115` | unreachable state in a `machine` |
 
 ### Performance
@@ -258,5 +292,5 @@ into other files are reported as notes rather than being dropped.
 
 Per-code severity can be overridden, including to `off`, through
 `DiagnosticEngine::SetSeverityOverride`. From wave 3 this is driven by the
-package manifest, and from wave 5 by `@allow(code, reason = "...")` in source,
-where the reason is mandatory.
+package manifest, and by `@allow(code, reason = "...")` in source, where the
+reason is mandatory. See **Suppression** above.

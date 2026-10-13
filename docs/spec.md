@@ -435,6 +435,21 @@ match Load(p) {
 An error is a tag without data. When an error has to carry a payload, write
 `Result<T, E>` explicitly.
 
+### 4.3a Numeric conversions
+
+There are no implicit numeric conversions. Widening is as explicit as
+narrowing:
+
+```wolang
+let small: i32 = 1
+let wide: i64 = small          // E0101: expected `i64`, found `i32`
+let fine: i64 = small as i64
+```
+
+Integer literals are the exception, and the reason this is not tiresome: a
+literal has arbitrary precision until it is used, so it takes whatever type
+its context expects.
+
 ### 4.4 Members
 
 A type's members are its fields, its methods, its enum variants and its
