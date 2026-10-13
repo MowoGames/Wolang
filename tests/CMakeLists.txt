@@ -14,6 +14,7 @@ add_executable(wolang_tests
     unit/format/formatter_unittest.cc
     unit/query/query_engine_unittest.cc
     unit/sema/type_check_unittest.cc
+    unit/ir/ir_unittest.cc
     unit/sema/effect_unittest.cc
     unit/sema/type_unittest.cc
     unit/syntax/lexer_unittest.cc

@@ -13,6 +13,9 @@ add_library(wolang_core STATIC
     compiler/workspace.cc
     format/formatter.cc
     query/query_engine.cc
+    ir/ir.cc
+    ir/printer.cc
+    ir/verifier.cc
     sema/dimension.cc
     sema/effect.cc
     sema/resolution.cc
@@ -44,6 +47,10 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/compiler/workspace.h
         ${PROJECT_SOURCE_DIR}/include/wolang/format/formatter.h
         ${PROJECT_SOURCE_DIR}/include/wolang/query/query_engine.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/ir/ir.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/ir/printer.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/ir/verifier.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/ir/ir_opcode.inc
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/dimension.h
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/effect.h
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/resolution.h
