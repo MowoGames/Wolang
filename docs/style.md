@@ -75,8 +75,9 @@ test(base): cover arena alignment
 chore(cmake): add a sanitizer preset
 ```
 
-Scopes are component directories: `base`, `lexer`, `parser`, `sema`, `check`,
-`ir`, `interp`, `codegen`, `runtime`, `std`, `cmake`, `docs`, `tests`, `tools`.
+Scopes are component directories: `base`, `lexer`, `parser`, `query`,
+`compiler`, `format`, `sema`, `check`, `ir`, `interp`, `codegen`, `runtime`,
+`std`, `cmake`, `docs`, `tests`, `tools`.
 
 ## Wave discipline
 

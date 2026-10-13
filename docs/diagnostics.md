@@ -16,6 +16,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 |---|---|---|
 | `E0001`–`E0019` | lexer | implemented (wave 1) |
 | `E0020`–`E0049` | parser | implemented (wave 2) |
+| `E0050`–`E0069` | manifests, modules, packages | implemented (wave 3) |
 | `E01xx` | types | wave 4 |
 | `E02xx` | pattern matching | wave 4 |
 | `E03xx` | coroutines | wave 10 |
@@ -80,6 +81,36 @@ the declarations around the broken one still reach the tree. The parser also
 suppresses its own message when the offending token was already reported by
 the lexer, or when the attributes and modifiers in front of a declaration
 already produced one, so each broken spot yields one diagnostic.
+
+## Implemented: package and module errors
+
+| Code | Message | Example |
+|---|---|---|
+| `E0050` | manifest syntax error | a line without `=`, an unclosed table header |
+| `E0051` | unknown manifest key or table | `author = "me"` under `[package]` |
+| `E0052` | missing manifest key | no `[package]`, no `name`, a dependency without a path |
+| `E0053` | invalid manifest value | `name = p`, `unsafe = "maybe"`, an unknown severity |
+| `E0054` | duplicate manifest key | `name` given twice in one table |
+| `E0055` | unresolved module | `import game.nowhere` |
+| `E0056` | imported name is not declared | `import game.math.{Vec4}` when there is no `Vec4` |
+| `E0057` | name declared more than once in a module | two files declaring `fn Fire` |
+| `E0058` | imported name is not public | importing a declaration without `pub` |
+| `E0059` | cyclic package dependencies | two packages depending on each other |
+| `E0060` | package cannot be read | no manifest, no source directory, unreadable file |
+
+A manifest problem never stops the load: the manifest keeps whatever was
+understood, so one bad line does not hide the rest of a project. A file
+checked on its own, outside any package, resolves no imports and reports none
+of `E0055`–`E0058` — compiling a single file is a legitimate thing to do.
+
+Per-code severity comes from the `[lints]` table of the package that owns the
+file, including `"off"` to silence a code entirely:
+
+```toml
+[lints]
+W0105 = "off"
+P0101 = "error"
+```
 
 ## Planned catalog
 

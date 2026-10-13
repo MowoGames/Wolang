@@ -5,11 +5,12 @@ ergonomics. Wolang is its own project: the compiler, runtime and libraries have
 no dependency on any game engine, and an engine is just one of the hosts it can
 be embedded into.
 
-**Status:** wave 2 of 16. The lexer, the parser and the diagnostic engine work:
-a `.wo` file becomes a syntax tree, and broken syntax recovers instead of
-giving up. There is no type checker or code generator yet. See
-[STATUS.md](STATUS.md) for where work stopped and
-[docs/roadmap.md](docs/roadmap.md) for what each wave adds.
+**Status:** wave 3 of 16. The front end is incremental: a package of `.wo`
+files becomes syntax trees and module scopes, editing a function body
+recomputes only that function, and there is a formatter and an on-disk cache.
+There is no type checker or code generator yet. See [STATUS.md](STATUS.md) for
+where work stopped and [docs/roadmap.md](docs/roadmap.md) for what each wave
+adds.
 
 ## What makes it different
 
@@ -44,9 +45,13 @@ Presets: `debug`, `asan` (address and UB sanitizers), `release`.
 ## Trying the current wave
 
 ```sh
-./build/debug/tools/wolang/wolang tokens examples/hello.wo
-./build/debug/tools/wolang/wolang ast examples/turret.wo
-./build/debug/tools/wolang/wolang check examples/recovery.wo
+W=./build/debug/tools/wolang/wolang
+
+$W modules examples/package    # the package and module graph
+$W check examples/package      # check a whole package
+$W fmt examples/turret.wo      # format a file
+$W ast examples/turret.wo      # print the syntax tree
+$W check examples/recovery.wo  # see error recovery
 ```
 
 ## Layout
@@ -55,16 +60,20 @@ Presets: `debug`, `asan` (address and UB sanitizers), `release`.
 include/wolang/   public headers, mirrored by src/
   base/           arenas, interning, source management, diagnostics
   syntax/         tokens, lexer, syntax tree, parser, tree printer
+  query/          the incremental query engine
+  compiler/       item trees, database, manifests, modules, workspace, cache
+  format/         the formatter
 src/              implementation (.cc)
 tools/wolang/     the `wolang` command line driver
 tests/            unit tests and the dependency-free test harness
-examples/         .wo sources used by hand and as lexer corpus
+examples/         .wo sources used by hand and as compiler corpus
 docs/             specification, architecture, roadmap, diagnostics, style
 ```
 
 ## Documentation
 
 - [docs/spec.md](docs/spec.md) — language specification
+- [docs/packages.md](docs/packages.md) — packages, modules and the manifest
 - [docs/architecture.md](docs/architecture.md) — how the compiler is built
 - [docs/roadmap.md](docs/roadmap.md) — waves and exit criteria
 - [docs/diagnostics.md](docs/diagnostics.md) — diagnostic catalog

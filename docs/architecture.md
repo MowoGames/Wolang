@@ -51,17 +51,68 @@ honest.
 ## Incremental compilation
 
 Every fact the compiler knows is a *query* with a cached result and a
-dependency list: `Tokens(file)`, `ItemTree(file)`, `Signature(fn)`,
-`Layout(type)`, `TypeCheck(fn)`, `Diagnostics(fn)`, `LowerIr(fn)`,
-`DevCode(fn)`.
+dependency list. Queries come in two kinds: **inputs**, supplied from outside
+and the only thing that can start an invalidation, and **derived** values,
+computed from other queries.
 
-Invalidation is red-green: when an input changes, dependents are marked
-possibly-dirty; a re-query recomputes and, if the new result *equals* the old
-one, dependents stay green. Changing a function body therefore recompiles that
-body and nothing else, because its signature did not change.
+| Query | Kind | Value |
+|---|---|---|
+| `SourceText(file)` | input | a fingerprint of the file's text |
+| `ModuleFiles(module)` | input | the files of a module |
+| `Workspace` | input | the set of packages and modules |
+| `Tokens(file)` | derived | the token stream |
+| `ParsedFile(file)` | derived | the syntax tree |
+| `ItemTree(file)` | derived | the declarations with signatures but no bodies |
+| `ModuleScope(module)` | derived | the names a module declares |
+| `Imports(file)` | derived | the resolved imports |
+| `FileDiagnostics(file)` | derived | every diagnostic for the file |
 
-The same query engine backs the compiler, the language server and the editor,
-so there is exactly one implementation of every rule.
+Later waves add `TypeCheck(fn)`, `Effects(fn)`, `LowerIr(fn)` and `DevCode(fn)`
+to the same engine.
+
+Dependencies are **discovered, not declared**: every `Get()` a computation
+makes is recorded, so a computation and its dependency list can never disagree.
+
+Invalidation is red-green. Changing an input bumps a global revision and
+invalidates nothing eagerly. The next `Get()` walks the dependency graph,
+verifies each dependency, and recomputes only what actually moved. The payoff
+comes from **back-dating**: a query that is recomputed but produces a value
+*equal* to its predecessor keeps its old `changed_at` stamp, so everything
+downstream stays green.
+
+That is what makes `ItemTree` the pivot of the whole design. It holds each
+declaration's kind, name, nesting and a hash of its signature, and
+deliberately holds no source positions and no syntax handles — both of which
+shift when a body is edited. Editing a function body therefore reparses one
+file and rebuilds one item tree, both of which come out equal, and nothing
+else runs.
+
+Two consequences worth knowing:
+
+- A cached value must never carry a source position. Positions belong to the
+  revision they were taken in, so anything that reports a diagnostic resolves
+  its spans against the current syntax tree. `ResolvedImport` stores an
+  ordinal, and `ModuleScope` stores item tree indices, for exactly this reason.
+- The same query engine backs the compiler, the language server and the editor,
+  so there is exactly one implementation of every rule.
+
+## Packages, modules and the on-disk cache
+
+A **package** is a directory with a `wolang.toml` manifest. A **module** is a
+directory of `.wo` files inside it, named after the package plus the path
+below the source root: `src/engine/math.wo` in package `game` belongs to
+module `game.engine`. Directory-scoped modules mean adding a file never
+requires editing a module declaration.
+
+Package discovery touches the filesystem, so it is *not* a query: a workspace
+is loaded explicitly, and loading one bumps the `Workspace` input.
+
+The cache stores item trees and nothing else. Each entry carries the hash and
+size of the text it was computed from, and the file carries a format version,
+so a stale, corrupt or foreign cache is discarded rather than trusted. A
+loaded entry is installed through `QueryEngine::Seed`, which records the
+file's text as its only dependency — so a seeded value behaves exactly like a
+computed one and an edit invalidates it normally.
 
 ## Core data structures
 
@@ -119,7 +170,10 @@ keeps that complexity out of the core.
 | Directory | Contents |
 |---|---|
 | `include/wolang/base`, `src/base` | arenas, interning, source management, diagnostics and rendering |
-| `include/wolang/syntax`, `src/syntax` | token vocabulary, lexer; parser and AST from wave 2 |
+| `include/wolang/syntax`, `src/syntax` | token vocabulary, lexer, syntax tree, parser, tree printer |
+| `include/wolang/query`, `src/query` | the query engine and the query catalog |
+| `include/wolang/compiler`, `src/compiler` | item trees, the database, manifests, modules, workspace loading, the cache |
+| `include/wolang/format`, `src/format` | the formatter |
 | `tools/wolang` | the command line driver |
 | `tests/harness` | the dependency-free test harness |
 | `tests/unit` | unit tests mirroring the source tree |
