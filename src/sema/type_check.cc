@@ -159,7 +159,7 @@ class Checker {
   void NarrowOnNullCheck(ExprId condition);
   TypeId CheckMatch(const Expr& expr, TypeId expected);
   void CheckExhaustive(const Expr& expr, TypeId subject);
-  void CheckTraitConformance(const Item& item);
+  void CheckTraitConformance(const Item& item, TypeId target);
   TypeId CheckLoop(const Expr& expr);
   TypeId CheckRange(const Expr& expr);
 
@@ -1608,12 +1608,11 @@ void Checker::CheckBinding(const Item& item) {
 // `extend T as Trait` promises that T has every method the trait declares.
 // The methods may come from T's own declaration or from any extension of it,
 // which is why this works from the member table rather than from this block.
-void Checker::CheckTraitConformance(const Item& item) {
-  if (!item.super_type.is_valid() || !item.target_type.is_valid()) {
+void Checker::CheckTraitConformance(const Item& item, TypeId target) {
+  if (!item.super_type.is_valid() || !target.is_valid()) {
     return;
   }
   const TypeId trait = resolver_.Resolve(ast_, item.super_type);
-  const TypeId target = resolver_.Resolve(ast_, item.target_type);
   if (types_->IsError(trait) || types_->IsError(target)) {
     return;
   }
@@ -1674,10 +1673,12 @@ void Checker::CheckItem(ItemId id) {
       // Inside a type's members, `self` is that type.
       const TypeId previous_self = self_type_;
       if (item.kind == ItemKind::kExtend) {
+        // Resolved once: resolving the target again would report an
+        // unknown type twice.
         self_type_ = item.target_type.is_valid()
                          ? resolver_.Resolve(ast_, item.target_type)
                          : TypeId{};
-        CheckTraitConformance(item);
+        CheckTraitConformance(item, self_type_);
       } else {
         const Binding* binding = Lookup(item.name);
         self_type_ = binding != nullptr ? binding->type : TypeId{};

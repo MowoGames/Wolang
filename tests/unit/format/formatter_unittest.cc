@@ -108,15 +108,27 @@ WOLANG_TEST(Formatter, WritesAnEmptyBodyOnOneLine) {
   WOLANG_EXPECT_EQ(pass.formatted(), "fun f() {}\nclass C {}\n");
 }
 
+WOLANG_TEST(Formatter, PlainNotationWinsTies) {
+  // `%g` renders 40.0 as `4e+01`: it round-trips and saves a character, and
+  // nobody writes it. Plain notation wins a tie; a magnitude that genuinely
+  // needs an exponent keeps one.
+  Pass pass("let a = 40.0\nlet b = 4000.0\nlet c = 1e30\n");
+  WOLANG_EXPECT_EQ(pass.formatted(),
+                   "let a = 40.0\n"
+                   "let b = 4000.0\n"
+                   "let c = 1e+30\n");
+  WOLANG_EXPECT_STABLE("let a = 40.0\nlet c = 1e30\n");
+}
+
 WOLANG_TEST(Formatter, KeepsFloatLiteralsFloating) {
   // `15.0` must not come back as `15`, which would re-read as an integer.
   Pass pass("let a = 15.0\nlet b = 0.25s\nlet c = 1e10\nlet d = 200ms\n");
-  // The shortest form that reads back as the same float wins, so an exponent
-  // survives as an exponent rather than being expanded.
+  // Notation is chosen by magnitude, not by length: 1e10 is inside the range
+  // ordinary code lives in, so it comes back written out.
   WOLANG_EXPECT_EQ(pass.formatted(),
                    "let a = 15.0\n"
                    "let b = 0.25s\n"
-                   "let c = 1e+10\n"
+                   "let c = 10000000000.0\n"
                    "let d = 200ms\n");
   WOLANG_EXPECT_STABLE("let a = 15.0\nlet b = 0.25s\n");
 }

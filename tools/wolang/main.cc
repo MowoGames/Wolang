@@ -297,24 +297,31 @@ int RunFormat(const Options& options) {
 
   int exit_code = 0;
   for (FileId file : files) {
-    const std::vector<Diagnostic>* diagnostics = database.Diagnostics(file);
-    if (diagnostics != nullptr) {
-      for (const Diagnostic& diagnostic : *diagnostics) {
-        if (diagnostic.severity != Severity::kError) {
-          continue;
-        }
-        // Formatting a file the parser could not understand would silently
-        // drop whatever it failed on.
-        std::fprintf(stderr, "wolang: %s has errors; not formatting\n",
-                     std::string(database.sources().Path(file)).c_str());
-        return Report(database.sources(), *diagnostics, render);
-      }
-    }
-
     const TokenizedFile* tokens = database.Tokens(file);
     const ParsedFile* parsed = database.Parse(file);
     if (tokens == nullptr || parsed == nullptr) {
       continue;
+    }
+
+    // Only the parse has to have succeeded. Formatting a tree the parser
+    // could not finish would silently drop whatever it failed on, but an
+    // unresolved name or a type error says nothing about the syntax -- and
+    // refusing to format then would make `fmt` useless on a file that is
+    // mid-edit, which is when it is wanted most.
+    bool syntax_error = false;
+    for (const Diagnostic& diagnostic : tokens->diagnostics) {
+      syntax_error |= diagnostic.severity == Severity::kError;
+    }
+    for (const Diagnostic& diagnostic : parsed->diagnostics) {
+      syntax_error |= diagnostic.severity == Severity::kError;
+    }
+    if (syntax_error) {
+      std::fprintf(stderr, "wolang: %s does not parse; not formatting\n",
+                   std::string(database.sources().Path(file)).c_str());
+      std::vector<Diagnostic> reported = tokens->diagnostics;
+      reported.insert(reported.end(), parsed->diagnostics.begin(),
+                      parsed->diagnostics.end());
+      return Report(database.sources(), reported, render);
     }
 
     const std::string formatted =

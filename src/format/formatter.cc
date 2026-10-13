@@ -2,6 +2,7 @@
 
 #include "wolang/format/formatter.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -24,15 +25,44 @@ Precedence Tighter(Precedence precedence) {
 // Renders a float so that re-reading the result yields the same value and the
 // same token kind. The shortest precision that round-trips is used, and a
 // `.0` is appended when the digits alone would lex as an integer.
+//
+// `%g` switches to an exponent as soon as that saves a character, which turns
+// `40.0` into `4e+01`: correct, round-tripping, and not what anybody writes.
+// The source notation is not in the tree, so the formatter picks one by
+// magnitude -- plain within the range ordinary code lives in, an exponent
+// outside it. The cost is that `1e10` comes back expanded; the alternative
+// cost was every `40.0` in a gameplay file turning into `4e+01`.
 std::string FormatFloatLiteral(double value) {
-  char buffer[40];
-  for (int precision = 1; precision <= 17; ++precision) {
-    std::snprintf(buffer, sizeof(buffer), "%.*g", precision, value);
-    if (std::strtod(buffer, nullptr) == value) {
-      break;
+  char buffer[340];
+  const auto shortest = [&buffer](const char* format, double value) {
+    for (int precision = 1; precision <= 17; ++precision) {
+      std::snprintf(buffer, sizeof(buffer), format, precision, value);
+      if (std::strtod(buffer, nullptr) == value) {
+        return true;
+      }
     }
+    return false;
+  };
+
+  const double magnitude = std::fabs(value);
+  const bool plain_range =
+      magnitude == 0.0 || (magnitude >= 1e-4 && magnitude < 1e16);
+
+  std::string text;
+  if (plain_range && shortest("%.*f", value)) {
+    text = buffer;
+    // `%f` pads with zeros the round-trip did not need.
+    if (text.find('.') != std::string::npos) {
+      while (text.size() > 1 && text.back() == '0' &&
+             text[text.size() - 2] != '.') {
+        text.pop_back();
+      }
+    }
+  } else {
+    shortest("%.*g", value);
+    text = buffer;
   }
-  std::string text(buffer);
+
   if (text.find_first_of(".eEni") == std::string::npos) {
     text.append(".0");
   }

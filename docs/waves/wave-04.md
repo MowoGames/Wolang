@@ -179,6 +179,14 @@ Two rules keep the output honest:
   variant.
 - **`null != p` was a type mismatch.** The null literal's type was used as
   the expectation for the other side.
+- **`wolang fmt` refused to format a file with type errors.** Only the parse
+  has to have succeeded; an unresolved name says nothing about the syntax,
+  and refusing then makes `fmt` useless on a file that is mid-edit.
+- **`40.0` was formatted as `4e+01`.** `%g` takes an exponent as soon as it
+  saves a character. Notation is now chosen by magnitude, which costs `1e10`
+  coming back expanded.
+- **An unknown `extend` target was reported twice**, once by the member pass
+  and once by the trait check.
 
 ## Things worth remembering
 
@@ -199,6 +207,10 @@ Two rules keep the output honest:
 - Trait bounds (`where T: Actor`) are parsed and the parameters are in scope,
   but a bound is not yet checked against the argument.
 - `E0401`: `override` without a virtual method.
+- The formatter puts every attribute and every block on its own line, while
+  the spec's examples write a short `@Edit var x: float` inline. The
+  formatter is self-consistent and idempotent, so this is a policy choice to
+  settle alongside the line-breaking work wave 3 deferred.
 - Effects and capabilities (`E07xx`), which is wave 5.
 - `self` is the enclosing type, not a reference to it; second-class
   references arrive with the memory rules.

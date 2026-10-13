@@ -19,9 +19,12 @@ unit ms = 0.001s
 /// A turret that scans for targets and fires at the closest one.
 @Spawnable
 class Turret : Actor {
-  @Edit @Range(1, 50) var range: float = 15.0
-  @Edit var fire_rate: float = 2.0
-  @Replicated var health: int = 100
+  @Edit @Range(1, 50)
+  var range: float = 15.0
+  @Edit
+  var fire_rate: float = 2.0
+  @Replicated
+  var health: int = 100
 
   // `component` is the keyword that declares an ECS component, so attaching a
   // sub-object is an ordinary host function instead.
@@ -71,14 +74,18 @@ machine Door {
     on Interact -> Opening
   }
   state Opening {
-    enter { await animation.Play("Open") }
+    enter {
+      await animation.Play("Open")
+    }
     always -> Open
   }
   state Open {
     on Interact after 3s -> Closing
   }
   state Closing {
-    enter { await animation.Play("Close") }
+    enter {
+      await animation.Play("Close")
+    }
     always -> Closed
   }
 }
