@@ -28,6 +28,16 @@ TokenStream Lex(const SourceManager& sources,
                 DiagnosticEngine* diagnostics,
                 const LexOptions& options = {});
 
+// Lexes only the bytes covered by |span|, keeping offsets absolute so the
+// resulting tokens point back into the original file. Used for the expressions
+// inside a string interpolation, which live inside a string token rather than
+// in the main token stream.
+TokenStream LexSpan(const SourceManager& sources,
+                    SourceSpan span,
+                    StringInterner* interner,
+                    DiagnosticEngine* diagnostics,
+                    const LexOptions& options = {});
+
 }  // namespace wolang
 
 #endif  // WOLANG_SYNTAX_LEXER_H_

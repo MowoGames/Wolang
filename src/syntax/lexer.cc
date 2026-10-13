@@ -2,6 +2,7 @@
 
 #include "wolang/syntax/lexer.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <string>
@@ -63,6 +64,47 @@ bool IsAsciiIdentifierContinue(char c) {
 
 bool IsNonAscii(char c) {
   return static_cast<unsigned char>(c) >= 0x80;
+}
+
+bool IsOperatorStart(char c) {
+  switch (c) {
+    case '(':
+    case ')':
+    case '{':
+    case '}':
+    case '[':
+    case ']':
+    case ',':
+    case ';':
+    case ':':
+    case '.':
+    case '@':
+    case '~':
+    case '+':
+    case '-':
+    case '*':
+    case '/':
+    case '%':
+    case '=':
+    case '!':
+    case '<':
+    case '>':
+    case '&':
+    case '|':
+    case '^':
+    case '?':
+      return true;
+    default:
+      return false;
+  }
+}
+
+// True for characters the lexer knows how to begin a token with. Anything else
+// is scanned as one run of garbage, so `$$$` is one diagnostic and not three.
+bool CanStartToken(char c) {
+  return IsAsciiIdentifierStart(c) || IsAsciiDigit(c) || IsNonAscii(c) ||
+         IsOperatorStart(c) || c == '"' || c == '\'' || c == ' ' ||
+         c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
 }
 
 // Decodes the UTF-8 sequence at |pos|. Returns its length in bytes and stores
@@ -173,17 +215,23 @@ bool LooksLikeNumericSuffix(std::string_view text) {
 
 class Lexer {
  public:
+  // Lexes the half-open byte range [begin, end) of |file|. Truncating the text
+  // view at |end| keeps every size-based check below correct, and starting the
+  // cursor at |begin| keeps offsets absolute.
   Lexer(const SourceManager& sources,
         FileId file,
+        uint32_t begin,
+        uint32_t end,
         StringInterner* interner,
         DiagnosticEngine* diagnostics,
         const LexOptions& options)
       : interner_(interner),
         diagnostics_(diagnostics),
         options_(options),
-        text_(sources.Text(file)) {
+        text_(sources.Text(file).substr(0, end)),
+        pos_(begin) {
     stream_.file = file;
-    stream_.tokens.reserve(text_.size() / 4 + 8);
+    stream_.tokens.reserve((end - begin) / 4 + 8);
   }
 
   TokenStream Run();
@@ -245,8 +293,11 @@ class Lexer {
 };
 
 TokenStream Lexer::Run() {
-  SkipByteOrderMark();
-  SkipShebang();
+  // Both only apply to a whole file, never to a sub-range.
+  if (pos_ == 0) {
+    SkipByteOrderMark();
+    SkipShebang();
+  }
 
   for (;;) {
     SkipTrivia();
@@ -397,9 +448,13 @@ void Lexer::LexToken() {
   }
 
   const uint32_t begin = pos_;
-  ++pos_;
-  std::string message = "unexpected character `";
-  message.push_back(c);
+  while (!AtEnd() && !CanStartToken(text_[pos_])) {
+    ++pos_;
+  }
+  const std::string_view run = text_.substr(begin, pos_ - begin);
+  std::string message =
+      run.size() == 1 ? "unexpected character `" : "unexpected characters `";
+  message.append(run);
   message.append("`");
   Report(kUnexpectedCharacter, std::move(message), SpanFrom(begin));
   PushToken(TokenKind::kUnknown, begin);
@@ -1071,7 +1126,22 @@ TokenStream Lex(const SourceManager& sources,
                 const LexOptions& options) {
   WOLANG_CHECK(interner != nullptr);
   WOLANG_CHECK(diagnostics != nullptr);
-  Lexer lexer(sources, file, interner, diagnostics, options);
+  const auto size = static_cast<uint32_t>(sources.Text(file).size());
+  Lexer lexer(sources, file, 0, size, interner, diagnostics, options);
+  return lexer.Run();
+}
+
+TokenStream LexSpan(const SourceManager& sources,
+                    SourceSpan span,
+                    StringInterner* interner,
+                    DiagnosticEngine* diagnostics,
+                    const LexOptions& options) {
+  WOLANG_CHECK(interner != nullptr);
+  WOLANG_CHECK(diagnostics != nullptr);
+  const auto size = static_cast<uint32_t>(sources.Text(span.file).size());
+  const uint32_t end = std::min(span.end, size);
+  const uint32_t begin = std::min(span.begin, end);
+  Lexer lexer(sources, span.file, begin, end, interner, diagnostics, options);
   return lexer.Run();
 }
 

@@ -160,6 +160,9 @@ WOLANG_CONTEXTUAL(Exit, "exit")
 WOLANG_CONTEXTUAL(Machine, "machine")
 WOLANG_CONTEXTUAL(State, "state")
 WOLANG_CONTEXTUAL(Unit, "unit")
+// Entity query filters: `Query<mut Velocity, with Falling, without Dead>`.
+WOLANG_CONTEXTUAL(With, "with")
+WOLANG_CONTEXTUAL(Without, "without")
 
 // --------------------------------------------------------- reserved words --
 
