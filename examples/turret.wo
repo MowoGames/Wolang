@@ -19,7 +19,9 @@ class Turret : Actor {
   @Edit var fire_rate: float = 2.0
   @Replicated var health: int = 100
 
-  let muzzle = component<SceneComponent>("Muzzle")
+  // `component` is the keyword that declares an ECS component, so attaching a
+  // sub-object is an ordinary host function instead.
+  let muzzle = attach<SceneComponent>("Muzzle")
   var target: Weak<Pawn>
 
   signal Destroyed(by: Actor?)

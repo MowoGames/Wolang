@@ -1,0 +1,28 @@
+// Deliberately broken declarations: this file checks that one bad construct
+// does not swallow the ones around it.
+//   wolang check examples/recovery.wo
+
+fn good_before() -> int => 1
+
+$$$
+
+class Broken : Actor {
+  @@@
+  var health: int = 100
+
+  fn method() {
+    let a = 1 let b = 2
+    let c = *
+    DoWork()
+  }
+}
+
+machine Wrong {
+  fn not_a_state() {}
+}
+
+unit meter
+
+fn good_after(x: int) -> int {
+  return x + 1
+}
