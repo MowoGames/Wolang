@@ -17,16 +17,16 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0001`–`E0019` | lexer | implemented (wave 1) |
 | `E0020`–`E0049` | parser | implemented (wave 2) |
 | `E0050`–`E0069` | manifests, modules, packages | implemented (wave 3) |
-| `E01xx` | types | wave 4 |
-| `E02xx` | pattern matching | wave 4 |
+| `E0101`–`E0119` | types and name resolution | implemented (wave 4) |
+| `E10xx` | units and dimensions | implemented (wave 4) |
+| `E02xx` | pattern matching | wave 5 |
 | `E03xx` | coroutines | wave 10 |
-| `E04xx` | inheritance and traits | wave 4 |
+| `E04xx` | inheritance and traits | wave 5 |
 | `E05xx` | entities and systems | wave 11 |
 | `E06xx` | networking | wave 16 |
 | `E07xx` | effects, determinism, capabilities | wave 5 |
 | `E08xx` | unsafe and sandboxing | wave 5 |
 | `E09xx` | compile-time evaluation | wave 7 |
-| `E10xx` | units and dimensions | wave 4 |
 
 ## Implemented: lexical errors
 
@@ -58,21 +58,21 @@ character.
 | Code | Message | Example |
 |---|---|---|
 | `E0020` | expected a declaration | `42` at file scope |
-| `E0021` | expected an identifier | `fn 1() {}` |
+| `E0021` | expected an identifier | `fun 1() {}` |
 | `E0022` | expected a specific token | `class C` without `{` |
-| `E0023` | expected a type | `fn f(a: ) {}` |
+| `E0023` | expected a type | `fun f(a: ) {}` |
 | `E0024` | expected an expression | `let a = *` |
 | `E0025` | expected a pattern | `for in items {}` |
 | `E0026` | unmatched delimiter | a block without its `}` |
-| `E0028` | expected a block | `fn f() ???` |
-| `E0029` | duplicate modifier | `pub pub fn f() {}` |
+| `E0028` | expected a block | `fun f() ???` |
+| `E0029` | duplicate modifier | `pub offer fun f() {}` |
 | `E0034` | expected a match arm | `match v { => 1 }` |
 | `E0035` | expected a `state` declaration | a `fn` inside a `machine` |
 | `E0036` | expected a transition | a stray name inside a `state` |
 | `E0037` | expected a unit definition | `unit m` with no dimension |
 | `E0040` | expected a line break between statements | `let a = 1 let b = 2` |
 | `E0041` | nesting too deep | hundreds of nested parentheses |
-| `E0042` | unknown type parameter in a `where` clause | `fn f<T>() where U: A {}` |
+| `E0042` | unknown type parameter in a `where` clause | `fun f<T>() where U: A {}` |
 | `E0043` | unexpected token after an expression | `"{a b}"` |
 | `E0044` | no enclosing loop carries that label | `break nowhere` |
 | `E0045` | expected an array length | `[int; ]` |
@@ -96,10 +96,10 @@ already produced one, so each broken spot yields one diagnostic.
 | `E0052` | missing manifest key | no `[package]`, no `name`, a dependency without a path |
 | `E0053` | invalid manifest value | `name = p`, `unsafe = "maybe"`, an unknown severity |
 | `E0054` | duplicate manifest key | `name` given twice in one table |
-| `E0055` | unresolved module | `import game.nowhere` |
-| `E0056` | imported name is not declared | `import game.math.{Vec4}` when there is no `Vec4` |
-| `E0057` | name declared more than once in a module | two files declaring `fn Fire` |
-| `E0058` | imported name is not public | importing a declaration without `pub` |
+| `E0055` | unresolved module | `need game.nowhere` |
+| `E0056` | a needed name is not declared | `need game.math.{Vec4}` when there is no `Vec4` |
+| `E0057` | name declared more than once in a module | two files declaring `fun Fire` |
+| `E0058` | a needed name is not offered | needing a declaration without `offer` |
 | `E0059` | cyclic package dependencies | two packages depending on each other |
 | `E0060` | package cannot be read | no manifest, no source directory, unreadable file |
 
@@ -116,6 +116,33 @@ file, including `"off"` to silence a code entirely:
 W0105 = "off"
 P0101 = "error"
 ```
+
+## Implemented: type errors
+
+| Code | Message | Example |
+|---|---|---|
+| `E0101` | mismatched types | `let x: bool = 1` |
+| `E0102` | wrong number of arguments | calling a two-parameter function with one |
+| `E0103` | no value with that name is in scope | `let x = nothing_here` |
+| `E0104` | a value that may be absent was used directly | `p.field` where `p: Pawn?` |
+| `E0105` | assignment to a `let` binding | `let a = 1` then `a = 2` |
+| `E0106` | the callee is not callable | calling an integer |
+| `E0107` | the value cannot be indexed | `n[0]` where `n: int` |
+| `E0108` | an operator got the wrong kind of operand | `-s` where `s: str` |
+| `E0109` | the literal does not fit its type | `let x: u8 = 300` |
+| `E0110` | no type with that name is in scope | `fun f(a: Nothing)` |
+| `E0111` | the name is not a type | a function used in type position |
+| `E0113` | the name is declared twice in one file | |
+| `E0114` | no dimension with that name | `unit m: Nothing` |
+| `E0115` | a unit conversion needs a literal with a unit | `unit cm = 5` |
+| `E0116` | a dimension is a product of dimension names | `dimension D = 2 + 2` |
+| `E1001` | dimensions do not match | `10m + 2s` |
+| `E1002` | no unit with that name is in scope | `10parsecs` |
+
+An error type propagates silently: one unknown name produces one message, not
+one per use of the value it was assigned to. Type checking is also skipped
+entirely on a file the parser could not finish, because every type inferred
+around an error node is noise.
 
 ## Planned catalog
 

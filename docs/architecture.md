@@ -148,8 +148,8 @@ A function's effects are inferred inside a module and written explicitly on
 public signatures:
 
 ```wolang
-pub fn Integrate(dt: Seconds, q: Query<mut Transform, Velocity>)
-pub fn LoadLevel(path: str) -> Result<Level> uses io, alloc
+offer fun Integrate(dt: Seconds, q: Query<mut Transform, Velocity>)
+offer fun LoadLevel(path: str) -> Result<Level> uses io, alloc
 ```
 
 Built-in effects are a closed set (`alloc`, `io`, `rand`, `time`, `net`, `gpu`,

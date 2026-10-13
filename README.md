@@ -31,7 +31,7 @@ optionals need no `Some`/`None` vocabulary, because `x?` and `null` already
 say it:
 
 ```wolang
-fn Lookup(key: str) -> Pawn?!
+fun Lookup(key: str) -> Pawn?!
 
 match count {
   n? => n

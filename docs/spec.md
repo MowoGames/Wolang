@@ -60,12 +60,16 @@ Thai and Vietnamese names work.
 ```
 after    as       async    await    before   break    class    component
 comptime continue defer    else     enum     error    extend   extern
-false    fn       for      foreach  if       import   in       let
-loop     match    mut      null     on       override priv     pub
+false    for      foreach  fun      if       in       let      loop
+match    mut      need     null     offer    on       override priv
 region   return   self     signal   spawn    struct   system   tag
 trait    true     type     unsafe   uses     var      virtual  where
 while
 ```
+
+`fun` declares a function, `need` brings names in, and `offer` sends a name
+out of its module. `need` and `offer` are a matched pair: a module needs names
+from elsewhere and offers its own.
 
 **Contextual keywords** are lexed as identifiers and only recognized by the
 parser where they introduce a declaration:
@@ -85,12 +89,16 @@ follows them.
 them later cannot break existing code:
 
 ```
-abstract actor  case   catch   const  delete do      final  goto
-impl   interface is    kernel lazy  macro  module namespace new   nil
-operator package private protected public rollback shader sizeof
-static  super  switch template this  throw  transactional try
-typedef typeof union  using   void   yield
+abstract actor  case   catch   const  delete do      final  fn
+goto   impl   need interface is   kernel lazy   macro module
+namespace new  nil    operator package private protected pub
+public rollback shader sizeof static super switch template this
+throw  transactional try typedef typeof union using void yield
 ```
+
+`fn`, `import`, `offer` and `impl` are reserved because they were the earlier
+spellings of `fun`, `need`, `offer` and `extend`; writing one gets a message
+instead of a confusing parse failure.
 
 ### 1.6 Literals
 
@@ -289,11 +297,11 @@ stray `$$$` produces one message rather than one per layer.
 ## 3. Declarations — draft
 
 ```wolang
-pub fn Damage(base: float, mult: float = 1.0) -> float {
+offer offer fun Damage(base: float, mult: float = 1.0) -> float {
   return base * mult
 }
 
-fn Lerp(a: float, b: float, t: float) -> float => a + (b - a) * t
+fun Lerp(a: float, b: float, t: float) -> float => a + (b - a) * t
 
 struct HitInfo {
   var point: Vec3
@@ -303,7 +311,7 @@ struct HitInfo {
 
 class Weapon : Object {
   var ammo: int = 30
-  fn Reload() { ammo = 30 }
+  fun Reload() { ammo = 30 }
 }
 
 enum AiState {
@@ -313,15 +321,15 @@ enum AiState {
 }
 
 trait Damageable {
-  fn TakeDamage(amount: float, from: Actor?)
+  fun TakeDamage(amount: float, from: Actor?)
 }
 
 extend Vec3 {
-  fn Flat() -> Vec3 => Vec3(x, 0.0, z)
+  fun Flat() -> Vec3 => Vec3(x, 0.0, z)
 }
 
 extend Barrel as Damageable {
-  fn TakeDamage(amount: float, from: Actor?) { Explode() }
+  fun TakeDamage(amount: float, from: Actor?) { Explode() }
 }
 
 type Health = int
@@ -335,7 +343,7 @@ sentence. (`impl` is reserved, so the Rust spelling produces a message rather
 than a confusing parse failure.)
 
 `let` binds immutably, `var` mutably. Visibility is module-private by default,
-`pub` across modules, `priv` within one file. Methods are statically dispatched
+`offer` across modules, `priv` within one file. Methods are statically dispatched
 unless declared `virtual`, and overriding requires `override`.
 
 `match` must be exhaustive. Error handling is `Result<T, E>` with the `?`
@@ -356,7 +364,7 @@ the coroutine or actor rather than unwinding.
 | Optionals | `T?`, which *is* `Option<T>`; references are non-nullable by default |
 | Fallible | `T!`, a value or one of an inferred set of errors |
 | Ownership | `Box<T>`, `Rc<T>`, `Arc<T>`, `Weak<T>` |
-| Functions | `fn(int) -> bool`, closures |
+| Functions | `fun(int) -> bool`, closures |
 
 `[T; N]` and `[T]` are part of the language because `core` needs them and
 because they allocate nothing, which is what makes them usable on WASM and on
@@ -407,11 +415,11 @@ combine:
 ```wolang
 error NotFound, Corrupt
 
-fn Find(id: int) -> Pawn?                 // may be absent
-fn Load(path: str) -> Level! uses io      // may fail
-fn Lookup(key: str) -> Pawn?!             // either
+fun Find(id: int) -> Pawn?                 // may be absent
+fun Load(path: str) -> Level! uses io      // may fail
+fun Lookup(key: str) -> Pawn?!             // either
 
-fn Load(path: str) -> Level! uses io {
+fun Load(path: str) -> Level! uses io {
   let bytes = ReadFile(path)?             // errors join the set
   if bytes.len == 0 { return Corrupt }
   return Parse(bytes)
@@ -434,8 +442,8 @@ Effects are inferred inside a module and explicit on public signatures.
 ```wolang
 effect Telemetry
 
-pub fn LoadLevel(path: str) -> Result<Level> uses io, alloc
-pub fn Report(event: str) uses Telemetry
+offer fun LoadLevel(path: str) -> Result<Level> uses io, alloc
+offer fun Report(event: str) uses Telemetry
 ```
 
 Built-in effects: `alloc`, `io`, `rand`, `time`, `net`, `gpu`, `unsafe`,
@@ -490,7 +498,7 @@ identical either way, so the layout is a measurement, not a rewrite.
 ## 8. Concurrency — draft
 
 ```wolang
-async fn OpenDoor() {
+async fun OpenDoor() {
   await animation.Play("Open")
   await Wait(2s)
   await All(LightsOn(), MusicFade(1s))
@@ -549,7 +557,7 @@ same component without an ordering.
 ```wolang
 comptime let SinTable = Array<float>.Generate(256, |i| Sin(i * Tau / 256))
 
-comptime fn Validate(config: WeaponConfig) {
+comptime fun Validate(config: WeaponConfig) {
   assert(config.fire_rate > 0, "fire rate must be positive")
 }
 ```

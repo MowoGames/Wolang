@@ -65,11 +65,11 @@ operators, numbers, strings, characters, trivia and byte-level edge cases.
 |---|---|
 | Wolang is a standalone project, not an engine module | the language is meant for general use; an engine becomes one host among several |
 | Hybrid memory model, optional garbage collector | value semantics and regions for predictable code, a collector only for object graphs that need one, so WASM and embedded targets stay viable |
-| Effects inferred inside a module, explicit on `pub` signatures | one mechanism instead of five unrelated attribute checks |
+| Effects inferred inside a module, explicit on `offer` signatures | one mechanism instead of five unrelated attribute checks |
 | Units, layout polymorphism, state machines and reactive values are core features | each is a repeated source of gameplay bugs or rewrites, and none can be retrofitted as a library |
 | Declaration words such as `state` and `unit` are contextual keywords | gameplay code uses them as variable names constantly |
 | Unit suffixes are recorded as symbols, not matched against a built-in list | units are user declared, so only sema can resolve them |
-| No block comments | `//` and `///` are enough, and nesting rules for `/* */` are a recurring source of lexer bugs |
+| No block comments | `//` and `///` are enough, and nesting rules for `/* */` are a recurring source of lexer bugs — **reversed in wave 4**, with nesting |
 | arm64 before x64 for the dev tier | that is the development machine |
 | The standard library is written in Wolang above a C++ platform floor | see `docs/roadmap.md`; `core` becomes possible in wave 7 |
 | The compiler stays C++20, self-hosting is not a goal | self-hosting requires the finished language and doubles the work |

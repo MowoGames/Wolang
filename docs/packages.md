@@ -72,22 +72,22 @@ name and version without running a Wolang interpreter.
 | | |
 |---|---|
 | no modifier | visible inside the module |
-| `pub` | visible to other modules |
+| `offer` | visible to other modules |
 | `priv` | visible inside the file only |
 
 A module's declarations are shared across its files, so two files in one
-directory see each other's names without importing anything. Declaring the
+directory see each other's names without needing anything. Declaring the
 same name twice in one module is an error (`E0057`), reported on both
 declarations.
 
-## Imports
+## Needing names
 
 ```wolang
-import mygame.combat                      // the whole module
-import mygame.combat.{Damage, Weapon}     // selected names
+need mygame.combat                      // the whole module
+need mygame.combat.{Damage, Weapon}     // selected names
 ```
 
-An import names a module, not a file. Importing a name the module does not
+A `need` names a module, not a file. Needing a name the module does not
 declare is `E0056`; importing one it declares but does not export is `E0058`.
 
 Cycles between packages are an error (`E0059`). Cycles between modules inside
@@ -102,8 +102,8 @@ A single file can be checked on its own:
 wolang check src/combat/damage.wo
 ```
 
-Such a file belongs to no module, so its imports are not resolved and no
-import diagnostics are produced — lexical, syntactic and later type errors are
+Such a file belongs to no module, so its `need` declarations are not
+resolved and no import diagnostics are produced — lexical, syntactic and later type errors are
 still reported in full. This is what makes a scratch file or a bug report
 reduction usable.
 

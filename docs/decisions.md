@@ -65,7 +65,7 @@ spells presence and absence: `T?` in a type, `x?` in a pattern, `null` for
 absence, `??` for a default. Importing two more words for a concept already
 expressible is a cost with no benefit.
 
-**D13. Error sets are inferred, and `T!` is postfix.** `fn Load() -> Level!`
+**D13. Error sets are inferred, and `T!` is postfix.** `fun Load() -> Level!`
 collects the errors the body can produce, so `?` never needs a conversion
 between error types. Postfix matches `T?`, so a type reads left to right and
 the two combine as `Pawn?!`. An error is a tag without data; a payload means
@@ -103,6 +103,13 @@ separator do.
 
 **D20. `as` is the cast operator**, binding tighter than any binary operator.
 
+**D20a. `fun`, `need` and `offer` replace `fn`, `import` and `pub`.** `fun` is
+the whole word rather than an abbreviation. `need` and `offer` are a matched
+pair that says what a module does: it *needs* names from elsewhere and
+*offers* its own. No other language uses this pair, which is the point — the
+words describe the relationship rather than borrowing a convention. `fn`,
+`import` and `pub` are reserved, so old habits get a message.
+
 **D21. `extend T` and `extend T as Trait` replace `impl`.** The target comes
 first either way, so the declaration reads as a sentence. `impl Trait for
 Type` is a known stumbling block: its word order matches neither English nor
@@ -114,6 +121,13 @@ a confusing parse failure.
 capability difference, not a spelling one: the same type can be one value in
 one place and a struct-of-arrays in another, and the choice can be flipped
 where it is measured.
+
+**D22a. A derived dimension is declared, not written inline.**
+`dimension Velocity = Length / Time` names the product once; there is no
+`Length/Time` syntax in general type position. A dimension name then *is* a
+type — the type of quantities carrying it — so `speed: Velocity` is how a
+velocity is declared. Confining the arithmetic to one declaration keeps type
+syntax free of operators and makes the concept nameable.
 
 **D23. Declaration-introducing words are contextual keywords** — `state`,
 `unit`, `machine`, `derived`, `effect`, `dimension`, `enter`, `exit`,
@@ -173,7 +187,7 @@ is a legitimate thing to do and must not invent errors.
 ## Effects
 
 **D35. Effects and capabilities are one mechanism**, inferred inside a module
-and explicit on `pub` signatures. One mechanism covers determinism,
+and explicit on `offer` signatures. One mechanism covers determinism,
 allocation-free hot paths, mod sandboxing, `comptime` purity and server/client
 separation — five unrelated attribute checks collapse into one.
 
