@@ -77,6 +77,36 @@ std::string_view TypeKindName(TypeKind kind);
 
 // One interned type. Plain data with no owned storage, so the store can hold
 // them in a flat array and hash them by value.
+// What a name declared inside a type stands for.
+enum class MemberKind : uint8_t {
+  kField,
+  kMethod,
+  // A member of an enum: `Shape.Circle`.
+  kVariant,
+  // A state of a `machine`.
+  kState,
+  kSignal,
+};
+
+// One name declared inside a named type. Member tables are part of the file
+// resolution that produced them rather than of the type store, so that
+// changing a field's type invalidates everything that reads it.
+struct Member {
+  Symbol name;
+  MemberKind kind = MemberKind::kField;
+  TypeId type;
+  // Fields: whether the member may be assigned through.
+  bool is_mutable = false;
+  // Whether code outside the declaring module may name it.
+  bool is_public = false;
+
+  friend bool operator==(const Member& lhs, const Member& rhs) {
+    return lhs.name == rhs.name && lhs.kind == rhs.kind &&
+           lhs.type == rhs.type && lhs.is_mutable == rhs.is_mutable &&
+           lhs.is_public == rhs.is_public;
+  }
+};
+
 struct Type {
   TypeKind kind = TypeKind::kError;
 
@@ -153,6 +183,15 @@ class TypeStore {
 
   // ------------------------------------------------------- constructors --
 
+  // Interns a base dimension by its declaration, so that `Length` declared
+  // in one file is the same dimension everywhere it is imported. Dimension
+  // ids are global for the same reason type ids are: a file-local index
+  // would make two unrelated dimensions compare equal.
+  DimensionId Dimension(Symbol name, uint32_t file, uint32_t item);
+
+  // The name a dimension was declared under, or an invalid symbol.
+  Symbol DimensionName(DimensionId dimension) const;
+
   TypeId Named(Symbol name, uint32_t file, uint32_t item);
   TypeId Parameter(Symbol name, uint32_t owner, uint32_t index);
   TypeId Instance(TypeId base, const std::vector<TypeId>& args);
@@ -203,9 +242,7 @@ class TypeStore {
 
   // Renders a type the way the user wrote it: `Array<int>?`, `[float; 3]`,
   // `Length/Time`.
-  std::string Describe(const StringInterner& interner,
-                       TypeId id,
-                       const std::vector<Symbol>& dimension_names = {}) const;
+  std::string Describe(const StringInterner& interner, TypeId id) const;
 
  private:
   // Interning key: a type's bytes plus the contents of its ranges, since two
@@ -246,6 +283,14 @@ class TypeStore {
   TypeId str_;
   TypeId int_literal_;
   TypeId float_literal_;
+
+  // Base dimensions, in declaration order. The index is the DimensionId.
+  struct DimensionEntry {
+    Symbol name;
+    uint32_t file = 0;
+    uint32_t item = 0;
+  };
+  std::vector<DimensionEntry> dimensions_;
 };
 
 }  // namespace wolang

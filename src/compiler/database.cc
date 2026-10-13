@@ -54,6 +54,9 @@ QueryKey ResolutionKey(FileId file) {
 }
 
 using ResolvedNames = std::pair<FileResolution, std::vector<Diagnostic>>;
+QueryKey MemberTablesKey(FileId file) {
+  return QueryKey{QueryKind::kMemberTables, file.index};
+}
 QueryKey TypeCheckKey(FileId file) {
   return QueryKey{QueryKind::kTypeCheck, file.index};
 }
@@ -233,6 +236,23 @@ void Database::RegisterQueries() {
           result.first.scope.push_back(binding);
         };
 
+        // A dimension's product travels with its name: `Velocity` is only
+        // `Length/Time` because the file that declared it says so.
+        const auto add_dimensions = [&result](const FileResolution& other) {
+          for (const auto& entry : other.dimension_products) {
+            bool known = false;
+            for (const auto& mine : result.first.dimension_products) {
+              if (mine.first == entry.first) {
+                known = true;
+                break;
+              }
+            }
+            if (!known) {
+              result.first.dimension_products.push_back(entry);
+            }
+          }
+        };
+
         // Sibling files of the same module share one namespace.
         const ModuleId own_module = ModuleOf(file);
         if (own_module.is_valid()) {
@@ -249,6 +269,7 @@ void Database::RegisterQueries() {
             for (const Binding& binding : names->first.scope) {
               add(binding, /*public_only=*/false);
             }
+            add_dimensions(names->first);
           }
         }
 
@@ -285,8 +306,32 @@ void Database::RegisterQueries() {
               }
               add(binding, /*public_only=*/true);
             }
+            add_dimensions(names->first);
           }
         }
+        return MakeComparableResult(std::move(result));
+      });
+
+  // Signatures and member tables. Split from Resolution because a field's
+  // type may name an imported type -- so this needs the whole scope -- while
+  // Resolution must not depend on another file's signatures, or two files of
+  // one module would each wait on the other.
+  engine_.Register(
+      QueryKind::kMemberTables,
+      [this](QueryEngine& db, uint32_t arg) -> QueryResult {
+        const FileId file{arg};
+        const ParsedFile* parsed = db.GetAs<ParsedFile>(ParsedFileKey(file));
+        const auto* resolved = db.GetAs<ResolvedNames>(ResolutionKey(file));
+        if (parsed == nullptr || resolved == nullptr) {
+          return MakeComparableResult(FileResolution{});
+        }
+
+        FileResolution result = resolved->first;
+        // Reports nothing: the type checker is the one reporter of an
+        // annotation that does not resolve.
+        DiagnosticEngine ignored;
+        ResolveSignatures(&types_, &interner_, parsed->ast, arg, &result,
+                          &ignored);
         return MakeComparableResult(std::move(result));
       });
 
@@ -295,8 +340,8 @@ void Database::RegisterQueries() {
       [this](QueryEngine& db, uint32_t arg) -> QueryResult {
         const FileId file{arg};
         const ParsedFile* parsed = db.GetAs<ParsedFile>(ParsedFileKey(file));
-        const auto* resolved = db.GetAs<ResolvedNames>(ResolutionKey(file));
-        if (parsed == nullptr || resolved == nullptr) {
+        const auto* own = db.GetAs<FileResolution>(MemberTablesKey(file));
+        if (parsed == nullptr || own == nullptr) {
           return MakeResult(CheckedFile{});
         }
 
@@ -309,11 +354,73 @@ void Database::RegisterQueries() {
           }
         }
 
+        // A field access reaches a type declared anywhere this file can see,
+        // so the member tables of those files are merged in here rather than
+        // in Resolution, which is what keeps module siblings acyclic.
+        FileResolution resolution = *own;
+        const auto merge = [&resolution](const FileResolution& other,
+                                        uint32_t other_file) {
+          for (const TypeMembers& table : other.type_members) {
+            bool known = false;
+            for (const TypeMembers& mine : resolution.type_members) {
+              if (mine.type == table.type) {
+                known = true;
+                break;
+              }
+            }
+            if (!known) {
+              resolution.type_members.push_back(table);
+            }
+          }
+
+          // A name imported from |other_file| gets its signature from that
+          // file's own pass, because an item index only means anything
+          // within the file it came from.
+          for (Binding& binding : resolution.scope) {
+            if (binding.file != other_file || binding.type.is_valid() ||
+                binding.item == Binding::kNoItem ||
+                binding.item >= other.item_types.size()) {
+              continue;
+            }
+            binding.type = other.item_types[binding.item];
+          }
+        };
+
+        const ModuleId own_module = ModuleOf(file);
+        if (own_module.is_valid()) {
+          for (FileId sibling : GetModule(own_module)->files) {
+            if (sibling == file) {
+              continue;
+            }
+            if (const auto* other =
+                    db.GetAs<FileResolution>(MemberTablesKey(sibling));
+                other != nullptr) {
+              merge(*other, sibling.index);
+            }
+          }
+        }
+        if (const auto* imports = db.GetAs<ResolvedImports>(ImportsKey(file));
+            imports != nullptr) {
+          for (const ResolvedImport& import : imports->imports) {
+            const Module* module = GetModule(import.module);
+            if (module == nullptr) {
+              continue;
+            }
+            for (FileId source : module->files) {
+              if (const auto* other =
+                      db.GetAs<FileResolution>(MemberTablesKey(source));
+                  other != nullptr) {
+                merge(*other, source.index);
+              }
+            }
+          }
+        }
+
         CheckedFile result;
         const Ast& ast = parsed->ast;
         for (ItemId id : ast.Get(ast.root())) {
-          TypedBody body = TypeCheckItem(&types_, &interner_,
-                                         &resolved->first, ast, id);
+          TypedBody body =
+              TypeCheckItem(&types_, &interner_, &resolution, ast, id);
           result.diagnostics.insert(result.diagnostics.end(),
                                     body.diagnostics.begin(),
                                     body.diagnostics.end());

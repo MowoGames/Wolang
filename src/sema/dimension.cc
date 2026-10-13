@@ -91,14 +91,15 @@ bool Dimensions::TryRoot(int32_t root, Dimensions* out) const {
 
 std::string Dimensions::Describe(
     const StringInterner& interner,
-    const std::vector<Symbol>& dimension_names) const {
+    const std::function<Symbol(DimensionId)>& name_of) const {
   if (factors_.empty()) {
     return "1";
   }
 
-  const auto name_of = [&](DimensionId dimension) -> std::string {
-    if (dimension.index < dimension_names.size()) {
-      return std::string(interner.Text(dimension_names[dimension.index]));
+  const auto text_of = [&](DimensionId dimension) -> std::string {
+    const Symbol name = name_of(dimension);
+    if (name.is_valid()) {
+      return std::string(interner.Text(name));
     }
     return "?";
   };
@@ -118,7 +119,7 @@ std::string Dimensions::Describe(
     if (!target->empty()) {
       target->push_back('*');
     }
-    target->append(name_of(factor.dimension));
+    target->append(text_of(factor.dimension));
     append_power(target, factor.exponent > 0 ? factor.exponent
                                             : -factor.exponent);
   }

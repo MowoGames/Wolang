@@ -253,8 +253,11 @@ WOLANG_TEST(DimensionsTest, RootsOnlyWorkWhenExponentsDivide) {
 
 WOLANG_TEST(DimensionsTest, DescribesProductsReadably) {
   StringInterner interner;
-  const std::vector<Symbol> names = {interner.Intern("Length"),
+  const std::vector<Symbol> table = {interner.Intern("Length"),
                                      interner.Intern("Time")};
+  const auto names = [&table](DimensionId d) {
+    return d.index < table.size() ? table[d.index] : Symbol{};
+  };
   const DimensionId length{0};
   const DimensionId time{1};
 
@@ -281,10 +284,12 @@ WOLANG_TEST(DimensionsTest, DescribesProductsReadably) {
 WOLANG_TEST(TypeStoreTest, QuantitiesCarryTheirDimension) {
   TypeStore store;
   StringInterner interner;
-  const std::vector<Symbol> names = {interner.Intern("Length"),
-                                     interner.Intern("Time")};
-  const DimensionId length{0};
-  const DimensionId time{1};
+  // Dimensions are interned by their declaration, so the same one named in
+  // two files is one dimension.
+  const DimensionId length = store.Dimension(interner.Intern("Length"), 0, 0);
+  const DimensionId time = store.Dimension(interner.Intern("Time"), 0, 1);
+  WOLANG_EXPECT_EQ(store.Dimension(interner.Intern("Length"), 0, 0), length);
+  WOLANG_EXPECT_NE(store.Dimension(interner.Intern("Length"), 1, 0), length);
   const TypeId f32 = store.default_float();
 
   const TypeId metres = store.Quantity(f32, Dimensions::Base(length));
@@ -295,7 +300,7 @@ WOLANG_TEST(TypeStoreTest, QuantitiesCarryTheirDimension) {
 
   const TypeId velocity = store.Quantity(
       f32, Dimensions::Base(length).Divide(Dimensions::Base(time)));
-  WOLANG_EXPECT_EQ(store.Describe(interner, velocity, names), "Length/Time");
+  WOLANG_EXPECT_EQ(store.Describe(interner, velocity), "Length/Time");
   WOLANG_EXPECT_EQ(store.DimensionsOf(velocity).ExponentOf(time), -1);
 
   // A dimensionless quantity is just its carrier, so `10m / 2m` works

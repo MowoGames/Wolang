@@ -416,10 +416,26 @@ uint32_t TypeStore::BitWidth(TypeId id) const {
   return 0;
 }
 
-std::string TypeStore::Describe(
-    const StringInterner& interner,
-    TypeId id,
-    const std::vector<Symbol>& dimension_names) const {
+Symbol TypeStore::DimensionName(DimensionId dimension) const {
+  if (!dimension.is_valid() || dimension.index >= dimensions_.size()) {
+    return Symbol{};
+  }
+  return dimensions_[dimension.index].name;
+}
+
+DimensionId TypeStore::Dimension(Symbol name, uint32_t file, uint32_t item) {
+  for (uint32_t i = 0; i < dimensions_.size(); ++i) {
+    const DimensionEntry& entry = dimensions_[i];
+    if (entry.name == name && entry.file == file && entry.item == item) {
+      return DimensionId{i};
+    }
+  }
+  dimensions_.push_back(DimensionEntry{name, file, item});
+  return DimensionId{static_cast<uint32_t>(dimensions_.size() - 1)};
+}
+
+std::string TypeStore::Describe(const StringInterner& interner,
+                                TypeId id) const {
   if (!id.is_valid()) {
     return "<unknown>";
   }
@@ -458,7 +474,7 @@ std::string TypeStore::Describe(
       return std::string(interner.Text(type.name));
 
     case TypeKind::kInstance: {
-      std::string text = Describe(interner, type.base, dimension_names);
+      std::string text = Describe(interner, type.base);
       text.push_back('<');
       bool first = true;
       for (TypeId arg : ArgumentsOf(id)) {
@@ -466,26 +482,26 @@ std::string TypeStore::Describe(
           text.append(", ");
         }
         first = false;
-        text.append(Describe(interner, arg, dimension_names));
+        text.append(Describe(interner, arg));
       }
       text.push_back('>');
       return text;
     }
 
     case TypeKind::kOptional:
-      return Describe(interner, type.element, dimension_names) + "?";
+      return Describe(interner, type.element) + "?";
     case TypeKind::kFallible:
-      return Describe(interner, type.element, dimension_names) + "!";
+      return Describe(interner, type.element) + "!";
 
     case TypeKind::kSlice: {
       std::string text = type.is_soa ? "soa [" : "[";
-      text.append(Describe(interner, type.element, dimension_names));
+      text.append(Describe(interner, type.element));
       text.push_back(']');
       return text;
     }
     case TypeKind::kArray: {
       std::string text = type.is_soa ? "soa [" : "[";
-      text.append(Describe(interner, type.element, dimension_names));
+      text.append(Describe(interner, type.element));
       text.append("; ");
       text.append(std::to_string(type.length));
       text.push_back(']');
@@ -500,7 +516,7 @@ std::string TypeStore::Describe(
           text.append(", ");
         }
         first = false;
-        text.append(Describe(interner, element, dimension_names));
+        text.append(Describe(interner, element));
       }
       text.push_back(')');
       return text;
@@ -514,35 +530,35 @@ std::string TypeStore::Describe(
           text.append(", ");
         }
         first = false;
-        text.append(Describe(interner, param, dimension_names));
+        text.append(Describe(interner, param));
       }
       text.push_back(')');
       if (type.element.is_valid() &&
           KindOf(type.element) != TypeKind::kVoid) {
         text.append(" -> ");
-        text.append(Describe(interner, type.element, dimension_names));
+        text.append(Describe(interner, type.element));
       }
       return text;
     }
 
     case TypeKind::kPointer:
       return (type.is_mutable ? "*mut " : "*") +
-             Describe(interner, type.element, dimension_names);
+             Describe(interner, type.element);
     case TypeKind::kReference:
       return (type.is_mutable ? "&mut " : "&") +
-             Describe(interner, type.element, dimension_names);
+             Describe(interner, type.element);
 
     case TypeKind::kQuantity: {
       // The dimension is what the reader cares about; the carrier is only
       // mentioned when it is not the default.
-      std::string text =
-          DimensionsOf(id).Describe(interner, dimension_names);
+      std::string text = DimensionsOf(id).Describe(
+          interner, [this](DimensionId d) { return DimensionName(d); });
       if (type.element.is_valid() &&
           !(KindOf(type.element) == TypeKind::kFloat &&
             Get(type.element).float_width == FloatWidth::k32)) {
         text.push_back(' ');
         text.push_back('(');
-        text.append(Describe(interner, type.element, dimension_names));
+        text.append(Describe(interner, type.element));
         text.push_back(')');
       }
       return text;

@@ -2,6 +2,7 @@
 
 #include "wolang/sema/type_check.h"
 
+#include <functional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -16,6 +17,7 @@ constexpr std::string_view kMaybeNull = "E0104";
 constexpr std::string_view kAssignToLet = "E0105";
 constexpr std::string_view kNotCallable = "E0106";
 constexpr std::string_view kNotIndexable = "E0107";
+constexpr std::string_view kUnknownMember = "E0112";
 constexpr std::string_view kBadOperand = "E0108";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
 constexpr std::string_view kDimensionMismatch = "E1001";
@@ -79,8 +81,14 @@ class Checker {
         .Primary(span, std::move(label));
   }
 
+  // Passed to Dimensions::Describe so a product prints with its declared
+  // names: dimension ids are global, so the type store knows them all.
+  std::function<Symbol(DimensionId)> DimensionName() const {
+    return [this](DimensionId d) { return types_->DimensionName(d); };
+  }
+
   std::string Describe(TypeId id) const {
-    return types_->Describe(*interner_, id, resolution_->dimension_names);
+    return types_->Describe(*interner_, id);
   }
 
   // Reports a mismatch unless either side is already an error type, which is
@@ -140,6 +148,11 @@ class Checker {
   TypeId CheckCall(const Expr& expr);
   TypeId CheckIndex(const Expr& expr);
   TypeId CheckField(const Expr& expr);
+  void CheckConstructor(const Expr& expr, TypeId type);
+
+  // The member of the enclosing type named |name|, or null when there is no
+  // enclosing type or it has no such member.
+  const Member* SelfMember(Symbol name) const;
   TypeId CheckIf(const Expr& expr, TypeId expected);
   TypeId CheckMatch(const Expr& expr, TypeId expected);
   TypeId CheckLoop(const Expr& expr);
@@ -171,6 +184,8 @@ class Checker {
   std::vector<Scope> scopes_;
   // The declared return type of the function being checked.
   TypeId return_type_;
+  // The type whose members are in scope, inside a method.
+  TypeId self_type_;
   // Nesting depth of loops, so `break` outside one can be reported.
   uint32_t loop_depth_ = 0;
 };
@@ -393,9 +408,21 @@ TypeId Checker::CheckLiteral(const Expr& expr, TypeId expected) {
 
 // ------------------------------------------------------------ expressions ---
 
+const Member* Checker::SelfMember(Symbol name) const {
+  if (!self_type_.is_valid()) {
+    return nullptr;
+  }
+  return resolution_->FindMember(types_->StripWrappers(self_type_), name);
+}
+
 TypeId Checker::CheckPath(const Expr& expr) {
   const Binding* binding = Lookup(expr.name);
   if (binding == nullptr) {
+    // Inside a method a bare name may be a member of the enclosing type:
+    // `health` means `self.health`, which is how gameplay code reads.
+    if (const Member* member = SelfMember(expr.name); member != nullptr) {
+      return member->type;
+    }
     std::string message = "no value named `";
     message.append(interner_->Text(expr.name));
     message.append("` is in scope");
@@ -501,12 +528,10 @@ TypeId Checker::CheckBinary(const Expr& expr) {
         // Comparing metres with seconds is the same bug as adding them.
         std::string message = "cannot compare `";
         message.append(
-            left_dimensions.Describe(*interner_,
-                                     resolution_->dimension_names));
+            left_dimensions.Describe(*interner_, DimensionName()));
         message.append("` with `");
         message.append(
-            right_dimensions.Describe(*interner_,
-                                      resolution_->dimension_names));
+            right_dimensions.Describe(*interner_, DimensionName()));
         message.append("`");
         Report(kDimensionMismatch, std::move(message), expr.span);
       } else if (!Accepts(left, right) && !Accepts(right, left)) {
@@ -579,12 +604,10 @@ TypeId Checker::CheckBinary(const Expr& expr) {
       if (left_dimensions != right_dimensions) {
         std::string message = "cannot combine `";
         message.append(
-            left_dimensions.Describe(*interner_,
-                                     resolution_->dimension_names));
+            left_dimensions.Describe(*interner_, DimensionName()));
         message.append("` with `");
         message.append(
-            right_dimensions.Describe(*interner_,
-                                      resolution_->dimension_names));
+            right_dimensions.Describe(*interner_, DimensionName()));
         message.append("`");
         Report(kDimensionMismatch, std::move(message), expr.span,
                "both sides of `+` and `-` need the same dimension");
@@ -609,6 +632,14 @@ TypeId Checker::CheckAssign(const Expr& expr) {
     const Expr& left = ast_.Get(expr.lhs);
     if (left.kind == ExprKind::kPath) {
       const Binding* binding = Lookup(left.name);
+      const Member* member =
+          binding == nullptr ? SelfMember(left.name) : nullptr;
+      if (member != nullptr && !member->is_mutable) {
+        std::string message = "cannot assign to `";
+        message.append(interner_->Text(left.name));
+        message.append("`, which is not `var`");
+        Report(kAssignToLet, std::move(message), expr.span);
+      }
       if (binding != nullptr && !binding->is_mutable &&
           (binding->kind == BindingKind::kLocal ||
            binding->kind == BindingKind::kValue)) {
@@ -636,9 +667,7 @@ TypeId Checker::CheckCall(const Expr& expr) {
     if (callee_expr.kind == ExprKind::kPath) {
       const Binding* binding = Lookup(callee_expr.name);
       if (binding != nullptr && binding->kind == BindingKind::kType) {
-        for (ExprId arg : ast_.Get(expr.args)) {
-          Check(arg, TypeId{});
-        }
+        CheckConstructor(expr, binding->type);
         Record(expr.lhs, binding->type);
         return binding->type;
       }
@@ -706,6 +735,41 @@ TypeId Checker::CheckIndex(const Expr& expr) {
   return types_->error();
 }
 
+// `Vec3(x, y, z)` fills the type's fields in declaration order. A type with
+// no fields known -- declared in a file this one cannot see -- still has its
+// arguments checked, just without expectations.
+void Checker::CheckConstructor(const Expr& expr, TypeId type) {
+  const std::span<const ExprId> args = ast_.Get(expr.args);
+
+  std::vector<TypeId> fields;
+  for (const Member& member : resolution_->MembersOf(type)) {
+    if (member.kind == MemberKind::kField) {
+      fields.push_back(member.type);
+    }
+  }
+
+  // No arguments is always allowed: it asks for the default value.
+  if (!args.empty() && !fields.empty() && args.size() != fields.size()) {
+    std::string message = "`";
+    message.append(Describe(type));
+    message.append("` has ");
+    message.append(std::to_string(fields.size()));
+    message.append(fields.size() == 1 ? " field, found " : " fields, found ");
+    message.append(std::to_string(args.size()));
+    message.append(args.size() == 1 ? " argument" : " arguments");
+    Report(kWrongArguments, std::move(message), expr.span);
+  }
+
+  const bool positional = args.size() == fields.size();
+  for (size_t i = 0; i < args.size(); ++i) {
+    const TypeId expected = positional ? fields[i] : TypeId{};
+    const TypeId found = Check(args[i], expected);
+    if (expected.is_valid() && !Accepts(expected, found)) {
+      ReportMismatch(expected, found, ast_.Get(args[i]).span);
+    }
+  }
+}
+
 TypeId Checker::CheckField(const Expr& expr) {
   const TypeId object = Check(expr.lhs, TypeId{});
 
@@ -720,9 +784,34 @@ TypeId Checker::CheckField(const Expr& expr) {
     return types_->error();
   }
 
-  // Member types arrive with member resolution; until then a field access on
-  // a known type yields an error type without a second complaint.
-  return types_->error();
+  // `?.` on an optional reaches through to the member of the inner type, and
+  // the whole expression is optional again.
+  const bool through_optional =
+      expr.kind != ExprKind::kField && types_->IsOptional(object);
+  const TypeId subject =
+      through_optional ? types_->ElementOf(object) : object;
+  const TypeId named = types_->StripWrappers(subject);
+
+  if (types_->IsError(named)) {
+    return types_->error();
+  }
+
+  const Member* member = resolution_->FindMember(named, expr.name);
+  if (member == nullptr) {
+    if (!resolution_->MembersOf(named).empty()) {
+      std::string message = "`";
+      message.append(Describe(named));
+      message.append("` has no member named `");
+      message.append(interner_->Text(expr.name));
+      message.append("`");
+      Report(kUnknownMember, std::move(message), expr.span);
+    }
+    // A type whose members are not known is declared in a file this one
+    // cannot see. That is already reported as an unresolved import.
+    return types_->error();
+  }
+
+  return through_optional ? types_->Optional(member->type) : member->type;
 }
 
 TypeId Checker::CheckIf(const Expr& expr, TypeId expected) {
@@ -886,8 +975,7 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       break;
 
     case ExprKind::kSelf:
-      // `self` gets its type with member resolution.
-      type = types_->error();
+      type = self_type_.is_valid() ? self_type_ : types_->error();
       break;
 
     case ExprKind::kUnary:
@@ -1279,11 +1367,23 @@ void Checker::CheckItem(ItemId id) {
     case ItemKind::kTrait:
     case ItemKind::kComponent:
     case ItemKind::kEnum:
-    case ItemKind::kExtend:
+    case ItemKind::kExtend: {
+      // Inside a type's members, `self` is that type.
+      const TypeId previous_self = self_type_;
+      if (item.kind == ItemKind::kExtend) {
+        self_type_ = item.target_type.is_valid()
+                         ? resolver_.Resolve(ast_, item.target_type)
+                         : TypeId{};
+      } else {
+        const Binding* binding = Lookup(item.name);
+        self_type_ = binding != nullptr ? binding->type : TypeId{};
+      }
       for (ItemId member : ast_.Get(item.members)) {
         CheckItem(member);
       }
+      self_type_ = previous_self;
       return;
+    }
 
     case ItemKind::kUnit:
       // Resolved while building the file's scope, where the dimensions are.

@@ -139,6 +139,44 @@ WOLANG_TEST(Database, EditingOneFileDoesNotTouchAnother) {
                    uint64_t{1});
 }
 
+WOLANG_TEST(Database, MemberTablesSurviveABodyEdit) {
+  // The point of splitting signatures out of resolution: editing a body
+  // leaves every member table untouched, so nothing downstream recomputes.
+  Database db;
+  const FileId file = db.AddFile(
+      "a.wo",
+      "struct Vec3 {\n  var x: float\n}\n"
+      "fun use(v: Vec3) -> float {\n  return v.x\n}\n");
+  db.Checked(file);
+  const Revision before = db.engine().ChangedAt(
+      QueryKey{QueryKind::kMemberTables, file.index});
+
+  db.SetFileText(file,
+                 "struct Vec3 {\n  var x: float\n}\n"
+                 "fun use(v: Vec3) -> float {\n  return v.x + 1.0\n}\n");
+  db.Checked(file);
+
+  WOLANG_EXPECT_EQ(db.engine().ChangedAt(
+                       QueryKey{QueryKind::kMemberTables, file.index}),
+                   before);
+}
+
+WOLANG_TEST(Database, EditingAFieldTypeChangesTheMemberTable) {
+  Database db;
+  const FileId file = db.AddFile(
+      "a.wo", "struct Vec3 {\n  var x: float\n}\n");
+  db.Checked(file);
+  const Revision before = db.engine().ChangedAt(
+      QueryKey{QueryKind::kMemberTables, file.index});
+
+  db.SetFileText(file, "struct Vec3 {\n  var x: int\n}\n");
+  db.Checked(file);
+
+  WOLANG_EXPECT_GT(db.engine().ChangedAt(
+                       QueryKey{QueryKind::kMemberTables, file.index}),
+                   before);
+}
+
 WOLANG_TEST(Database, AddingADeclarationGrowsTheItemTree) {
   Database db;
   const FileId file = db.AddFile("a.wo", "fun a() {}\n");

@@ -39,6 +39,10 @@ WOLANG_QUERY(DeclaredNames,
 WOLANG_QUERY(Resolution,
              "file",
              "every name a file can see, imports included")
+WOLANG_QUERY(MemberTables,
+             "file",
+             "the signature of every declaration of a file and the members "
+             "of every type it declares")
 WOLANG_QUERY(TypeCheck,
              "file",
              "the type of every expression in a file")

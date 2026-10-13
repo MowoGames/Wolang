@@ -81,8 +81,7 @@ class Fixture {
   std::string Render(const CheckedFile& checked,
                      const FileResolution& resolution,
                      ExprId expr) {
-    return db_.types().Describe(db_.interner(), checked.body.TypeOf(expr),
-                                resolution.dimension_names);
+    return db_.types().Describe(db_.interner(), checked.body.TypeOf(expr));
   }
 
   std::string FindInItem(const Ast& ast,
@@ -643,6 +642,158 @@ WOLANG_TEST(TypeCheck, EditingASignatureChangesResolution) {
   fixture.db().Checked(fixture.file());
 
   WOLANG_EXPECT_GT(fixture.db().engine().ChangedAt(key), before);
+}
+
+
+// ------------------------------------------------------------- members -----
+
+WOLANG_TEST(TypeCheck, FieldAccessTakesTheFieldType) {
+  Fixture f(R"(
+struct Vec3 {
+  var x: float
+  var y: float
+}
+
+fun take(v: Vec3) {
+  let a = v.x
+}
+)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "f32");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, UnknownMemberIsReported) {
+  Fixture f(R"(
+struct Vec3 {
+  var x: float
+}
+
+fun take(v: Vec3) {
+  let a = v.z
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0112"));
+  WOLANG_EXPECT(f.Messages().find("has no member named `z`") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, MethodsSeeTheirOwnFields) {
+  Fixture f(R"(
+class Pawn {
+  var health: float = 100.0
+
+  fun Hurt(amount: float) {
+    health = health - amount
+    let left = self.health
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("left"), "f32");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AssigningAnImmutableFieldIsReported) {
+  Fixture f(R"(
+class Pawn {
+  let health: float = 100.0
+
+  fun Hurt() {
+    health = 1.0
+  }
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0105"));
+}
+
+WOLANG_TEST(TypeCheck, MethodCallsCheckTheirArguments) {
+  Fixture f(R"(
+class Pawn {
+  fun Hurt(amount: float) {}
+}
+
+fun take(p: Pawn) {
+  p.Hurt(true)
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0101"));
+}
+
+WOLANG_TEST(TypeCheck, OptionalMemberAccessNeedsTheSafeOperator) {
+  Fixture f(R"(
+struct Vec3 {
+  var x: float
+}
+
+fun take(v: Vec3?) {
+  let bad = v.x
+  let good = v?.x
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0104"));
+  // Reaching through `?.` leaves the result optional.
+  WOLANG_EXPECT_EQ(f.TypeOfInit("good"), "f32?");
+}
+
+// ---------------------------------------------------------- signatures -----
+
+WOLANG_TEST(TypeCheck, CallsCheckAgainstTheDeclaredSignature) {
+  Fixture f(R"(
+fun Damage(base: float, mult: float) -> float => base
+
+fun use() {
+  let a = Damage(1.0, 2.0)
+  let b = Damage(1.0)
+  let c = Damage(1.0, true)
+}
+)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "f32");
+  WOLANG_EXPECT(f.HasCode("E0102"));
+  WOLANG_EXPECT(f.HasCode("E0101"));
+}
+
+WOLANG_TEST(TypeCheck, ConstructorsFillFieldsInOrder) {
+  Fixture f(R"(
+struct Vec3 {
+  var x: float
+  var y: float
+}
+
+fun use() {
+  let a = Vec3(1.0, 2.0)
+  let b = Vec3()
+  let c = Vec3(1.0)
+  let d = Vec3(1.0, true)
+}
+)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "Vec3");
+  // No arguments asks for the default value, which is always allowed.
+  WOLANG_EXPECT_EQ(f.TypeOfInit("b"), "Vec3");
+  WOLANG_EXPECT(f.HasCode("E0102"));
+  WOLANG_EXPECT(f.HasCode("E0101"));
+}
+
+WOLANG_TEST(TypeCheck, DimensionNamesAreTypes) {
+  Fixture f(R"(
+dimension Length
+dimension Time
+dimension Velocity = Length / Time
+
+unit m: Length
+unit s: Time
+
+fun Travel(distance: Length, speed: Velocity) -> Time {
+  return distance / speed
+}
+
+fun use() {
+  let eta = Travel(3m, 2m / 1s)
+  let bad = Travel(3s, 2m / 1s)
+}
+)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("eta"), "Time");
+  WOLANG_EXPECT(f.HasCode("E0101"));
+  WOLANG_EXPECT(f.Messages().find("expected `Length`, found `Time`") !=
+                std::string::npos);
 }
 
 }  // namespace

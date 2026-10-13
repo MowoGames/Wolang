@@ -4,6 +4,7 @@
 #define WOLANG_SEMA_DIMENSION_H_
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -69,9 +70,9 @@ class Dimensions {
 
   // Renders the product for diagnostics, for example "Length/Time" or
   // "Length^2". Dimensionless prints as "1".
-  std::string Describe(
-      const StringInterner& interner,
-      const std::vector<Symbol>& dimension_names) const;
+  // |name_of| maps a dimension to the name it was declared under.
+  std::string Describe(const StringInterner& interner,
+                       const std::function<Symbol(DimensionId)>& name_of) const;
 
  private:
   void Insert(DimensionId dimension, int32_t exponent);

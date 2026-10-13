@@ -4,6 +4,8 @@
 #define WOLANG_SEMA_RESOLUTION_H_
 
 #include <cstdint>
+#include <span>
+#include <utility>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -65,6 +67,16 @@ struct Binding {
 // This is the output of name resolution and the input to type checking. It
 // holds no source positions: a diagnostic resolves its span against the
 // current syntax tree, so a cached resolution never carries a stale offset.
+// The members of one named type, in declaration order.
+struct TypeMembers {
+  TypeId type;
+  std::vector<Member> members;
+
+  friend bool operator==(const TypeMembers& lhs, const TypeMembers& rhs) {
+    return lhs.type == rhs.type && lhs.members == rhs.members;
+  }
+};
+
 struct FileResolution {
   // Every name visible at file scope: this file's declarations, the other
   // files of its module, and whatever its imports selected.
@@ -72,14 +84,24 @@ struct FileResolution {
   // The type each declaration of this file introduces, indexed by item tree
   // index. Invalid for declarations that are not types.
   std::vector<TypeId> item_types;
-  // Dimensions declared in this file, in declaration order. The index into
-  // this vector is the DimensionId.
-  std::vector<Symbol> dimension_names;
-  // What each dimension stands for: a base dimension is itself, and a derived
-  // one is the product it was declared as. Parallel to |dimension_names|.
-  std::vector<Dimensions> dimension_products;
+  // What each dimension this file can see stands for: a base dimension is
+  // itself, and a derived one is the product it was declared as. Keyed by
+  // dimension id, which is global, so a product survives being imported.
+  std::vector<std::pair<DimensionId, Dimensions>> dimension_products;
+  // The members of every named type this file can see: the ones it declares,
+  // plus those its module siblings and imports brought in. Kept here rather
+  // than in the type store so that changing a field's type changes this
+  // value, which is what invalidates the files that read the field.
+  std::vector<TypeMembers> type_members;
 
   const Binding* Find(Symbol name) const;
+
+  // The members of |type|, or an empty span when none are known -- which is
+  // the case for a type declared in a file this one cannot see.
+  std::span<const Member> MembersOf(TypeId type) const;
+
+  // The member of |type| named |name|, or null.
+  const Member* FindMember(TypeId type, Symbol name) const;
 
   // The product a dimension stands for, or the empty product.
   Dimensions ProductOf(DimensionId dimension) const;
@@ -87,8 +109,8 @@ struct FileResolution {
   friend bool operator==(const FileResolution& lhs,
                          const FileResolution& rhs) {
     return lhs.scope == rhs.scope && lhs.item_types == rhs.item_types &&
-           lhs.dimension_names == rhs.dimension_names &&
-           lhs.dimension_products == rhs.dimension_products;
+           lhs.dimension_products == rhs.dimension_products &&
+           lhs.type_members == rhs.type_members;
   }
 };
 
@@ -125,6 +147,21 @@ class TypeResolver {
 };
 
 // Builds the scope and the declaration types of one file.
+// Works out the type of every signature, field and member of |ast|, and the
+// member table of every type it declares. Separate from ResolveFile because a
+// field's type may name an imported type, so this needs the file's whole
+// scope -- while ResolveFile must not, or two files of one module would each
+// wait on the other.
+//
+// Reports nothing: an annotation that does not resolve becomes an error type
+// here and is reported once, by the type checker.
+void ResolveSignatures(TypeStore* types,
+                       const StringInterner* interner,
+                       const Ast& ast,
+                       uint32_t file_index,
+                       FileResolution* resolution,
+                       DiagnosticEngine* diagnostics);
+
 FileResolution ResolveFile(TypeStore* types,
                            StringInterner* interner,
                            const Ast& ast,

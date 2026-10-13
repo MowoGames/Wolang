@@ -93,11 +93,30 @@ BindingKind BindingKindOf(ItemKind kind) {
 }  // namespace
 
 Dimensions FileResolution::ProductOf(DimensionId dimension) const {
-  if (!dimension.is_valid() ||
-      dimension.index >= dimension_products.size()) {
-    return Dimensions();
+  for (const auto& [id, product] : dimension_products) {
+    if (id == dimension) {
+      return product;
+    }
   }
-  return dimension_products[dimension.index];
+  return {};
+}
+
+std::span<const Member> FileResolution::MembersOf(TypeId type) const {
+  for (const TypeMembers& table : type_members) {
+    if (table.type == type) {
+      return table.members;
+    }
+  }
+  return {};
+}
+
+const Member* FileResolution::FindMember(TypeId type, Symbol name) const {
+  for (const Member& member : MembersOf(type)) {
+    if (member.name == name) {
+      return &member;
+    }
+  }
+  return nullptr;
 }
 
 const Binding* FileResolution::Find(Symbol name) const {
@@ -431,20 +450,20 @@ FileResolution ResolveFile(TypeStore* types,
     // A `dimension` or `error` declaration binds several names at once.
     if (entry.kind == ItemKind::kDimension && item != nullptr) {
       for (Symbol name : ast.Get(item->names)) {
-        const auto dimension_index =
-            static_cast<uint32_t>(resolution.dimension_names.size());
-        resolution.dimension_names.push_back(name);
-        // Filled in below for a derived dimension; a base one stands for
+        // Interned by declaration, so `Length` is one dimension however many
+        // files name it.
+        const DimensionId dimension = types->Dimension(name, file_index, index);
+        // Replaced below for a derived dimension; a base one stands for
         // itself.
-        resolution.dimension_products.push_back(
-            Dimensions::Base(DimensionId{dimension_index}));
+        resolution.dimension_products.emplace_back(dimension,
+                                                   Dimensions::Base(dimension));
 
         Binding binding;
         binding.name = name;
         binding.kind = BindingKind::kDimension;
         binding.item = index;
         binding.file = file_index;
-        binding.dimension = DimensionId{dimension_index};
+        binding.dimension = dimension;
         binding.is_public = HasFlag(entry.flags, ItemFlags::kOffer);
         resolution.scope.push_back(binding);
       }
@@ -495,9 +514,15 @@ FileResolution ResolveFile(TypeStore* types,
     }
 
     Dimensions product;
-    if (EvaluateDimensionProduct(ast, resolution, *interner, item.init,
-                                 diagnostics, &product)) {
-      resolution.dimension_products[binding->dimension.index] = product;
+    if (!EvaluateDimensionProduct(ast, resolution, *interner, item.init,
+                                  diagnostics, &product)) {
+      continue;
+    }
+    for (auto& [id, stored] : resolution.dimension_products) {
+      if (id == binding->dimension) {
+        stored = product;
+        break;
+      }
     }
   }
 
@@ -606,6 +631,134 @@ FileResolution ResolveFile(TypeStore* types,
   }
 
   return resolution;
+}
+
+void ResolveSignatures(TypeStore* types,
+                       const StringInterner* interner,
+                       const Ast& ast,
+                       uint32_t file_index,
+                       FileResolution* resolution,
+                       DiagnosticEngine* diagnostics) {
+  const ItemTree tree = BuildItemTree(*interner, ast);
+  if (resolution->item_types.size() < tree.entries.size()) {
+    resolution->item_types.resize(tree.entries.size(), TypeId{});
+  }
+  TypeResolver resolver(types, interner, resolution, diagnostics);
+
+  const auto signature_of = [&](const Item& item) -> TypeId {
+    std::vector<TypeId> params;
+    params.reserve(item.params.size());
+    for (ParamId param_id : ast.Get(item.params)) {
+      const Param& param = ast.Get(param_id);
+      params.push_back(param.type.is_valid() ? resolver.Resolve(ast, param.type)
+                                             : types->error());
+    }
+    const TypeId result = item.type.is_valid()
+                              ? resolver.Resolve(ast, item.type)
+                              : types->void_type();
+    return types->Function(params, result);
+  };
+
+  for (uint32_t index = 0; index < tree.entries.size(); ++index) {
+    const ItemTreeEntry& entry = tree.entries[index];
+    const ItemId item_id = ResolveItem(ast, index);
+    if (!ast.Contains(item_id)) {
+      continue;
+    }
+    const Item& item = ast.Get(item_id);
+
+    // A generic declaration's parameters have to be in scope while its own
+    // signature is resolved.
+    size_t pushed = 0;
+    for (GenericParamId generic_id : ast.Get(item.generics)) {
+      const GenericParam& generic = ast.Get(generic_id);
+      resolver.PushTypeParameter(
+          generic.name, types->Parameter(generic.name, index,
+                                         static_cast<uint32_t>(pushed)));
+      ++pushed;
+    }
+
+    switch (entry.kind) {
+      case ItemKind::kFunction:
+      case ItemKind::kSystem:
+        resolution->item_types[index] = signature_of(item);
+        break;
+      case ItemKind::kBinding:
+      case ItemKind::kTypeAlias:
+        if (item.type.is_valid()) {
+          resolution->item_types[index] = resolver.Resolve(ast, item.type);
+        }
+        break;
+      case ItemKind::kVariant:
+        // A variant with fields is constructed like a function returning its
+        // enum; one without is a value of that enum already.
+        resolution->item_types[index] =
+            entry.parent != ItemTreeEntry::kNoParent
+                ? resolution->item_types[entry.parent]
+                : types->error();
+        break;
+      default:
+        break;
+    }
+
+    resolver.PopTypeParameters(pushed);
+  }
+
+  // Now that every declaration has a type, collect the members of each named
+  // type from its children.
+  for (uint32_t index = 0; index < tree.entries.size(); ++index) {
+    const ItemTreeEntry& entry = tree.entries[index];
+    if (!DeclaresAType(entry.kind) || !resolution->item_types[index].is_valid()) {
+      continue;
+    }
+
+    TypeMembers table;
+    table.type = resolution->item_types[index];
+    for (uint32_t child = 0; child < tree.entries.size(); ++child) {
+      const ItemTreeEntry& member_entry = tree.entries[child];
+      if (member_entry.parent != index || !member_entry.name.is_valid()) {
+        continue;
+      }
+
+      Member member;
+      member.name = member_entry.name;
+      member.type = resolution->item_types[child];
+      member.is_mutable = HasFlag(member_entry.flags, ItemFlags::kMutable);
+      member.is_public = !HasFlag(member_entry.flags, ItemFlags::kPriv);
+      switch (member_entry.kind) {
+        case ItemKind::kFunction:
+          member.kind = MemberKind::kMethod;
+          break;
+        case ItemKind::kVariant:
+          member.kind = MemberKind::kVariant;
+          break;
+        case ItemKind::kSignal:
+        case ItemKind::kOn:
+          member.kind = MemberKind::kSignal;
+          break;
+        default:
+          member.kind = MemberKind::kField;
+          break;
+      }
+      table.members.push_back(member);
+    }
+
+    // A `machine`'s states are members too, so `self.state` can name one.
+    resolution->type_members.push_back(std::move(table));
+  }
+
+  // Patch this file's own bindings, whose type only now exists. An item
+  // index only means anything within the file it came from, so a binding
+  // brought in from elsewhere is left for that file's own pass.
+  for (Binding& binding : resolution->scope) {
+    if (binding.file != file_index || binding.type.is_valid() ||
+        binding.item == Binding::kNoItem ||
+        binding.item >= resolution->item_types.size()) {
+      continue;
+    }
+    binding.type = resolution->item_types[binding.item];
+  }
+
 }
 
 }  // namespace wolang
