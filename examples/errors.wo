@@ -1,0 +1,14 @@
+// Every line below is wrong on purpose: this file is the fixture for checking
+// that lexical diagnostics point at the right place.
+//   wolang check examples/errors.wo
+
+let unterminated = "no closing quote
+let bad_escape = "a\qb"
+let bad_unicode = "\u{110000}"
+let empty_interpolation = "{}"
+let bad_number = 0b1012
+let too_big = 18446744073709551616
+let bad_suffix = 1f128
+let empty_char = ''
+let reserved = transactional
+let stray = $

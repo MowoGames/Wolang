@@ -1,0 +1,99 @@
+// A gameplay class written in Wolang. Nothing here is compiled yet: wave 1
+// only lexes, and this file doubles as the corpus the lexer is tested on.
+
+import engine.gameplay
+import engine.math.{Vec3, Quat}
+
+dimension Length
+dimension Time
+
+unit m: Length
+unit cm = 0.01m
+unit s: Time
+unit ms = 0.001s
+
+/// A turret that scans for targets and fires at the closest one.
+@Spawnable
+class Turret : Actor {
+  @Edit @Range(1, 50) var range: float = 15.0
+  @Edit var fire_rate: float = 2.0
+  @Replicated var health: int = 100
+
+  let muzzle = component<SceneComponent>("Muzzle")
+  var target: Weak<Pawn>
+
+  signal Destroyed(by: Actor?)
+
+  derived var is_alive: bool => health > 0
+
+  override fn BeginPlay() {
+    spawn ScanLoop()
+  }
+
+  async fn ScanLoop() uses rand {
+    loop {
+      target = World.Overlap<Pawn>(position, range).Closest(position)
+
+      if let t = target.alive {
+        rotation = Quat.LookAt(t.position - position)
+        Fire(t)
+        await Wait(1.0 / fire_rate)
+      } else {
+        await Wait(0.25s)
+      }
+    }
+  }
+
+  @Server
+  fn Fire(t: Pawn) {
+    let direction = (t.position - muzzle.position).normalized
+    World.Spawn<Projectile>(muzzle.position, direction) { speed = 40.0 }
+  }
+
+  on TakeDamage(amount: int, from: Actor?) {
+    health -= amount
+
+    if health <= 0 {
+      Destroyed.Emit(from)
+      Destroy()
+    }
+  }
+}
+
+machine Door {
+  state Closed {
+    on Interact -> Opening
+  }
+  state Opening {
+    enter { await animation.Play("Open") }
+    always -> Open
+  }
+  state Open {
+    on Interact after 3s -> Closing
+  }
+  state Closing {
+    enter { await animation.Play("Close") }
+    always -> Closed
+  }
+}
+
+@layout(soa)
+struct Particle {
+  var position: Vec3
+  var velocity: Vec3
+  var life: float
+}
+
+system Integrate(dt: float, q: Query<mut Transform, Velocity>) after Gravity {
+  foreach (t, v) in q {
+    t.position += v.value * dt
+  }
+}
+
+fn Describe(hp: int, max: int) -> String {
+  return "hp {hp} / {max} ({hp * 100 / max}%)"
+}
+
+comptime fn Validate(rate: float) {
+  assert(rate > 0.0, "fire rate must be positive")
+}

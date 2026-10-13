@@ -1,0 +1,9 @@
+#!/usr/bin/env wolang
+// The smallest useful Wolang program. Runnable from wave 7 onwards.
+
+import std.io
+
+fn main() uses io {
+  let name = "world"
+  io.Print("hello, {name}")
+}
