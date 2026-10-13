@@ -1,6 +1,6 @@
 # Wave 4 — the type system, units, generics and traits
 
-**Status:** complete. 374 unit tests, all passing in Debug, sanitizers and
+**Status:** complete. 375 unit tests, all passing in Debug, sanitizers and
 Release.
 
 ## Scope
