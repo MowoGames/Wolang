@@ -16,6 +16,7 @@ add_library(wolang_core STATIC
     ir/builder.cc
     ir/ir.cc
     ir/lower.cc
+    ir/passes.cc
     ir/printer.cc
     ir/verifier.cc
     sema/dimension.cc
@@ -52,6 +53,7 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/builder.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/ir.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/lower.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/ir/passes.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/printer.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/verifier.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/ir_opcode.inc

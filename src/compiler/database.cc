@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "wolang/ir/lower.h"
+#include "wolang/ir/passes.h"
 #include "wolang/ir/verifier.h"
 #include "wolang/syntax/lexer.h"
 #include "wolang/syntax/parser.h"
@@ -893,10 +894,24 @@ void Database::RegisterQueries() {
 
         // Verified on every input rather than on request: the IR is the
         // contract between the front end and every back end, so a violation
-        // has to surface where it was introduced.
-        const ir::VerificationResult verdict =
+        // has to surface where it was introduced. Verified twice, because a
+        // pass that breaks the invariants and a lowering that breaks them
+        // are different bugs and have to be distinguishable.
+        const ir::VerificationResult lowered =
             ir::Verify(interner_, types_, result.module);
-        result.problems = verdict.problems;
+        result.problems = lowered.problems;
+        for (std::string& problem : result.problems) {
+          problem.insert(0, "lowering: ");
+        }
+
+        result.unoptimized = result.module;
+        ir::Optimize(&types_, &result.module);
+
+        const ir::VerificationResult optimized =
+            ir::Verify(interner_, types_, result.module);
+        for (const std::string& problem : optimized.problems) {
+          result.problems.push_back("after passes: " + problem);
+        }
         return MakeResult(std::move(result));
       });
 

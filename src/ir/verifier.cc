@@ -59,7 +59,9 @@ class Verifier {
       const Block& block = function_.Get(id);
 
       if (block.instructions.empty()) {
-        Fail(At(id) + " is empty");
+        // A pass removes a block by emptying it, because a BlockId is an
+        // index and renumbering would invalidate every successor. An empty
+        // block is therefore a deleted one, and only a jump to it is wrong.
         continue;
       }
       if (block.param_count > block.instructions.size()) {
@@ -109,6 +111,10 @@ class Verifier {
           Fail(At(block) + " jumps to the invalid block " + At(next));
           continue;
         }
+        if (function_.blocks[next.index].instructions.empty()) {
+          Fail(At(block) + " jumps to " + At(next) + ", which was removed");
+          continue;
+        }
         if (reachable_[next.index]) {
           continue;
         }
@@ -118,7 +124,7 @@ class Verifier {
     }
 
     for (uint32_t i = 0; i < reachable_.size(); ++i) {
-      if (!reachable_[i]) {
+      if (!reachable_[i] && !function_.blocks[i].instructions.empty()) {
         Fail(At(BlockId{i}) + " is not reachable from the entry");
       }
     }
@@ -138,7 +144,7 @@ class Verifier {
     while (changed) {
       changed = false;
       for (uint32_t i = 1; i < count; ++i) {
-        if (!reachable_[i]) {
+        if (!reachable_[i] || function_.blocks[i].instructions.empty()) {
           continue;
         }
         std::vector<bool> next(count, true);

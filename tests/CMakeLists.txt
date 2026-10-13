@@ -16,6 +16,7 @@ add_executable(wolang_tests
     unit/sema/type_check_unittest.cc
     unit/ir/ir_unittest.cc
     unit/ir/lower_unittest.cc
+    unit/ir/passes_unittest.cc
     unit/sema/effect_unittest.cc
     unit/sema/type_unittest.cc
     unit/syntax/lexer_unittest.cc

@@ -74,6 +74,9 @@ struct CheckedFile {
 struct LoweredFile {
   ir::Module module;
   std::vector<std::string> problems;
+  // The IR as lowering left it, before any pass ran. Kept so that a pass
+  // that breaks something can be told apart from a lowering that did.
+  ir::Module unoptimized;
 };
 
 // The effect row of one declaration, after the module-wide fixpoint.

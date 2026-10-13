@@ -83,6 +83,11 @@ class Printer {
 
   void PrintBlock(const Function& function, BlockId id) {
     const Block& block = function.Get(id);
+    // A pass removes a block by emptying it, so an empty block is a deleted
+    // one and has nothing to show.
+    if (block.instructions.empty()) {
+      return;
+    }
     Label(id);
     // The entry block's parameters are the function's, already printed in
     // the signature; every other block lists its own.
