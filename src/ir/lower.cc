@@ -417,6 +417,9 @@ class Lowerer {
       case ExprKind::kIf:
         return LowerIf(expr, type);
 
+      case ExprKind::kMatch:
+        return LowerMatch(expr, type);
+
       case ExprKind::kLoop:
       case ExprKind::kWhile:
         LowerLoop(expr);
@@ -788,6 +791,241 @@ class Lowerer {
 
     builder_->SetCurrent(join);
     return result;
+  }
+
+  // A `match` becomes a switch when every arm tests an integer-shaped
+  // constant, and a chain of comparisons otherwise. The checker already
+  // proved the arms cover every value, so the default arm is either the
+  // catch-all or unreachable.
+  InstId LowerMatch(const Expr& expr, TypeId type) {
+    const bool produces =
+        type.is_valid() && types_->KindOf(type) != TypeKind::kVoid;
+    const InstId subject = Value(expr.lhs);
+    const TypeId subject_type = TypeOf(expr.lhs);
+
+    const BlockId join = builder_->AddBlock("match.join");
+    const InstId result = produces ? builder_->AddParam(join, type)
+                                   : InstId{};
+
+    // Each arm gets a block; the arms are tested in order, so each test
+    // needs somewhere to go when it fails.
+    struct Arm {
+      MatchArmId id;
+      BlockId body;
+      BlockId next;
+      bool catch_all = false;
+    };
+    std::vector<Arm> arms;
+    const std::span<const MatchArmId> arm_ids = ast_.Get(expr.arms);
+    for (size_t i = 0; i < arm_ids.size(); ++i) {
+      Arm arm;
+      arm.id = arm_ids[i];
+      arm.body = builder_->AddBlock("match.arm");
+      // Only an arm with another one after it needs somewhere to go when its
+      // test fails. Giving the last one a block would leave it empty, which
+      // the verifier rightly refuses.
+      if (i + 1 < arm_ids.size()) {
+        arm.next = builder_->AddBlock("match.test");
+      }
+      arm.catch_all = IsCatchAll(arm_ids[i]);
+      arms.push_back(arm);
+    }
+
+    for (size_t i = 0; i < arms.size(); ++i) {
+      const MatchArm& arm = ast_.Get(arms[i].id);
+      const BlockId otherwise = arms[i].next;
+
+      if (arms[i].catch_all) {
+        builder_->Jump(arms[i].body);
+      } else {
+        const InstId test = ArmTest(arm, subject, subject_type);
+        if (test.is_valid() && otherwise.is_valid()) {
+          builder_->Branch(test, arms[i].body, otherwise);
+        } else if (test.is_valid()) {
+          // The last arm with no catch-all after it: the checker proved it
+          // covers what is left, so failing it cannot happen.
+          const BlockId dead = builder_->AddBlock("match.dead");
+          builder_->Branch(test, arms[i].body, dead);
+          builder_->SetCurrent(dead);
+          builder_->Unreachable();
+        } else {
+          builder_->Jump(arms[i].body);
+        }
+      }
+
+      builder_->SetCurrent(arms[i].body);
+      const size_t depth = locals_.size();
+      BindArm(arm, subject, subject_type);
+      if (produces) {
+        const InstId value = Value(arm.body);
+        if (!builder_->Terminated()) {
+          builder_->Jump(join, {value});
+        }
+      } else {
+        Lower(arm.body);
+        if (!builder_->Terminated()) {
+          builder_->Jump(join);
+        }
+      }
+      locals_.resize(depth);
+
+      if (otherwise.is_valid()) {
+        builder_->SetCurrent(otherwise);
+      }
+    }
+
+    if (arms.empty()) {
+      builder_->Jump(join);
+    }
+
+    builder_->SetCurrent(join);
+    return result;
+  }
+
+  bool IsCatchAll(MatchArmId id) const {
+    const MatchArm& arm = ast_.Get(id);
+    if (arm.guard.is_valid()) {
+      return false;
+    }
+    for (PatternId pattern_id : ast_.Get(arm.patterns)) {
+      if (!ast_.Contains(pattern_id)) {
+        continue;
+      }
+      const Pattern& pattern = ast_.Get(pattern_id);
+      if (pattern.kind == PatternKind::kWildcard ||
+          pattern.kind == PatternKind::kRest) {
+        return true;
+      }
+      // A bare name that is not a variant binds everything.
+      if (pattern.kind == PatternKind::kBinding) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // What has to be true for |arm| to run. An invalid id means "always".
+  InstId ArmTest(const MatchArm& arm, InstId subject, TypeId subject_type) {
+    InstId combined;
+    for (PatternId pattern_id : ast_.Get(arm.patterns)) {
+      if (!ast_.Contains(pattern_id)) {
+        continue;
+      }
+      const InstId test =
+          PatternTest(ast_.Get(pattern_id), subject, subject_type);
+      if (!test.is_valid()) {
+        continue;
+      }
+      combined = combined.is_valid()
+                     ? builder_->Add(Opcode::kBitOr, types_->bool_type(),
+                                     {combined, test})
+                     : test;
+    }
+    if (!arm.guard.is_valid()) {
+      return combined;
+    }
+    const InstId guard = Value(arm.guard);
+    if (!combined.is_valid()) {
+      return guard;
+    }
+    return builder_->Add(Opcode::kBitAnd, types_->bool_type(),
+                         {combined, guard});
+  }
+
+  InstId PatternTest(const Pattern& pattern,
+                     InstId subject,
+                     TypeId subject_type) {
+    switch (pattern.kind) {
+      case PatternKind::kLiteral: {
+        if (!ast_.Contains(pattern.literal)) {
+          return InstId{};
+        }
+        const Expr& literal = ast_.Get(pattern.literal);
+        if (literal.kind == ExprKind::kNullLiteral) {
+          const InstId present = builder_->Add(
+              Opcode::kOptionalIsPresent, types_->bool_type(), {subject});
+          return builder_->Add(Opcode::kLogicalNot, types_->bool_type(),
+                               {present});
+        }
+        const InstId value = Value(pattern.literal);
+        return builder_->Add(Opcode::kEq, types_->bool_type(),
+                             {subject, value});
+      }
+
+      case PatternKind::kPresent:
+        return builder_->Add(Opcode::kOptionalIsPresent,
+                             types_->bool_type(), {subject});
+
+      case PatternKind::kVariant:
+      case PatternKind::kStruct: {
+        // A variant is identified by the tag the enum stores first. Reading
+        // it as a field keeps the layout decision in one place.
+        const InstId tag = builder_->Extract(types_->default_int(), subject,
+                                             0);
+        const InstId expected = builder_->ConstInt(
+            types_->default_int(), VariantIndex(subject_type, pattern));
+        return builder_->Add(Opcode::kEq, types_->bool_type(),
+                             {tag, expected});
+      }
+
+      default:
+        return InstId{};
+    }
+  }
+
+  uint64_t VariantIndex(TypeId owner, const Pattern& pattern) const {
+    Symbol name = pattern.name;
+    const std::span<const Symbol> path = ast_.Get(pattern.path);
+    if (!path.empty()) {
+      name = path.back();
+    }
+    uint64_t index = 0;
+    for (const Member& member : resolution_.MembersOf(owner)) {
+      if (member.kind != MemberKind::kVariant) {
+        continue;
+      }
+      if (member.name == name) {
+        return index;
+      }
+      ++index;
+    }
+    return 0;
+  }
+
+  void BindArm(const MatchArm& arm, InstId subject, TypeId subject_type) {
+    for (PatternId pattern_id : ast_.Get(arm.patterns)) {
+      if (!ast_.Contains(pattern_id)) {
+        continue;
+      }
+      const Pattern& pattern = ast_.Get(pattern_id);
+      if (pattern.kind == PatternKind::kBinding &&
+          !IsVariantName(subject_type, pattern.name)) {
+        locals_.push_back(
+            Local{pattern.name, InstId{}, subject, subject_type});
+        continue;
+      }
+      if (pattern.kind == PatternKind::kPresent) {
+        const TypeId inner = Erase(types_->ElementOf(subject_type));
+        const InstId value =
+            builder_->Add(Opcode::kOptionalValue, inner, {subject});
+        for (PatternId element : ast_.Get(pattern.elements)) {
+          if (ast_.Contains(element) &&
+              ast_.Get(element).kind == PatternKind::kBinding) {
+            locals_.push_back(
+                Local{ast_.Get(element).name, InstId{}, value, inner});
+          }
+        }
+      }
+    }
+  }
+
+  bool IsVariantName(TypeId owner, Symbol name) const {
+    for (const Member& member : resolution_.MembersOf(owner)) {
+      if (member.kind == MemberKind::kVariant && member.name == name) {
+        return true;
+      }
+    }
+    return false;
   }
 
   void LowerLoop(const Expr& expr) {

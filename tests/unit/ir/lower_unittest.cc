@@ -318,5 +318,89 @@ fun Make() -> Vec3 {
                 std::string::npos);
 }
 
+
+WOLANG_TEST(LowerTest, LowersAMatchIntoTestedArms) {
+  Fixture f(R"(
+fun Classify(n: int) -> int {
+  return match n {
+    0 => 10
+    1 => 20
+    _ => 30
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string body = f.Function("Classify");
+  WOLANG_EXPECT(body.find("match.join") != std::string::npos);
+  WOLANG_EXPECT(body.find("match.test") != std::string::npos);
+  // The catch-all needs no test.
+  WOLANG_EXPECT(body.find("match.dead") == std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AMatchWithNoCatchAllEndsUnreachable) {
+  // The checker already proved the arms cover every value, so failing the
+  // last test cannot happen -- and saying so is better than inventing a
+  // branch to nowhere.
+  Fixture f(R"(
+fun Flag(b: bool) -> int {
+  return match b {
+    true => 1
+    false => 0
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Function("Flag").find("unreachable") != std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AMatchOnAnOptionalTestsPresence) {
+  Fixture f(R"(
+fun Read(p: int?) -> int {
+  return match p {
+    x? => x
+    null => 0
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string body = f.Function("Read");
+  WOLANG_EXPECT(body.find("opt.present") != std::string::npos);
+  WOLANG_EXPECT(body.find("opt.value") != std::string::npos);
+  WOLANG_EXPECT(body.find("lnot") != std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AMatchOnAnEnumTestsTheTag) {
+  Fixture f(R"(
+enum Shape {
+  Circle(radius: float)
+  Point
+}
+
+fun Area(s: Shape) -> float {
+  return match s {
+    Circle(r) => 1.0
+    Point => 0.0
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Function("Area").find("extract 0, %0") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AGuardedArmTestsThePatternAndTheGuard) {
+  Fixture f(R"(
+fun Pick(n: int) -> int {
+  return match n {
+    0 if n > 0 => 1
+    _ => 2
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string body = f.Function("Pick");
+  WOLANG_EXPECT(body.find("and %") != std::string::npos);
+}
+
 }  // namespace
 }  // namespace wolang
