@@ -34,12 +34,14 @@ struct LoopTarget {
 
 class Lowerer {
  public:
-  Lowerer(TypeStore* types,
+  Lowerer(StringInterner* interner,
+          TypeStore* types,
           const FileResolution& resolution,
           const Ast& ast,
           const TypedBody& typed,
           Module* module)
-      : types_(types),
+      : interner_(interner),
+        types_(types),
         resolution_(resolution),
         ast_(ast),
         typed_(typed),
@@ -503,16 +505,72 @@ class Lowerer {
       return builder_->ConstString(type,
                                    ast_.string(text.aux));
     }
-    // Interpolation builds a string at runtime, which needs the formatting
-    // machinery from `core`. Until then the pieces are evaluated for their
-    // effects and the result is undefined.
+    // Interpolation builds a string at runtime, by turning each piece into
+    // text and concatenating. The conversions are intrinsics -- the one
+    // thing here the language cannot say about itself.
+    const TypeId str = types_->str();
+    InstId result;
     for (ExprId part : parts) {
-      if (ast_.Contains(part) &&
-          ast_.Get(part).kind != ExprKind::kStringText) {
-        Value(part);
+      if (!ast_.Contains(part)) {
+        continue;
       }
+      const Expr& piece = ast_.Get(part);
+      InstId text;
+      if (piece.kind == ExprKind::kStringText) {
+        text = builder_->ConstString(str, ast_.string(piece.aux));
+      } else {
+        text = Stringify(Value(part), TypeOf(part));
+      }
+      if (!text.is_valid()) {
+        continue;
+      }
+      result = result.is_valid() ? Intrinsic("ConcatStr", str,
+                                             {result, text})
+                                 : text;
     }
-    return builder_->Undef(type);
+    return result.is_valid() ? result
+                             : builder_->ConstString(str, std::string());
+  }
+
+  // Calls a host-provided function by name, declaring it if this file has
+  // not named it yet.
+  InstId Intrinsic(std::string_view name,
+                   TypeId result,
+                   std::vector<InstId> arguments) {
+    const Symbol symbol = interner_->Intern(name);
+    std::vector<TypeId> params;
+    for (InstId argument : arguments) {
+      params.push_back(
+          module_->functions[current_function_].Contains(argument)
+              ? module_->functions[current_function_].Get(argument).type
+              : types_->error());
+    }
+    const uint32_t callee =
+        DeclareExternal(symbol, types_->Function(params, result));
+    return builder_->Call(callee, result, std::move(arguments));
+  }
+
+  // Turns a value into text, picking the conversion by its type.
+  InstId Stringify(InstId value, TypeId type) {
+    if (!value.is_valid()) {
+      return value;
+    }
+    const TypeId str = types_->str();
+    switch (types_->KindOf(Erase(type))) {
+      case TypeKind::kStr:
+      case TypeKind::kString:
+        return value;
+      case TypeKind::kInt:
+        return Intrinsic("IntToStr", str, {value});
+      case TypeKind::kFloat:
+        return Intrinsic("FloatToStr", str, {value});
+      case TypeKind::kBool:
+        return Intrinsic("BoolToStr", str, {value});
+      default:
+        // Anything else needs a formatting trait, which arrives with the
+        // rest of `core`.
+        return builder_->ConstString(str, "<?>");
+    }
   }
 
   InstId LowerPath(const Expr& expr, TypeId type) {
@@ -1143,6 +1201,7 @@ class Lowerer {
   }
 
 
+  StringInterner* interner_;
   TypeStore* types_;
   const FileResolution& resolution_;
   const Ast& ast_;
@@ -1159,12 +1218,13 @@ class Lowerer {
 
 }  // namespace
 
-void LowerFile(TypeStore* types,
+void LowerFile(StringInterner* interner,
+               TypeStore* types,
                const FileResolution& resolution,
                const Ast& ast,
                const TypedBody& typed,
                Module* module) {
-  Lowerer lowerer(types, resolution, ast, typed, module);
+  Lowerer lowerer(interner, types, resolution, ast, typed, module);
   lowerer.Run();
 }
 

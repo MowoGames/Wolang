@@ -88,6 +88,13 @@ otherwise make this tiresome, and a conversion that is always spelled is a
 conversion that can always be found. This retires the planned `W0114`
 "implicit narrowing" lint: there is no implicit narrowing to warn about.
 
+**D15b. An owned `String` is accepted where a borrowed `str` is wanted.** An
+implicit borrow, and safe for the reason references are second class (D8): a
+`str` cannot be stored in a field, so the view can never outlive the string
+it points into. Without this, printing an interpolated string — the most
+common operation in any language — would not type check, and requiring a
+sigil for it would buy nothing a borrow checker is not already providing.
+
 ## Syntax
 
 **D16. Control flow is expression-shaped.** `if`, `match`, `loop`, `while`,

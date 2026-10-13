@@ -14,6 +14,9 @@ namespace ir {
 
 // Lowers one file's declarations into |module|.
 //
+// |interner| is not const: lowering interns the names of the intrinsics an
+// interpolated string needs, which the source never wrote.
+//
 // Lowering trusts the type checker: it reads the types the checker recorded
 // rather than working anything out again, and it is only ever run on a file
 // that produced no errors. That division is what keeps the IR free of
@@ -24,7 +27,8 @@ namespace ir {
 // deliberately naive: SROA promotes the slots whose address never escapes,
 // and leaving that to a pass keeps lowering simple enough to be obviously
 // correct.
-void LowerFile(TypeStore* types,
+void LowerFile(StringInterner* interner,
+               TypeStore* types,
                const FileResolution& resolution,
                const Ast& ast,
                const TypedBody& typed,

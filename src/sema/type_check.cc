@@ -390,6 +390,14 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
   if (types_->IsOptional(expected)) {
     return Accepts(types_->ElementOf(expected), found);
   }
+  // An owned `String` fits wherever a borrowed `str` is wanted. This is an
+  // implicit borrow, and it is safe for the reason references are second
+  // class (D8): a `str` cannot be stored in a field, so the view can never
+  // outlive the string it points into.
+  if (types_->KindOf(expected) == TypeKind::kStr &&
+      types_->KindOf(found) == TypeKind::kString) {
+    return true;
+  }
   // A slice is a view of an array, so an array fits wherever one is wanted.
   // Without this a slice has nothing to be a view of, and `fun f(xs: [int])`
   // could not be called with `[1, 2, 3]`.

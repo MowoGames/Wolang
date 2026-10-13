@@ -1,9 +1,13 @@
 #!/usr/bin/env wolang
-// The smallest useful Wolang program. Runnable from wave 7 onwards.
-
-need std.io
+// The smallest useful Wolang program.
+//
+//   wolang run examples/hello.wo
 
 fun main() uses io {
   let name = "world"
-  io.Print("hello, {name}")
+  Print("hello, {name}")
 }
+
+/// Declared here because a single file resolves no imports; in a package
+/// this comes from `std.io`.
+offer fun Print(text: str) uses io

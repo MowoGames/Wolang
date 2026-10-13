@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "wolang/base/string_interner.h"
+#include "wolang/interp/intrinsics.h"
 #include "wolang/interp/value.h"
 #include "wolang/ir/ir.h"
 #include "wolang/sema/type.h"
@@ -63,7 +64,8 @@ Outcome Run(const StringInterner& interner,
             const ir::Module& module,
             const ir::Function& function,
             std::vector<Value> arguments,
-            const Limits& limits = {});
+            const Limits& limits = {},
+            Output* output = nullptr);
 
 // Convenience: finds |name| in |module| and runs it.
 Outcome RunNamed(const StringInterner& interner,
@@ -71,7 +73,8 @@ Outcome RunNamed(const StringInterner& interner,
                  const ir::Module& module,
                  Symbol name,
                  std::vector<Value> arguments = {},
-                 const Limits& limits = {});
+                 const Limits& limits = {},
+                 Output* output = nullptr);
 
 }  // namespace interp
 }  // namespace wolang

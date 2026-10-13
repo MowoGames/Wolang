@@ -431,14 +431,19 @@ int RunProgram(const Options& options) {
   }
 
   const Symbol main = database.interner().Intern("main");
-  const interp::Outcome reference =
-      interp::RunNamed(database.interner(), database.types(),
-                       program->unoptimized, main);
-  const interp::Outcome optimized =
-      interp::RunNamed(database.interner(), database.types(),
-                       program->module, main);
+  interp::Output reference_output;
+  interp::Output optimized_output;
+  const interp::Outcome reference = interp::RunNamed(
+      database.interner(), database.types(), program->unoptimized, main, {},
+      {}, &reference_output);
+  const interp::Outcome optimized = interp::RunNamed(
+      database.interner(), database.types(), program->module, main, {}, {},
+      &optimized_output);
 
+  // What the program printed is part of what it does, so the two tiers have
+  // to agree about that too.
   if (reference.trap != optimized.trap ||
+      reference_output.text != optimized_output.text ||
       (reference.ok() && reference.value != optimized.value)) {
     // A difference here is a miscompile, which is the most serious kind of
     // bug this compiler can have.
@@ -449,6 +454,7 @@ int RunProgram(const Options& options) {
     return 70;
   }
 
+  std::fputs(reference_output.text.c_str(), stdout);
   if (!reference.ok()) {
     std::fprintf(stderr, "wolang: %s at %s: %s\n",
                  std::string(interp::TrapKindName(reference.trap)).c_str(),

@@ -383,5 +383,102 @@ WOLANG_TEST(TestAttributeTest, CollectsFunctionsMarkedTest) {
   WOLANG_EXPECT_EQ(db.interner().Text(lowered->tests[1]), "AlsoATest");
 }
 
+
+// --------------------------------------------------------- intrinsics -----
+
+// Runs `main` and returns what it printed. The host side of the platform
+// floor: everything the language can say about itself is written in Wolang,
+// and this is what is left.
+class ProgramFixture {
+ public:
+  explicit ProgramFixture(std::string_view code) {
+    file_ = db_.AddFile("<test>", std::string(code));
+  }
+
+  std::string Output() {
+    const LoweredFile* lowered = db_.Lowered(file_);
+    if (lowered == nullptr) {
+      return "<not lowered>";
+    }
+    if (!lowered->problems.empty()) {
+      return "<verifier: " + lowered->problems.front() + ">";
+    }
+
+    const Symbol main = db_.interner().Intern("main");
+    interp::Output reference;
+    interp::Output optimized;
+    const interp::Outcome a =
+        interp::RunNamed(db_.interner(), db_.types(), lowered->unoptimized,
+                         main, {}, {}, &reference);
+    const interp::Outcome b =
+        interp::RunNamed(db_.interner(), db_.types(), lowered->module, main,
+                         {}, {}, &optimized);
+    if (!a.ok()) {
+      return "trap: " + std::string(interp::TrapKindName(a.trap));
+    }
+    if (a.trap != b.trap || reference.text != optimized.text) {
+      return "<the passes changed what it printed>";
+    }
+    return reference.text;
+  }
+
+ private:
+  Database db_;
+  FileId file_;
+};
+
+WOLANG_TEST(IntrinsicTest, PrintsAString) {
+  ProgramFixture f(R"(
+fun main() uses io {
+  Print("hello")
+}
+
+offer fun Print(text: str) uses io
+)");
+  WOLANG_EXPECT_EQ(f.Output(), "hello\n");
+}
+
+WOLANG_TEST(IntrinsicTest, BuildsAnInterpolatedString) {
+  // Each piece is converted by an intrinsic and the results concatenated,
+  // which is the one thing here the language cannot say about itself.
+  ProgramFixture f(R"(
+fun main() uses io {
+  let n = 42
+  let f = 1.5
+  let b = true
+  Print("n={n} f={f} b={b} and {n}")
+}
+
+offer fun Print(text: str) uses io
+)");
+  WOLANG_EXPECT_EQ(f.Output(), "n=42 f=1.5 b=true and 42\n");
+}
+
+WOLANG_TEST(IntrinsicTest, AnOwnedStringIsAcceptedWhereABorrowedOneIsWanted) {
+  // An interpolated string is owned and `Print` takes a borrow. Without the
+  // implicit borrow the most common operation in any language would not
+  // type check.
+  ProgramFixture f(R"(
+fun main() uses io {
+  let who = "world"
+  Print("hello, {who}")
+}
+
+offer fun Print(text: str) uses io
+)");
+  WOLANG_EXPECT_EQ(f.Output(), "hello, world\n");
+}
+
+WOLANG_TEST(IntrinsicTest, ADeclarationThatIsNotAnIntrinsicTraps) {
+  ProgramFixture f(R"(
+fun main() {
+  let _x = Nowhere()
+}
+
+offer fun Nowhere() -> int
+)");
+  WOLANG_EXPECT_EQ(f.Output(), "trap: no body");
+}
+
 }  // namespace
 }  // namespace wolang

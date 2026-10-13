@@ -1,0 +1,15 @@
+// The console, and the conversions an interpolated string needs.
+//
+// Every declaration here has no body: it is the platform floor, implemented
+// by the host rather than in Wolang. The list is deliberately tiny —
+// everything that *can* be written in Wolang is written in Wolang.
+
+/// Writes `text` and a line break.
+offer fun Print(text: str) uses io
+
+/// Conversions. Lowering calls these for the pieces of an interpolated
+/// string, so they have to exist even where the source never names them.
+offer fun IntToStr(value: int) -> str
+offer fun FloatToStr(value: float) -> str
+offer fun BoolToStr(value: bool) -> str
+offer fun ConcatStr(left: str, right: str) -> str

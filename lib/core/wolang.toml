@@ -1,0 +1,9 @@
+[package]
+name = "core"
+source = "src"
+
+[build]
+# `core` allocates nothing and touches nothing, which is what makes it
+# usable on WASM and on embedded targets. The grant is what enforces that
+# rather than leaving it to discipline.
+capabilities = ""

@@ -1,0 +1,55 @@
+// Comparison, as the rest of `core` needs it.
+//
+// This is the first Wolang written in Wolang. It allocates nothing and does
+// nothing observable, which the package's empty capability grant enforces.
+
+offer enum Ordering {
+  Less
+  Equal
+  Greater
+}
+
+offer fun CompareInt(a: int, b: int) -> Ordering {
+  if a < b {
+    return Ordering.Less
+  }
+  if a > b {
+    return Ordering.Greater
+  }
+  return Ordering.Equal
+}
+
+offer fun MinInt(a: int, b: int) -> int {
+  if a < b {
+    return a
+  }
+  return b
+}
+
+offer fun MaxInt(a: int, b: int) -> int {
+  if a > b {
+    return a
+  }
+  return b
+}
+
+/// Keeps `value` within `low` and `high`, inclusive.
+offer fun ClampInt(value: int, low: int, high: int) -> int {
+  return MinInt(MaxInt(value, low), high)
+}
+
+@Test
+fun ComparesInOrder() -> bool {
+  return MinInt(2, 3) == 2 && MaxInt(2, 3) == 3
+}
+
+@Test
+fun ClampsToTheRange() -> bool {
+  if ClampInt(5, 0, 3) != 3 {
+    return false
+  }
+  if ClampInt(-5, 0, 3) != 0 {
+    return false
+  }
+  return ClampInt(2, 0, 3) == 2
+}

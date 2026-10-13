@@ -2,6 +2,8 @@
 
 #include "wolang/interp/interpreter.h"
 
+#include "wolang/interp/intrinsics.h"
+
 #include <algorithm>
 #include <utility>
 
@@ -28,11 +30,13 @@ class Interpreter {
   Interpreter(const StringInterner& interner,
               const TypeStore& types,
               const ir::Module& module,
-              const Limits& limits)
+              const Limits& limits,
+              Output* output)
       : interner_(interner),
         types_(types),
         module_(module),
-        limits_(limits) {}
+        limits_(limits),
+        output_(output) {}
 
   Outcome Run(const ir::Function& function, std::vector<Value> arguments) {
     Outcome outcome;
@@ -68,6 +72,20 @@ class Interpreter {
              std::vector<Value> arguments,
              Outcome* outcome) {
     if (function.is_declaration()) {
+      // A declaration whose name is an intrinsic is implemented by the host.
+      // That is the platform floor: everything the language can say about
+      // itself is written in Wolang, and this is what is left.
+      const Intrinsic intrinsic =
+          LookupIntrinsic(interner_.Text(function.name));
+      if (intrinsic != Intrinsic::kNone) {
+        Value result = CallIntrinsic(intrinsic, arguments, output_);
+        if (!result.is_undefined()) {
+          return result;
+        }
+        return Trap(outcome, TrapKind::kUndefinedValue,
+                    "@" + std::string(interner_.Text(function.name)),
+                    "was given arguments it cannot take");
+      }
       return Trap(outcome, TrapKind::kNoBody,
                   "@" + std::string(interner_.Text(function.name)),
                   "has no body to run");
@@ -608,6 +626,7 @@ class Interpreter {
   const TypeStore& types_;
   const ir::Module& module_;
   Limits limits_;
+  Output* output_ = nullptr;
   uint64_t steps_ = 0;
   uint32_t depth_ = 0;
 };
@@ -625,8 +644,9 @@ Outcome Run(const StringInterner& interner,
             const ir::Module& module,
             const ir::Function& function,
             std::vector<Value> arguments,
-            const Limits& limits) {
-  Interpreter interpreter(interner, types, module, limits);
+            const Limits& limits,
+            Output* output) {
+  Interpreter interpreter(interner, types, module, limits, output);
   return interpreter.Run(function, std::move(arguments));
 }
 
@@ -635,7 +655,8 @@ Outcome RunNamed(const StringInterner& interner,
                  const ir::Module& module,
                  Symbol name,
                  std::vector<Value> arguments,
-                 const Limits& limits) {
+                 const Limits& limits,
+                 Output* output) {
   const ir::Function* function = module.Find(name);
   if (function == nullptr) {
     Outcome outcome;
@@ -645,7 +666,7 @@ Outcome RunNamed(const StringInterner& interner,
     return outcome;
   }
   return Run(interner, types, module, *function, std::move(arguments),
-             limits);
+             limits, output);
 }
 
 }  // namespace interp

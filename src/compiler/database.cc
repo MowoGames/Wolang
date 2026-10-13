@@ -891,7 +891,7 @@ void Database::RegisterQueries() {
         }
 
         LoweredFile result;
-        ir::LowerFile(&types_, checked->resolution, parsed->ast,
+        ir::LowerFile(&interner_, &types_, checked->resolution, parsed->ast,
                       checked->body, &result.module);
 
         // Verified on every input rather than on request: the IR is the
