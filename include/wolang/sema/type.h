@@ -12,6 +12,7 @@
 
 #include "wolang/base/string_interner.h"
 #include "wolang/sema/dimension.h"
+#include "wolang/sema/effect.h"
 
 namespace wolang {
 
@@ -204,6 +205,30 @@ class TypeStore {
   // The name a dimension was declared under, or an invalid symbol.
   Symbol DimensionName(DimensionId dimension) const;
 
+  // Interns an effect by its declaration. The built-in effects are interned
+  // first, in BuiltinEffect order, so their ids are those constants.
+  EffectId Effect(Symbol name, uint32_t file, uint32_t item);
+  EffectId BuiltinEffectId(BuiltinEffect effect) const {
+    return EffectId{static_cast<uint32_t>(effect)};
+  }
+
+  // The name an effect was declared under, or an invalid symbol for a
+  // built-in -- those are spelled by BuiltinEffectName instead.
+  Symbol EffectName(EffectId effect) const;
+
+  // How an effect is written, built-in or declared.
+  std::string EffectText(const StringInterner& interner,
+                         EffectId effect) const;
+
+  // Renders a row the way it would be written after `uses`.
+  std::string Describe(const StringInterner& interner,
+                       const EffectRow& row) const;
+
+  bool IsBuiltinEffect(EffectId effect) const {
+    return effect.is_valid() &&
+           effect.index < static_cast<uint32_t>(BuiltinEffect::kCount);
+  }
+
   TypeId Named(Symbol name, uint32_t file, uint32_t item);
   // |bounds| are the traits and base types the argument has to satisfy.
   // Carried by the parameter itself, so a call site can check them without
@@ -326,6 +351,15 @@ class TypeStore {
     uint32_t item = 0;
   };
   std::vector<DimensionEntry> dimensions_;
+
+  // Effects, in declaration order with the built-ins first. The index is the
+  // EffectId.
+  struct EffectEntry {
+    Symbol name;
+    uint32_t file = 0;
+    uint32_t item = 0;
+  };
+  std::vector<EffectEntry> effects_;
 };
 
 }  // namespace wolang

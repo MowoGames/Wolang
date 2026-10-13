@@ -119,6 +119,32 @@ const Member* FileResolution::FindMember(TypeId type, Symbol name) const {
   return nullptr;
 }
 
+const EffectRow* FileResolution::DeclaredRow(uint32_t file,
+                                             uint32_t item) const {
+  for (const DeclaredEffects& entry : declared_effects) {
+    if (entry.file == file && entry.item == item) {
+      return &entry.row;
+    }
+  }
+  return nullptr;
+}
+
+EffectId FileResolution::FindEffect(Symbol name,
+                                    const StringInterner& interner) const {
+  // A declared effect wins, so a project can shadow nothing by accident:
+  // `effect io` in one's own file is a different effect than the built-in.
+  for (const auto& entry : effect_names) {
+    if (entry.first == name) {
+      return entry.second;
+    }
+  }
+  const BuiltinEffect builtin = LookupBuiltinEffect(interner.Text(name));
+  if (builtin != BuiltinEffect::kCount) {
+    return EffectId{static_cast<uint32_t>(builtin)};
+  }
+  return EffectId{};
+}
+
 TypeId FileResolution::BaseOf(TypeId type) const {
   for (const TypeRelations& relation : relations) {
     if (relation.type == type) {
@@ -527,6 +553,14 @@ FileResolution ResolveFile(TypeStore* types,
       }
       continue;
     }
+    if (entry.kind == ItemKind::kEffect && item != nullptr) {
+      // Interned by declaration, so one `effect` is one effect however many
+      // files name it -- and so a project's own `effect io` is not the
+      // built-in one.
+      resolution.effect_names.emplace_back(
+          entry.name, types->Effect(entry.name, file_index, index));
+      // Falls through: an effect also binds its name like any declaration.
+    }
     if (entry.kind == ItemKind::kErrorSet && item != nullptr) {
       for (Symbol name : ast.Get(item->names)) {
         Binding binding;
@@ -764,6 +798,25 @@ void ResolveSignatures(TypeStore* types,
         break;
       default:
         break;
+    }
+
+    // `uses io, Telemetry`. Resolved here because an effect name may be
+    // imported, exactly like a type name.
+    if (!item.effects.empty()) {
+      EffectRow row;
+      for (TypeRefId effect_id : ast.Get(item.effects)) {
+        if (!ast.Contains(effect_id)) {
+          continue;
+        }
+        const TypeRef& effect = ast.Get(effect_id);
+        const std::span<const Symbol> path = ast.Get(effect.path);
+        if (path.empty()) {
+          continue;
+        }
+        row.Add(resolution->FindEffect(path.back(), *interner));
+      }
+      resolution->declared_effects.push_back(
+          DeclaredEffects{file_index, index, std::move(row)});
     }
 
     resolver.PopTypeParameters(pushed);

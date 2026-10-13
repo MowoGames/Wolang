@@ -93,6 +93,20 @@ struct TypeRelations {
   }
 };
 
+// The `uses` row of one declaration, identified the way everything that
+// crosses a file boundary has to be.
+struct DeclaredEffects {
+  uint32_t file = 0;
+  uint32_t item = 0;
+  EffectRow row;
+
+  friend bool operator==(const DeclaredEffects& lhs,
+                         const DeclaredEffects& rhs) {
+    return lhs.file == rhs.file && lhs.item == rhs.item &&
+           lhs.row == rhs.row;
+  }
+};
+
 struct FileResolution {
   // Every name visible at file scope: this file's declarations, the other
   // files of its module, and whatever its imports selected.
@@ -112,6 +126,15 @@ struct FileResolution {
   // The base type and implemented traits of every named type this file can
   // see, merged the same way member tables are.
   std::vector<TypeRelations> relations;
+  // The effect row written after `uses` on a declaration. A declaration with
+  // no `uses` has no entry, which is not the same as an empty row: one says
+  // "not stated", the other says "nothing observable".
+  //
+  // Keyed by file as well as item, because an item index only means anything
+  // within the file it came from.
+  std::vector<DeclaredEffects> declared_effects;
+  // Effects declared in this file, so that `uses Telemetry` resolves.
+  std::vector<std::pair<Symbol, EffectId>> effect_names;
 
   const Binding* Find(Symbol name) const;
 
@@ -129,6 +152,13 @@ struct FileResolution {
   // at |type|'s own members.
   const Member* FindInheritedMember(TypeId type, Symbol name) const;
 
+  // The row written after `uses` on a declaration, or null when none was.
+  const EffectRow* DeclaredRow(uint32_t file, uint32_t item) const;
+
+  // The effect named |name|, built-in or declared in a file this one can
+  // see, or an invalid id.
+  EffectId FindEffect(Symbol name, const StringInterner& interner) const;
+
   // True when |type| may be used where |bound| is required: it is that type,
   // derives from it, or implements it as a trait.
   bool Satisfies(TypeId type, TypeId bound) const;
@@ -141,7 +171,9 @@ struct FileResolution {
     return lhs.scope == rhs.scope && lhs.item_types == rhs.item_types &&
            lhs.dimension_products == rhs.dimension_products &&
            lhs.type_members == rhs.type_members &&
-           lhs.relations == rhs.relations;
+           lhs.relations == rhs.relations &&
+           lhs.declared_effects == rhs.declared_effects &&
+           lhs.effect_names == rhs.effect_names;
   }
 };
 

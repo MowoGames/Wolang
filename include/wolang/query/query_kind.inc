@@ -46,6 +46,13 @@ WOLANG_QUERY(MemberTables,
 WOLANG_QUERY(TypeCheck,
              "file",
              "the type of every expression in a file")
+WOLANG_QUERY(ModuleEffects,
+             "module",
+             "the effect row of every declaration in a module, inferred to a "
+             "fixpoint")
+WOLANG_QUERY(EffectDiagnostics,
+             "file",
+             "what a file's declarations do against what they declare")
 WOLANG_QUERY(FileDiagnostics, "file", "every diagnostic reported for a file")
 
 #undef WOLANG_QUERY_INPUT

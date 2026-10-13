@@ -54,6 +54,12 @@ QueryKey ResolutionKey(FileId file) {
 }
 
 using ResolvedNames = std::pair<FileResolution, std::vector<Diagnostic>>;
+QueryKey ModuleEffectsKey(ModuleId module) {
+  return QueryKey{QueryKind::kModuleEffects, module.index};
+}
+QueryKey EffectDiagnosticsKey(FileId file) {
+  return QueryKey{QueryKind::kEffectDiagnostics, file.index};
+}
 QueryKey MemberTablesKey(FileId file) {
   return QueryKey{QueryKind::kMemberTables, file.index};
 }
@@ -66,8 +72,19 @@ constexpr std::string_view kUnresolvedName = "E0056";
 constexpr std::string_view kDuplicateDeclaration = "E0057";
 constexpr std::string_view kPrivateName = "E0058";
 constexpr std::string_view kUnusedName = "W0101";
+constexpr std::string_view kUndeclaredEffect = "E0701";
+constexpr std::string_view kUnstatedPublicEffect = "E0704";
 
 }  // namespace
+
+const EffectRow* ModuleEffectRows::Find(uint32_t file, uint32_t item) const {
+  for (const InferredEffects& entry : rows) {
+    if (entry.file == file && entry.item == item) {
+      return &entry.row;
+    }
+  }
+  return nullptr;
+}
 
 Database::Database() {
   RegisterQueries();
@@ -374,6 +391,33 @@ void Database::RegisterQueries() {
             }
           }
 
+          // Declared rows travel too: a caller needs to know what calling
+          // an imported function does, and that is stated on its signature.
+          for (const DeclaredEffects& declared : other.declared_effects) {
+            bool known = false;
+            for (const DeclaredEffects& mine : resolution.declared_effects) {
+              if (mine.file == declared.file && mine.item == declared.item) {
+                known = true;
+                break;
+              }
+            }
+            if (!known) {
+              resolution.declared_effects.push_back(declared);
+            }
+          }
+          for (const auto& effect : other.effect_names) {
+            bool known = false;
+            for (const auto& mine : resolution.effect_names) {
+              if (mine.second == effect.second) {
+                known = true;
+                break;
+              }
+            }
+            if (!known) {
+              resolution.effect_names.push_back(effect);
+            }
+          }
+
           // Relations travel with the tables: a bound of `Actor` is only
           // satisfiable because the declaring file says so, and a trait may
           // be implemented in a third file.
@@ -451,9 +495,20 @@ void Database::RegisterQueries() {
 
         CheckedFile result;
         const Ast& ast = parsed->ast;
-        for (ItemId id : ast.Get(ast.root())) {
-          TypedBody body =
-              TypeCheckItem(&types_, &interner_, &resolution, ast, id);
+        // Walked through the item tree rather than the root list, so that
+        // each body carries the index a caller elsewhere will name it by.
+        const ItemTree* tree = db.GetAs<ItemTree>(ItemTreeKey(file));
+        const size_t entry_count = tree == nullptr ? 0 : tree->entries.size();
+        for (uint32_t index = 0; index < entry_count; ++index) {
+          if (tree->entries[index].parent != ItemTreeEntry::kNoParent) {
+            continue;
+          }
+          const ItemId id = ResolveItem(ast, index);
+          if (!ast.Contains(id)) {
+            continue;
+          }
+          TypedBody body = TypeCheckItem(&types_, &interner_, &resolution,
+                                         ast, id, index);
           result.diagnostics.insert(result.diagnostics.end(),
                                     body.diagnostics.begin(),
                                     body.diagnostics.end());
@@ -470,6 +525,7 @@ void Database::RegisterQueries() {
           result.body.used_names.insert(result.body.used_names.end(),
                                         body.used_names.begin(),
                                         body.used_names.end());
+          result.items.push_back(std::move(body));
         }
 
         // A `need` nothing refers to is dead weight, and the check belongs
@@ -511,6 +567,154 @@ void Database::RegisterQueries() {
         return MakeResult(std::move(result));
       });
 
+  // One query per module, not per declaration: a set of mutually recursive
+  // functions is a loop inside this computation rather than a cycle between
+  // queries, which is what keeps the answer independent of which file was
+  // asked about first.
+  engine_.Register(
+      QueryKind::kModuleEffects,
+      [](QueryEngine& db, uint32_t arg) -> QueryResult {
+        const ModuleId module{arg};
+        const auto* files =
+            db.GetAs<std::vector<FileId>>(ModuleFilesKey(module));
+        if (files == nullptr) {
+          return MakeComparableResult(ModuleEffectRows{});
+        }
+
+        // Seed every declaration with what its own body does, and remember
+        // who it calls.
+        struct Node {
+          uint32_t file = 0;
+          uint32_t item = 0;
+          EffectRow row;
+          std::vector<std::pair<uint32_t, uint32_t>> callees;
+        };
+        std::vector<Node> nodes;
+        for (FileId file : *files) {
+          const auto* checked = db.GetAs<CheckedFile>(TypeCheckKey(file));
+          if (checked == nullptr) {
+            continue;
+          }
+          for (const TypedBody& body : checked->items) {
+            if (body.item_index == 0xFFFFFFFFu) {
+              continue;
+            }
+            nodes.push_back(Node{file.index, body.item_index,
+                                 body.direct_effects, body.callees});
+          }
+        }
+
+        // Union along call edges until nothing grows. Bounded by the number
+        // of declarations times the number of effects, and in practice two
+        // or three passes.
+        bool grew = true;
+        for (size_t pass = 0; grew && pass <= nodes.size(); ++pass) {
+          grew = false;
+          for (Node& node : nodes) {
+            for (const auto& [file, item] : node.callees) {
+              for (const Node& other : nodes) {
+                if (other.file != file || other.item != item) {
+                  continue;
+                }
+                grew |= node.row.Merge(other.row);
+                break;
+              }
+            }
+          }
+        }
+
+        ModuleEffectRows result;
+        for (Node& node : nodes) {
+          result.rows.push_back(
+              InferredEffects{node.file, node.item, std::move(node.row)});
+        }
+        return MakeComparableResult(std::move(result));
+      });
+
+  // Reporting is its own query so that type checking -- which collects the
+  // rows -- does not depend on the module-wide answer it feeds.
+  engine_.Register(
+      QueryKind::kEffectDiagnostics,
+      [this](QueryEngine& db, uint32_t arg) -> QueryResult {
+        const FileId file{arg};
+        std::vector<Diagnostic> result;
+
+        const ModuleId module = ModuleOf(file);
+        if (!module.is_valid()) {
+          // A file outside a package has no module to infer across, exactly
+          // as it resolves no imports.
+          return MakeComparableResult(std::move(result));
+        }
+        const auto* rows =
+            db.GetAs<ModuleEffectRows>(ModuleEffectsKey(module));
+        const auto* resolved = db.GetAs<FileResolution>(MemberTablesKey(file));
+        const ParsedFile* parsed = db.GetAs<ParsedFile>(ParsedFileKey(file));
+        const ItemTree* tree = db.GetAs<ItemTree>(ItemTreeKey(file));
+        if (rows == nullptr || resolved == nullptr || parsed == nullptr ||
+            tree == nullptr) {
+          return MakeComparableResult(std::move(result));
+        }
+
+        const Ast& ast = parsed->ast;
+        DiagnosticEngine diagnostics;
+        for (uint32_t index = 0; index < tree->entries.size(); ++index) {
+          if (tree->entries[index].parent != ItemTreeEntry::kNoParent) {
+            continue;
+          }
+          const EffectRow* actual = rows->Find(arg, index);
+          if (actual == nullptr) {
+            continue;
+          }
+          const EffectRow* declared = resolved->DeclaredRow(arg, index);
+
+          if (declared == nullptr) {
+            // Inference stops at the module boundary, so a name other
+            // modules can call has to say what it does -- otherwise its
+            // callers have nothing to check against.
+            if (actual->empty() ||
+                !HasFlag(tree->entries[index].flags, ItemFlags::kOffer) ||
+                tree->entries[index].kind != ItemKind::kFunction) {
+              continue;
+            }
+            const ItemId offered = ResolveItem(ast, index);
+            if (!ast.Contains(offered)) {
+              continue;
+            }
+            std::string message = "`";
+            message.append(interner_.Text(ast.Get(offered).name));
+            message.append("` is offered to other modules and does `");
+            message.append(types_.Describe(interner_, *actual));
+            message.append("`, so it has to say so");
+            diagnostics.Error(kUnstatedPublicEffect, std::move(message))
+                .Primary(ast.Get(offered).name_span,
+                         "add `uses ...` to the signature");
+            continue;
+          }
+
+          const EffectRow missing = declared->Missing(*actual);
+          if (missing.empty()) {
+            continue;
+          }
+          const ItemId id = ResolveItem(ast, index);
+          if (!ast.Contains(id)) {
+            continue;
+          }
+
+          std::string message = "`";
+          message.append(interner_.Text(ast.Get(id).name));
+          message.append("` does `");
+          message.append(types_.Describe(interner_, missing));
+          message.append("`, which it does not declare");
+          diagnostics.Error(kUndeclaredEffect, std::move(message))
+              .Primary(ast.Get(id).name_span,
+                       "add it to the `uses` list");
+        }
+        for (const Diagnostic& diagnostic : diagnostics.diagnostics()) {
+          result.push_back(diagnostic);
+        }
+        return MakeComparableResult(std::move(result));
+      });
+
   engine_.Register(
       QueryKind::kFileDiagnostics,
       [this](QueryEngine& db, uint32_t arg) -> QueryResult {
@@ -549,6 +753,10 @@ void Database::RegisterQueries() {
                 db.GetAs<CheckedFile>(TypeCheckKey(file))) {
           all.insert(all.end(), checked->diagnostics.begin(),
                      checked->diagnostics.end());
+        }
+        if (const auto* effects = db.GetAs<std::vector<Diagnostic>>(
+                EffectDiagnosticsKey(file))) {
+          all.insert(all.end(), effects->begin(), effects->end());
         }
         ApplyLintPolicy(file, &all);
         return MakeResult(std::move(all));

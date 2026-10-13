@@ -193,6 +193,120 @@ WOLANG_TEST(ModuleScopeTest, ABareNeedIsNeverUnused) {
   WOLANG_EXPECT_EQ(fixture.Warnings(main), "");
 }
 
+// ------------------------------------------------------------- effects -----
+
+WOLANG_TEST(ModuleScopeTest, ReportsAnEffectADeclarationDoesNotState) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "effect Telemetry\n"
+      "fun Report() uses io { Measure() }\n"
+      "fun Measure() uses Telemetry {}\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0701");
+  WOLANG_EXPECT(fixture.Messages(main).find("does `Telemetry`") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(ModuleScopeTest, AStatedRowThatCoversTheBodyIsAccepted) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "effect Telemetry\n"
+      "fun Report() uses io, Telemetry { Measure() }\n"
+      "fun Measure() uses Telemetry {}\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, ADeclarationThatStatesNothingIsNotContradicted) {
+  // Only a stated row can be contradicted; the body's effects are still
+  // inferred, for callers to read.
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "fun Quiet() { Loud() }\n"
+      "fun Loud() uses io {}\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, EffectsTravelThroughAFunctionWithNoRow) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "effect Telemetry\n"
+      "fun Top() uses io { Middle() }\n"
+      "fun Middle() { Measure() }\n"
+      "fun Measure() uses Telemetry {}\n");
+
+  // Two hops, the middle one stating nothing of its own.
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0701");
+}
+
+WOLANG_TEST(ModuleScopeTest, EffectsPropagateThroughMutualRecursion) {
+  // The reason the fixpoint is one query per module rather than one per
+  // declaration: a cycle here must not make the answer depend on which
+  // declaration was asked about first.
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "effect Telemetry\n"
+      "fun Ping() uses io { Pong() }\n"
+      "fun Pong() { Ping()\n  Emit() }\n"
+      "fun Emit() uses Telemetry {}\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0701");
+  WOLANG_EXPECT(fixture.Messages(main).find("`Ping` does `Telemetry`") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(ModuleScopeTest, AnUnsafeBlockIsTheUnsafeEffect) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo", "fun Poke() uses io { unsafe { } }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0701");
+  WOLANG_EXPECT(fixture.Messages(main).find("does `unsafe`") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(ModuleScopeTest, AnOfferedFunctionMustStateItsEffects) {
+  // Inference stops at the module boundary, so a name other modules can call
+  // has to say what it does.
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "offer fun Emit() { Inner() }\n"
+      "fun Inner() uses io {}\n"
+      "offer fun Pure() -> int => 1\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0704");
+  WOLANG_EXPECT(fixture.Messages(main).find("`Emit` is offered") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(ModuleScopeTest, AnImportedRowIsReadFromItsSignature) {
+  Fixture fixture;
+  const ModuleId sub = fixture.AddModule("game.sub");
+  fixture.AddFile(sub, "emit.wo", "offer fun Emit() uses io {}\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "need game.sub.{Emit}\nfun Call() uses rand { Emit() }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0701");
+  WOLANG_EXPECT(fixture.Messages(main).find("does `io`") != std::string::npos);
+}
+
 WOLANG_TEST(ModuleScopeTest, ReportsAnUnknownModule) {
   Fixture fixture;
   const ModuleId game = fixture.AddModule("game");

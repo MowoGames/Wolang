@@ -8,6 +8,7 @@
 
 #include "wolang/base/diagnostic.h"
 #include "wolang/base/string_interner.h"
+#include "wolang/sema/effect.h"
 #include "wolang/sema/resolution.h"
 #include "wolang/sema/type.h"
 #include "wolang/syntax/ast.h"
@@ -25,6 +26,17 @@ struct TypedBody {
   // order and with duplicates. Read to find an import nothing names.
   std::vector<Symbol> used_names;
 
+  // What this declaration's body does by itself: effects from built-in
+  // operations and from calls to functions whose row is already declared.
+  EffectRow direct_effects;
+  // Functions this body calls whose row is not declared, as (file, item)
+  // pairs. The module-wide fixpoint needs these: a row cannot be inferred
+  // from one body alone.
+  std::vector<std::pair<uint32_t, uint32_t>> callees;
+  // The item tree index of the declaration this body belongs to, so that a
+  // caller elsewhere can be matched to it.
+  uint32_t item_index = 0xFFFFFFFFu;
+
   TypeId TypeOf(ExprId id) const {
     if (!id.is_valid() || id.index >= expr_types.size()) {
       return TypeId{};
@@ -39,11 +51,14 @@ struct TypedBody {
 // and an inferred type flows up from the expression. That is what lets
 // `let x: u8 = 200` give the literal a type without a suffix, and what lets
 // `f(1)` take its parameter's type.
+// |item_index| is the declaration's index in its file's item tree, recorded
+// in the result so that a caller elsewhere can be matched to it.
 TypedBody TypeCheckItem(TypeStore* types,
                         const StringInterner* interner,
                         const FileResolution* resolution,
                         const Ast& ast,
-                        ItemId item);
+                        ItemId item,
+                        uint32_t item_index = 0xFFFFFFFFu);
 
 }  // namespace wolang
 

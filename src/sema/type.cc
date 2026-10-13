@@ -117,6 +117,12 @@ TypeStore::TypeStore() {
   str_ = simple(TypeKind::kStr);
   int_literal_ = simple(TypeKind::kIntLiteral);
   float_literal_ = simple(TypeKind::kFloatLiteral);
+
+  // The built-in effects occupy the first ids, in BuiltinEffect order, so
+  // that testing for one is an index comparison. They are spelled by
+  // BuiltinEffectName rather than by a symbol, which is what keeps the type
+  // store independent of any interner.
+  effects_.resize(static_cast<size_t>(BuiltinEffect::kCount));
 }
 
 TypeId TypeStore::Intern(Key key) {
@@ -418,6 +424,50 @@ uint32_t TypeStore::BitWidth(TypeId id) const {
     return type.float_width == FloatWidth::k32 ? 32 : 64;
   }
   return 0;
+}
+
+EffectId TypeStore::Effect(Symbol name, uint32_t file, uint32_t item) {
+  for (uint32_t i = static_cast<uint32_t>(BuiltinEffect::kCount);
+       i < effects_.size(); ++i) {
+    const EffectEntry& entry = effects_[i];
+    if (entry.name == name && entry.file == file && entry.item == item) {
+      return EffectId{i};
+    }
+  }
+  effects_.push_back(EffectEntry{name, file, item});
+  return EffectId{static_cast<uint32_t>(effects_.size() - 1)};
+}
+
+Symbol TypeStore::EffectName(EffectId effect) const {
+  if (!effect.is_valid() || effect.index >= effects_.size()) {
+    return Symbol{};
+  }
+  return effects_[effect.index].name;
+}
+
+std::string TypeStore::EffectText(const StringInterner& interner,
+                                  EffectId effect) const {
+  if (IsBuiltinEffect(effect)) {
+    return std::string(
+        BuiltinEffectName(static_cast<BuiltinEffect>(effect.index)));
+  }
+  const Symbol name = EffectName(effect);
+  return name.is_valid() ? std::string(interner.Text(name)) : "?";
+}
+
+std::string TypeStore::Describe(const StringInterner& interner,
+                                const EffectRow& row) const {
+  if (row.empty()) {
+    return "no effects";
+  }
+  std::string result;
+  for (EffectId effect : row.effects()) {
+    if (!result.empty()) {
+      result.append(", ");
+    }
+    result.append(EffectText(interner, effect));
+  }
+  return result;
 }
 
 Symbol TypeStore::DimensionName(DimensionId dimension) const {

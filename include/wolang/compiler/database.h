@@ -58,6 +58,36 @@ struct SourceFingerprint {
 struct CheckedFile {
   TypedBody body;
   std::vector<Diagnostic> diagnostics;
+  // One entry per top-level declaration, in item tree order.
+  std::vector<TypedBody> items;
+};
+
+// The effect row of one declaration, after the module-wide fixpoint.
+struct InferredEffects {
+  uint32_t file = 0;
+  uint32_t item = 0;
+  EffectRow row;
+
+  friend bool operator==(const InferredEffects& lhs,
+                         const InferredEffects& rhs) {
+    return lhs.file == rhs.file && lhs.item == rhs.item &&
+           lhs.row == rhs.row;
+  }
+};
+
+// What every declaration of a module actually does. Computed in one query so
+// that a cycle of mutually recursive functions is a loop inside a single
+// computation rather than a cycle between queries -- which would make the
+// answer depend on which file was asked about first.
+struct ModuleEffectRows {
+  std::vector<InferredEffects> rows;
+
+  const EffectRow* Find(uint32_t file, uint32_t item) const;
+
+  friend bool operator==(const ModuleEffectRows& lhs,
+                         const ModuleEffectRows& rhs) {
+    return lhs.rows == rhs.rows;
+  }
 };
 
 // Owns everything one compilation knows and answers questions about it

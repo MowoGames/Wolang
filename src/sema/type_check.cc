@@ -90,7 +90,7 @@ class Checker {
     resolver_.CollectUsedNames(&result_.used_names);
   }
 
-  TypedBody Run(ItemId item);
+  TypedBody Run(ItemId item, uint32_t item_index);
 
  private:
   // ----------------------------------------------------------- reporting --
@@ -234,6 +234,10 @@ class Checker {
   TypeId CheckIndex(const Expr& expr);
   TypeId CheckField(const Expr& expr);
   void CheckConstructor(const Expr& expr, TypeId type);
+
+  // Notes what calling |callee| does: its declared row if it has one, and
+  // otherwise who to ask once the module-wide rows are known.
+  void RecordCallEffects(ExprId callee);
 
   // The member of the enclosing type named |name|, or null when there is no
   // enclosing type or it has no such member.
@@ -801,6 +805,8 @@ TypeId Checker::CheckCall(const Expr& expr) {
     }
   }
 
+  RecordCallEffects(expr.lhs);
+
   const TypeId callee = Check(expr.lhs, TypeId{});
   const std::span<const ExprId> args = ast_.Get(expr.args);
 
@@ -902,6 +908,36 @@ TypeId Checker::CheckIndex(const Expr& expr) {
     Report(kNotIndexable, std::move(message), expr.span);
   }
   return types_->error();
+}
+
+void Checker::RecordCallEffects(ExprId callee) {
+  if (!ast_.Contains(callee)) {
+    return;
+  }
+  const Expr& expr = ast_.Get(callee);
+  Symbol name;
+  if (expr.kind == ExprKind::kPath) {
+    name = expr.name;
+  } else if (expr.kind == ExprKind::kField ||
+             expr.kind == ExprKind::kOptionalField) {
+    name = expr.name;
+  }
+  if (!name.is_valid()) {
+    return;
+  }
+
+  const Binding* binding = Lookup(name);
+  if (binding == nullptr || binding->item == Binding::kNoItem) {
+    return;
+  }
+  if (const EffectRow* declared =
+          resolution_->DeclaredRow(binding->file, binding->item);
+      declared != nullptr) {
+    result_.direct_effects.Merge(*declared);
+    return;
+  }
+  // Not stated here, so the row has to come from the module-wide fixpoint.
+  result_.callees.emplace_back(binding->file, binding->item);
 }
 
 // `Vec3(x, y, z)` fills the type's fields in declaration order. A type with
@@ -1474,6 +1510,13 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       break;
 
     case ExprKind::kUnsafe:
+      // `unsafe { ... }` is itself the `unsafe` effect, so a caller that
+      // forbids it does not have to look inside the block.
+      result_.direct_effects.Add(
+          types_->BuiltinEffectId(BuiltinEffect::kUnsafe));
+      type = Check(expr.lhs, expected);
+      break;
+
     case ExprKind::kRegion:
       type = Check(expr.lhs, expected);
       break;
@@ -1967,7 +2010,8 @@ void Checker::CheckItem(ItemId id) {
   }
 }
 
-TypedBody Checker::Run(ItemId item) {
+TypedBody Checker::Run(ItemId item, uint32_t item_index) {
+  result_.item_index = item_index;
   PushScope();
   CheckItem(item);
   PopScope();
@@ -1981,9 +2025,10 @@ TypedBody TypeCheckItem(TypeStore* types,
                         const StringInterner* interner,
                         const FileResolution* resolution,
                         const Ast& ast,
-                        ItemId item) {
+                        ItemId item,
+                        uint32_t item_index) {
   Checker checker(types, interner, resolution, ast);
-  return checker.Run(item);
+  return checker.Run(item, item_index);
 }
 
 }  // namespace wolang

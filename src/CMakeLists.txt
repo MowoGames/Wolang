@@ -14,6 +14,7 @@ add_library(wolang_core STATIC
     format/formatter.cc
     query/query_engine.cc
     sema/dimension.cc
+    sema/effect.cc
     sema/resolution.cc
     sema/type.cc
     sema/type_check.cc
@@ -44,6 +45,7 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/format/formatter.h
         ${PROJECT_SOURCE_DIR}/include/wolang/query/query_engine.h
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/dimension.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/sema/effect.h
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/resolution.h
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/type.h
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/type_check.h
