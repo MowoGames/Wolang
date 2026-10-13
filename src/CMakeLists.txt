@@ -13,6 +13,10 @@ add_library(wolang_core STATIC
     compiler/workspace.cc
     format/formatter.cc
     query/query_engine.cc
+    sema/dimension.cc
+    sema/resolution.cc
+    sema/type.cc
+    sema/type_check.cc
     syntax/ast.cc
     syntax/ast_printer.cc
     syntax/lexer.cc
@@ -39,6 +43,10 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/compiler/workspace.h
         ${PROJECT_SOURCE_DIR}/include/wolang/format/formatter.h
         ${PROJECT_SOURCE_DIR}/include/wolang/query/query_engine.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/sema/dimension.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/sema/resolution.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/sema/type.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/sema/type_check.h
         ${PROJECT_SOURCE_DIR}/include/wolang/syntax/ast.h
         ${PROJECT_SOURCE_DIR}/include/wolang/syntax/ast_printer.h
         ${PROJECT_SOURCE_DIR}/include/wolang/syntax/lexer.h

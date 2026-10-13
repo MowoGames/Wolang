@@ -33,6 +33,15 @@ WOLANG_QUERY(ItemTree,
              "bodies")
 WOLANG_QUERY(ModuleScope, "module", "the names a module declares")
 WOLANG_QUERY(Imports, "file", "the resolved imports of a file")
+WOLANG_QUERY(DeclaredNames,
+             "file",
+             "the names one file declares, without imports")
+WOLANG_QUERY(Resolution,
+             "file",
+             "every name a file can see, imports included")
+WOLANG_QUERY(TypeCheck,
+             "file",
+             "the type of every expression in a file")
 WOLANG_QUERY(FileDiagnostics, "file", "every diagnostic reported for a file")
 
 #undef WOLANG_QUERY_INPUT

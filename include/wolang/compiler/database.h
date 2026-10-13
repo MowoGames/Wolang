@@ -15,6 +15,9 @@
 #include "wolang/compiler/manifest.h"
 #include "wolang/compiler/module.h"
 #include "wolang/query/query_engine.h"
+#include "wolang/sema/resolution.h"
+#include "wolang/sema/type.h"
+#include "wolang/sema/type_check.h"
 #include "wolang/syntax/ast.h"
 #include "wolang/syntax/token.h"
 
@@ -49,6 +52,14 @@ struct SourceFingerprint {
   uint32_t size = 0;
 };
 
+// Every declaration of a file, type checked. Bodies are checked per file
+// rather than per declaration for now; wave 5 splits this per item so an edit
+// to one body does not recheck its neighbours.
+struct CheckedFile {
+  TypedBody body;
+  std::vector<Diagnostic> diagnostics;
+};
+
 // Owns everything one compilation knows and answers questions about it
 // incrementally.
 //
@@ -70,6 +81,8 @@ class Database {
   const StringInterner& interner() const { return interner_; }
   QueryEngine& engine() { return engine_; }
   const QueryEngine& engine() const { return engine_; }
+  TypeStore& types() { return types_; }
+  const TypeStore& types() const { return types_; }
 
   // Registers a file and its initial text.
   FileId AddFile(std::string path,
@@ -126,6 +139,8 @@ class Database {
   const ItemTree* Items(FileId file);
   const ModuleScope* Scope(ModuleId module);
   const ResolvedImports* Imports(FileId file);
+  const FileResolution* Resolution(FileId file);
+  const CheckedFile* Checked(FileId file);
 
   // Every diagnostic reported for one file, in reporting order.
   const std::vector<Diagnostic>* Diagnostics(FileId file);
@@ -156,6 +171,7 @@ class Database {
 
   SourceManager sources_;
   StringInterner interner_;
+  TypeStore types_;
   QueryEngine engine_;
 
   // Indexed by FileId.

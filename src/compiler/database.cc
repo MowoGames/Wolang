@@ -46,6 +46,17 @@ QueryKey ImportsKey(FileId file) {
 QueryKey WorkspaceKey() {
   return QueryKey{QueryKind::kWorkspace, 0};
 }
+QueryKey DeclaredNamesKey(FileId file) {
+  return QueryKey{QueryKind::kDeclaredNames, file.index};
+}
+QueryKey ResolutionKey(FileId file) {
+  return QueryKey{QueryKind::kResolution, file.index};
+}
+
+using ResolvedNames = std::pair<FileResolution, std::vector<Diagnostic>>;
+QueryKey TypeCheckKey(FileId file) {
+  return QueryKey{QueryKind::kTypeCheck, file.index};
+}
 
 constexpr std::string_view kUnresolvedModule = "E0055";
 constexpr std::string_view kUnresolvedName = "E0056";
@@ -175,6 +186,151 @@ void Database::RegisterQueries() {
         return MakeComparableResult(std::move(result));
       });
 
+  // What one file declares, with no knowledge of any other file. Keeping
+  // this separate from Resolution is what breaks the cycle two files of one
+  // module would otherwise form: each needs the other's names.
+  engine_.Register(
+      QueryKind::kDeclaredNames,
+      [this](QueryEngine& db, uint32_t arg) -> QueryResult {
+        const FileId file{arg};
+        const ParsedFile* parsed = db.GetAs<ParsedFile>(ParsedFileKey(file));
+        if (parsed == nullptr) {
+          return MakeComparableResult(ResolvedNames{});
+        }
+
+        DiagnosticEngine diagnostics;
+        FileResolution resolution = ResolveFile(&types_, &interner_,
+                                                parsed->ast, arg,
+                                                &diagnostics);
+        // Comparable, so editing a body recomputes this but leaves
+        // everything downstream of it green.
+        return MakeComparableResult(
+            ResolvedNames{std::move(resolution), diagnostics.diagnostics()});
+      });
+
+  // Everything the file can see: its own declarations, the other files of its
+  // module, and whatever its imports selected.
+  engine_.Register(
+      QueryKind::kResolution,
+      [this](QueryEngine& db, uint32_t arg) -> QueryResult {
+        const FileId file{arg};
+        const auto* own = db.GetAs<ResolvedNames>(DeclaredNamesKey(file));
+        if (own == nullptr) {
+          return MakeComparableResult(ResolvedNames{});
+        }
+        ResolvedNames result = *own;
+
+        const auto add = [&result](const Binding& binding, bool public_only) {
+          if (public_only && binding.kind == BindingKind::kErrorTag) {
+            // Error tags are part of their module's surface, like a type.
+          } else if (public_only && !binding.is_public) {
+            return;
+          }
+          // A name the file declares itself wins over an imported one.
+          if (result.first.Find(binding.name) != nullptr) {
+            return;
+          }
+          result.first.scope.push_back(binding);
+        };
+
+        // Sibling files of the same module share one namespace.
+        const ModuleId own_module = ModuleOf(file);
+        if (own_module.is_valid()) {
+          const Module* module = GetModule(own_module);
+          for (FileId sibling : module->files) {
+            if (sibling == file) {
+              continue;
+            }
+            const auto* names =
+                db.GetAs<ResolvedNames>(DeclaredNamesKey(sibling));
+            if (names == nullptr) {
+              continue;
+            }
+            for (const Binding& binding : names->first.scope) {
+              add(binding, /*public_only=*/false);
+            }
+          }
+        }
+
+        const ResolvedImports* imports =
+            db.GetAs<ResolvedImports>(ImportsKey(file));
+        if (imports == nullptr) {
+          return MakeComparableResult(std::move(result));
+        }
+        for (const ResolvedImport& import : imports->imports) {
+          const Module* module = GetModule(import.module);
+          if (module == nullptr) {
+            continue;
+          }
+          for (FileId source : module->files) {
+            const auto* names =
+                db.GetAs<ResolvedNames>(DeclaredNamesKey(source));
+            if (names == nullptr) {
+              continue;
+            }
+            for (const Binding& binding : names->first.scope) {
+              // An import list selects names; a bare import brings the
+              // module's whole public surface.
+              if (!import.names.empty()) {
+                bool selected = false;
+                for (Symbol name : import.names) {
+                  if (name == binding.name) {
+                    selected = true;
+                    break;
+                  }
+                }
+                if (!selected) {
+                  continue;
+                }
+              }
+              add(binding, /*public_only=*/true);
+            }
+          }
+        }
+        return MakeComparableResult(std::move(result));
+      });
+
+  engine_.Register(
+      QueryKind::kTypeCheck,
+      [this](QueryEngine& db, uint32_t arg) -> QueryResult {
+        const FileId file{arg};
+        const ParsedFile* parsed = db.GetAs<ParsedFile>(ParsedFileKey(file));
+        const auto* resolved = db.GetAs<ResolvedNames>(ResolutionKey(file));
+        if (parsed == nullptr || resolved == nullptr) {
+          return MakeResult(CheckedFile{});
+        }
+
+        // A tree the parser could not finish has error nodes in it, and every
+        // type inferred around one is noise. One broken expression should
+        // produce one message, not two.
+        for (const Diagnostic& diagnostic : parsed->diagnostics) {
+          if (diagnostic.severity == Severity::kError) {
+            return MakeResult(CheckedFile{});
+          }
+        }
+
+        CheckedFile result;
+        const Ast& ast = parsed->ast;
+        for (ItemId id : ast.Get(ast.root())) {
+          TypedBody body = TypeCheckItem(&types_, &interner_,
+                                         &resolved->first, ast, id);
+          result.diagnostics.insert(result.diagnostics.end(),
+                                    body.diagnostics.begin(),
+                                    body.diagnostics.end());
+          // The per-item tables cover the same expression array, so they are
+          // merged into one side table for the file.
+          if (result.body.expr_types.size() < body.expr_types.size()) {
+            result.body.expr_types.resize(body.expr_types.size(), TypeId{});
+          }
+          for (size_t i = 0; i < body.expr_types.size(); ++i) {
+            if (body.expr_types[i].is_valid()) {
+              result.body.expr_types[i] = body.expr_types[i];
+            }
+          }
+        }
+        return MakeResult(std::move(result));
+      });
+
   engine_.Register(
       QueryKind::kFileDiagnostics,
       [this](QueryEngine& db, uint32_t arg) -> QueryResult {
@@ -203,6 +359,17 @@ void Database::RegisterQueries() {
 
         all.insert(all.end(), reporter.diagnostics().begin(),
                    reporter.diagnostics().end());
+
+        if (const auto* resolved =
+                db.GetAs<ResolvedNames>(ResolutionKey(file))) {
+          all.insert(all.end(), resolved->second.begin(),
+                     resolved->second.end());
+        }
+        if (const CheckedFile* checked =
+                db.GetAs<CheckedFile>(TypeCheckKey(file))) {
+          all.insert(all.end(), checked->diagnostics.begin(),
+                     checked->diagnostics.end());
+        }
         ApplyLintPolicy(file, &all);
         return MakeResult(std::move(all));
       });
@@ -487,6 +654,15 @@ const ModuleScope* Database::Scope(ModuleId module) {
 
 const ResolvedImports* Database::Imports(FileId file) {
   return engine_.GetAs<ResolvedImports>(ImportsKey(file));
+}
+
+const FileResolution* Database::Resolution(FileId file) {
+  const auto* pair = engine_.GetAs<ResolvedNames>(ResolutionKey(file));
+  return pair == nullptr ? nullptr : &pair->first;
+}
+
+const CheckedFile* Database::Checked(FileId file) {
+  return engine_.GetAs<CheckedFile>(TypeCheckKey(file));
 }
 
 const ParsedFile* Database::Parse(FileId file) {
