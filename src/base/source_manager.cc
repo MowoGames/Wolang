@@ -78,6 +78,15 @@ FileId SourceManager::LoadFile(std::string_view path, std::string* error) {
   return Register(path_string, std::move(text));
 }
 
+void SourceManager::ReplaceText(FileId file, std::string text) {
+  if (!file.is_valid() || file.index >= files_.size()) {
+    return;
+  }
+  Entry& entry = *files_[file.index];
+  entry.text = std::move(text);
+  entry.line_starts = ComputeLineStarts(entry.text);
+}
+
 const SourceManager::Entry* SourceManager::Get(FileId file) const {
   if (!file.is_valid() || file.index >= files_.size()) {
     return nullptr;

@@ -79,6 +79,16 @@ class SourceManager {
   // FileId and, when |error| is not null, stores a human readable reason.
   FileId LoadFile(std::string_view path, std::string* error);
 
+  // Replaces the contents of an already registered file, which is what an
+  // editor does on every keystroke.
+  //
+  // Every `std::string_view` previously handed out for this file dangles
+  // afterwards, so views must not be held across an edit. Offsets stay
+  // meaningful: cached token streams and syntax trees store offsets, not
+  // views, which is what lets them survive until something asks for them
+  // again.
+  void ReplaceText(FileId file, std::string text);
+
   size_t file_count() const { return files_.size(); }
 
   std::string_view Text(FileId file) const;
