@@ -13,6 +13,7 @@
 #include "wolang/sema/type.h"
 
 namespace wolang {
+namespace ir {
 
 // ---------------------------------------------------------------- opcodes ---
 
@@ -200,6 +201,7 @@ struct Module {
   const Function* Find(Symbol name) const;
 };
 
+}  // namespace ir
 }  // namespace wolang
 
 #endif  // WOLANG_IR_IR_H_

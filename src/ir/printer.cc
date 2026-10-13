@@ -5,6 +5,7 @@
 #include <cstdio>
 
 namespace wolang {
+namespace ir {
 namespace {
 
 class Printer {
@@ -211,4 +212,5 @@ std::string PrintModule(const StringInterner& interner,
   return printer.take();
 }
 
+}  // namespace ir
 }  // namespace wolang

@@ -14,12 +14,20 @@ most often:
 | Class data members | `trailing_underscore_`; plain-data struct members have no underscore |
 | Constants and enum class values | `kPascalCase` |
 | Namespaces | lowercase, `wolang` and `wolang::test` |
+| Layer vocabulary | a nested namespace, `wolang::ir` |
 | Include guards | `WOLANG_<PATH>_H_` |
 | Indentation | two spaces, 80 column limit |
 | Out parameters | pointers, not non-const references |
 
 `.clang-format` in the repository root carries `BasedOnStyle: Chromium`; run
 `clang-format -i` on anything you touch.
+
+A layer whose vocabulary is made of generic words — the IR has `Module`,
+`Function`, `Block`, `Inst` — gets a nested namespace. This is not tidiness:
+`wolang::Module` already meant a module of source files, and a second struct
+with the same name is an ODR violation. The linker picks one definition, code
+compiled against the other reads the wrong offsets, and the symptom is memory
+corruption somewhere else entirely. The sanitizer preset is what caught it.
 
 Generated files say so in their header and are produced by a committed script
 under `tools/gen/`. `include/wolang/base/unicode_tables.inc` is the only one

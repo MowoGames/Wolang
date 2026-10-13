@@ -5,6 +5,7 @@
 #include <algorithm>
 
 namespace wolang {
+namespace ir {
 namespace {
 
 class Verifier {
@@ -473,4 +474,5 @@ VerificationResult Verify(const StringInterner& interner,
   return all;
 }
 
+}  // namespace ir
 }  // namespace wolang

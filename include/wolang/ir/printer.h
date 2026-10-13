@@ -10,6 +10,7 @@
 #include "wolang/sema/type.h"
 
 namespace wolang {
+namespace ir {
 
 // Renders the IR in a stable textual form. "Stable" is the requirement, not
 // a nicety: golden tests compare this text, and wave 12 compares the
@@ -27,6 +28,7 @@ std::string PrintModule(const StringInterner& interner,
                         const TypeStore& types,
                         const Module& module);
 
+}  // namespace ir
 }  // namespace wolang
 
 #endif  // WOLANG_IR_PRINTER_H_

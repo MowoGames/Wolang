@@ -3,6 +3,7 @@
 #include "wolang/ir/ir.h"
 
 namespace wolang {
+namespace ir {
 namespace {
 
 constexpr std::string_view kMnemonics[] = {
@@ -46,4 +47,5 @@ const Function* Module::Find(Symbol name) const {
   return nullptr;
 }
 
+}  // namespace ir
 }  // namespace wolang

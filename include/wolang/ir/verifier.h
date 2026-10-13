@@ -11,6 +11,7 @@
 #include "wolang/sema/type.h"
 
 namespace wolang {
+namespace ir {
 
 // Everything the verifier found wrong, as text meant for a developer of the
 // compiler rather than for a user of the language. An empty result is the
@@ -40,6 +41,7 @@ VerificationResult Verify(const StringInterner& interner,
                           const TypeStore& types,
                           const Module& module);
 
+}  // namespace ir
 }  // namespace wolang
 
 #endif  // WOLANG_IR_VERIFIER_H_

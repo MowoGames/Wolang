@@ -7,6 +7,7 @@
 #include "wolang/ir/verifier.h"
 
 namespace wolang {
+namespace ir {
 namespace {
 
 // Builds small functions by hand, so the IR's own invariants can be tested
@@ -88,7 +89,7 @@ class Builder {
   }
 
   VerificationResult Verify() {
-    return ::wolang::Verify(interner_, types_, module_, function());
+    return ir::Verify(interner_, types_, module_, function());
   }
 
   std::string Print() {
@@ -354,4 +355,5 @@ WOLANG_TEST(PrinterTest, PrintsBlockParametersAndEdges) {
 }
 
 }  // namespace
+}  // namespace ir
 }  // namespace wolang
