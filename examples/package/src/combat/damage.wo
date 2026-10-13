@@ -1,0 +1,16 @@
+// Damage maths, with units doing the checking.
+need demo.engine.{Length, Time, Velocity, m, s}
+
+offer error OutOfRange, Immune
+
+/// Falls off linearly with distance, reaching zero at `reach`.
+offer fun Falloff(base: float, distance: Length, reach: Length) -> float {
+  // Dividing two lengths cancels the dimension, so the ratio is a plain
+  // number and multiplying by `base` type checks.
+  let ratio = distance / reach
+  return base * (1.0 - ratio)
+}
+
+offer fun TravelTime(distance: Length, speed: Velocity) -> Time {
+  return distance / speed
+}

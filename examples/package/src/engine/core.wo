@@ -1,0 +1,55 @@
+// A stub of the host's gameplay surface, just enough for the examples in this
+// package to resolve and type check. A real host provides these through the
+// embedding API; see docs/roadmap.md, wave 15.
+
+offer dimension Length
+offer dimension Time
+
+// A derived dimension is named once and then used by name, which keeps the
+// product out of general type syntax.
+offer dimension Velocity = Length / Time
+offer dimension Area = Length^2
+
+offer unit m: Length
+offer unit cm = 0.01m
+offer unit s: Time
+offer unit ms = 0.001s
+
+offer struct Vec3 {
+  var x: float = 0.0
+  var y: float = 0.0
+  var z: float = 0.0
+}
+
+offer struct Quat {
+  var x: float = 0.0
+  var y: float = 0.0
+  var z: float = 0.0
+  var w: float = 1.0
+}
+
+offer struct Transform {
+  var position: Vec3
+  var rotation: Quat
+}
+
+offer class Actor {}
+offer class Pawn {}
+offer class Barrel {}
+offer class Projectile {}
+offer class SceneComponent {}
+
+// Named `Motion` rather than `Velocity`: that name is already the dimension
+// above, and one module has one namespace.
+offer component Motion {
+  var value: Vec3
+}
+
+offer trait Damageable {
+  fun TakeDamage(amount: float, from: Actor?)
+}
+
+offer struct Cell {
+  var matches: bool = false
+  var blocked: bool = false
+}

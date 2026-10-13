@@ -1,7 +1,15 @@
 // The root module of the package is named after the package itself: `demo`.
-import demo.engine.{Vec3, Length, m}
+need demo.engine.{Vec3, Length, Velocity, m, s}
+need demo.combat.{Falloff, TravelTime}
 
-fn main() {
+fun main() {
   let origin = Vec3()
   let reach = 3m
+
+  // Units are checked at compile time and cost nothing at runtime: swapping
+  // these two arguments would not compile.
+  let damage = Falloff(10.0, 1m, reach)
+
+  let speed = 2m / 1s
+  let eta = TravelTime(reach, speed)
 }
