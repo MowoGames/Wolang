@@ -22,6 +22,10 @@ struct Local {
 };
 
 // Where `break` and `continue` go, innermost last.
+//
+// `break_to` is created on demand. A loop nothing breaks out of has no exit
+// block at all, which is what keeps lowering from emitting one the verifier
+// would rightly call unreachable.
 struct LoopTarget {
   Symbol label;
   BlockId break_to;
@@ -154,6 +158,7 @@ class Lowerer {
 
     Builder builder(module_, FunctionId{index});
     builder.types = types_;
+    current_function_ = index;
     builder_ = &builder;
     locals_.clear();
     loops_.clear();
@@ -199,6 +204,32 @@ class Lowerer {
   }
 
   // ------------------------------------------------------------- lookups --
+
+  // `Accepts(T?, T)` holds in the checker -- a value fits an optional of
+  // itself -- so wherever a value flows into an optional position the IR
+  // needs the wrap the source did not write.
+  InstId Coerce(InstId value, TypeId from, TypeId to) {
+    if (!value.is_valid() || !to.is_valid()) {
+      return value;
+    }
+    const TypeId target = Erase(to);
+    if (types_->KindOf(target) != TypeKind::kOptional) {
+      return value;
+    }
+    if (types_->KindOf(Erase(from)) == TypeKind::kOptional) {
+      return value;
+    }
+    return builder_->Add(Opcode::kOptionalWrap, target, {value});
+  }
+
+  // The type a value is built at, when the context asked for an optional of
+  // it.
+  TypeId Unwrapped(TypeId type) {
+    const TypeId erased = Erase(type);
+    return types_->KindOf(erased) == TypeKind::kOptional
+               ? Erase(types_->ElementOf(erased))
+               : erased;
+  }
 
   const Local* Find(Symbol name) const {
     for (auto it = locals_.rbegin(); it != locals_.rend(); ++it) {
@@ -300,7 +331,8 @@ class Lowerer {
 
       case StmtKind::kReturn:
         if (stmt.expr.is_valid()) {
-          builder_->Return(Value(stmt.expr));
+          builder_->Return(Coerce(Value(stmt.expr), TypeOf(stmt.expr),
+                                  return_type_));
         } else {
           builder_->ReturnVoid();
         }
@@ -308,14 +340,20 @@ class Lowerer {
 
       case StmtKind::kBreak:
       case StmtKind::kContinue: {
-        const LoopTarget* target = FindLoop(stmt.label);
+        LoopTarget* target = FindLoop(stmt.label);
         if (target == nullptr) {
           // The checker already reported a `break` with no loop.
           builder_->Unreachable();
           return;
         }
-        builder_->Jump(stmt.kind == StmtKind::kBreak ? target->break_to
-                                                     : target->continue_to);
+        if (stmt.kind == StmtKind::kContinue) {
+          builder_->Jump(target->continue_to);
+          return;
+        }
+        if (!target->break_to.is_valid()) {
+          target->break_to = builder_->AddBlock("loop.exit");
+        }
+        builder_->Jump(target->break_to);
         return;
       }
 
@@ -359,7 +397,7 @@ class Lowerer {
     locals_.push_back(Local{pattern->name, slot, InstId{}, type});
   }
 
-  const LoopTarget* FindLoop(Symbol label) const {
+  LoopTarget* FindLoop(Symbol label) {
     for (auto it = loops_.rbegin(); it != loops_.rend(); ++it) {
       if (!label.is_valid() || it->label == label) {
         return &*it;
@@ -380,14 +418,19 @@ class Lowerer {
     switch (expr.kind) {
       case ExprKind::kIntLiteral: {
         const NumberLiteral& number = ast_.number(expr.aux);
-        return builder_->ConstInt(type, number.integer_value);
+        const TypeId built = Unwrapped(type);
+        return Coerce(builder_->ConstInt(built, number.integer_value),
+                      built, type);
       }
       case ExprKind::kFloatLiteral: {
         const NumberLiteral& number = ast_.number(expr.aux);
-        return builder_->ConstFloat(type, number.float_value);
+        const TypeId built = Unwrapped(type);
+        return Coerce(builder_->ConstFloat(built, number.float_value),
+                      built, type);
       }
       case ExprKind::kBoolLiteral:
-        return builder_->ConstBool(expr.aux != 0);
+        return Coerce(builder_->ConstBool(expr.aux != 0),
+                      types_->bool_type(), type);
       case ExprKind::kNullLiteral:
         return builder_->ConstNull(type);
       case ExprKind::kStringLiteral:
@@ -402,6 +445,20 @@ class Lowerer {
         return LowerBinary(id, expr, type);
       case ExprKind::kAssign:
         return LowerAssign(expr);
+
+      case ExprKind::kArrayLiteral: {
+        std::vector<InstId> elements;
+        for (ExprId element : ast_.Get(expr.args)) {
+          elements.push_back(Value(element));
+        }
+        return builder_->Add(Opcode::kMakeArray, type, std::move(elements));
+      }
+
+      case ExprKind::kIndex: {
+        const InstId array = Value(expr.lhs);
+        const InstId index = Value(expr.rhs);
+        return builder_->Add(Opcode::kIndex, type, {array, index});
+      }
 
       case ExprKind::kField:
         return LowerField(expr, type);
@@ -674,9 +731,20 @@ class Lowerer {
   }
 
   InstId LowerCall(const Expr& expr, TypeId type) {
+    const TypeId callee_type =
+        ast_.Contains(expr.lhs) ? TypeOf(expr.lhs) : TypeId{};
+    const std::vector<TypeId> params =
+        types_->KindOf(callee_type) == TypeKind::kFunction
+            ? types_->ArgumentsOf(callee_type)
+            : std::vector<TypeId>();
+
     std::vector<InstId> arguments;
-    for (ExprId argument : ast_.Get(expr.args)) {
-      arguments.push_back(Value(argument));
+    const std::span<const ExprId> written = ast_.Get(expr.args);
+    for (size_t i = 0; i < written.size(); ++i) {
+      const InstId value = Value(written[i]);
+      arguments.push_back(i < params.size()
+                              ? Coerce(value, TypeOf(written[i]), params[i])
+                              : value);
     }
 
     if (ast_.Contains(expr.lhs) &&
@@ -691,8 +759,14 @@ class Lowerer {
       // A constructor: the callee is a type, and the arguments are its
       // fields in order.
       if (binding != nullptr && binding->kind == BindingKind::kType) {
-        return builder_->Add(Opcode::kMakeStruct, type,
-                             std::move(arguments));
+        // The checker records the type the context wanted, so `type` may
+        // already be `Pawn?` for a `Pawn(...)`. What the instruction builds
+        // is the struct, and the wrap is what bridges the two.
+        const TypeId built = Erase(binding->type);
+        const InstId value = builder_->Add(
+            Opcode::kMakeStruct, built.is_valid() ? built : type,
+            std::move(arguments));
+        return Coerce(value, built, type);
       }
       // A function from another file. Lowering is per file, so it gets a
       // declaration here -- the same shape a trait method or an `extern`
@@ -1031,12 +1105,16 @@ class Lowerer {
   void LowerLoop(const Expr& expr) {
     const BlockId header = builder_->AddBlock("loop.header");
     const BlockId body = builder_->AddBlock("loop.body");
-    const BlockId exit = builder_->AddBlock("loop.exit");
 
     builder_->Jump(header);
     builder_->SetCurrent(header);
 
+    // A `while` leaves the loop when its condition fails, so it needs an
+    // exit before the body is seen; a `loop` only gets one if something
+    // breaks.
+    BlockId exit;
     if (expr.kind == ExprKind::kWhile) {
+      exit = builder_->AddBlock("loop.exit");
       const InstId condition = Value(expr.lhs);
       builder_->Branch(condition, body, exit);
     } else {
@@ -1051,10 +1129,19 @@ class Lowerer {
     if (!builder_->Terminated()) {
       builder_->Jump(header);
     }
+    const BlockId reached = loops_.back().break_to;
     loops_.pop_back();
 
-    builder_->SetCurrent(exit);
+    if (reached.is_valid()) {
+      builder_->SetCurrent(reached);
+      return;
+    }
+    // Nothing leaves the loop. Everything after it is unreachable, which the
+    // checker reported as W0102; leaving the builder on a block that is
+    // already terminated is what stops anything more being emitted.
+    builder_->SetCurrent(body);
   }
+
 
   TypeStore* types_;
   const FileResolution& resolution_;
@@ -1063,6 +1150,7 @@ class Lowerer {
   Module* module_;
 
   Builder* builder_ = nullptr;
+  uint32_t current_function_ = 0;
   TypeId return_type_;
   std::vector<Local> locals_;
   std::vector<LoopTarget> loops_;

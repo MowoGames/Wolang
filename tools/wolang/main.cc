@@ -24,6 +24,7 @@
 #include "wolang/compiler/database.h"
 #include "wolang/compiler/workspace.h"
 #include "wolang/format/formatter.h"
+#include "wolang/interp/interpreter.h"
 #include "wolang/ir/printer.h"
 #include "wolang/syntax/ast.h"
 #include "wolang/syntax/ast_printer.h"
@@ -376,6 +377,90 @@ int RunFormat(const Options& options) {
   return exit_code;
 }
 
+// Runs `main`, through the interpreter. The reference semantics are the
+// unoptimized IR; the optimized form is run too and the two results are
+// compared, which turns "the passes preserve meaning" into something the
+// driver checks on every run rather than something assumed.
+std::string Describe(const interp::Outcome& outcome) {
+  if (outcome.ok()) {
+    return outcome.value.Describe();
+  }
+  std::string result(interp::TrapKindName(outcome.trap));
+  result.append(" at ");
+  result.append(outcome.where);
+  return result;
+}
+
+int RunProgram(const Options& options) {
+  Database database;
+  DiagnosticEngine load_diagnostics;
+  std::vector<FileId> files;
+  if (!CollectInputs(&database, options, &load_diagnostics, &files)) {
+    return 2;
+  }
+
+  RenderOptions render;
+  render.color = options.color && StderrIsTerminal();
+
+  std::vector<Diagnostic> all = load_diagnostics.diagnostics();
+  const LoweredFile* program = nullptr;
+  for (FileId file : files) {
+    if (const std::vector<Diagnostic>* diagnostics =
+            database.Diagnostics(file)) {
+      all.insert(all.end(), diagnostics->begin(), diagnostics->end());
+    }
+    const LoweredFile* lowered = database.Lowered(file);
+    if (lowered == nullptr) {
+      continue;
+    }
+    for (const std::string& problem : lowered->problems) {
+      std::fprintf(stderr, "wolang: internal: %s\n", problem.c_str());
+    }
+    if (lowered->module.Find(database.interner().Intern("main")) != nullptr) {
+      program = lowered;
+    }
+  }
+
+  const int reported = Report(database.sources(), all, render);
+  if (reported != 0) {
+    return reported;
+  }
+  if (program == nullptr) {
+    std::fprintf(stderr, "wolang: no `main` to run\n");
+    return 2;
+  }
+
+  const Symbol main = database.interner().Intern("main");
+  const interp::Outcome reference =
+      interp::RunNamed(database.interner(), database.types(),
+                       program->unoptimized, main);
+  const interp::Outcome optimized =
+      interp::RunNamed(database.interner(), database.types(),
+                       program->module, main);
+
+  if (reference.trap != optimized.trap ||
+      (reference.ok() && reference.value != optimized.value)) {
+    // A difference here is a miscompile, which is the most serious kind of
+    // bug this compiler can have.
+    std::fprintf(stderr,
+                 "wolang: internal: the passes changed the meaning of the "
+                 "program\n  before: %s\n  after:  %s\n",
+                 Describe(reference).c_str(), Describe(optimized).c_str());
+    return 70;
+  }
+
+  if (!reference.ok()) {
+    std::fprintf(stderr, "wolang: %s at %s: %s\n",
+                 std::string(interp::TrapKindName(reference.trap)).c_str(),
+                 reference.where.c_str(), reference.message.c_str());
+    return 1;
+  }
+  if (reference.value.kind() != interp::Value::Kind::kVoid) {
+    std::fprintf(stdout, "%s\n", reference.value.Describe().c_str());
+  }
+  return 0;
+}
+
 int RunModules(const Options& options) {
   if (options.inputs.size() != 1) {
     std::fprintf(stderr, "wolang: modules needs exactly one directory\n");
@@ -452,7 +537,8 @@ int Run(int argc, char** argv) {
   const bool needs_inputs =
       options.command == "check" || options.command == "tokens" ||
       options.command == "ast" || options.command == "fmt" ||
-      options.command == "ir" || options.command == "modules";
+      options.command == "ir" || options.command == "modules" ||
+      options.command == "run";
   if (needs_inputs && options.inputs.empty()) {
     std::fprintf(stderr, "wolang: %s needs at least one path\n",
                  options.command.c_str());
@@ -468,6 +554,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "fmt") {
     return RunFormat(options);
+  }
+  if (options.command == "run") {
+    return RunProgram(options);
   }
   if (options.command == "modules") {
     return RunModules(options);

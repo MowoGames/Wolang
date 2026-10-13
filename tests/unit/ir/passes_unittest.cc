@@ -105,18 +105,32 @@ fun Flip() -> bool {
                 std::string::npos);
 }
 
-WOLANG_TEST(PassTest, RemovesAnUnusedComputation) {
+WOLANG_TEST(PassTest, RemovesAnUnusedComputationThatCannotTrap) {
   Fixture f(R"(
 fun Dead(n: int) -> int {
-  let _unused = n + n
+  let _unused = n > 0
   return n
 }
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   // Present before the passes, gone after: that is the pass doing the work
   // rather than lowering never emitting it.
-  WOLANG_EXPECT(f.Lowered("Dead").find("add") != std::string::npos);
-  WOLANG_EXPECT(f.Optimized("Dead").find("add") == std::string::npos);
+  WOLANG_EXPECT(f.Lowered("Dead").find("gt") != std::string::npos);
+  WOLANG_EXPECT(f.Optimized("Dead").find("gt") == std::string::npos);
+}
+
+WOLANG_TEST(PassTest, KeepsUnusedArithmeticBecauseItCanTrap) {
+  // Overflow is a trap, and a trap is something the program can observe, so
+  // deleting an unused `n + n` would turn a program that faults into one
+  // that does not. Removing it needs a proof that it cannot trap.
+  Fixture f(R"(
+fun Kept(n: int) -> int {
+  let _unused = n + n
+  return n
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Optimized("Kept").find("add") != std::string::npos);
 }
 
 WOLANG_TEST(PassTest, KeepsACallWithEffects) {

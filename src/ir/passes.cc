@@ -30,9 +30,34 @@ bool ReplaceAllUses(Function* function, InstId from, InstId to) {
   return changed;
 }
 
-// An operation with no operands and no effect on anything outside itself.
+// True when removing the operation cannot change what the program does.
+//
+// Arithmetic is *not* pure in this language. Overflow and division by zero
+// are traps, and a trap is a defined outcome the program can observe -- so
+// deleting an unused `a + b` would turn a program that faults into one that
+// does not. Removing it needs a proof that it cannot trap, which is range
+// analysis and belongs with the optimizer proper.
+//
+// `extract` and `insert` are treated as pure even though the interpreter
+// traps on a field that is not there: the front end builds them from the
+// member table, so an out-of-range field is a compiler bug rather than
+// program behaviour to preserve.
 bool IsPure(Opcode opcode) {
   switch (opcode) {
+    // Can trap.
+    case Opcode::kAdd:
+    case Opcode::kSub:
+    case Opcode::kMul:
+    case Opcode::kDiv:
+    case Opcode::kRem:
+    case Opcode::kNeg:
+    case Opcode::kShl:
+    case Opcode::kShr:
+    case Opcode::kIndex:
+    case Opcode::kOptionalValue:
+    case Opcode::kLoad:
+    case Opcode::kUndef:
+    // Does something, or is something.
     case Opcode::kStore:
     case Opcode::kCall:
     case Opcode::kCallIndirect:

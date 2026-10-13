@@ -13,6 +13,8 @@ add_library(wolang_core STATIC
     compiler/workspace.cc
     format/formatter.cc
     query/query_engine.cc
+    interp/interpreter.cc
+    interp/value.cc
     ir/builder.cc
     ir/ir.cc
     ir/lower.cc
@@ -50,6 +52,8 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/compiler/workspace.h
         ${PROJECT_SOURCE_DIR}/include/wolang/format/formatter.h
         ${PROJECT_SOURCE_DIR}/include/wolang/query/query_engine.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/interp/interpreter.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/interp/value.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/builder.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/ir.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/lower.h
