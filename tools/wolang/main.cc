@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,6 +20,10 @@
 #include "wolang/base/diagnostic_renderer.h"
 #include "wolang/base/source_manager.h"
 #include "wolang/base/string_interner.h"
+#include "wolang/compiler/cache.h"
+#include "wolang/compiler/database.h"
+#include "wolang/compiler/workspace.h"
+#include "wolang/format/formatter.h"
 #include "wolang/syntax/ast.h"
 #include "wolang/syntax/ast_printer.h"
 #include "wolang/syntax/lexer.h"
@@ -35,6 +40,12 @@ struct Options {
   bool color = true;
   bool show_trivia = false;
   bool show_spans = false;
+  // `fmt` only: verify instead of printing, or rewrite the file in place.
+  bool check_only = false;
+  bool write_in_place = false;
+  // Skip the on-disk cache entirely, which is how a suspected cache problem
+  // is ruled out.
+  bool no_cache = false;
 };
 
 bool StderrIsTerminal() {
@@ -46,40 +57,83 @@ bool StderrIsTerminal() {
 }
 
 void PrintUsage() {
-  std::fprintf(stdout,
-               "wolang %s - the Wolang compiler driver\n"
-               "\n"
-               "usage: wolang <command> [options] [files...]\n"
-               "\n"
-               "commands:\n"
-               "  check <files>   report diagnostics for the given files\n"
-               "  tokens <files>  print the token stream of the given files\n"
-               "  ast <files>     print the syntax tree of the given files\n"
-               "  version         print the version and exit\n"
-               "  help            print this message\n"
-               "\n"
-               "options:\n"
-               "  --no-color      never emit ANSI colors\n"
-               "  --trivia        include comments in `tokens` output\n"
-               "  --spans         annotate `ast` output with positions\n",
-               std::string(kVersion).c_str());
+  std::fprintf(
+      stdout,
+      "wolang %s - the Wolang compiler driver\n"
+      "\n"
+      "usage: wolang <command> [options] [paths...]\n"
+      "\n"
+      "commands:\n"
+      "  check <paths>   report diagnostics for files or package directories\n"
+      "  fmt <files>     format files; prints to stdout by default\n"
+      "  tokens <files>  print the token stream of the given files\n"
+      "  ast <files>     print the syntax tree of the given files\n"
+      "  modules <dir>   print the module graph of a package\n"
+      "  version         print the version and exit\n"
+      "  help            print this message\n"
+      "\n"
+      "options:\n"
+      "  --no-color      never emit ANSI colors\n"
+      "  --trivia        include comments in `tokens` output\n"
+      "  --spans         annotate `ast` output with positions\n"
+      "  --check         `fmt` only: fail if a file is not formatted\n"
+      "  --write         `fmt` only: rewrite the file in place\n"
+      "  --no-cache      ignore and do not write the on-disk cache\n",
+      std::string(kVersion).c_str());
 }
 
-// Renders everything collected in |diagnostics| and returns the exit code.
-int ReportAndSummarize(const SourceManager& sources,
-                       const DiagnosticEngine& diagnostics,
-                       const RenderOptions& options) {
-  if (!diagnostics.diagnostics().empty()) {
-    const std::string text =
-        RenderDiagnostics(sources, diagnostics.diagnostics(), options);
+int Report(const SourceManager& sources,
+           const std::vector<Diagnostic>& diagnostics,
+           const RenderOptions& options) {
+  if (!diagnostics.empty()) {
+    const std::string text = RenderDiagnostics(sources, diagnostics, options);
     std::fputs(text.c_str(), stderr);
   }
 
-  const std::string summary = RenderSummary(diagnostics, options);
-  if (!summary.empty()) {
-    std::fprintf(stderr, "\n%s\n", summary.c_str());
+  size_t errors = 0;
+  size_t warnings = 0;
+  for (const Diagnostic& diagnostic : diagnostics) {
+    if (diagnostic.severity == Severity::kError) {
+      ++errors;
+    } else if (diagnostic.severity == Severity::kWarning) {
+      ++warnings;
+    }
   }
-  return diagnostics.has_errors() ? 1 : 0;
+  if (!diagnostics.empty()) {
+    std::fprintf(stderr, "\n%zu error%s, %zu warning%s\n", errors,
+                 errors == 1 ? "" : "s", warnings,
+                 warnings == 1 ? "" : "s");
+  }
+  return errors == 0 ? 0 : 1;
+}
+
+// Adds every input to the database, loading package directories as packages.
+bool CollectInputs(Database* database,
+                   const Options& options,
+                   DiagnosticEngine* load_diagnostics,
+                   std::vector<FileId>* files) {
+  for (const std::string& input : options.inputs) {
+    if (IsPackageDirectory(input)) {
+      if (!LoadPackage(database, input, load_diagnostics)) {
+        return false;
+      }
+      for (const Module& module : database->modules()) {
+        for (FileId file : module.files) {
+          files->push_back(file);
+        }
+      }
+      continue;
+    }
+
+    std::string error;
+    const FileId file = database->LoadFile(input, &error);
+    if (!file.is_valid()) {
+      std::fprintf(stderr, "wolang: %s\n", error.c_str());
+      return false;
+    }
+    files->push_back(file);
+  }
+  return true;
 }
 
 void PrintTokens(const SourceManager& sources,
@@ -99,22 +153,11 @@ void PrintTokens(const SourceManager& sources,
       case TokenKind::kIdentifier:
         detail = std::string(interner.Text(stream.IdentifierOf(token)));
         break;
-      case TokenKind::kIntLiteral: {
-        const NumberLiteral& number = stream.NumberOf(token);
-        detail = std::to_string(number.integer_value);
-        if (number.has_unit()) {
-          detail += " unit=";
-          detail += std::string(interner.Text(number.unit));
-        }
-        if (number.suffix != NumericSuffix::kNone) {
-          detail += " suffix=";
-          detail += std::string(NumericSuffixName(number.suffix));
-        }
-        break;
-      }
+      case TokenKind::kIntLiteral:
       case TokenKind::kFloatLiteral: {
         const NumberLiteral& number = stream.NumberOf(token);
-        detail = std::to_string(number.float_value);
+        detail = number.is_float ? std::to_string(number.float_value)
+                                 : std::to_string(number.integer_value);
         if (number.has_unit()) {
           detail += " unit=";
           detail += std::string(interner.Text(number.unit));
@@ -162,39 +205,188 @@ void PrintTokens(const SourceManager& sources,
   }
 }
 
-int RunFrontendCommand(const Options& options) {
-  SourceManager sources;
-  StringInterner interner;
-  DiagnosticEngine diagnostics;
+// The cache lives beside the package it belongs to, so two checkouts of the
+// same project never share one.
+std::string CachePathFor(const Options& options) {
+  if (options.no_cache || options.inputs.size() != 1 ||
+      !IsPackageDirectory(options.inputs.front())) {
+    return std::string();
+  }
+  return options.inputs.front() + "/.wolang-cache/items.wdb";
+}
+
+int RunCheck(const Options& options) {
+  Database database;
+  DiagnosticEngine load_diagnostics;
+  std::vector<FileId> files;
+  if (!CollectInputs(&database, options, &load_diagnostics, &files)) {
+    return 2;
+  }
+
+  const std::string cache_path = CachePathFor(options);
+  if (!cache_path.empty()) {
+    Cache::Load(&database, cache_path);
+  }
 
   RenderOptions render;
   render.color = options.color && StderrIsTerminal();
 
-  AstPrintOptions print;
-  print.include_spans = options.show_spans;
-
-  for (const std::string& input : options.inputs) {
-    std::string error;
-    const FileId file = sources.LoadFile(input, &error);
-    if (!file.is_valid()) {
-      std::fprintf(stderr, "wolang: %s\n", error.c_str());
-      return 2;
-    }
-
-    const TokenStream stream = Lex(sources, file, &interner, &diagnostics);
-    if (options.command == "tokens") {
-      PrintTokens(sources, interner, stream, options.show_trivia);
-      continue;
-    }
-
-    const Ast ast = Parse(sources, stream, &interner, &diagnostics);
-    if (options.command == "ast") {
-      const std::string text = PrintAst(sources, interner, ast, print);
-      std::fputs(text.c_str(), stdout);
+  std::vector<Diagnostic> all = load_diagnostics.diagnostics();
+  for (FileId file : files) {
+    const std::vector<Diagnostic>* diagnostics = database.Diagnostics(file);
+    if (diagnostics != nullptr) {
+      all.insert(all.end(), diagnostics->begin(), diagnostics->end());
     }
   }
 
-  return ReportAndSummarize(sources, diagnostics, render);
+  if (!cache_path.empty()) {
+    Cache::Save(&database, cache_path);
+  }
+  return Report(database.sources(), all, render);
+}
+
+int RunSyntaxCommand(const Options& options) {
+  Database database;
+  DiagnosticEngine load_diagnostics;
+  std::vector<FileId> files;
+  if (!CollectInputs(&database, options, &load_diagnostics, &files)) {
+    return 2;
+  }
+
+  RenderOptions render;
+  render.color = options.color && StderrIsTerminal();
+  AstPrintOptions print;
+  print.include_spans = options.show_spans;
+
+  std::vector<Diagnostic> all = load_diagnostics.diagnostics();
+  for (FileId file : files) {
+    if (options.command == "tokens") {
+      const TokenizedFile* tokens = database.Tokens(file);
+      if (tokens != nullptr) {
+        PrintTokens(database.sources(), database.interner(), tokens->tokens,
+                    options.show_trivia);
+      }
+    } else if (options.command == "ast") {
+      const ParsedFile* parsed = database.Parse(file);
+      if (parsed != nullptr) {
+        const std::string text = PrintAst(&database.sources(),
+                                          database.interner(), parsed->ast,
+                                          print);
+        std::fputs(text.c_str(), stdout);
+      }
+    }
+
+    const std::vector<Diagnostic>* diagnostics = database.Diagnostics(file);
+    if (diagnostics != nullptr) {
+      all.insert(all.end(), diagnostics->begin(), diagnostics->end());
+    }
+  }
+  return Report(database.sources(), all, render);
+}
+
+int RunFormat(const Options& options) {
+  Database database;
+  DiagnosticEngine load_diagnostics;
+  std::vector<FileId> files;
+  if (!CollectInputs(&database, options, &load_diagnostics, &files)) {
+    return 2;
+  }
+
+  RenderOptions render;
+  render.color = options.color && StderrIsTerminal();
+
+  int exit_code = 0;
+  for (FileId file : files) {
+    const std::vector<Diagnostic>* diagnostics = database.Diagnostics(file);
+    if (diagnostics != nullptr) {
+      for (const Diagnostic& diagnostic : *diagnostics) {
+        if (diagnostic.severity != Severity::kError) {
+          continue;
+        }
+        // Formatting a file the parser could not understand would silently
+        // drop whatever it failed on.
+        std::fprintf(stderr, "wolang: %s has errors; not formatting\n",
+                     std::string(database.sources().Path(file)).c_str());
+        return Report(database.sources(), *diagnostics, render);
+      }
+    }
+
+    const TokenizedFile* tokens = database.Tokens(file);
+    const ParsedFile* parsed = database.Parse(file);
+    if (tokens == nullptr || parsed == nullptr) {
+      continue;
+    }
+
+    const std::string formatted =
+        Format(database.sources(), database.interner(), tokens->tokens,
+               parsed->ast);
+    const std::string_view original = database.sources().Text(file);
+
+    if (options.check_only) {
+      if (formatted != original) {
+        std::fprintf(stderr, "%s is not formatted\n",
+                     std::string(database.sources().Path(file)).c_str());
+        exit_code = 1;
+      }
+      continue;
+    }
+
+    if (options.write_in_place) {
+      if (formatted == original) {
+        continue;
+      }
+      const std::string path(database.sources().Path(file));
+      std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+      if (!stream.is_open()) {
+        std::fprintf(stderr, "wolang: cannot write '%s'\n", path.c_str());
+        return 2;
+      }
+      stream.write(formatted.data(),
+                   static_cast<std::streamsize>(formatted.size()));
+      std::fprintf(stdout, "formatted %s\n", path.c_str());
+      continue;
+    }
+
+    std::fputs(formatted.c_str(), stdout);
+  }
+  return exit_code;
+}
+
+int RunModules(const Options& options) {
+  if (options.inputs.size() != 1) {
+    std::fprintf(stderr, "wolang: modules needs exactly one directory\n");
+    return 2;
+  }
+
+  Database database;
+  DiagnosticEngine diagnostics;
+  if (!LoadPackage(&database, options.inputs.front(), &diagnostics)) {
+    RenderOptions render;
+    render.color = options.color && StderrIsTerminal();
+    return Report(database.sources(), diagnostics.diagnostics(), render);
+  }
+
+  for (size_t i = 0; i < database.package_count(); ++i) {
+    const Package* package = database.GetPackage(PackageId{
+        static_cast<uint32_t>(i)});
+    std::fprintf(stdout, "package %s %s\n", package->name.c_str(),
+                 package->manifest.version.empty()
+                     ? "(no version)"
+                     : package->manifest.version.c_str());
+  }
+
+  for (const Module& module : database.modules()) {
+    std::fprintf(stdout, "module %s (%zu file%s)\n", module.name.c_str(),
+                 module.files.size(), module.files.size() == 1 ? "" : "s");
+    for (FileId file : module.files) {
+      std::fprintf(stdout, "    %s\n",
+                   std::string(database.sources().Path(file)).c_str());
+    }
+  }
+
+  RenderOptions render;
+  render.color = options.color && StderrIsTerminal();
+  return Report(database.sources(), diagnostics.diagnostics(), render);
 }
 
 int Run(int argc, char** argv) {
@@ -207,6 +399,12 @@ int Run(int argc, char** argv) {
       options.show_trivia = true;
     } else if (argument == "--spans") {
       options.show_spans = true;
+    } else if (argument == "--check") {
+      options.check_only = true;
+    } else if (argument == "--write") {
+      options.write_in_place = true;
+    } else if (argument == "--no-cache") {
+      options.no_cache = true;
     } else if (argument.size() > 1 && argument[0] == '-') {
       std::fprintf(stderr, "wolang: unknown option %.*s\n",
                    static_cast<int>(argument.size()), argument.data());
@@ -226,14 +424,28 @@ int Run(int argc, char** argv) {
     std::fprintf(stdout, "wolang %s\n", std::string(kVersion).c_str());
     return 0;
   }
-  if (options.command == "check" || options.command == "tokens" ||
-      options.command == "ast") {
-    if (options.inputs.empty()) {
-      std::fprintf(stderr, "wolang: %s needs at least one input file\n",
-                   options.command.c_str());
-      return 2;
-    }
-    return RunFrontendCommand(options);
+
+  const bool needs_inputs =
+      options.command == "check" || options.command == "tokens" ||
+      options.command == "ast" || options.command == "fmt" ||
+      options.command == "modules";
+  if (needs_inputs && options.inputs.empty()) {
+    std::fprintf(stderr, "wolang: %s needs at least one path\n",
+                 options.command.c_str());
+    return 2;
+  }
+
+  if (options.command == "check") {
+    return RunCheck(options);
+  }
+  if (options.command == "tokens" || options.command == "ast") {
+    return RunSyntaxCommand(options);
+  }
+  if (options.command == "fmt") {
+    return RunFormat(options);
+  }
+  if (options.command == "modules") {
+    return RunModules(options);
   }
 
   std::fprintf(stderr, "wolang: unknown command '%s'\n",
