@@ -28,7 +28,7 @@ class Fixture {
 
   const Ast& ast() const { return ast_; }
 
-  std::string Tree() const { return PrintAst(sources_, interner_, ast_); }
+  std::string Tree() const { return PrintAst(&sources_, interner_, ast_); }
 
   // The tree of the first declaration's initializer, which keeps expression
   // expectations free of the surrounding `let`.
@@ -37,7 +37,7 @@ class Fixture {
     if (items.empty()) {
       return "<no declarations>\n";
     }
-    return PrintExpr(sources_, interner_, ast_, ast_.Get(items.front()).init);
+    return PrintExpr(&sources_, interner_, ast_, ast_.Get(items.front()).init);
   }
 
   // The tree of the first declaration's body.
@@ -46,7 +46,7 @@ class Fixture {
     if (items.empty()) {
       return "<no declarations>\n";
     }
-    return PrintExpr(sources_, interner_, ast_, ast_.Get(items.front()).body);
+    return PrintExpr(&sources_, interner_, ast_, ast_.Get(items.front()).body);
   }
 
   size_t item_count() const { return ast_.Get(ast_.root()).size(); }
