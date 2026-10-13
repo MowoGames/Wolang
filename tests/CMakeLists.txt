@@ -5,6 +5,7 @@ add_executable(wolang_tests
     unit/base/diagnostic_unittest.cc
     unit/base/source_manager_unittest.cc
     unit/base/string_interner_unittest.cc
+    unit/base/unicode_unittest.cc
     unit/compiler/cache_unittest.cc
     unit/compiler/database_unittest.cc
     unit/compiler/manifest_unittest.cc
@@ -27,6 +28,6 @@ add_test(NAME unit COMMAND wolang_tests)
 
 # Keep the suites individually addressable so a failure points at a component.
 foreach(suite Arena StringInterner SourceManager SourceSpanTest Diagnostic
-              TokenKind Lexer Parser QueryEngine QueryKeyTest QueryKindTest Database Manifest ModuleScopeTest Workspace Formatter Cache)
+              TokenKind Lexer Parser QueryEngine QueryKeyTest QueryKindTest Database Manifest ModuleScopeTest Workspace Formatter Cache Unicode)
   add_test(NAME unit.${suite} COMMAND wolang_tests --filter ${suite})
 endforeach()

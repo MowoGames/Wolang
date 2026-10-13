@@ -307,6 +307,66 @@ WOLANG_TEST(Formatter, FormatsTypes) {
   WOLANG_EXPECT_STABLE(pass.formatted());
 }
 
+WOLANG_TEST(Formatter, FormatsTheNewSurface) {
+  WOLANG_EXPECT_STABLE(
+      "error NotFound, Corrupt\n"
+      "extend Vec3 {\n  fn Flat() -> Vec3 => self\n}\n"
+      "extend Barrel as Damageable {\n"
+      "  fn TakeDamage(amount: float) {}\n"
+      "}\n"
+      "fn Find(id: int) -> Pawn?\n"
+      "fn Load(p: str) -> Level!\n"
+      "fn Lookup(k: str) -> Pawn?!\n"
+      "fn Sum(xs: [float]) -> float\n"
+      "fn Fixed(xs: [float; 3])\n"
+      "var burst: soa [Particle]\n"
+      "var packed: aos [Particle]\n");
+}
+
+WOLANG_TEST(Formatter, FormatsLabelledLoopsAndRanges) {
+  Pass pass(
+      "fn f() {\n"
+      "outer: loop {\n"
+      "for i in 2.. { break outer }\n"
+      "let a = xs[..5]\n"
+      "let b = xs[..]\n"
+      "continue outer\n"
+      "}\n"
+      "}\n");
+  WOLANG_EXPECT(pass.formatted().find("outer: loop {") != std::string::npos);
+  WOLANG_EXPECT(pass.formatted().find("for i in 2.. {") != std::string::npos);
+  WOLANG_EXPECT(pass.formatted().find("xs[..5]") != std::string::npos);
+  WOLANG_EXPECT(pass.formatted().find("xs[..]") != std::string::npos);
+  WOLANG_EXPECT(pass.formatted().find("break outer") != std::string::npos);
+  WOLANG_EXPECT(pass.formatted().find("continue outer") != std::string::npos);
+  WOLANG_EXPECT_STABLE(pass.formatted());
+}
+
+WOLANG_TEST(Formatter, FormatsOptionalPatterns) {
+  Pass pass(
+      "fn f() {\n"
+      "  match count {\n"
+      "    n? => n\n"
+      "    null => 0\n"
+      "  }\n"
+      "}\n");
+  WOLANG_EXPECT(pass.formatted().find("n? => n") != std::string::npos);
+  WOLANG_EXPECT(pass.formatted().find("null => 0") != std::string::npos);
+  WOLANG_EXPECT_STABLE(pass.formatted());
+}
+
+WOLANG_TEST(Formatter, FormatsStructPatternsInConditions) {
+  Pass pass("fn f() { if let Point { x, y: inner } = p { Use(x) } }");
+  WOLANG_EXPECT(pass.formatted().find("if let Point { x, y: inner } = p") !=
+                std::string::npos);
+  WOLANG_EXPECT_STABLE(pass.formatted());
+}
+
+WOLANG_TEST(Formatter, KeepsBlockComments) {
+  Pass pass("/* a note */\nfn f() {}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(), "/* a note */\nfn f() {}\n");
+}
+
 WOLANG_TEST(Formatter, FormatsEveryDeclarationKind) {
   WOLANG_EXPECT_STABLE(
       "import a.b\n"
@@ -320,7 +380,9 @@ WOLANG_TEST(Formatter, FormatsEveryDeclarationKind) {
       "component Velocity {\n  var value: Vec3\n}\n"
       "enum State {\n  Idle\n  Chase(target: Pawn)\n}\n"
       "trait Damageable {\n  fn TakeDamage(amount: float)\n}\n"
-      "impl Damageable for Barrel {\n  fn TakeDamage(amount: float) {}\n}\n"
+      "extend Barrel as Damageable {\n"
+      "  fn TakeDamage(amount: float) {}\n"
+      "}\n"
       "struct Hit {\n  var point: Vec3 = origin\n}\n"
       "signal Died(by: Actor?)\n"
       "system Integrate(dt: float) after Gravity {\n  Step(dt)\n}\n"

@@ -4,6 +4,7 @@ add_library(wolang_core STATIC
     base/diagnostic_renderer.cc
     base/source_manager.cc
     base/string_interner.cc
+    base/unicode.cc
     compiler/cache.cc
     compiler/database.cc
     compiler/item_tree.cc
@@ -29,6 +30,7 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/base/diagnostic_renderer.h
         ${PROJECT_SOURCE_DIR}/include/wolang/base/source_manager.h
         ${PROJECT_SOURCE_DIR}/include/wolang/base/string_interner.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/base/unicode.h
         ${PROJECT_SOURCE_DIR}/include/wolang/compiler/cache.h
         ${PROJECT_SOURCE_DIR}/include/wolang/compiler/database.h
         ${PROJECT_SOURCE_DIR}/include/wolang/compiler/item_tree.h

@@ -117,6 +117,14 @@ WOLANG_TEST(Lexer, TokensCarrySpans) {
 
 // ------------------------------------------------- identifiers & keywords ---
 
+WOLANG_TEST(Lexer, LexesNewKeywords) {
+  Fixture fixture("extend Barrel as Damageable {}\nerror NotFound");
+  WOLANG_EXPECT_EQ(fixture.Kinds(),
+                   "KwExtend Identifier KwAs Identifier LeftBrace RightBrace "
+                   "KwError Identifier");
+  WOLANG_EXPECT(fixture.Codes().empty());
+}
+
 WOLANG_TEST(Lexer, LexesDeclarations) {
   Fixture fixture("pub async fn Fire(target: Pawn) -> bool { return true }");
   WOLANG_EXPECT_EQ(fixture.Kinds(),
@@ -151,9 +159,70 @@ WOLANG_TEST(Lexer, AcceptsUnicodeIdentifiers) {
   WOLANG_EXPECT_EQ(fixture.Kinds(), "KwLet Identifier Eq IntLiteral");
   WOLANG_EXPECT_EQ(fixture.SpellingAt(1), "скорость");
   WOLANG_EXPECT(fixture.Codes().empty());
+
+  // Letters from any script are fine, as are digits and marks after the
+  // first character.
+  WOLANG_EXPECT(Fixture("let 速度 = 1").Codes().empty());
+  WOLANG_EXPECT(Fixture("let café2 = 1").Codes().empty());
+}
+
+WOLANG_TEST(Lexer, RejectsNonLettersInIdentifiers) {
+  // An emoji or a symbol would let two different names look identical, and
+  // an invisible character would hide one name inside another.
+  WOLANG_EXPECT_EQ(Fixture("let 🚀 = 1").Codes(), "E0013");
+  WOLANG_EXPECT_EQ(Fixture("let a\u200Bb = 1").Codes(), "E0013");
+  WOLANG_EXPECT_EQ(Fixture("let ❤ = 1").Codes(), "E0013");
+}
+
+WOLANG_TEST(Lexer, RequiresIdentifiersInNfcForm) {
+  // `й` precomposed is accepted; the same letter spelled as `и` plus a
+  // combining breve is rejected, so one name has exactly one spelling.
+  WOLANG_EXPECT(Fixture("let й = 1").Codes().empty());
+  WOLANG_EXPECT_EQ(Fixture("let и\u0306 = 1").Codes(), "E0014");
+  WOLANG_EXPECT_EQ(Fixture("let cafe\u0301 = 1").Codes(), "E0014");
+
+  // A mark that cannot compose with what precedes it is already in NFC.
+  WOLANG_EXPECT(Fixture("let \u0915\u093E = 1").Codes().empty());
+}
+
+WOLANG_TEST(Lexer, SkipsBlockComments) {
+  Fixture fixture("fn /* inline */ f() {}");
+  WOLANG_EXPECT_EQ(fixture.Kinds(),
+                   "KwFn Identifier LeftParen RightParen LeftBrace "
+                   "RightBrace");
+  WOLANG_EXPECT_EQ(fixture.stream().comments.size(), size_t{1});
+  WOLANG_EXPECT(fixture.Codes().empty());
+}
+
+WOLANG_TEST(Lexer, BlockCommentsNest) {
+  // Nesting is the only reason to reach for a block comment: commenting out a
+  // region that already contains one has to work.
+  Fixture fixture("fn /* outer /* inner */ still */ f() {}");
+  WOLANG_EXPECT_EQ(fixture.Kinds(),
+                   "KwFn Identifier LeftParen RightParen LeftBrace "
+                   "RightBrace");
+  WOLANG_EXPECT(fixture.Codes().empty());
+}
+
+WOLANG_TEST(Lexer, BlockCommentsMaySpanLines) {
+  Fixture fixture("fn f() {\n/* one\n   two */\n}");
+  WOLANG_EXPECT_EQ(fixture.Kinds(),
+                   "KwFn Identifier LeftParen RightParen LeftBrace "
+                   "RightBrace");
+  WOLANG_EXPECT(fixture.Codes().empty());
+}
+
+WOLANG_TEST(Lexer, ReportsUnterminatedBlockComments) {
+  WOLANG_EXPECT_EQ(Fixture("fn f() /* never closed").Codes(), "E0012");
+  // An unclosed inner comment leaves the outer one open too.
+  WOLANG_EXPECT_EQ(Fixture("/* outer /* inner */").Codes(), "E0012");
 }
 
 WOLANG_TEST(Lexer, ReportsReservedWords) {
+  // `impl` became reserved when `extend` replaced it, so old habits get a
+  // message instead of a confusing parse failure.
+  WOLANG_EXPECT_EQ(Fixture("impl Vec3 {}").Codes(), "E0011");
+
   Fixture fixture("let transactional = 1");
   WOLANG_EXPECT_EQ(fixture.Codes(), "E0011");
   // Recovery keeps it an identifier so the rest of the line still parses.
