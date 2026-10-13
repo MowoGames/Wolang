@@ -1004,5 +1004,51 @@ extend Pawn as Damageable {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+
+// -------------------------------------------------------- flow typing -----
+
+WOLANG_TEST(TypeCheck, AnExplicitNullCheckNarrowsTheName) {
+  Fixture f(R"(
+struct Pawn { var health: float }
+
+fun take(p: Pawn?) -> float {
+  if p != null {
+    return p.health
+  }
+  return 0.0
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, NarrowingEndsWithTheBranch) {
+  Fixture f(R"(
+struct Pawn { var health: float }
+
+fun take(p: Pawn?) -> float {
+  if p != null {
+    return p.health
+  }
+  return p.health
+}
+)");
+  // Exactly one complaint, about the access after the branch.
+  WOLANG_EXPECT_EQ(f.Codes(), "E0104");
+}
+
+WOLANG_TEST(TypeCheck, NullComparesInEitherOrder) {
+  Fixture f(R"(
+struct Pawn { var health: float }
+
+fun take(p: Pawn?) -> float {
+  if null != p {
+    return p.health
+  }
+  return 0.0
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang

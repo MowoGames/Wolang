@@ -156,6 +156,7 @@ class Checker {
   // enclosing type or it has no such member.
   const Member* SelfMember(Symbol name) const;
   TypeId CheckIf(const Expr& expr, TypeId expected);
+  void NarrowOnNullCheck(ExprId condition);
   TypeId CheckMatch(const Expr& expr, TypeId expected);
   void CheckExhaustive(const Expr& expr, TypeId subject);
   void CheckTraitConformance(const Item& item);
@@ -505,6 +506,11 @@ TypeId Checker::CheckBinary(const Expr& expr) {
   } else if (expr.op == TokenKind::kAmpAmp ||
              expr.op == TokenKind::kPipePipe) {
     right_expectation = types_->bool_type();
+  } else if (types_->KindOf(left) == TypeKind::kOptional &&
+             types_->KindOf(types_->ElementOf(left)) == TypeKind::kNever) {
+    // The left side is the bare `null` literal, whose type says nothing
+    // about what it is being compared with.
+    right_expectation = TypeId{};
   }
   const TypeId right =
       Check(expr.rhs, right_expectation, /*keep_open=*/true);
@@ -526,6 +532,17 @@ TypeId Checker::CheckBinary(const Expr& expr) {
     case TokenKind::kLessEq:
     case TokenKind::kGreater:
     case TokenKind::kGreaterEq: {
+      // `null` compares with anything that may be absent, in either order,
+      // and that is how an optional is tested without `if let`.
+      const auto is_null = [this](ExprId id) {
+        return ast_.Contains(id) &&
+               ast_.Get(id).kind == ExprKind::kNullLiteral;
+      };
+      if ((is_null(expr.rhs) && types_->IsOptional(left)) ||
+          (is_null(expr.lhs) && types_->IsOptional(right))) {
+        return types_->bool_type();
+      }
+
       const Dimensions left_dimensions = types_->DimensionsOf(left);
       const Dimensions right_dimensions = types_->DimensionsOf(right);
       if (left_dimensions != right_dimensions) {
@@ -859,6 +876,41 @@ TypeId Checker::CheckField(const Expr& expr) {
   return through_optional ? types_->Optional(member->type) : member->type;
 }
 
+// `if p != null { ... }` narrows `p` for the body, the same way `if let`
+// does. Shadowing the name in the current scope is what makes it work for
+// the body only, with no flow graph to carry.
+void Checker::NarrowOnNullCheck(ExprId condition) {
+  if (!ast_.Contains(condition)) {
+    return;
+  }
+  const Expr& test = ast_.Get(condition);
+  if (test.kind != ExprKind::kBinary || test.op != TokenKind::kBangEq) {
+    return;
+  }
+
+  // Either order: `p != null` and `null != p` say the same thing.
+  const ExprId sides[2] = {test.lhs, test.rhs};
+  for (int i = 0; i < 2; ++i) {
+    const ExprId name_side = sides[i];
+    const ExprId null_side = sides[1 - i];
+    if (!ast_.Contains(name_side) || !ast_.Contains(null_side)) {
+      continue;
+    }
+    const Expr& name_expr = ast_.Get(name_side);
+    if (ast_.Get(null_side).kind != ExprKind::kNullLiteral ||
+        name_expr.kind != ExprKind::kPath) {
+      continue;
+    }
+    const Binding* binding = Lookup(name_expr.name);
+    if (binding == nullptr || !types_->IsOptional(binding->type)) {
+      continue;
+    }
+    Bind(name_expr.name, types_->ElementOf(binding->type),
+         binding->is_mutable);
+    return;
+  }
+}
+
 TypeId Checker::CheckIf(const Expr& expr, TypeId expected) {
   PushScope();
   if (HasFlag(expr.flags, ExprFlags::kHasBinding)) {
@@ -874,6 +926,7 @@ TypeId Checker::CheckIf(const Expr& expr, TypeId expected) {
     if (!Accepts(types_->bool_type(), condition)) {
       ReportMismatch(types_->bool_type(), condition, expr.span);
     }
+    NarrowOnNullCheck(expr.lhs);
   }
 
   const TypeId then_type = Check(expr.rhs, expected);
