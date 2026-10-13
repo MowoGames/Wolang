@@ -18,6 +18,7 @@ constexpr std::string_view kAssignToLet = "E0105";
 constexpr std::string_view kNotCallable = "E0106";
 constexpr std::string_view kNotIndexable = "E0107";
 constexpr std::string_view kUnknownMember = "E0112";
+constexpr std::string_view kNonExhaustive = "E0201";
 constexpr std::string_view kBadOperand = "E0108";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
 constexpr std::string_view kDimensionMismatch = "E1001";
@@ -155,6 +156,7 @@ class Checker {
   const Member* SelfMember(Symbol name) const;
   TypeId CheckIf(const Expr& expr, TypeId expected);
   TypeId CheckMatch(const Expr& expr, TypeId expected);
+  void CheckExhaustive(const Expr& expr, TypeId subject);
   TypeId CheckLoop(const Expr& expr);
   TypeId CheckRange(const Expr& expr);
 
@@ -856,6 +858,158 @@ TypeId Checker::CheckIf(const Expr& expr, TypeId expected) {
   return then_type;
 }
 
+// A `match` has to cover every value its subject can take, because a value
+// that falls through has nowhere to go. Only bool, optionals and enums have a
+// value set the compiler can enumerate; anything else needs a catch-all arm.
+void Checker::CheckExhaustive(const Expr& expr, TypeId subject) {
+  if (types_->IsError(subject)) {
+    return;
+  }
+
+  // An enum's variants are its members. Gathered first, because a bare name
+  // in an arm is the short form of a variant when the subject is that enum,
+  // and an ordinary binding -- a catch-all -- when it is not.
+  std::vector<Symbol> variants;
+  for (const Member& member : resolution_->MembersOf(
+           types_->StripWrappers(subject))) {
+    if (member.kind == MemberKind::kVariant) {
+      variants.push_back(member.name);
+    }
+  }
+  const auto is_variant = [&variants](Symbol name) {
+    for (Symbol variant : variants) {
+      if (variant == name) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  bool has_catch_all = false;
+  bool covers_true = false;
+  bool covers_false = false;
+  bool covers_null = false;
+  bool covers_present = false;
+  std::vector<Symbol> covered_variants;
+
+  for (MatchArmId arm_id : ast_.Get(expr.arms)) {
+    const MatchArm& arm = ast_.Get(arm_id);
+    // A guarded arm may not run, so it covers nothing.
+    if (arm.guard.is_valid()) {
+      continue;
+    }
+    for (PatternId pattern_id : ast_.Get(arm.patterns)) {
+      if (!ast_.Contains(pattern_id)) {
+        continue;
+      }
+      const Pattern& pattern = ast_.Get(pattern_id);
+      switch (pattern.kind) {
+        case PatternKind::kBinding:
+          if (is_variant(pattern.name)) {
+            covered_variants.push_back(pattern.name);
+          } else {
+            has_catch_all = true;
+          }
+          break;
+        case PatternKind::kWildcard:
+        case PatternKind::kRest:
+          has_catch_all = true;
+          break;
+        case PatternKind::kPresent:
+          covers_present = true;
+          break;
+        case PatternKind::kLiteral: {
+          if (!ast_.Contains(pattern.literal)) {
+            break;
+          }
+          const Expr& literal = ast_.Get(pattern.literal);
+          if (literal.kind == ExprKind::kBoolLiteral) {
+            if (literal.aux != 0) {
+              covers_true = true;
+            } else {
+              covers_false = true;
+            }
+          } else if (literal.kind == ExprKind::kNullLiteral) {
+            covers_null = true;
+          }
+          break;
+        }
+        case PatternKind::kVariant:
+        case PatternKind::kStruct: {
+          // The variant name is the last segment of the pattern's path;
+          // `name` holds the binding of a struct pattern's field instead.
+          const std::span<const Symbol> path = ast_.Get(pattern.path);
+          if (!path.empty()) {
+            covered_variants.push_back(path.back());
+          } else if (pattern.name.is_valid()) {
+            covered_variants.push_back(pattern.name);
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
+
+  if (has_catch_all) {
+    return;
+  }
+
+  const auto report = [&](std::string missing) {
+    std::string message = "`match` does not cover every value of `";
+    message.append(Describe(subject));
+    message.append("`");
+    Report(kNonExhaustive, std::move(message), expr.span,
+           "add an arm for " + missing + ", or a `_` arm");
+  };
+
+  if (types_->KindOf(subject) == TypeKind::kBool) {
+    if (!covers_true || !covers_false) {
+      report(covers_true ? "`false`" : "`true`");
+    }
+    return;
+  }
+
+  if (types_->IsOptional(subject)) {
+    if (!covers_null || !covers_present) {
+      report(covers_null ? "`x?`" : "`null`");
+    }
+    return;
+  }
+
+  // The uncovered variants are known by name, so they can be listed.
+  if (!variants.empty()) {
+    std::string missing;
+    for (Symbol variant : variants) {
+      bool found = false;
+      for (Symbol covered : covered_variants) {
+        if (covered == variant) {
+          found = true;
+          break;
+        }
+      }
+      if (found) {
+        continue;
+      }
+      if (!missing.empty()) {
+        missing.append(", ");
+      }
+      missing.push_back('`');
+      missing.append(interner_->Text(variant));
+      missing.push_back('`');
+    }
+    if (!missing.empty()) {
+      report(std::move(missing));
+    }
+    return;
+  }
+
+  // Every other type has more values than a `match` can spell out, so the
+  // only exhaustive form is one with a catch-all.
+  report("every remaining value");
+}
+
 TypeId Checker::CheckMatch(const Expr& expr, TypeId expected) {
   const TypeId subject = Check(expr.lhs, TypeId{});
   TypeId result;
@@ -884,6 +1038,8 @@ TypeId Checker::CheckMatch(const Expr& expr, TypeId expected) {
       ReportMismatch(result, body, arm.span);
     }
   }
+
+  CheckExhaustive(expr, subject);
 
   if (expected.is_valid()) {
     return expected;
@@ -1136,10 +1292,18 @@ void Checker::BindPattern(PatternId id, TypeId type,
   }
   const Pattern& pattern = ast_.Get(id);
   switch (pattern.kind) {
-    case PatternKind::kBinding:
+    case PatternKind::kBinding: {
+      // A bare name that is a variant of the subject's enum is the short
+      // form of that variant, not a new binding that would shadow it.
+      const Member* member = resolution_->FindMember(
+          types_->StripWrappers(type), pattern.name);
+      if (member != nullptr && member->kind == MemberKind::kVariant) {
+        return;
+      }
       Bind(pattern.name, type,
            is_mutable || HasFlag(pattern.flags, PatternFlags::kMutable));
       return;
+    }
 
     case PatternKind::kPresent: {
       // `n?` matches a present optional and binds what is inside.

@@ -796,5 +796,91 @@ fun use() {
                 std::string::npos);
 }
 
+
+// ------------------------------------------------------ exhaustiveness -----
+
+WOLANG_TEST(TypeCheck, EnumMatchMustCoverEveryVariant) {
+  Fixture f(R"(
+enum Shape {
+  Circle(radius: float)
+  Square(side: float)
+  Point
+}
+
+fun area(s: Shape) -> float {
+  return match s {
+    Circle(r) => r
+    Point => 0.0
+  }
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0201"));
+  // The uncovered variant is named, which is the whole value of the check.
+  WOLANG_EXPECT(f.Messages().find("Shape") != std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, CoveringEveryVariantIsExhaustive) {
+  Fixture f(R"(
+enum Shape {
+  Circle(radius: float)
+  Point
+}
+
+fun area(s: Shape) -> float {
+  return match s {
+    Circle(r) => r
+    Point => 0.0
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, BoolMatchNeedsBothValues) {
+  Fixture f("fun pick(b: bool) -> int {\n"
+            "  return match b {\n    true => 1\n  }\n}\n");
+  WOLANG_EXPECT(f.HasCode("E0201"));
+}
+
+WOLANG_TEST(TypeCheck, OptionalMatchNeedsNullAndPresent) {
+  Fixture f(R"(
+struct Vec3 { var x: float }
+
+fun pick(v: Vec3?) -> int {
+  return match v {
+    null => 0
+    x? => 1
+  }
+}
+
+fun half(v: Vec3?) -> int {
+  return match v {
+    null => 0
+  }
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0201"));
+  // One message, for `half` only.
+  WOLANG_EXPECT_EQ(f.Codes(), "E0201");
+}
+
+WOLANG_TEST(TypeCheck, AnIntegerMatchNeedsACatchAll) {
+  Fixture f("fun pick(n: int) -> int {\n"
+            "  return match n {\n    0 => 1\n    1 => 2\n  }\n}\n");
+  WOLANG_EXPECT(f.HasCode("E0201"));
+
+  Fixture ok("fun pick(n: int) -> int {\n"
+             "  return match n {\n    0 => 1\n    _ => 2\n  }\n}\n");
+  WOLANG_EXPECT_EQ(ok.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AGuardedArmCoversNothing) {
+  // A guard may be false, so the arm cannot be counted on.
+  Fixture f("fun pick(b: bool) -> int {\n"
+            "  return match b {\n    true => 1\n"
+            "    false if b => 2\n  }\n}\n");
+  WOLANG_EXPECT(f.HasCode("E0201"));
+}
+
 }  // namespace
 }  // namespace wolang
