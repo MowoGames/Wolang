@@ -165,6 +165,11 @@ class TypeResolver {
   void PushTypeParameter(Symbol name, TypeId type);
   void PopTypeParameters(size_t count);
 
+  // Collects every file-scope name a type annotation referred to, so that an
+  // import nothing names can be reported. Optional: nothing is recorded
+  // until a sink is installed.
+  void CollectUsedNames(std::vector<Symbol>* sink) { used_ = sink; }
+
  private:
   TypeId ResolvePath(const Ast& ast, const TypeRef& type);
   TypeId LookupBuiltin(Symbol name) const;
@@ -174,6 +179,7 @@ class TypeResolver {
   const FileResolution* resolution_;
   DiagnosticEngine* diagnostics_;
   std::vector<std::pair<Symbol, TypeId>> type_parameters_;
+  std::vector<Symbol>* used_ = nullptr;
   std::unordered_map<uint32_t, TypeId> builtins_;
 };
 

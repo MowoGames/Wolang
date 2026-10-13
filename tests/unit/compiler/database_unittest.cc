@@ -59,10 +59,10 @@ WOLANG_TEST(Database, CollectsDiagnosticsPerFile) {
 
 WOLANG_TEST(Database, DiagnosticsFollowAnEdit) {
   Database db;
-  const FileId file = db.AddFile("a.wo", "fun f() { let a = * }\n");
+  const FileId file = db.AddFile("a.wo", "fun f() -> int { let a = * }\n");
   WOLANG_EXPECT_EQ(db.Diagnostics(file)->size(), size_t{1});
 
-  db.SetFileText(file, "fun f() { let a = 1 }\n");
+  db.SetFileText(file, "fun f() -> int { let a = 1\n  return a\n}\n");
   WOLANG_EXPECT(db.Diagnostics(file)->empty());
 }
 

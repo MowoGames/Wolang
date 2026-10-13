@@ -22,14 +22,28 @@ constexpr std::string_view kNonExhaustive = "E0201";
 constexpr std::string_view kBadOverride = "E0401";
 constexpr std::string_view kMissingTraitMethod = "E0402";
 constexpr std::string_view kBoundNotSatisfied = "E0403";
+constexpr std::string_view kReferenceInField = "E0120";
+constexpr std::string_view kUnusedName = "W0101";
+constexpr std::string_view kUnreachableCode = "W0102";
 constexpr std::string_view kBadOperand = "E0108";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
 constexpr std::string_view kDimensionMismatch = "E1001";
 constexpr std::string_view kUnknownUnit = "E1002";
 
 // One lexical scope: locals shadow whatever is outside.
+// One local binding and whether anything ever read it. Tracked per scope so
+// that an unused local is reported where it goes out of scope, which is also
+// where the last chance to use it was.
+struct LocalBinding {
+  Binding binding;
+  SourceSpan span;
+  bool used = false;
+  // `_` and names starting with it are deliberately unused.
+  bool deliberate = false;
+};
+
 struct Scope {
-  std::vector<Binding> bindings;
+  std::vector<LocalBinding> bindings;
 };
 
 // The range an integer type can hold, used to reject a literal that does not
@@ -70,6 +84,9 @@ class Checker {
         ast_(ast),
         resolver_(types, interner, resolution, &diagnostics_) {
     result_.expr_types.assign(ast.expr_count(), TypeId{});
+    // A name in type position counts as a use just as much as one in
+    // expression position.
+    resolver_.CollectUsedNames(&result_.used_names);
   }
 
   TypedBody Run(ItemId item);
@@ -82,6 +99,14 @@ class Checker {
               SourceSpan span,
               std::string label = {}) {
     diagnostics_.Error(code, std::move(message))
+        .Primary(span, std::move(label));
+  }
+
+  void Warn(std::string_view code,
+            std::string message,
+            SourceSpan span,
+            std::string label = {}) {
+    diagnostics_.Warning(code, std::move(message))
         .Primary(span, std::move(label));
   }
 
@@ -113,12 +138,27 @@ class Checker {
 
   void PushScope() { scopes_.emplace_back(); }
   void PopScope() {
-    if (!scopes_.empty()) {
-      scopes_.pop_back();
+    if (scopes_.empty()) {
+      return;
     }
+    // Reported here because this is also where the last chance to use the
+    // binding was.
+    for (const LocalBinding& local : scopes_.back().bindings) {
+      if (local.used || local.deliberate || !local.span.is_valid()) {
+        continue;
+      }
+      std::string message = "`";
+      message.append(interner_->Text(local.binding.name));
+      message.append("` is never used");
+      Warn(kUnusedName, std::move(message), local.span,
+           "prefix it with `_` if that is deliberate");
+    }
+    scopes_.pop_back();
   }
-  void Bind(Symbol name, TypeId type, bool is_mutable);
-  const Binding* Lookup(Symbol name) const;
+  void Bind(Symbol name, TypeId type, bool is_mutable,
+            SourceSpan span = SourceSpan());
+  // Not const: finding a local marks it used, which is what W0101 reads.
+  const Binding* Lookup(Symbol name);
 
   // --------------------------------------------------------- declarations --
 
@@ -129,6 +169,10 @@ class Checker {
   // ---------------------------------------------------------- statements --
 
   void CheckBlock(ExprId id, TypeId expected);
+
+  // True when control cannot continue past |id|: a `return`, a `break`, a
+  // `continue`, or an expression statement whose type is `never`.
+  bool Diverges(StmtId id) const;
   void CheckStmt(StmtId id);
   // |is_mutable| comes from the `var` keyword of the enclosing
   // statement; a pattern of its own only says `mut`.
@@ -200,30 +244,42 @@ class Checker {
   uint32_t loop_depth_ = 0;
 };
 
-void Checker::Bind(Symbol name, TypeId type, bool is_mutable) {
+void Checker::Bind(Symbol name, TypeId type, bool is_mutable,
+                   SourceSpan span) {
   if (scopes_.empty() || !name.is_valid()) {
     return;
   }
-  Binding binding;
-  binding.name = name;
-  binding.kind = BindingKind::kLocal;
-  binding.type = type;
-  binding.is_mutable = is_mutable;
-  scopes_.back().bindings.push_back(binding);
+  LocalBinding local;
+  local.binding.name = name;
+  local.binding.kind = BindingKind::kLocal;
+  local.binding.type = type;
+  local.binding.is_mutable = is_mutable;
+  local.span = span;
+  const std::string_view text = interner_->Text(name);
+  local.deliberate = !text.empty() && text.front() == '_';
+  scopes_.back().bindings.push_back(std::move(local));
 }
 
-const Binding* Checker::Lookup(Symbol name) const {
+const Binding* Checker::Lookup(Symbol name) {
   // Innermost scope first, so a local shadows a field and a field shadows a
   // module-level name.
   for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
     for (auto it = scope->bindings.rbegin(); it != scope->bindings.rend();
          ++it) {
-      if (it->name == name) {
-        return &*it;
+      if (it->binding.name == name) {
+        it->used = true;
+        return &it->binding;
       }
     }
   }
-  return resolution_ == nullptr ? nullptr : resolution_->Find(name);
+  if (resolution_ == nullptr) {
+    return nullptr;
+  }
+  // Falling through to file scope means the name came from this file's own
+  // declarations, its module siblings or its imports -- which is exactly
+  // what an unused-import check needs to know.
+  result_.used_names.push_back(name);
+  return resolution_->Find(name);
 }
 
 // ------------------------------------------------------------- adaptation ---
@@ -1349,7 +1405,7 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
                                       ? resolver_.Resolve(ast_, param.type)
                                       : types_->error();
         params.push_back(param_type);
-        Bind(param.name, param_type, param.is_mutable);
+        Bind(param.name, param_type, param.is_mutable, param.span);
       }
       const TypeId declared = expr.type.is_valid()
                                   ? resolver_.Resolve(ast_, expr.type)
@@ -1409,7 +1465,8 @@ void Checker::BindPattern(PatternId id, TypeId type,
         return;
       }
       Bind(pattern.name, type,
-           is_mutable || HasFlag(pattern.flags, PatternFlags::kMutable));
+           is_mutable || HasFlag(pattern.flags, PatternFlags::kMutable),
+           pattern.span);
       return;
     }
 
@@ -1532,15 +1589,41 @@ void Checker::CheckStmt(StmtId id) {
   }
 }
 
+bool Checker::Diverges(StmtId id) const {
+  if (!ast_.Contains(id)) {
+    return false;
+  }
+  const Stmt& stmt = ast_.Get(id);
+  switch (stmt.kind) {
+    case StmtKind::kReturn:
+    case StmtKind::kBreak:
+    case StmtKind::kContinue:
+      return true;
+    case StmtKind::kExpr:
+      return types_->KindOf(result_.TypeOf(stmt.expr)) == TypeKind::kNever;
+    default:
+      return false;
+  }
+}
+
 void Checker::CheckBlock(ExprId id, TypeId expected) {
   const Expr& block = ast_.Get(id);
   PushScope();
 
   const std::span<const StmtId> stmts = ast_.Get(block.stmts);
   TypeId type = types_->void_type();
+  // Set by the first statement that cannot fall through, so that everything
+  // after it is reported once rather than statement by statement.
+  bool diverged = false;
   for (size_t i = 0; i < stmts.size(); ++i) {
     const bool is_last = i + 1 == stmts.size();
     const Stmt& stmt = ast_.Get(stmts[i]);
+
+    if (diverged) {
+      Warn(kUnreachableCode, "this code is never reached", stmt.span);
+      diverged = false;  // One message per block, not one per statement.
+    }
+
     // A block's value is its final expression statement, which is what makes
     // `let x = { ... }` and an expression-bodied arm work.
     if (is_last && stmt.kind == StmtKind::kExpr) {
@@ -1548,6 +1631,10 @@ void Checker::CheckBlock(ExprId id, TypeId expected) {
       continue;
     }
     CheckStmt(stmts[i]);
+
+    if (!is_last && Diverges(stmts[i])) {
+      diverged = true;
+    }
   }
 
   PopScope();
@@ -1579,7 +1666,11 @@ void Checker::CheckFunction(const Item& item) {
         ReportMismatch(type, found, ast_.Get(param.default_value).span);
       }
     }
-    Bind(param.name, type, param.is_mutable);
+    // A declaration with no body -- a trait method, an `extern` -- has
+    // nowhere to use its parameters, so an unused one says nothing. An
+    // invalid span is what opts a binding out of W0101.
+    Bind(param.name, type, param.is_mutable,
+         item.body.is_valid() ? param.span : SourceSpan());
   }
 
   const TypeId previous_return = return_type_;
@@ -1608,6 +1699,18 @@ void Checker::CheckBinding(const Item& item) {
   const TypeId declared = item.type.is_valid()
                               ? resolver_.Resolve(ast_, item.type)
                               : TypeId{};
+
+  // References are second class: a parameter or a local may hold one, a
+  // field may not. That is what gives memory safety without a borrow
+  // checker -- a reference can never outlive the frame it was made in.
+  if (self_type_.is_valid() &&
+      types_->KindOf(declared) == TypeKind::kReference) {
+    std::string message = "a field cannot hold a reference; `";
+    message.append(interner_->Text(item.name));
+    message.append("` would outlive what it points at");
+    Report(kReferenceInField, std::move(message), item.name_span,
+           "store a `Box<T>`, an `Rc<T>` or the value itself");
+  }
   if (!item.init.is_valid()) {
     return;
   }

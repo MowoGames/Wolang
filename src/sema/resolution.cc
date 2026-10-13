@@ -348,6 +348,10 @@ TypeId TypeResolver::ResolvePath(const Ast& ast, const TypeRef& type) {
     return builtin;
   }
 
+  if (used_ != nullptr) {
+    used_->push_back(name);
+  }
+
   const Binding* binding =
       resolution_ == nullptr ? nullptr : resolution_->Find(name);
   if (binding == nullptr) {

@@ -1,5 +1,5 @@
 // Damage maths, with units doing the checking.
-need demo.engine.{Length, Time, Velocity, m, s}
+need demo.engine.{Length, Time, Velocity}
 
 offer error OutOfRange, Immune
 

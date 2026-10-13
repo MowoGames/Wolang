@@ -116,9 +116,11 @@ WOLANG_TEST(Workspace, DiscoversModulesFromDirectories) {
 WOLANG_TEST(Workspace, ResolvesImportsAcrossDiscoveredModules) {
   TempTree tree("imports");
   tree.Write("wolang.toml", "[package]\nname = \"game\"\n");
+  // The import is used, so that "nothing at all is reported" stays the
+  // assertion rather than becoming "nothing but the unused-import lint".
   tree.Write("src/main.wo",
              "need game.engine.{Vec3}\n"
-             "fun main() {}\n");
+             "fun main() { let _v = Vec3() }\n");
   tree.Write("src/engine/math.wo", "offer struct Vec3 {}\n");
 
   Database db;
@@ -146,7 +148,7 @@ WOLANG_TEST(Workspace, LoadsPathDependencies) {
   tree.Write("game/wolang.toml",
              "[package]\nname = \"game\"\n"
              "[dependencies]\ncore = { path = \"../core\" }\n");
-  tree.Write("game/src/main.wo", "need core.{Log}\nfun main() {}\n");
+  tree.Write("game/src/main.wo", "need core.{Log}\nfun main() { Log() }\n");
   tree.Write("core/wolang.toml", "[package]\nname = \"core\"\n");
   tree.Write("core/src/log.wo", "offer fun Log() {}\n");
 

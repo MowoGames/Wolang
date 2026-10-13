@@ -1,9 +1,8 @@
 // The root module of the package is named after the package itself: `demo`.
-need demo.engine.{Vec3, Length, Velocity, m, s}
+need demo.engine.{Report, m, s}
 need demo.combat.{Falloff, TravelTime}
 
 fun main() {
-  let origin = Vec3()
   let reach = 3m
 
   // Units are checked at compile time and cost nothing at runtime: swapping
@@ -12,4 +11,6 @@ fun main() {
 
   let speed = 2m / 1s
   let eta = TravelTime(reach, speed)
+
+  Report(damage, eta)
 }

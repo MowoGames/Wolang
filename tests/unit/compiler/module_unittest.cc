@@ -33,13 +33,25 @@ class Fixture {
 
   Database& db() { return db_; }
 
+  // Errors only. A warning is asserted through Warnings(), so that adding a
+  // lint does not invalidate every test that says "this resolves".
   std::string Codes(FileId file) {
+    return CodesOf(file, Severity::kError);
+  }
+  std::string Warnings(FileId file) {
+    return CodesOf(file, Severity::kWarning);
+  }
+
+  std::string CodesOf(FileId file, Severity severity) {
     std::string result;
     const std::vector<Diagnostic>* diagnostics = db_.Diagnostics(file);
     if (diagnostics == nullptr) {
       return result;
     }
     for (const Diagnostic& diagnostic : *diagnostics) {
+      if (diagnostic.severity != severity) {
+        continue;
+      }
       if (!result.empty()) {
         result.push_back(',');
       }
@@ -135,6 +147,50 @@ WOLANG_TEST(ModuleScopeTest, ResolvesImportsBetweenModules) {
   WOLANG_EXPECT_EQ(imports->imports.front().names.size(), size_t{2});
   WOLANG_EXPECT(imports->imports.front().missing.empty());
   WOLANG_EXPECT(fixture.Codes(main).empty());
+}
+
+WOLANG_TEST(ModuleScopeTest, ReportsANeedNothingUses) {
+  // Only type checking knows what a file actually named, which is why this
+  // lives with the checker rather than with import resolution.
+  Fixture fixture;
+  const ModuleId math = fixture.AddModule("game.math");
+  fixture.AddFile(math, "vec.wo", "offer struct Vec3 {}\noffer fun Dot() {}\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "need game.math.{Vec3, Dot}\nfun main() { Dot() }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+  WOLANG_EXPECT_EQ(fixture.Warnings(main), "W0101");
+  WOLANG_EXPECT(fixture.Messages(main).find("`Vec3` is needed but never used") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(ModuleScopeTest, ANameUsedInTypePositionCounts) {
+  Fixture fixture;
+  const ModuleId math = fixture.AddModule("game.math");
+  fixture.AddFile(math, "vec.wo", "offer struct Vec3 {}\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "need game.math.{Vec3}\nfun take(_v: Vec3) {}\n");
+
+  WOLANG_EXPECT_EQ(fixture.Warnings(main), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, ABareNeedIsNeverUnused) {
+  // `need a.b` brings in a whole module, so there is no one name to blame.
+  Fixture fixture;
+  const ModuleId math = fixture.AddModule("game.math");
+  fixture.AddFile(math, "vec.wo", "offer struct Vec3 {}\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main =
+      fixture.AddFile(game, "main.wo", "need game.math\nfun main() {}\n");
+
+  WOLANG_EXPECT_EQ(fixture.Warnings(main), "");
 }
 
 WOLANG_TEST(ModuleScopeTest, ReportsAnUnknownModule) {

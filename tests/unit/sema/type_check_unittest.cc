@@ -22,13 +22,21 @@ class Fixture {
   Database& db() { return db_; }
   FileId file() const { return file_; }
 
-  std::string Codes() {
+  // Errors only. A warning is asserted through Warnings(), so that adding a
+  // lint does not invalidate every test that says "this compiles".
+  std::string Codes() { return CodesOf(Severity::kError); }
+  std::string Warnings() { return CodesOf(Severity::kWarning); }
+
+  std::string CodesOf(Severity severity) {
     std::string result;
     const std::vector<Diagnostic>* diagnostics = db_.Diagnostics(file_);
     if (diagnostics == nullptr) {
       return result;
     }
     for (const Diagnostic& diagnostic : *diagnostics) {
+      if (diagnostic.severity != severity) {
+        continue;
+      }
       if (!result.empty()) {
         result.push_back(',');
       }
@@ -1170,6 +1178,94 @@ fun Hurt<T: Damageable>(victim: T) {}
 fun use(p: Pawn) {
   Spawn(p)
   Hurt(p)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+
+// ----------------------------------------------------------- warnings -----
+
+WOLANG_TEST(TypeCheck, ReportsAnUnusedLocal) {
+  Fixture f(R"(
+fun f() -> int {
+  let a = 1
+  let b = 2
+  return a
+}
+)");
+  WOLANG_EXPECT_EQ(f.Warnings(), "W0101");
+  WOLANG_EXPECT(f.Messages().find("`b` is never used") != std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, AnUnderscorePrefixOptsOut) {
+  Fixture f(R"(
+fun f(_unused: int, used: int) -> int {
+  let _ignored = 1
+  return used
+}
+)");
+  WOLANG_EXPECT_EQ(f.Warnings(), "");
+}
+
+WOLANG_TEST(TypeCheck, ADeclarationWithNoBodyHasNoUnusedParameters) {
+  // A trait method has nowhere to use its parameters.
+  Fixture f(R"(
+trait Damageable {
+  fun TakeDamage(amount: float, from: int)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Warnings(), "");
+}
+
+WOLANG_TEST(TypeCheck, ReportsUnreachableCode) {
+  Fixture f(R"(
+fun f() -> int {
+  return 1
+  let a = 2
+  let b = 3
+}
+)");
+  // One message for the block, not one per statement after the return.
+  WOLANG_EXPECT(f.Warnings().find("W0102") != std::string::npos);
+  WOLANG_EXPECT_EQ(f.CodesOf(Severity::kWarning).find("W0102"), size_t{0});
+  WOLANG_EXPECT(f.Messages().find("never reached") != std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, CodeAfterABreakIsUnreachable) {
+  Fixture f(R"(
+fun f() {
+  loop {
+    break
+    let _a = 1
+  }
+}
+)");
+  WOLANG_EXPECT(f.Warnings().find("W0102") != std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, ALastStatementIsNotUnreachable) {
+  Fixture f("fun f() -> int {\n  return 1\n}\n");
+  WOLANG_EXPECT_EQ(f.Warnings(), "");
+}
+
+// --------------------------------------------- references are second class -
+
+WOLANG_TEST(TypeCheck, AFieldCannotHoldAReference) {
+  Fixture f(R"(
+struct Holder {
+  var r: &int
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0120"));
+  WOLANG_EXPECT(f.Messages().find("would outlive") != std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, AParameterAndALocalMayHoldAReference) {
+  Fixture f(R"(
+fun f(a: &int) -> int {
+  let b: &int = a
+  return 0
 }
 )");
   WOLANG_EXPECT_EQ(f.Codes(), "");

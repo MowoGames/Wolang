@@ -65,6 +65,7 @@ constexpr std::string_view kUnresolvedModule = "E0055";
 constexpr std::string_view kUnresolvedName = "E0056";
 constexpr std::string_view kDuplicateDeclaration = "E0057";
 constexpr std::string_view kPrivateName = "E0058";
+constexpr std::string_view kUnusedName = "W0101";
 
 }  // namespace
 
@@ -464,6 +465,46 @@ void Database::RegisterQueries() {
           for (size_t i = 0; i < body.expr_types.size(); ++i) {
             if (body.expr_types[i].is_valid()) {
               result.body.expr_types[i] = body.expr_types[i];
+            }
+          }
+          result.body.used_names.insert(result.body.used_names.end(),
+                                        body.used_names.begin(),
+                                        body.used_names.end());
+        }
+
+        // A `need` nothing refers to is dead weight, and the check belongs
+        // here rather than with import resolution: only type checking knows
+        // what the file actually named.
+        const auto is_used = [&result](Symbol name) {
+          for (Symbol used : result.body.used_names) {
+            if (used == name) {
+              return true;
+            }
+          }
+          return false;
+        };
+        for (ItemId id : ast.Get(ast.root())) {
+          const Item& item = ast.Get(id);
+          if (item.kind != ItemKind::kNeed) {
+            continue;
+          }
+          // A bare `need a.b` brings in a whole module, so there is no one
+          // name to call unused.
+          if (!HasFlag(item.flags, ItemFlags::kNeedList)) {
+            continue;
+          }
+          for (Symbol name : ast.Get(item.names)) {
+            if (is_used(name)) {
+              continue;
+            }
+            std::string message = "`";
+            message.append(interner_.Text(name));
+            message.append("` is needed but never used");
+            DiagnosticEngine unused;
+            unused.Warning(kUnusedName, std::move(message))
+                .Primary(item.span, "remove it from the `need` list");
+            for (const Diagnostic& diagnostic : unused.diagnostics()) {
+              result.diagnostics.push_back(diagnostic);
             }
           }
         }

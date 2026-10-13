@@ -53,3 +53,6 @@ offer struct Cell {
   var matches: bool = false
   var blocked: bool = false
 }
+
+// A host-provided sink, so the example consumes what it computes.
+offer fun Report(damage: float, eta: Time)

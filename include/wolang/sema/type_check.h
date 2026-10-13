@@ -21,6 +21,9 @@ struct TypedBody {
   // invalid.
   std::vector<TypeId> expr_types;
   std::vector<Diagnostic> diagnostics;
+  // Every file-scope name this declaration referred to, in no particular
+  // order and with duplicates. Read to find an import nothing names.
+  std::vector<Symbol> used_names;
 
   TypeId TypeOf(ExprId id) const {
     if (!id.is_valid() || id.index >= expr_types.size()) {
