@@ -146,7 +146,7 @@ void Database::RegisterQueries() {
         uint32_t ordinal = 0;
         for (ItemId id : ast.Get(ast.root())) {
           const Item& item = ast.Get(id);
-          if (item.kind != ItemKind::kImport) {
+          if (item.kind != ItemKind::kNeed) {
             continue;
           }
 
@@ -251,7 +251,7 @@ void Database::ReportImportProblems(QueryEngine& db,
   uint32_t ordinal = 0;
   for (ItemId id : ast.Get(ast.root())) {
     const Item& item = ast.Get(id);
-    if (item.kind != ItemKind::kImport) {
+    if (item.kind != ItemKind::kNeed) {
       continue;
     }
     if (ordinal >= imports->imports.size()) {

@@ -63,12 +63,12 @@ WOLANG_TEST(QueryEngine, UnregisteredQueryHasNoValue) {
 WOLANG_TEST(QueryEngine, InputRoundTripsAndBumpsTheRevision) {
   QueryEngine engine;
   const Revision before = engine.revision();
-  SetText(&engine, kTextA, "fn f() {}");
+  SetText(&engine, kTextA, "fun f() {}");
 
   WOLANG_EXPECT_GT(engine.revision(), before);
   const std::string* text = engine.GetAs<std::string>(kTextA);
   WOLANG_ASSERT_NE(text, nullptr);
-  WOLANG_EXPECT_EQ(*text, "fn f() {}");
+  WOLANG_EXPECT_EQ(*text, "fun f() {}");
 }
 
 WOLANG_TEST(QueryEngine, DerivedQueryRunsOnceAndThenHits) {
@@ -155,14 +155,14 @@ WOLANG_TEST(QueryEngine, EqualRecomputationKeepsDependentsGreen) {
                                                         : 0);
                   });
 
-  SetText(&engine, kTextA, "fn f() -> int\n  return 1\n");
-  WOLANG_EXPECT_EQ(*engine.GetAs<size_t>(Scope(1)), size_t{13});
+  SetText(&engine, kTextA, "fun f() -> int\n  return 1\n");
+  WOLANG_EXPECT_EQ(*engine.GetAs<size_t>(Scope(1)), size_t{14});
   engine.ResetCounters();
 
   // Edit the body only. The signature query must rerun, because its input
   // changed, but its result is equal, so the scope stays valid.
-  SetText(&engine, kTextA, "fn f() -> int\n  return 2\n");
-  WOLANG_EXPECT_EQ(*engine.GetAs<size_t>(Scope(1)), size_t{13});
+  SetText(&engine, kTextA, "fun f() -> int\n  return 2\n");
+  WOLANG_EXPECT_EQ(*engine.GetAs<size_t>(Scope(1)), size_t{14});
   WOLANG_EXPECT_EQ(engine.ComputationCount(QueryKind::kItemTree),
                    uint64_t{1});
   WOLANG_EXPECT_EQ(engine.ComputationCount(QueryKind::kModuleScope),
@@ -170,8 +170,8 @@ WOLANG_TEST(QueryEngine, EqualRecomputationKeepsDependentsGreen) {
 
   // Editing the signature does propagate.
   engine.ResetCounters();
-  SetText(&engine, kTextA, "fn f() -> bool\n  return 2\n");
-  WOLANG_EXPECT_EQ(*engine.GetAs<size_t>(Scope(1)), size_t{14});
+  SetText(&engine, kTextA, "fun f() -> bool\n  return 2\n");
+  WOLANG_EXPECT_EQ(*engine.GetAs<size_t>(Scope(1)), size_t{15});
   WOLANG_EXPECT_EQ(engine.ComputationCount(QueryKind::kItemTree),
                    uint64_t{1});
   WOLANG_EXPECT_EQ(engine.ComputationCount(QueryKind::kModuleScope),

@@ -86,17 +86,17 @@ void ExpectStable(std::string_view code, std::string_view file, int line) {
 // ----------------------------------------------------------------- output ---
 
 WOLANG_TEST(Formatter, NormalizesSpacingAndIndentation) {
-  Pass pass("fn    f(a:int,b:float)->bool{return a>0}");
+  Pass pass("fun    f(a:int,b:float)->bool{return a>0}");
   WOLANG_EXPECT_EQ(pass.formatted(),
-                   "fn f(a: int, b: float) -> bool {\n"
+                   "fun f(a: int, b: float) -> bool {\n"
                    "  return a > 0\n"
                    "}\n");
 }
 
 WOLANG_TEST(Formatter, DropsSemicolonsAndExtraBlankLines) {
-  Pass pass("fn f() {\n  let a = 1;\n\n\n  let b = 2;\n}\n");
+  Pass pass("fun f() {\n  let a = 1;\n\n\n  let b = 2;\n}\n");
   WOLANG_EXPECT_EQ(pass.formatted(),
-                   "fn f() {\n"
+                   "fun f() {\n"
                    "  let a = 1\n"
                    "\n"
                    "  let b = 2\n"
@@ -104,8 +104,8 @@ WOLANG_TEST(Formatter, DropsSemicolonsAndExtraBlankLines) {
 }
 
 WOLANG_TEST(Formatter, WritesAnEmptyBodyOnOneLine) {
-  Pass pass("fn f() {\n}\nclass C {\n}\n");
-  WOLANG_EXPECT_EQ(pass.formatted(), "fn f() {}\nclass C {}\n");
+  Pass pass("fun f() {\n}\nclass C {\n}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(), "fun f() {}\nclass C {}\n");
 }
 
 WOLANG_TEST(Formatter, KeepsFloatLiteralsFloating) {
@@ -148,12 +148,12 @@ WOLANG_TEST(Formatter, RestoresNeededParentheses) {
 
 WOLANG_TEST(Formatter, BreaksLongArgumentLists) {
   Pass pass(
-      "fn f() {\n"
+      "fun f() {\n"
       "  Spawn(a_long_argument, another_long_argument, "
       "a_third_long_argument, and_a_fourth_one)\n"
       "}\n");
   WOLANG_EXPECT_EQ(pass.formatted(),
-                   "fn f() {\n"
+                   "fun f() {\n"
                    "  Spawn(\n"
                    "      a_long_argument,\n"
                    "      another_long_argument,\n"
@@ -165,7 +165,7 @@ WOLANG_TEST(Formatter, BreaksLongArgumentLists) {
 
 WOLANG_TEST(Formatter, BreaksLongParameterLists) {
   Pass pass(
-      "fn LongFunctionName(first_parameter: SomeLongType, "
+      "fun LongFunctionName(first_parameter: SomeLongType, "
       "second_parameter: AnotherType, third: int) {}\n");
   WOLANG_EXPECT(pass.formatted().find("(\n") != std::string::npos);
   WOLANG_EXPECT_STABLE(pass.formatted());
@@ -174,7 +174,7 @@ WOLANG_TEST(Formatter, BreaksLongParameterLists) {
 WOLANG_TEST(Formatter, KeepsComments) {
   Pass pass(
       "// leading\n"
-      "fn f() {\n"
+      "fun f() {\n"
       "  // inside\n"
       "  let a = 1  // trailing\n"
       "  // before the end\n"
@@ -182,7 +182,7 @@ WOLANG_TEST(Formatter, KeepsComments) {
       "// at the end of the file\n");
   WOLANG_EXPECT_EQ(pass.formatted(),
                    "// leading\n"
-                   "fn f() {\n"
+                   "fun f() {\n"
                    "  // inside\n"
                    "  let a = 1  // trailing\n"
                    "  // before the end\n"
@@ -196,11 +196,11 @@ WOLANG_TEST(Formatter, KeepsDocumentationComments) {
   Pass pass(
       "  /// Fires once.\n"
       "  ///   Indented continuation.\n"
-      "fn Fire() {}\n");
+      "fun Fire() {}\n");
   WOLANG_EXPECT_EQ(pass.formatted(),
                    "/// Fires once.\n"
                    "///   Indented continuation.\n"
-                   "fn Fire() {}\n");
+                   "fun Fire() {}\n");
 }
 
 WOLANG_TEST(Formatter, PutsAttributesAboveTheDeclaration) {
@@ -212,14 +212,14 @@ WOLANG_TEST(Formatter, PutsAttributesAboveTheDeclaration) {
 
 WOLANG_TEST(Formatter, FormatsControlFlow) {
   Pass pass(
-      "fn f() {\n"
+      "fun f() {\n"
       "if a {b()} else if c {d()} else {e()}\n"
       "while x {y()}\n"
       "for i in 0..10 {g(i)}\n"
       "loop {h()}\n"
       "}\n");
   WOLANG_EXPECT_EQ(pass.formatted(),
-                   "fn f() {\n"
+                   "fun f() {\n"
                    "  if a {\n"
                    "    b()\n"
                    "  } else if c {\n"
@@ -241,7 +241,7 @@ WOLANG_TEST(Formatter, FormatsControlFlow) {
 
 WOLANG_TEST(Formatter, FormatsMatchArms) {
   Pass pass(
-      "fn f() {\n"
+      "fun f() {\n"
       "  match s {\n"
       "    Idle=>Look()\n"
       "    Chase(t)|Attack(t,_) if ready=>Move(t)\n"
@@ -249,7 +249,7 @@ WOLANG_TEST(Formatter, FormatsMatchArms) {
       "  }\n"
       "}\n");
   WOLANG_EXPECT_EQ(pass.formatted(),
-                   "fn f() {\n"
+                   "fun f() {\n"
                    "  match s {\n"
                    "    Idle => Look()\n"
                    "    Chase(t) | Attack(t, _) if ready => Move(t)\n"
@@ -263,7 +263,7 @@ WOLANG_TEST(Formatter, FormatsMatchArms) {
 WOLANG_TEST(Formatter, FormatsStructPatternsInTheirShortForm) {
   // `x: x` means the same as `x`, so the short form is canonical; `y: inner`
   // binds a different name and has to survive.
-  Pass pass("fn f() {\n  match p {\n    Point { x: x, y: inner } => 1\n  }\n}\n");
+  Pass pass("fun f() {\n  match p {\n    Point { x: x, y: inner } => 1\n  }\n}\n");
   WOLANG_EXPECT(pass.formatted().find("Point { x, y: inner }") !=
                 std::string::npos);
   WOLANG_EXPECT_STABLE(pass.formatted());
@@ -295,10 +295,10 @@ WOLANG_TEST(Formatter, FormatsStringsAndInterpolations) {
 
 WOLANG_TEST(Formatter, FormatsTypes) {
   Pass pass(
-      "fn f(a:Actor?,b:Array<float>,c:fn(int)->bool,d:*mut float,"
+      "fun f(a:Actor?,b:Array<float>,c:fun(int)->bool,d:*mut float,"
       "e:&Transform,g:(int,bool),h:Query<mut T,with Tag>) {}\n");
   WOLANG_EXPECT(pass.formatted().find("a: Actor?") != std::string::npos);
-  WOLANG_EXPECT(pass.formatted().find("c: fn(int) -> bool") !=
+  WOLANG_EXPECT(pass.formatted().find("c: fun(int) -> bool") !=
                 std::string::npos);
   WOLANG_EXPECT(pass.formatted().find("d: *mut float") != std::string::npos);
   WOLANG_EXPECT(pass.formatted().find("e: &Transform") != std::string::npos);
@@ -310,22 +310,22 @@ WOLANG_TEST(Formatter, FormatsTypes) {
 WOLANG_TEST(Formatter, FormatsTheNewSurface) {
   WOLANG_EXPECT_STABLE(
       "error NotFound, Corrupt\n"
-      "extend Vec3 {\n  fn Flat() -> Vec3 => self\n}\n"
+      "extend Vec3 {\n  fun Flat() -> Vec3 => self\n}\n"
       "extend Barrel as Damageable {\n"
-      "  fn TakeDamage(amount: float) {}\n"
+      "  fun TakeDamage(amount: float) {}\n"
       "}\n"
-      "fn Find(id: int) -> Pawn?\n"
-      "fn Load(p: str) -> Level!\n"
-      "fn Lookup(k: str) -> Pawn?!\n"
-      "fn Sum(xs: [float]) -> float\n"
-      "fn Fixed(xs: [float; 3])\n"
+      "fun Find(id: int) -> Pawn?\n"
+      "fun Load(p: str) -> Level!\n"
+      "fun Lookup(k: str) -> Pawn?!\n"
+      "fun Sum(xs: [float]) -> float\n"
+      "fun Fixed(xs: [float; 3])\n"
       "var burst: soa [Particle]\n"
       "var packed: aos [Particle]\n");
 }
 
 WOLANG_TEST(Formatter, FormatsLabelledLoopsAndRanges) {
   Pass pass(
-      "fn f() {\n"
+      "fun f() {\n"
       "outer: loop {\n"
       "for i in 2.. { break outer }\n"
       "let a = xs[..5]\n"
@@ -344,7 +344,7 @@ WOLANG_TEST(Formatter, FormatsLabelledLoopsAndRanges) {
 
 WOLANG_TEST(Formatter, FormatsOptionalPatterns) {
   Pass pass(
-      "fn f() {\n"
+      "fun f() {\n"
       "  match count {\n"
       "    n? => n\n"
       "    null => 0\n"
@@ -356,21 +356,21 @@ WOLANG_TEST(Formatter, FormatsOptionalPatterns) {
 }
 
 WOLANG_TEST(Formatter, FormatsStructPatternsInConditions) {
-  Pass pass("fn f() { if let Point { x, y: inner } = p { Use(x) } }");
+  Pass pass("fun f() { if let Point { x, y: inner } = p { Use(x) } }");
   WOLANG_EXPECT(pass.formatted().find("if let Point { x, y: inner } = p") !=
                 std::string::npos);
   WOLANG_EXPECT_STABLE(pass.formatted());
 }
 
 WOLANG_TEST(Formatter, KeepsBlockComments) {
-  Pass pass("/* a note */\nfn f() {}\n");
-  WOLANG_EXPECT_EQ(pass.formatted(), "/* a note */\nfn f() {}\n");
+  Pass pass("/* a note */\nfun f() {}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(), "/* a note */\nfun f() {}\n");
 }
 
 WOLANG_TEST(Formatter, FormatsEveryDeclarationKind) {
   WOLANG_EXPECT_STABLE(
-      "import a.b\n"
-      "import a.c.{D, E}\n"
+      "need a.b\n"
+      "need a.c.{D, E}\n"
       "dimension Length, Time\n"
       "unit m: Length\n"
       "unit cm = 0.01m\n"
@@ -379,15 +379,15 @@ WOLANG_TEST(Formatter, FormatsEveryDeclarationKind) {
       "tag Falling\n"
       "component Velocity {\n  var value: Vec3\n}\n"
       "enum State {\n  Idle\n  Chase(target: Pawn)\n}\n"
-      "trait Damageable {\n  fn TakeDamage(amount: float)\n}\n"
+      "trait Damageable {\n  fun TakeDamage(amount: float)\n}\n"
       "extend Barrel as Damageable {\n"
-      "  fn TakeDamage(amount: float) {}\n"
+      "  fun TakeDamage(amount: float) {}\n"
       "}\n"
       "struct Hit {\n  var point: Vec3 = origin\n}\n"
       "signal Died(by: Actor?)\n"
       "system Integrate(dt: float) after Gravity {\n  Step(dt)\n}\n"
-      "pub async fn Run<T: Actor>(x: T) -> T? uses io {\n  return null\n}\n"
-      "extern \"C\" fn Noise(x: float) -> float = \"wolang_noise\"\n"
+      "offer async fun Run<T: Actor>(x: T) -> T? uses io {\n  return null\n}\n"
+      "extern \"C\" fun Noise(x: float) -> float = \"wolang_noise\"\n"
       "comptime let Table = Build()\n");
 }
 
@@ -409,12 +409,12 @@ WOLANG_TEST(Formatter, StaysStableOnTheBundledExamples) {
 WOLANG_TEST(Formatter, HonoursTheColumnLimit) {
   FormatOptions narrow;
   narrow.column_limit = 20;
-  Pass pass("fn f() {\n  Call(first, second)\n}\n", narrow);
+  Pass pass("fun f() {\n  Call(first, second)\n}\n", narrow);
   WOLANG_EXPECT(pass.formatted().find("Call(\n") != std::string::npos);
 
   FormatOptions wide;
   wide.column_limit = 80;
-  Pass unbroken("fn f() {\n  Call(first, second)\n}\n", wide);
+  Pass unbroken("fun f() {\n  Call(first, second)\n}\n", wide);
   WOLANG_EXPECT(unbroken.formatted().find("Call(first, second)") !=
                 std::string::npos);
 }

@@ -68,8 +68,8 @@ class Fixture {
 WOLANG_TEST(ModuleScopeTest, CollectsDeclarationsFromEveryFile) {
   Fixture fixture;
   const ModuleId module = fixture.AddModule("game");
-  fixture.AddFile(module, "a.wo", "pub fn Fire() {}\nclass Turret {}\n");
-  fixture.AddFile(module, "b.wo", "pub struct Hit {}\n");
+  fixture.AddFile(module, "a.wo", "offer fun Fire() {}\nclass Turret {}\n");
+  fixture.AddFile(module, "b.wo", "offer struct Hit {}\n");
 
   const ModuleScope* scope = fixture.db().Scope(module);
   WOLANG_ASSERT_NE(scope, nullptr);
@@ -92,9 +92,9 @@ WOLANG_TEST(ModuleScopeTest, IgnoresMembersImportsAndImpls) {
   Fixture fixture;
   const ModuleId module = fixture.AddModule("game");
   fixture.AddFile(module, "a.wo",
-                  "import other.place\n"
-                  "class C {\n  var field: int = 0\n  fn Method() {}\n}\n"
-                  "impl C { fn Extra() {} }\n");
+                  "need other.place\n"
+                  "class C {\n  var field: int = 0\n  fun Method() {}\n}\n"
+                  "impl C { fun Extra() {} }\n");
 
   const ModuleScope* scope = fixture.db().Scope(module);
   // Only `C` is a module-level name.
@@ -105,8 +105,8 @@ WOLANG_TEST(ModuleScopeTest, IgnoresMembersImportsAndImpls) {
 WOLANG_TEST(ModuleScopeTest, ReportsDuplicateDeclarationsAcrossFiles) {
   Fixture fixture;
   const ModuleId module = fixture.AddModule("game");
-  const FileId first = fixture.AddFile(module, "a.wo", "fn Fire() {}\n");
-  const FileId second = fixture.AddFile(module, "b.wo", "fn Fire() {}\n");
+  const FileId first = fixture.AddFile(module, "a.wo", "fun Fire() {}\n");
+  const FileId second = fixture.AddFile(module, "b.wo", "fun Fire() {}\n");
 
   const ModuleScope* scope = fixture.db().Scope(module);
   WOLANG_ASSERT_EQ(scope->duplicates.size(), size_t{1});
@@ -121,11 +121,11 @@ WOLANG_TEST(ModuleScopeTest, ReportsDuplicateDeclarationsAcrossFiles) {
 WOLANG_TEST(ModuleScopeTest, ResolvesImportsBetweenModules) {
   Fixture fixture;
   const ModuleId math = fixture.AddModule("game.math");
-  fixture.AddFile(math, "vec.wo", "pub struct Vec3 {}\npub fn Dot() {}\n");
+  fixture.AddFile(math, "vec.wo", "offer struct Vec3 {}\noffer fun Dot() {}\n");
 
   const ModuleId game = fixture.AddModule("game");
   const FileId main = fixture.AddFile(
-      game, "main.wo", "import game.math.{Vec3, Dot}\nfn main() {}\n");
+      game, "main.wo", "need game.math.{Vec3, Dot}\nfun main() {}\n");
 
   const ResolvedImports* imports = fixture.db().Imports(main);
   WOLANG_ASSERT_NE(imports, nullptr);
@@ -141,7 +141,7 @@ WOLANG_TEST(ModuleScopeTest, ReportsAnUnknownModule) {
   Fixture fixture;
   const ModuleId game = fixture.AddModule("game");
   const FileId main =
-      fixture.AddFile(game, "main.wo", "import game.missing\n");
+      fixture.AddFile(game, "main.wo", "need game.missing\n");
 
   WOLANG_EXPECT_EQ(fixture.Codes(main), "E0055");
   WOLANG_EXPECT(fixture.Messages(main).find("no module named `game.missing`") !=
@@ -151,10 +151,10 @@ WOLANG_TEST(ModuleScopeTest, ReportsAnUnknownModule) {
 WOLANG_TEST(ModuleScopeTest, ReportsAnUnknownImportedName) {
   Fixture fixture;
   const ModuleId math = fixture.AddModule("game.math");
-  fixture.AddFile(math, "vec.wo", "pub struct Vec3 {}\n");
+  fixture.AddFile(math, "vec.wo", "offer struct Vec3 {}\n");
   const ModuleId game = fixture.AddModule("game");
   const FileId main =
-      fixture.AddFile(game, "main.wo", "import game.math.{Vec3, Vec4}\n");
+      fixture.AddFile(game, "main.wo", "need game.math.{Vec3, Vec4}\n");
 
   WOLANG_EXPECT_EQ(fixture.Codes(main), "E0056");
   WOLANG_EXPECT(fixture.Messages(main).find("`Vec4` is not declared") !=
@@ -167,7 +167,7 @@ WOLANG_TEST(ModuleScopeTest, ReportsImportingAPrivateName) {
   fixture.AddFile(math, "vec.wo", "struct Hidden {}\n");
   const ModuleId game = fixture.AddModule("game");
   const FileId main =
-      fixture.AddFile(game, "main.wo", "import game.math.{Hidden}\n");
+      fixture.AddFile(game, "main.wo", "need game.math.{Hidden}\n");
 
   WOLANG_EXPECT_EQ(fixture.Codes(main), "E0058");
   WOLANG_EXPECT(fixture.Messages(main).find("`Hidden` is not public") !=
@@ -176,7 +176,7 @@ WOLANG_TEST(ModuleScopeTest, ReportsImportingAPrivateName) {
 
 WOLANG_TEST(ModuleScopeTest, AFileOutsideAnyModuleResolvesNothing) {
   Database db;
-  const FileId file = db.AddFile("loose.wo", "import whatever.place\n");
+  const FileId file = db.AddFile("loose.wo", "need whatever.place\n");
 
   const ResolvedImports* imports = db.Imports(file);
   WOLANG_ASSERT_NE(imports, nullptr);
@@ -189,11 +189,11 @@ WOLANG_TEST(ModuleScopeTest, EditingABodyKeepsTheModuleScopeGreen) {
   Fixture fixture;
   const ModuleId module = fixture.AddModule("game");
   const FileId file =
-      fixture.AddFile(module, "a.wo", "pub fn Fire() { Shoot() }\n");
+      fixture.AddFile(module, "a.wo", "offer fun Fire() { Shoot() }\n");
   fixture.db().Scope(module);
   fixture.db().engine().ResetCounters();
 
-  fixture.db().SetFileText(file, "pub fn Fire() { Shoot()\n  Reload() }\n");
+  fixture.db().SetFileText(file, "offer fun Fire() { Shoot()\n  Reload() }\n");
   fixture.db().Scope(module);
 
   // The file was reparsed and its item tree rebuilt, but the module scope was
@@ -209,13 +209,13 @@ WOLANG_TEST(ModuleScopeTest, EditingABodyKeepsTheModuleScopeGreen) {
 WOLANG_TEST(ModuleScopeTest, RenamingADeclarationRecomputesImporters) {
   Fixture fixture;
   const ModuleId math = fixture.AddModule("game.math");
-  const FileId vec = fixture.AddFile(math, "vec.wo", "pub fn Dot() {}\n");
+  const FileId vec = fixture.AddFile(math, "vec.wo", "offer fun Dot() {}\n");
   const ModuleId game = fixture.AddModule("game");
   const FileId main =
-      fixture.AddFile(game, "main.wo", "import game.math.{Dot}\n");
+      fixture.AddFile(game, "main.wo", "need game.math.{Dot}\n");
   WOLANG_EXPECT(fixture.Codes(main).empty());
 
-  fixture.db().SetFileText(vec, "pub fn Cross() {}\n");
+  fixture.db().SetFileText(vec, "offer fun Cross() {}\n");
   WOLANG_EXPECT_EQ(fixture.Codes(main), "E0056");
 }
 
@@ -227,7 +227,7 @@ WOLANG_TEST(ModuleScopeTest, ApplyingTheManifestLintPolicy) {
   const PackageId package = db.AddPackage("game", "/game", manifest);
 
   const ModuleId module = db.AddModule("game", "/game/src", package);
-  const FileId file = db.AddFile("a.wo", "fn f() { let a = * }\n");
+  const FileId file = db.AddFile("a.wo", "fun f() { let a = * }\n");
   db.SetModuleFiles(module, {file});
 
   // The syntax error is real, but this package turned that code off.
@@ -236,7 +236,7 @@ WOLANG_TEST(ModuleScopeTest, ApplyingTheManifestLintPolicy) {
 
 WOLANG_TEST(ModuleScopeTest, ImportPathTextJoinsSegments) {
   Database db;
-  const FileId file = db.AddFile("a.wo", "import engine.math.vec\n");
+  const FileId file = db.AddFile("a.wo", "need engine.math.vec\n");
   const ParsedFile* parsed = db.Parse(file);
   WOLANG_ASSERT_NE(parsed, nullptr);
 

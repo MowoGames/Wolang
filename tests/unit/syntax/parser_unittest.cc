@@ -124,7 +124,7 @@ WOLANG_TEST(Parser, LogicalOperatorsBindLooserThanComparison) {
 }
 
 WOLANG_TEST(Parser, AssignmentIsRightAssociative) {
-  Fixture fixture("fn f() { a = b = c }");
+  Fixture fixture("fun f() { a = b = c }");
   WOLANG_EXPECT(fixture.BodyTree().find(
                     "(assign =\n"
                     "      (path a)\n"
@@ -235,7 +235,7 @@ WOLANG_TEST(Parser, MethodChainsMayStartALine) {
 
 WOLANG_TEST(Parser, OperatorAtLineStartEndsTheExpression) {
   // Otherwise `-b` on its own line would silently join the previous line.
-  Fixture fixture("fn f() {\n  a\n  -b\n}");
+  Fixture fixture("fun f() {\n  a\n  -b\n}");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.BodyTree(),
                    "(block\n"
@@ -262,7 +262,7 @@ WOLANG_TEST(Parser, StructLiteralAndInitializerBlock) {
 }
 
 WOLANG_TEST(Parser, ConditionsDoNotStartAStructLiteral) {
-  Fixture fixture("fn f() { if ready { Fire() } }");
+  Fixture fixture("fun f() { if ready { Fire() } }");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.BodyTree(),
                    "(block\n"
@@ -277,7 +277,7 @@ WOLANG_TEST(Parser, ConditionsDoNotStartAStructLiteral) {
 
 WOLANG_TEST(Parser, IfElseChainAndIfLet) {
   Fixture fixture(
-      "fn f() {\n"
+      "fun f() {\n"
       "  if let t = target { Fire(t) } else if ready { Wait() } else { Idle() }\n"
       "}");
   WOLANG_EXPECT(fixture.Codes().empty());
@@ -289,7 +289,7 @@ WOLANG_TEST(Parser, IfElseChainAndIfLet) {
 
 WOLANG_TEST(Parser, MatchArmsAlternativesAndGuards) {
   Fixture fixture(
-      "fn f() {\n"
+      "fun f() {\n"
       "  match state {\n"
       "    Idle => LookAround()\n"
       "    Patrol(route) => Follow(route)\n"
@@ -314,7 +314,7 @@ WOLANG_TEST(Parser, MatchArmsAlternativesAndGuards) {
 
 WOLANG_TEST(Parser, LoopForms) {
   Fixture fixture(
-      "fn f() {\n"
+      "fun f() {\n"
       "  loop { Tick() }\n"
       "  while alive { Tick() }\n"
       "  for i in 0..10 { Tick() }\n"
@@ -329,7 +329,7 @@ WOLANG_TEST(Parser, LoopForms) {
 }
 
 WOLANG_TEST(Parser, AwaitSpawnAndTry) {
-  Fixture fixture("fn f() { await Wait(1s)\n  spawn Loop()\n  let v = read()? }");
+  Fixture fixture("fun f() { await Wait(1s)\n  spawn Loop()\n  let v = read()? }");
   WOLANG_EXPECT(fixture.Codes().empty());
   const std::string body = fixture.BodyTree();
   WOLANG_EXPECT(body.find("(await") != std::string::npos);
@@ -365,7 +365,7 @@ WOLANG_TEST(Parser, ArrayAndTupleLiterals) {
 }
 
 WOLANG_TEST(Parser, UnsafeAndRegionBlocks) {
-  Fixture fixture("fn f() { unsafe { p[0] = 1 }\n  region { Build() } }");
+  Fixture fixture("fun f() { unsafe { p[0] = 1 }\n  region { Build() } }");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT(fixture.BodyTree().find("(unsafe") != std::string::npos);
   WOLANG_EXPECT(fixture.BodyTree().find("(region") != std::string::npos);
@@ -393,13 +393,13 @@ WOLANG_TEST(Parser, InterpolationErrorsPointInsideTheLiteral) {
 
 WOLANG_TEST(Parser, TypeForms) {
   Fixture fixture(
-      "fn f(a: Actor?, b: Array<float>, c: fn(int) -> bool, d: *mut float,\n"
+      "fun f(a: Actor?, b: Array<float>, c: fun(int) -> bool, d: *mut float,\n"
       "     e: &Transform, g: (int, bool), h: engine.math.Vec3) {}");
   WOLANG_EXPECT(fixture.Codes().empty());
   const std::string tree = fixture.Tree();
   WOLANG_EXPECT(tree.find("(optional") != std::string::npos);
   WOLANG_EXPECT(tree.find("(type Array") != std::string::npos);
-  WOLANG_EXPECT(tree.find("(fn-type") != std::string::npos);
+  WOLANG_EXPECT(tree.find("(fun-type") != std::string::npos);
   WOLANG_EXPECT(tree.find("(pointer mut") != std::string::npos);
   WOLANG_EXPECT(tree.find("(reference") != std::string::npos);
   WOLANG_EXPECT(tree.find("(tuple-type") != std::string::npos);
@@ -425,7 +425,7 @@ WOLANG_TEST(Parser, QueryModifiersAreContextual) {
 
 WOLANG_TEST(Parser, PatternForms) {
   Fixture fixture(
-      "fn f() {\n"
+      "fun f() {\n"
       "  match v {\n"
       "    _ => 1\n"
       "    -1 => 2\n"
@@ -451,7 +451,7 @@ WOLANG_TEST(Parser, PatternForms) {
 
 WOLANG_TEST(Parser, StatementForms) {
   Fixture fixture(
-      "fn f() {\n"
+      "fun f() {\n"
       "  let a: int = 1\n"
       "  var b = 2\n"
       "  defer { Cleanup() }\n"
@@ -470,40 +470,40 @@ WOLANG_TEST(Parser, StatementForms) {
 }
 
 WOLANG_TEST(Parser, SemicolonsAreAcceptedAsSeparators) {
-  Fixture fixture("fn f() { let a = 1; let b = 2; }");
+  Fixture fixture("fun f() { let a = 1; let b = 2; }");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT(fixture.BodyTree().find("(let\n    (bind b)") !=
                 std::string::npos);
 }
 
 WOLANG_TEST(Parser, NestedDeclarationsAreStatements) {
-  Fixture fixture("fn f() { fn inner() -> int => 1\n  inner() }");
+  Fixture fixture("fun f() { fun inner() -> int => 1\n  inner() }");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT(fixture.BodyTree().find("(item\n    (fn inner") !=
+  WOLANG_EXPECT(fixture.BodyTree().find("(item\n    (fun inner") !=
                 std::string::npos);
 }
 
 // ----------------------------------------------------------------- items ----
 
 WOLANG_TEST(Parser, Imports) {
-  Fixture fixture("import engine.gameplay\nimport engine.math.{Vec3, Quat}");
+  Fixture fixture("need engine.gameplay\nneed engine.math.{Vec3, Quat}");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.Tree(),
                    "(file\n"
-                   "  (import engine.gameplay)\n"
-                   "  (import engine.math\n"
+                   "  (need engine.gameplay)\n"
+                   "  (need engine.math\n"
                    "    (names Vec3 Quat)))\n");
 }
 
 WOLANG_TEST(Parser, FunctionSignature) {
   Fixture fixture(
-      "pub async fn Closest<T: Actor + Damageable>(items: Span<T>,\n"
+      "offer async fun Closest<T: Actor + Damageable>(items: Span<T>,\n"
       "    from: Vec3 = origin) -> T? uses rand, io where T: Spawnable {\n"
       "  return null\n"
       "}");
   WOLANG_EXPECT(fixture.Codes().empty());
   const std::string tree = fixture.Tree();
-  WOLANG_EXPECT(tree.find("(fn Closest pub async") != std::string::npos);
+  WOLANG_EXPECT(tree.find("(fun Closest offer async") != std::string::npos);
   WOLANG_EXPECT(tree.find("(generic T") != std::string::npos);
   WOLANG_EXPECT(tree.find("(type Actor)") != std::string::npos);
   WOLANG_EXPECT(tree.find("(type Damageable)") != std::string::npos);
@@ -515,7 +515,7 @@ WOLANG_TEST(Parser, FunctionSignature) {
 }
 
 WOLANG_TEST(Parser, ExpressionBodiedFunction) {
-  Fixture fixture("fn Lerp(a: float, b: float, t: float) -> float => a + t");
+  Fixture fixture("fun Lerp(a: float, b: float, t: float) -> float => a + t");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT(fixture.BodyTree().find("(binary +") == 0);
 }
@@ -523,8 +523,8 @@ WOLANG_TEST(Parser, ExpressionBodiedFunction) {
 WOLANG_TEST(Parser, TraitMethodsNeedNoBody) {
   Fixture fixture(
       "trait Damageable {\n"
-      "  fn TakeDamage(amount: float, from: Actor?)\n"
-      "  fn IsAlive() -> bool\n"
+      "  fun TakeDamage(amount: float, from: Actor?)\n"
+      "  fun IsAlive() -> bool\n"
       "}");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT(fixture.TreeContains("(trait Damageable"));
@@ -540,7 +540,7 @@ WOLANG_TEST(Parser, ClassWithMembers) {
       "  let muzzle = attach<SceneComponent>(\"Muzzle\")\n"
       "  derived var alive: bool => health > 0\n"
       "  signal Destroyed(by: Actor?)\n"
-      "  override fn BeginPlay() { spawn Scan() }\n"
+      "  override fun BeginPlay() { spawn Scan() }\n"
       "  on TakeDamage(amount: int) { health -= amount }\n"
       "}");
   WOLANG_EXPECT(fixture.Codes().empty());
@@ -552,12 +552,12 @@ WOLANG_TEST(Parser, ClassWithMembers) {
   WOLANG_EXPECT(tree.find("(var alive derived") != std::string::npos);
   WOLANG_EXPECT(tree.find("(derive") != std::string::npos);
   WOLANG_EXPECT(tree.find("(signal Destroyed") != std::string::npos);
-  WOLANG_EXPECT(tree.find("(fn BeginPlay override") != std::string::npos);
+  WOLANG_EXPECT(tree.find("(fun BeginPlay override") != std::string::npos);
   WOLANG_EXPECT(tree.find("(on TakeDamage") != std::string::npos);
 }
 
 WOLANG_TEST(Parser, DocCommentsAttachToDeclarations) {
-  Fixture fixture("/// Fires once.\n/// Twice.\nfn Fire() {}");
+  Fixture fixture("/// Fires once.\n/// Twice.\nfun Fire() {}");
   WOLANG_EXPECT(fixture.Codes().empty());
   const std::span<const ItemId> items = fixture.ast().Get(
       fixture.ast().root());
@@ -584,14 +584,14 @@ WOLANG_TEST(Parser, EnumVariants) {
 }
 
 WOLANG_TEST(Parser, ExtendBlocks) {
-  Fixture inherent("extend Vec3 { fn Flat() -> Vec3 => self }");
+  Fixture inherent("extend Vec3 { fun Flat() -> Vec3 => self }");
   WOLANG_EXPECT(inherent.Codes().empty());
   WOLANG_EXPECT(inherent.TreeContains("(extend Vec3"));
   WOLANG_EXPECT(inherent.TreeContains("(target"));
 
   // The target comes first either way, so the form reads as a sentence.
   Fixture trait_impl(
-      "extend Barrel as Damageable { fn TakeDamage(a: float) { Explode() } }");
+      "extend Barrel as Damageable { fun TakeDamage(a: float) { Explode() } }");
   WOLANG_EXPECT(trait_impl.Codes().empty());
   WOLANG_EXPECT(trait_impl.TreeContains("(as\n"));
   WOLANG_EXPECT(trait_impl.TreeContains("(type Damageable)"));
@@ -613,9 +613,9 @@ WOLANG_TEST(Parser, ErrorSets) {
 
 WOLANG_TEST(Parser, FallibleAndOptionalTypesArePostfix) {
   Fixture fixture(
-      "fn Find(id: int) -> Pawn?\n"
-      "fn Load(p: str) -> Level!\n"
-      "fn Lookup(k: str) -> Pawn?!\n");
+      "fun Find(id: int) -> Pawn?\n"
+      "fun Load(p: str) -> Level!\n"
+      "fun Lookup(k: str) -> Pawn?!\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   const std::string tree = fixture.Tree();
   WOLANG_EXPECT(tree.find("(optional\n        (type Pawn))") !=
@@ -629,9 +629,9 @@ WOLANG_TEST(Parser, FallibleAndOptionalTypesArePostfix) {
 
 WOLANG_TEST(Parser, SliceAndArrayTypes) {
   Fixture fixture(
-      "fn Sum(xs: [float]) -> float\n"
-      "fn Fixed(xs: [float; 3])\n"
-      "fn Nested(xs: [[int]; 2])\n");
+      "fun Sum(xs: [float]) -> float\n"
+      "fun Fixed(xs: [float; 3])\n"
+      "fun Nested(xs: [[int]; 2])\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   const std::string tree = fixture.Tree();
   WOLANG_EXPECT(tree.find("(slice\n") != std::string::npos);
@@ -659,7 +659,7 @@ WOLANG_TEST(Parser, StorageLayoutBelongsToTheStorage) {
 
 WOLANG_TEST(Parser, OptionalPatternsNeedNoSomeOrNone) {
   Fixture fixture(
-      "fn f() {\n"
+      "fun f() {\n"
       "  match count {\n"
       "    n? => n\n"
       "    null => 0\n"
@@ -672,7 +672,7 @@ WOLANG_TEST(Parser, OptionalPatternsNeedNoSomeOrNone) {
   WOLANG_EXPECT(body.find("(literal\n") != std::string::npos);
 
   // Nested optionals and a wildcard form.
-  Fixture nested("fn f() { match x { inner?? => inner, _? => 1, _ => 0 } }");
+  Fixture nested("fun f() { match x { inner?? => inner, _? => 1, _ => 0 } }");
   WOLANG_EXPECT(nested.Codes().empty());
   const std::string nested_body = nested.BodyTree();
   WOLANG_EXPECT(nested_body.find("(present") != std::string::npos);
@@ -680,7 +680,7 @@ WOLANG_TEST(Parser, OptionalPatternsNeedNoSomeOrNone) {
 }
 
 WOLANG_TEST(Parser, StructPatternsWorkInConditions) {
-  Fixture fixture("fn f() { if let Point { x, y: inner } = p { Use(x) } }");
+  Fixture fixture("fun f() { if let Point { x, y: inner } = p { Use(x) } }");
   WOLANG_EXPECT(fixture.Codes().empty());
   const std::string body = fixture.BodyTree();
   WOLANG_EXPECT(body.find("(struct-pattern Point") != std::string::npos);
@@ -690,7 +690,7 @@ WOLANG_TEST(Parser, StructPatternsWorkInConditions) {
 
 WOLANG_TEST(Parser, LabelledLoops) {
   Fixture fixture(
-      "fn f() {\n"
+      "fun f() {\n"
       "  outer: loop {\n"
       "    inner: for i in items {\n"
       "      if done { break outer }\n"
@@ -707,12 +707,12 @@ WOLANG_TEST(Parser, LabelledLoops) {
 }
 
 WOLANG_TEST(Parser, ReportsAnUnknownLoopLabel) {
-  Fixture fixture("fn f() { loop { break nowhere } }");
+  Fixture fixture("fun f() { loop { break nowhere } }");
   WOLANG_EXPECT(fixture.HasCode("E0044"));
 }
 
 WOLANG_TEST(Parser, ALabelDoesNotSwallowTheNextStatement) {
-  Fixture fixture("fn f() { loop { break\n  Cleanup() } }");
+  Fixture fixture("fun f() { loop { break\n  Cleanup() } }");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT(fixture.BodyTree().find("(break)") != std::string::npos);
   WOLANG_EXPECT(fixture.BodyTree().find("(path Cleanup)") !=
@@ -721,7 +721,7 @@ WOLANG_TEST(Parser, ALabelDoesNotSwallowTheNextStatement) {
 
 WOLANG_TEST(Parser, IncompleteRanges) {
   Fixture fixture(
-      "fn f() {\n"
+      "fun f() {\n"
       "  let a = xs[2..]\n"
       "  let b = xs[..5]\n"
       "  let c = xs[..]\n"
@@ -815,19 +815,19 @@ WOLANG_TEST(Parser, StateMachines) {
 
 WOLANG_TEST(Parser, ExternFunctions) {
   Fixture fixture(
-      "extern \"C\" fn FastNoise(x: float) -> float = \"wolang_noise\"");
+      "extern \"C\" fun FastNoise(x: float) -> float = \"wolang_noise\"");
   WOLANG_EXPECT(fixture.Codes().empty());
   const std::string tree = fixture.Tree();
-  WOLANG_EXPECT(tree.find("(fn FastNoise extern") != std::string::npos);
+  WOLANG_EXPECT(tree.find("(fun FastNoise extern") != std::string::npos);
   WOLANG_EXPECT(tree.find("(symbol wolang_noise)") != std::string::npos);
   WOLANG_EXPECT(tree.find("(abi C)") != std::string::npos);
 }
 
 WOLANG_TEST(Parser, ComptimeDeclarations) {
-  Fixture fixture("comptime let Table = Build()\ncomptime fn Check() {}");
+  Fixture fixture("comptime let Table = Build()\ncomptime fun Check() {}");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT(fixture.TreeContains("(let Table comptime"));
-  WOLANG_EXPECT(fixture.TreeContains("(fn Check comptime"));
+  WOLANG_EXPECT(fixture.TreeContains("(fun Check comptime"));
 }
 
 WOLANG_TEST(Parser, LayoutAttributeOnStruct) {
@@ -842,22 +842,22 @@ WOLANG_TEST(Parser, LayoutAttributeOnStruct) {
 // ------------------------------------------------------------- recovery -----
 
 WOLANG_TEST(Parser, ReportsGarbageAtTopLevelAndKeepsGoing) {
-  Fixture fixture("42\nfn f() {}\n");
+  Fixture fixture("42\nfun f() {}\n");
   WOLANG_EXPECT(fixture.HasCode("E0020"));
   // The declaration after the garbage still lands in the tree.
-  WOLANG_EXPECT(fixture.TreeContains("(fn f"));
+  WOLANG_EXPECT(fixture.TreeContains("(fun f"));
 }
 
 WOLANG_TEST(Parser, DoesNotRepeatWhatTheLexerAlreadyReported) {
   // The lexer reports the stray characters; the parser must not add a second
   // complaint about the same place.
-  Fixture fixture("$$$\nfn f() {}\n");
+  Fixture fixture("$$$\nfun f() {}\n");
   WOLANG_EXPECT_EQ(fixture.Codes(), "E0005");
-  WOLANG_EXPECT(fixture.TreeContains("(fn f"));
+  WOLANG_EXPECT(fixture.TreeContains("(fun f"));
 }
 
 WOLANG_TEST(Parser, ReportsUnmatchedBrace) {
-  Fixture fixture("fn f() {\n  let a = 1\n");
+  Fixture fixture("fun f() {\n  let a = 1\n");
   WOLANG_EXPECT(fixture.HasCode("E0026"));
 }
 
@@ -865,46 +865,46 @@ WOLANG_TEST(Parser, RecoversInsideAClassBody) {
   Fixture fixture(
       "class C {\n"
       "  @@@\n"
-      "  fn good() {}\n"
+      "  fun good() {}\n"
       "}");
   WOLANG_EXPECT(!fixture.Codes().empty());
-  WOLANG_EXPECT(fixture.TreeContains("(fn good"));
+  WOLANG_EXPECT(fixture.TreeContains("(fun good"));
 }
 
 WOLANG_TEST(Parser, RecoversFromABadStatement) {
-  Fixture fixture("fn f() {\n  let a = *\n  let b = 2\n}");
+  Fixture fixture("fun f() {\n  let a = *\n  let b = 2\n}");
   WOLANG_EXPECT(fixture.HasCode("E0024"));
   WOLANG_EXPECT(fixture.BodyTree().find("(bind b)") != std::string::npos);
 }
 
 WOLANG_TEST(Parser, RequiresALineBreakBetweenStatements) {
-  Fixture fixture("fn f() { let a = 1 let b = 2 }");
+  Fixture fixture("fun f() { let a = 1 let b = 2 }");
   WOLANG_EXPECT(fixture.HasCode("E0040"));
 }
 
 WOLANG_TEST(Parser, ReportsMissingFunctionBody) {
-  Fixture fixture("fn f() ???");
+  Fixture fixture("fun f() ???");
   WOLANG_EXPECT(!fixture.Codes().empty());
 }
 
 WOLANG_TEST(Parser, ReportsDuplicateModifiers) {
-  Fixture fixture("pub pub fn f() {}");
+  Fixture fixture("offer offer fun f() {}");
   WOLANG_EXPECT(fixture.HasCode("E0029"));
-  WOLANG_EXPECT(fixture.TreeContains("(fn f pub"));
+  WOLANG_EXPECT(fixture.TreeContains("(fun f offer"));
 }
 
 WOLANG_TEST(Parser, ReportsUnknownWhereParameter) {
-  Fixture fixture("fn f<T>() where U: Actor {}");
+  Fixture fixture("fun f<T>() where U: Actor {}");
   WOLANG_EXPECT(fixture.HasCode("E0042"));
 }
 
 WOLANG_TEST(Parser, ReportsBadMatchArm) {
-  Fixture fixture("fn f() { match v { => 1 } }");
+  Fixture fixture("fun f() { match v { => 1 } }");
   WOLANG_EXPECT(fixture.HasCode("E0034"));
 }
 
 WOLANG_TEST(Parser, ReportsBadStateAndTransition) {
-  Fixture states("machine M { fn oops() {} }");
+  Fixture states("machine M { fun oops() {} }");
   WOLANG_EXPECT(states.HasCode("E0035"));
 
   Fixture transition("machine M { state S { oops } }");
@@ -917,10 +917,10 @@ WOLANG_TEST(Parser, ReportsUnitWithoutDefinition) {
 }
 
 WOLANG_TEST(Parser, ReportsMissingTypeAndPattern) {
-  Fixture type("fn f(a: ) {}");
+  Fixture type("fun f(a: ) {}");
   WOLANG_EXPECT(type.HasCode("E0023"));
 
-  Fixture pattern("fn f() { for in items {} }");
+  Fixture pattern("fun f() { for in items {} }");
   WOLANG_EXPECT(pattern.HasCode("E0025"));
 }
 

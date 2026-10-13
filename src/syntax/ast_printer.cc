@@ -149,7 +149,7 @@ class Printer {
     }
     Open(indent, head);
 
-    if (item.kind == ItemKind::kImport) {
+    if (item.kind == ItemKind::kNeed) {
       Atom(PathText(item.path));
     } else if (item.name.is_valid()) {
       Name(item.name);
@@ -290,7 +290,7 @@ class Printer {
       ItemFlags flag;
       std::string_view name;
     } kNames[] = {
-        {ItemFlags::kPub, "pub"},
+        {ItemFlags::kOffer, "offer"},
         {ItemFlags::kPriv, "priv"},
         {ItemFlags::kAsync, "async"},
         {ItemFlags::kVirtual, "virtual"},

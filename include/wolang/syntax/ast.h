@@ -76,7 +76,7 @@ struct AstRange {
 
 enum class ItemKind : uint8_t {
   kError,
-  kImport,
+  kNeed,       // `need a.b` -- an import
   kFunction,
   kClass,
   kStruct,
@@ -100,7 +100,8 @@ enum class ItemKind : uint8_t {
 
 enum class ItemFlags : uint16_t {
   kNone = 0,
-  kPub = 1 << 0,
+  // Visible to other modules: the `offer` keyword.
+  kOffer = 1 << 0,
   kPriv = 1 << 1,
   kAsync = 1 << 2,
   kVirtual = 1 << 3,
@@ -116,8 +117,8 @@ enum class ItemFlags : uint16_t {
   kHasError = 1 << 10,
   // `extend T as Trait` rather than `extend T`.
   kTraitImpl = 1 << 11,
-  // `import a.b.{c, d}` rather than `import a.b`.
-  kImportList = 1 << 12,
+  // `need a.b.{c, d}` rather than `need a.b`.
+  kNeedList = 1 << 12,
 };
 
 enum class ExprKind : uint8_t {

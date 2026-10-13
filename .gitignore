@@ -5,3 +5,6 @@ cmake-build-*/
 compile_commands.json
 .DS_Store
 *.qdb
+
+# The compiler's own on-disk cache, written next to any package it checks.
+.wolang-cache/

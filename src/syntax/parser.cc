@@ -92,14 +92,14 @@ bool StartsLoop(TokenKind kind) {
 bool StartsItem(TokenKind kind) {
   switch (kind) {
     case TokenKind::kAt:
-    case TokenKind::kKwPub:
+    case TokenKind::kKwOffer:
     case TokenKind::kKwPriv:
     case TokenKind::kKwComptime:
     case TokenKind::kKwExtern:
     case TokenKind::kKwAsync:
     case TokenKind::kKwVirtual:
     case TokenKind::kKwOverride:
-    case TokenKind::kKwFn:
+    case TokenKind::kKwFun:
     case TokenKind::kKwClass:
     case TokenKind::kKwStruct:
     case TokenKind::kKwEnum:
@@ -110,7 +110,7 @@ bool StartsItem(TokenKind kind) {
     case TokenKind::kKwSystem:
     case TokenKind::kKwSignal:
     case TokenKind::kKwOn:
-    case TokenKind::kKwImport:
+    case TokenKind::kKwNeed:
     case TokenKind::kKwType:
     case TokenKind::kKwError:
       return true;
@@ -616,8 +616,8 @@ ItemFlags Parser::ParseModifiers(Symbol* abi) {
 
   for (;;) {
     switch (PeekKind()) {
-      case TokenKind::kKwPub:
-        add(ItemFlags::kPub, "pub");
+      case TokenKind::kKwOffer:
+        add(ItemFlags::kOffer, "offer");
         Advance();
         continue;
       case TokenKind::kKwPriv:
@@ -682,9 +682,9 @@ ItemId Parser::ParseItem(bool allow_error_item) {
   const bool had_prefix = pos_ != start;
 
   switch (PeekKind()) {
-    case TokenKind::kKwImport:
+    case TokenKind::kKwNeed:
       return ParseImport(std::move(item), start);
-    case TokenKind::kKwFn:
+    case TokenKind::kKwFun:
       return ParseFunction(std::move(item), start);
     case TokenKind::kKwClass:
       return ParseAggregate(std::move(item), start, ItemKind::kClass);
@@ -776,8 +776,8 @@ AstRange<ItemId> Parser::ParseItemBlock(SourceSpan open) {
 }
 
 ItemId Parser::ParseImport(Item item, size_t start) {
-  Advance();  // `import`
-  item.kind = ItemKind::kImport;
+  Advance();  // `need`
+  item.kind = ItemKind::kNeed;
 
   std::vector<Symbol> segments;
   std::vector<Symbol> names;
@@ -785,7 +785,7 @@ ItemId Parser::ParseImport(Item item, size_t start) {
     if (At(TokenKind::kLeftBrace)) {
       const SourceSpan open = CurrentSpan();
       Advance();
-      item.flags |= ItemFlags::kImportList;
+      item.flags |= ItemFlags::kNeedList;
       while (!AtEnd() && !At(TokenKind::kRightBrace)) {
         const Symbol name = ExpectIdentifier();
         if (name.is_valid()) {
@@ -976,7 +976,7 @@ AstRange<TypeRefId> Parser::ParseEffectList() {
 }
 
 ItemId Parser::ParseFunction(Item item, size_t start) {
-  Advance();  // `fn`
+  Advance();  // `fun`
   item.kind = ItemKind::kFunction;
   item.name = ExpectIdentifier(&item.name_span);
 
@@ -1251,11 +1251,23 @@ ItemId Parser::ParseDimension(Item item, size_t start) {
 
   std::vector<Symbol> names;
   for (;;) {
-    const Symbol name = ExpectIdentifier();
+    SourceSpan name_span;
+    const Symbol name = ExpectIdentifier(&name_span);
     if (!name.is_valid()) {
       break;
     }
+    if (names.empty()) {
+      item.name_span = name_span;
+    }
     names.push_back(name);
+
+    // `dimension Velocity = Length / Time` names a derived dimension. The
+    // product is confined to this declaration rather than being allowed in
+    // general type syntax, so a velocity is named once and used by name.
+    if (names.size() == 1 && Eat(TokenKind::kEq)) {
+      item.init = ParseExpression();
+      break;
+    }
     if (!Eat(TokenKind::kComma)) {
       break;
     }
@@ -2637,7 +2649,7 @@ TypeRefId Parser::ParseTypeNoSuffix() {
       return ast_->Add(type);
     }
 
-    case TokenKind::kKwFn: {
+    case TokenKind::kKwFun: {
       Advance();
       type.kind = TypeRefKind::kFunction;
       std::vector<TypeRefId> params;

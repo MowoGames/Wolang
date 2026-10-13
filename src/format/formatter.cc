@@ -273,8 +273,8 @@ class Formatter {
   // ----------------------------------------------------------------- items --
 
   void EmitModifiers(const Item& item) {
-    if (HasFlag(item.flags, ItemFlags::kPub)) {
-      Put("pub ");
+    if (HasFlag(item.flags, ItemFlags::kOffer)) {
+      Put("offer ");
     }
     if (HasFlag(item.flags, ItemFlags::kPriv)) {
       Put("priv ");
@@ -480,10 +480,10 @@ class Formatter {
     EmitModifiers(item);
 
     switch (item.kind) {
-      case ItemKind::kImport: {
-        Put("import ");
+      case ItemKind::kNeed: {
+        Put("need ");
         PutPath(item.path);
-        if (HasFlag(item.flags, ItemFlags::kImportList)) {
+        if (HasFlag(item.flags, ItemFlags::kNeedList)) {
           Put(".{");
           bool first = true;
           for (Symbol name : ast_.Get(item.names)) {
@@ -499,7 +499,7 @@ class Formatter {
       }
 
       case ItemKind::kFunction: {
-        Put("fn ");
+        Put("fun ");
         Put(Name(item.name));
         EmitGenerics(item.generics);
         EmitParams(item.params);
@@ -1446,7 +1446,7 @@ class Formatter {
         Put("]");
         return;
       case TypeRefKind::kFunction: {
-        Put("fn(");
+        Put("fun(");
         bool first = true;
         for (TypeRefId arg : ast_.Get(type.args)) {
           if (!first) {

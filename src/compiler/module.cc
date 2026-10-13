@@ -72,7 +72,7 @@ ModuleScope BuildModuleScope(const std::vector<FileId>& files,
       binding.file = files[i];
       binding.entry = index;
       binding.kind = entry.kind;
-      binding.is_public = HasFlag(entry.flags, ItemFlags::kPub);
+      binding.is_public = HasFlag(entry.flags, ItemFlags::kOffer);
       binding.is_file_private = HasFlag(entry.flags, ItemFlags::kPriv);
       scope.entries.push_back(binding);
     }

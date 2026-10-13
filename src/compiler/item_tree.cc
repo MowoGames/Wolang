@@ -54,7 +54,7 @@ class SignatureWriter {
       ItemFlags flag;
       std::string_view name;
     } kNames[] = {
-        {ItemFlags::kPub, "pub"},         {ItemFlags::kPriv, "priv"},
+        {ItemFlags::kOffer, "offer"},         {ItemFlags::kPriv, "priv"},
         {ItemFlags::kAsync, "async"},     {ItemFlags::kVirtual, "virtual"},
         {ItemFlags::kOverride, "override"}, {ItemFlags::kComptime, "comptime"},
         {ItemFlags::kDerived, "derived"}, {ItemFlags::kMutable, "mut"},
@@ -130,7 +130,7 @@ class SignatureWriter {
         out_.push_back(']');
         return;
       case TypeRefKind::kFunction: {
-        Put("fn(");
+        Put("fun(");
         bool first = true;
         for (TypeRefId arg : ast_.Get(type.args)) {
           if (!first) {

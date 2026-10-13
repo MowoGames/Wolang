@@ -89,7 +89,7 @@ WOLANG_TEST(Cache, RoundTripsItemTrees) {
   TempDir dir("roundtrip");
   const std::string source = dir.Write(
       "a.wo",
-      "pub fn Fire(target: Pawn) -> bool {\n  return true\n}\n"
+      "offer fun Fire(target: Pawn) -> bool {\n  return true\n}\n"
       "class Turret {\n  var health: int = 100\n}\n");
   const std::string cache_path = dir.path("cache/items.wdb");
 
@@ -129,7 +129,7 @@ WOLANG_TEST(Cache, RoundTripsItemTrees) {
 WOLANG_TEST(Cache, PreservesNamesFlagsAndNesting) {
   TempDir dir("fields");
   const std::string source = dir.Write(
-      "a.wo", "pub class C {\n  priv fn Hidden() {}\n}\n");
+      "a.wo", "offer class C {\n  priv fun Hidden() {}\n}\n");
   const std::string cache_path = dir.path("items.wdb");
 
   {
@@ -147,7 +147,7 @@ WOLANG_TEST(Cache, PreservesNamesFlagsAndNesting) {
   const ItemTree* tree = db.Items(file);
   WOLANG_ASSERT_EQ(tree->entries.size(), size_t{2});
   WOLANG_EXPECT_EQ(tree->entries[0].kind, ItemKind::kClass);
-  WOLANG_EXPECT(HasFlag(tree->entries[0].flags, ItemFlags::kPub));
+  WOLANG_EXPECT(HasFlag(tree->entries[0].flags, ItemFlags::kOffer));
   WOLANG_EXPECT_EQ(db.interner().Text(tree->entries[0].name), "C");
   WOLANG_EXPECT_EQ(tree->entries[1].parent, 0u);
   WOLANG_EXPECT(HasFlag(tree->entries[1].flags, ItemFlags::kPriv));
@@ -157,7 +157,7 @@ WOLANG_TEST(Cache, PreservesNamesFlagsAndNesting) {
 
 WOLANG_TEST(Cache, DiscardsAnEntryWhoseFileChanged) {
   TempDir dir("changed");
-  const std::string source = dir.Write("a.wo", "fn One() {}\n");
+  const std::string source = dir.Write("a.wo", "fun One() {}\n");
   const std::string cache_path = dir.path("items.wdb");
 
   {
@@ -168,7 +168,7 @@ WOLANG_TEST(Cache, DiscardsAnEntryWhoseFileChanged) {
   }
 
   // The file now says something else, so the cached tree is wrong.
-  dir.Write("a.wo", "fn Two(x: int) {}\n");
+  dir.Write("a.wo", "fun Two(x: int) {}\n");
 
   Database db;
   std::string error;
@@ -188,8 +188,8 @@ WOLANG_TEST(Cache, DiscardsAnEntryWhoseFileChanged) {
 
 WOLANG_TEST(Cache, DiscardsAnEntryForAFileThatIsNoLongerRegistered) {
   TempDir dir("gone");
-  const std::string first = dir.Write("a.wo", "fn A() {}\n");
-  dir.Write("b.wo", "fn B() {}\n");
+  const std::string first = dir.Write("a.wo", "fun A() {}\n");
+  dir.Write("b.wo", "fun B() {}\n");
   const std::string cache_path = dir.path("items.wdb");
 
   {
@@ -213,7 +213,7 @@ WOLANG_TEST(Cache, DiscardsAnEntryForAFileThatIsNoLongerRegistered) {
 
 WOLANG_TEST(Cache, AnEditAfterLoadingStillInvalidates) {
   TempDir dir("edit");
-  const std::string source = dir.Write("a.wo", "fn One() {}\n");
+  const std::string source = dir.Write("a.wo", "fun One() {}\n");
   const std::string cache_path = dir.path("items.wdb");
 
   {
@@ -231,7 +231,7 @@ WOLANG_TEST(Cache, AnEditAfterLoadingStillInvalidates) {
 
   // A seeded value is not special: editing the file invalidates it like any
   // other computed value.
-  db.SetFileText(file, "fn Two() {}\nfn Three() {}\n");
+  db.SetFileText(file, "fun Two() {}\nfun Three() {}\n");
   const ItemTree* tree = db.Items(file);
   WOLANG_ASSERT_EQ(tree->entries.size(), size_t{2});
   WOLANG_EXPECT_EQ(db.interner().Text(tree->entries[0].name), "Two");
@@ -269,7 +269,7 @@ WOLANG_TEST(Cache, RejectsAnotherFormatVersion) {
 
 WOLANG_TEST(Cache, RejectsATruncatedFile) {
   TempDir dir("truncated");
-  const std::string source = dir.Write("a.wo", "fn A(x: int) -> bool {}\n");
+  const std::string source = dir.Write("a.wo", "fun A(x: int) -> bool {}\n");
   const std::string cache_path = dir.path("items.wdb");
 
   {
@@ -301,7 +301,7 @@ WOLANG_TEST(Cache, RejectsATruncatedFile) {
 
 WOLANG_TEST(Cache, DoesNotOverwriteFresherKnowledge) {
   TempDir dir("fresh");
-  const std::string source = dir.Write("a.wo", "fn One() {}\n");
+  const std::string source = dir.Write("a.wo", "fun One() {}\n");
   const std::string cache_path = dir.path("items.wdb");
 
   {
@@ -322,7 +322,7 @@ WOLANG_TEST(Cache, DoesNotOverwriteFresherKnowledge) {
 
 WOLANG_TEST(Cache, SkipsManifestsAndCreatesItsDirectory) {
   TempDir dir("manifest");
-  const std::string source = dir.Write("a.wo", "fn A() {}\n");
+  const std::string source = dir.Write("a.wo", "fun A() {}\n");
   const std::string manifest =
       dir.Write("wolang.toml", "[package]\nname = \"p\"\n");
   const std::string cache_path = dir.path("deep/nested/items.wdb");

@@ -8,8 +8,8 @@ namespace wolang {
 namespace {
 
 WOLANG_TEST(TokenKind, NamesAndSpellings) {
-  WOLANG_EXPECT_EQ(TokenKindName(TokenKind::kKwFn), "KwFn");
-  WOLANG_EXPECT_EQ(TokenKindSpelling(TokenKind::kKwFn), "fn");
+  WOLANG_EXPECT_EQ(TokenKindName(TokenKind::kKwFun), "KwFun");
+  WOLANG_EXPECT_EQ(TokenKindSpelling(TokenKind::kKwFun), "fun");
   WOLANG_EXPECT_EQ(TokenKindName(TokenKind::kLeftParen), "LeftParen");
   WOLANG_EXPECT_EQ(TokenKindSpelling(TokenKind::kLeftParen), "(");
   WOLANG_EXPECT_EQ(TokenKindSpelling(TokenKind::kIdentifier),
@@ -41,13 +41,15 @@ WOLANG_TEST(TokenKind, ClassifiesCategories) {
 }
 
 WOLANG_TEST(TokenKind, LookupKeywordRecognizesEveryKeyword) {
-  WOLANG_EXPECT_EQ(LookupKeyword("fn"), TokenKind::kKwFn);
+  WOLANG_EXPECT_EQ(LookupKeyword("fun"), TokenKind::kKwFun);
+  WOLANG_EXPECT_EQ(LookupKeyword("need"), TokenKind::kKwNeed);
+  WOLANG_EXPECT_EQ(LookupKeyword("offer"), TokenKind::kKwOffer);
   WOLANG_EXPECT_EQ(LookupKeyword("foreach"), TokenKind::kKwForeach);
   WOLANG_EXPECT_EQ(LookupKeyword("uses"), TokenKind::kKwUses);
   WOLANG_EXPECT_EQ(LookupKeyword("region"), TokenKind::kKwRegion);
   // Keywords are case sensitive and not matched as prefixes.
-  WOLANG_EXPECT_EQ(LookupKeyword("Fn"), TokenKind::kIdentifier);
-  WOLANG_EXPECT_EQ(LookupKeyword("fna"), TokenKind::kIdentifier);
+  WOLANG_EXPECT_EQ(LookupKeyword("Fun"), TokenKind::kIdentifier);
+  WOLANG_EXPECT_EQ(LookupKeyword("funny"), TokenKind::kIdentifier);
   WOLANG_EXPECT_EQ(LookupKeyword(""), TokenKind::kIdentifier);
 }
 
@@ -71,9 +73,15 @@ WOLANG_TEST(TokenKind, DeclarationWordsStayContextual) {
 
 WOLANG_TEST(TokenKind, ReservedWordsAreNotKeywords) {
   WOLANG_EXPECT(IsReservedWord("transactional"));
+  // The spellings `fun`, `need` and `offer` replaced are reserved, so
+  // old habits get a message rather than a confusing parse failure.
+  WOLANG_EXPECT(IsReservedWord("fn"));
+  WOLANG_EXPECT(IsReservedWord("import"));
+  WOLANG_EXPECT(IsReservedWord("pub"));
+  WOLANG_EXPECT(IsReservedWord("impl"));
   WOLANG_EXPECT(IsReservedWord("kernel"));
   WOLANG_EXPECT(IsReservedWord("yield"));
-  WOLANG_EXPECT(!IsReservedWord("fn"));
+  WOLANG_EXPECT(!IsReservedWord("fun"));
   WOLANG_EXPECT(!IsReservedWord("health"));
   WOLANG_EXPECT_EQ(LookupKeyword("transactional"), TokenKind::kIdentifier);
 }

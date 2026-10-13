@@ -94,14 +94,14 @@ WOLANG_TEST(Lexer, EmptyInputYieldsOnlyEndOfFile) {
 }
 
 WOLANG_TEST(Lexer, StreamAlwaysEndsWithEndOfFile) {
-  Fixture fixture("fn f() {}\n");
+  Fixture fixture("fun f() {}\n");
   WOLANG_EXPECT_EQ(fixture.stream().tokens.back().kind,
                    TokenKind::kEndOfFile);
-  WOLANG_EXPECT_EQ(fixture.stream().tokens.back().offset, 10u);
+  WOLANG_EXPECT_EQ(fixture.stream().tokens.back().offset, 11u);
 }
 
 WOLANG_TEST(Lexer, IndexingPastTheEndReturnsEndOfFile) {
-  Fixture fixture("fn");
+  Fixture fixture("fun");
   WOLANG_EXPECT_EQ(fixture.stream().At(999).kind, TokenKind::kEndOfFile);
 }
 
@@ -126,9 +126,9 @@ WOLANG_TEST(Lexer, LexesNewKeywords) {
 }
 
 WOLANG_TEST(Lexer, LexesDeclarations) {
-  Fixture fixture("pub async fn Fire(target: Pawn) -> bool { return true }");
+  Fixture fixture("offer async fun Fire(target: Pawn) -> bool { return true }");
   WOLANG_EXPECT_EQ(fixture.Kinds(),
-                   "KwPub KwAsync KwFn Identifier LeftParen Identifier Colon "
+                   "KwOffer KwAsync KwFun Identifier LeftParen Identifier Colon "
                    "Identifier RightParen Arrow Identifier LeftBrace "
                    "KwReturn KwTrue RightBrace");
 }
@@ -186,9 +186,9 @@ WOLANG_TEST(Lexer, RequiresIdentifiersInNfcForm) {
 }
 
 WOLANG_TEST(Lexer, SkipsBlockComments) {
-  Fixture fixture("fn /* inline */ f() {}");
+  Fixture fixture("fun /* inline */ f() {}");
   WOLANG_EXPECT_EQ(fixture.Kinds(),
-                   "KwFn Identifier LeftParen RightParen LeftBrace "
+                   "KwFun Identifier LeftParen RightParen LeftBrace "
                    "RightBrace");
   WOLANG_EXPECT_EQ(fixture.stream().comments.size(), size_t{1});
   WOLANG_EXPECT(fixture.Codes().empty());
@@ -197,23 +197,23 @@ WOLANG_TEST(Lexer, SkipsBlockComments) {
 WOLANG_TEST(Lexer, BlockCommentsNest) {
   // Nesting is the only reason to reach for a block comment: commenting out a
   // region that already contains one has to work.
-  Fixture fixture("fn /* outer /* inner */ still */ f() {}");
+  Fixture fixture("fun /* outer /* inner */ still */ f() {}");
   WOLANG_EXPECT_EQ(fixture.Kinds(),
-                   "KwFn Identifier LeftParen RightParen LeftBrace "
+                   "KwFun Identifier LeftParen RightParen LeftBrace "
                    "RightBrace");
   WOLANG_EXPECT(fixture.Codes().empty());
 }
 
 WOLANG_TEST(Lexer, BlockCommentsMaySpanLines) {
-  Fixture fixture("fn f() {\n/* one\n   two */\n}");
+  Fixture fixture("fun f() {\n/* one\n   two */\n}");
   WOLANG_EXPECT_EQ(fixture.Kinds(),
-                   "KwFn Identifier LeftParen RightParen LeftBrace "
+                   "KwFun Identifier LeftParen RightParen LeftBrace "
                    "RightBrace");
   WOLANG_EXPECT(fixture.Codes().empty());
 }
 
 WOLANG_TEST(Lexer, ReportsUnterminatedBlockComments) {
-  WOLANG_EXPECT_EQ(Fixture("fn f() /* never closed").Codes(), "E0012");
+  WOLANG_EXPECT_EQ(Fixture("fun f() /* never closed").Codes(), "E0012");
   // An unclosed inner comment leaves the outer one open too.
   WOLANG_EXPECT_EQ(Fixture("/* outer /* inner */").Codes(), "E0012");
 }
@@ -502,9 +502,9 @@ WOLANG_TEST(Lexer, ReportsBadCharacterLiterals) {
 // --------------------------------------------------------------- trivia -----
 
 WOLANG_TEST(Lexer, SkipsLineCommentsAndRecordsThem) {
-  Fixture fixture("// leading\nfn f() {} // trailing\n");
+  Fixture fixture("// leading\nfun f() {} // trailing\n");
   WOLANG_EXPECT_EQ(fixture.Kinds(),
-                   "KwFn Identifier LeftParen RightParen LeftBrace "
+                   "KwFun Identifier LeftParen RightParen LeftBrace "
                    "RightBrace");
   WOLANG_ASSERT_EQ(fixture.stream().comments.size(), size_t{2});
   WOLANG_EXPECT_EQ(fixture.stream().comments[0].begin, 0u);
@@ -512,16 +512,16 @@ WOLANG_TEST(Lexer, SkipsLineCommentsAndRecordsThem) {
 }
 
 WOLANG_TEST(Lexer, DocCommentsAreTokens) {
-  Fixture fixture("/// Fires once.\nfn f() {}");
+  Fixture fixture("/// Fires once.\nfun f() {}");
   WOLANG_EXPECT_EQ(fixture.At(0).kind, TokenKind::kDocComment);
   WOLANG_EXPECT_EQ(fixture.TextAt(0), "/// Fires once.");
-  WOLANG_EXPECT_EQ(fixture.At(1).kind, TokenKind::kKwFn);
+  WOLANG_EXPECT_EQ(fixture.At(1).kind, TokenKind::kKwFun);
   WOLANG_EXPECT(fixture.stream().comments.empty());
 }
 
 WOLANG_TEST(Lexer, FourSlashesIsAnOrdinaryComment) {
-  Fixture fixture("//// divider\nfn f() {}");
-  WOLANG_EXPECT_EQ(fixture.At(0).kind, TokenKind::kKwFn);
+  Fixture fixture("//// divider\nfun f() {}");
+  WOLANG_EXPECT_EQ(fixture.At(0).kind, TokenKind::kKwFun);
   WOLANG_EXPECT_EQ(fixture.stream().comments.size(), size_t{1});
 }
 
@@ -536,16 +536,16 @@ WOLANG_TEST(Lexer, TracksLineStartsAndBlankLines) {
 }
 
 WOLANG_TEST(Lexer, HandlesCarriageReturnsAndTabs) {
-  Fixture fixture("fn\tf()\r\n{}\r\n");
+  Fixture fixture("fun\tf()\r\n{}\r\n");
   WOLANG_EXPECT_EQ(fixture.Kinds(),
-                   "KwFn Identifier LeftParen RightParen LeftBrace "
+                   "KwFun Identifier LeftParen RightParen LeftBrace "
                    "RightBrace");
   WOLANG_EXPECT(fixture.Codes().empty());
 }
 
 WOLANG_TEST(Lexer, SkipsShebangLine) {
-  Fixture fixture("#!/usr/bin/env wolang\nfn main() {}");
-  WOLANG_EXPECT_EQ(fixture.At(0).kind, TokenKind::kKwFn);
+  Fixture fixture("#!/usr/bin/env wolang\nfun main() {}");
+  WOLANG_EXPECT_EQ(fixture.At(0).kind, TokenKind::kKwFun);
   WOLANG_EXPECT(fixture.Codes().empty());
 }
 
@@ -554,10 +554,10 @@ WOLANG_TEST(Lexer, SkipsByteOrderMark) {
   code.push_back(static_cast<char>(0xEF));
   code.push_back(static_cast<char>(0xBB));
   code.push_back(static_cast<char>(0xBF));
-  code.append("fn main() {}");
+  code.append("fun main() {}");
 
   Fixture fixture(code);
-  WOLANG_EXPECT_EQ(fixture.At(0).kind, TokenKind::kKwFn);
+  WOLANG_EXPECT_EQ(fixture.At(0).kind, TokenKind::kKwFun);
   WOLANG_EXPECT(fixture.Codes().empty());
 }
 
@@ -582,7 +582,7 @@ WOLANG_TEST(Lexer, LexesARepresentativeDeclaration) {
       "  @Edit @Range(1, 50) var range: float = 15.0\n"
       "  var target: Weak<Pawn>\n"
       "\n"
-      "  async fn ScanLoop() uses rand {\n"
+      "  async fun ScanLoop() uses rand {\n"
       "    loop {\n"
       "      if let t = target.alive {\n"
       "        await Wait(1.0 / fireRate)\n"

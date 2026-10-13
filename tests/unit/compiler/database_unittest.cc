@@ -21,7 +21,7 @@ std::string Signature(Database* db, FileId file, uint32_t entry) {
 
 WOLANG_TEST(Database, LexesAndParsesOnDemand) {
   Database db;
-  const FileId file = db.AddFile("a.wo", "fn f() -> int { return 1 }\n");
+  const FileId file = db.AddFile("a.wo", "fun f() -> int { return 1 }\n");
 
   const TokenizedFile* tokens = db.Tokens(file);
   WOLANG_ASSERT_NE(tokens, nullptr);
@@ -36,7 +36,7 @@ WOLANG_TEST(Database, LexesAndParsesOnDemand) {
 
 WOLANG_TEST(Database, RepeatedQuestionsDoNotRecompute) {
   Database db;
-  const FileId file = db.AddFile("a.wo", "fn f() {}\n");
+  const FileId file = db.AddFile("a.wo", "fun f() {}\n");
   db.Items(file);
   db.engine().ResetCounters();
 
@@ -48,8 +48,8 @@ WOLANG_TEST(Database, RepeatedQuestionsDoNotRecompute) {
 
 WOLANG_TEST(Database, CollectsDiagnosticsPerFile) {
   Database db;
-  const FileId good = db.AddFile("good.wo", "fn f() {}\n");
-  const FileId bad = db.AddFile("bad.wo", "fn f() { let a = * }\n");
+  const FileId good = db.AddFile("good.wo", "fun f() {}\n");
+  const FileId bad = db.AddFile("bad.wo", "fun f() { let a = * }\n");
 
   WOLANG_EXPECT(db.Diagnostics(good)->empty());
   WOLANG_ASSERT_EQ(db.Diagnostics(bad)->size(), size_t{1});
@@ -59,10 +59,10 @@ WOLANG_TEST(Database, CollectsDiagnosticsPerFile) {
 
 WOLANG_TEST(Database, DiagnosticsFollowAnEdit) {
   Database db;
-  const FileId file = db.AddFile("a.wo", "fn f() { let a = * }\n");
+  const FileId file = db.AddFile("a.wo", "fun f() { let a = * }\n");
   WOLANG_EXPECT_EQ(db.Diagnostics(file)->size(), size_t{1});
 
-  db.SetFileText(file, "fn f() { let a = 1 }\n");
+  db.SetFileText(file, "fun f() { let a = 1 }\n");
   WOLANG_EXPECT(db.Diagnostics(file)->empty());
 }
 
@@ -71,7 +71,7 @@ WOLANG_TEST(Database, EditingABodyLeavesTheItemTreeEqual) {
   Database db;
   const FileId file = db.AddFile(
       "a.wo",
-      "fn Damage(base: float, mult: float) -> float {\n"
+      "fun Damage(base: float, mult: float) -> float {\n"
       "  return base * mult\n"
       "}\n");
 
@@ -86,7 +86,7 @@ WOLANG_TEST(Database, EditingABodyLeavesTheItemTreeEqual) {
 
   // Change the body only.
   db.SetFileText(file,
-                 "fn Damage(base: float, mult: float) -> float {\n"
+                 "fun Damage(base: float, mult: float) -> float {\n"
                  "  return base * mult * 2.0\n"
                  "}\n");
 
@@ -108,14 +108,14 @@ WOLANG_TEST(Database, EditingABodyLeavesTheItemTreeEqual) {
 WOLANG_TEST(Database, EditingASignatureChangesTheItemTree) {
   Database db;
   const FileId file = db.AddFile(
-      "a.wo", "fn Damage(base: float) -> float {\n  return base\n}\n");
+      "a.wo", "fun Damage(base: float) -> float {\n  return base\n}\n");
 
   const ItemTree snapshot = *db.Items(file);
   const Revision before =
       db.engine().ChangedAt(QueryKey{QueryKind::kItemTree, file.index});
 
   db.SetFileText(file,
-                 "fn Damage(base: f64) -> float {\n  return base\n}\n");
+                 "fun Damage(base: f64) -> float {\n  return base\n}\n");
 
   WOLANG_EXPECT(!(*db.Items(file) == snapshot));
   WOLANG_EXPECT_GT(
@@ -125,13 +125,13 @@ WOLANG_TEST(Database, EditingASignatureChangesTheItemTree) {
 
 WOLANG_TEST(Database, EditingOneFileDoesNotTouchAnother) {
   Database db;
-  const FileId first = db.AddFile("a.wo", "fn a() {}\n");
-  const FileId second = db.AddFile("b.wo", "fn b() {}\n");
+  const FileId first = db.AddFile("a.wo", "fun a() {}\n");
+  const FileId second = db.AddFile("b.wo", "fun b() {}\n");
   db.Items(first);
   db.Items(second);
   db.engine().ResetCounters();
 
-  db.SetFileText(first, "fn a() { Work() }\n");
+  db.SetFileText(first, "fun a() { Work() }\n");
   db.Items(first);
   db.Items(second);
 
@@ -141,10 +141,10 @@ WOLANG_TEST(Database, EditingOneFileDoesNotTouchAnother) {
 
 WOLANG_TEST(Database, AddingADeclarationGrowsTheItemTree) {
   Database db;
-  const FileId file = db.AddFile("a.wo", "fn a() {}\n");
+  const FileId file = db.AddFile("a.wo", "fun a() {}\n");
   WOLANG_EXPECT_EQ(db.Items(file)->entries.size(), size_t{1});
 
-  db.SetFileText(file, "fn a() {}\nfn b() {}\n");
+  db.SetFileText(file, "fun a() {}\nfun b() {}\n");
   WOLANG_EXPECT_EQ(db.Items(file)->entries.size(), size_t{2});
 }
 
@@ -154,9 +154,9 @@ WOLANG_TEST(Database, ItemTreeIncludesMembersInPreOrder) {
       "a.wo",
       "class Turret : Actor {\n"
       "  var health: int = 100\n"
-      "  fn Fire() {}\n"
+      "  fun Fire() {}\n"
       "}\n"
-      "fn free() {}\n");
+      "fun free() {}\n");
 
   const ItemTree* tree = db.Items(file);
   WOLANG_ASSERT_EQ(tree->entries.size(), size_t{4});
@@ -175,24 +175,24 @@ WOLANG_TEST(Database, ItemTreeIncludesMembersInPreOrder) {
 WOLANG_TEST(Database, ResolveItemFindsTheDeclarationOfAnEntry) {
   Database db;
   const FileId file = db.AddFile(
-      "a.wo", "class C {\n  fn Method(x: int) {}\n}\n");
+      "a.wo", "class C {\n  fun Method(x: int) {}\n}\n");
 
   WOLANG_EXPECT_EQ(Signature(&db, file, 0), "class C");
-  WOLANG_EXPECT_EQ(Signature(&db, file, 1), "fn Method(x:int)");
+  WOLANG_EXPECT_EQ(Signature(&db, file, 1), "fun Method(x:int)");
   WOLANG_EXPECT_EQ(Signature(&db, file, 2), "<invalid>");
 }
 
 WOLANG_TEST(Database, NestedItemsInABodyStayOutOfTheItemTree) {
   Database db;
   const FileId file = db.AddFile(
-      "a.wo", "fn outer() {\n  fn inner() {}\n  inner()\n}\n");
+      "a.wo", "fun outer() {\n  fun inner() {}\n  inner()\n}\n");
   // A declaration inside a body is a statement, not a member: it cannot be
   // referred to from outside, so it is not part of the file's signature.
   WOLANG_EXPECT_EQ(db.Items(file)->entries.size(), size_t{1});
 
   const ItemTree snapshot = *db.Items(file);
   db.SetFileText(file,
-                 "fn outer() {\n  fn inner() -> int => 2\n  inner()\n}\n");
+                 "fun outer() {\n  fun inner() -> int => 2\n  inner()\n}\n");
   WOLANG_EXPECT(*db.Items(file) == snapshot);
 }
 

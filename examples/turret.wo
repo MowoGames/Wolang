@@ -1,9 +1,12 @@
-// A gameplay class written in Wolang. Nothing here is executed yet: the
-// compiler reaches syntax trees and module scopes, and this file doubles as
-// the corpus the front end is tested on.
+// A gameplay class written in Wolang, used as the corpus the parser and the
+// formatter are tested on.
+//
+// `wolang check` on this file reports unknown names: it is a single file, so
+// its imports resolve to nothing, and class members are not resolved until
+// wave 5. For an example that type checks end to end, see `examples/package`.
 
-import engine.gameplay
-import engine.math.{Vec3, Quat}
+need engine.gameplay
+need engine.math.{Vec3, Quat}
 
 dimension Length
 dimension Time
@@ -29,11 +32,11 @@ class Turret : Actor {
 
   derived var is_alive: bool => health > 0
 
-  override fn BeginPlay() {
+  override fun BeginPlay() {
     spawn ScanLoop()
   }
 
-  async fn ScanLoop() uses rand {
+  async fun ScanLoop() uses rand {
     loop {
       target = World.Overlap<Pawn>(position, range).Closest(position)
 
@@ -48,7 +51,7 @@ class Turret : Actor {
   }
 
   @Server
-  fn Fire(t: Pawn) {
+  fun Fire(t: Pawn) {
     let direction = (t.position - muzzle.position).normalized
     World.Spawn<Projectile>(muzzle.position, direction) { speed = 40.0 }
   }
@@ -95,7 +98,7 @@ error NoTarget, OutOfAmmo
 
 // `T?` may be absent, `T!` may fail; both are postfix, so a type reads left
 // to right.
-fn PickTarget(candidates: [Pawn]) -> Pawn?! uses rand {
+fun PickTarget(candidates: [Pawn]) -> Pawn?! uses rand {
   if candidates.len == 0 {
     return NoTarget
   }
@@ -103,11 +106,11 @@ fn PickTarget(candidates: [Pawn]) -> Pawn?! uses rand {
 }
 
 extend Vec3 {
-  fn Flat() -> Vec3 => Vec3(x, 0.0, z)
+  fun Flat() -> Vec3 => Vec3(x, 0.0, z)
 }
 
 extend Barrel as Damageable {
-  fn TakeDamage(amount: float, from: Actor?) {
+  fun TakeDamage(amount: float, from: Actor?) {
     Explode()
   }
 }
@@ -118,7 +121,7 @@ system Integrate(dt: float, q: Query<mut Transform, Velocity>) after Gravity {
   }
 }
 
-fn Describe(count: int?) -> String {
+fun Describe(count: int?) -> String {
   // Optionals need no Some/None vocabulary: the type says `int?`, the pattern
   // says `n?`, and absence is spelled `null`.
   match count {
@@ -127,7 +130,7 @@ fn Describe(count: int?) -> String {
   }
 }
 
-fn Search(grid: [[Cell]]) -> Cell? {
+fun Search(grid: [[Cell]]) -> Cell? {
   outer: for row in grid {
     for cell in row[1..] {
       if cell.matches {
@@ -141,10 +144,10 @@ fn Search(grid: [[Cell]]) -> Cell? {
   return null
 }
 
-fn DescribeHealth(hp: int, max: int) -> String {
+fun DescribeHealth(hp: int, max: int) -> String {
   return "hp {hp} / {max} ({hp * 100 / max}%)"
 }
 
-comptime fn Validate(rate: float) {
+comptime fun Validate(rate: float) {
   assert(rate > 0.0, "fire rate must be positive")
 }

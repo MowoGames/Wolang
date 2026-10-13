@@ -8,10 +8,10 @@ std::string_view ItemKindName(ItemKind kind) {
   switch (kind) {
     case ItemKind::kError:
       return "error";
-    case ItemKind::kImport:
-      return "import";
+    case ItemKind::kNeed:
+      return "need";
     case ItemKind::kFunction:
-      return "fn";
+      return "fun";
     case ItemKind::kClass:
       return "class";
     case ItemKind::kStruct:
@@ -163,7 +163,7 @@ std::string_view TypeRefKindName(TypeRefKind kind) {
     case TypeRefKind::kFallible:
       return "fallible";
     case TypeRefKind::kFunction:
-      return "fn-type";
+      return "fun-type";
     case TypeRefKind::kPointer:
       return "pointer";
     case TypeRefKind::kReference:

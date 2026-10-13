@@ -80,13 +80,13 @@ std::string Codes(const DiagnosticEngine& diagnostics) {
 WOLANG_TEST(Workspace, DiscoversModulesFromDirectories) {
   TempTree tree("discover");
   tree.Write("wolang.toml", "[package]\nname = \"game\"\nversion = \"0.1\"\n");
-  tree.Write("src/main.wo", "fn main() {}\n");
-  tree.Write("src/engine/math.wo", "pub struct Vec3 {}\n");
-  tree.Write("src/engine/vec.wo", "pub fn Dot() {}\n");
-  tree.Write("src/engine/physics/body.wo", "pub class Body {}\n");
+  tree.Write("src/main.wo", "fun main() {}\n");
+  tree.Write("src/engine/math.wo", "offer struct Vec3 {}\n");
+  tree.Write("src/engine/vec.wo", "offer fun Dot() {}\n");
+  tree.Write("src/engine/physics/body.wo", "offer class Body {}\n");
   // Not a source file, and a dot directory: both ignored.
   tree.Write("src/notes.txt", "ignore me\n");
-  tree.Write("src/.cache/stale.wo", "fn stale() {}\n");
+  tree.Write("src/.cache/stale.wo", "fun stale() {}\n");
 
   Database db;
   DiagnosticEngine diagnostics;
@@ -117,9 +117,9 @@ WOLANG_TEST(Workspace, ResolvesImportsAcrossDiscoveredModules) {
   TempTree tree("imports");
   tree.Write("wolang.toml", "[package]\nname = \"game\"\n");
   tree.Write("src/main.wo",
-             "import game.engine.{Vec3}\n"
-             "fn main() {}\n");
-  tree.Write("src/engine/math.wo", "pub struct Vec3 {}\n");
+             "need game.engine.{Vec3}\n"
+             "fun main() {}\n");
+  tree.Write("src/engine/math.wo", "offer struct Vec3 {}\n");
 
   Database db;
   DiagnosticEngine diagnostics;
@@ -130,7 +130,7 @@ WOLANG_TEST(Workspace, ResolvesImportsAcrossDiscoveredModules) {
 WOLANG_TEST(Workspace, ReportsAnUnresolvedImportInsideAPackage) {
   TempTree tree("unresolved");
   tree.Write("wolang.toml", "[package]\nname = \"game\"\n");
-  tree.Write("src/main.wo", "import game.nowhere\n");
+  tree.Write("src/main.wo", "need game.nowhere\n");
 
   Database db;
   DiagnosticEngine diagnostics;
@@ -146,9 +146,9 @@ WOLANG_TEST(Workspace, LoadsPathDependencies) {
   tree.Write("game/wolang.toml",
              "[package]\nname = \"game\"\n"
              "[dependencies]\ncore = { path = \"../core\" }\n");
-  tree.Write("game/src/main.wo", "import core.{Log}\nfn main() {}\n");
+  tree.Write("game/src/main.wo", "need core.{Log}\nfun main() {}\n");
   tree.Write("core/wolang.toml", "[package]\nname = \"core\"\n");
-  tree.Write("core/src/log.wo", "pub fn Log() {}\n");
+  tree.Write("core/src/log.wo", "offer fun Log() {}\n");
 
   Database db;
   DiagnosticEngine diagnostics;
@@ -165,11 +165,11 @@ WOLANG_TEST(Workspace, ReportsCyclicPackageDependencies) {
   tree.Write("a/wolang.toml",
              "[package]\nname = \"a\"\n"
              "[dependencies]\nb = { path = \"../b\" }\n");
-  tree.Write("a/src/a.wo", "pub fn A() {}\n");
+  tree.Write("a/src/a.wo", "offer fun A() {}\n");
   tree.Write("b/wolang.toml",
              "[package]\nname = \"b\"\n"
              "[dependencies]\na = { path = \"../a\" }\n");
-  tree.Write("b/src/b.wo", "pub fn B() {}\n");
+  tree.Write("b/src/b.wo", "offer fun B() {}\n");
 
   Database db;
   DiagnosticEngine diagnostics;
@@ -181,7 +181,7 @@ WOLANG_TEST(Workspace, ReportsCyclicPackageDependencies) {
 
 WOLANG_TEST(Workspace, ReportsAMissingManifest) {
   TempTree tree("nomanifest");
-  tree.Write("src/main.wo", "fn main() {}\n");
+  tree.Write("src/main.wo", "fun main() {}\n");
 
   Database db;
   DiagnosticEngine diagnostics;
@@ -203,7 +203,7 @@ WOLANG_TEST(Workspace, HonoursACustomSourceDirectory) {
   TempTree tree("custom");
   tree.Write("wolang.toml",
              "[package]\nname = \"game\"\nsource = \"code\"\n");
-  tree.Write("code/main.wo", "fn main() {}\n");
+  tree.Write("code/main.wo", "fun main() {}\n");
 
   Database db;
   DiagnosticEngine diagnostics;
@@ -216,7 +216,7 @@ WOLANG_TEST(Workspace, AppliesTheLintPolicyOfThePackage) {
   TempTree tree("lints");
   tree.Write("wolang.toml",
              "[package]\nname = \"game\"\n[lints]\nE0024 = \"off\"\n");
-  tree.Write("src/main.wo", "fn main() { let a = * }\n");
+  tree.Write("src/main.wo", "fun main() { let a = * }\n");
 
   Database db;
   DiagnosticEngine diagnostics;
@@ -227,7 +227,7 @@ WOLANG_TEST(Workspace, AppliesTheLintPolicyOfThePackage) {
 WOLANG_TEST(Workspace, IsPackageDirectoryDetectsAManifest) {
   TempTree tree("detect");
   tree.Write("wolang.toml", "[package]\nname = \"game\"\n");
-  tree.Write("plain/file.wo", "fn f() {}\n");
+  tree.Write("plain/file.wo", "fun f() {}\n");
 
   WOLANG_EXPECT(IsPackageDirectory(tree.path()));
   WOLANG_EXPECT(!IsPackageDirectory(tree.path("plain")));
