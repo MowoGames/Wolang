@@ -461,6 +461,71 @@ int RunProgram(const Options& options) {
   return 0;
 }
 
+// Runs every `@Test` function. A test passes when it returns without
+// trapping and does not return `false`; anything else is a failure, with the
+// trap named.
+int RunTests(const Options& options) {
+  Database database;
+  DiagnosticEngine load_diagnostics;
+  std::vector<FileId> files;
+  if (!CollectInputs(&database, options, &load_diagnostics, &files)) {
+    return 2;
+  }
+
+  RenderOptions render;
+  render.color = options.color && StderrIsTerminal();
+  std::vector<Diagnostic> all = load_diagnostics.diagnostics();
+  for (FileId file : files) {
+    if (const std::vector<Diagnostic>* diagnostics =
+            database.Diagnostics(file)) {
+      all.insert(all.end(), diagnostics->begin(), diagnostics->end());
+    }
+  }
+  const int reported = Report(database.sources(), all, render);
+  if (reported != 0) {
+    return reported;
+  }
+
+  int ran = 0;
+  int failed = 0;
+  for (FileId file : files) {
+    const LoweredFile* lowered = database.Lowered(file);
+    if (lowered == nullptr) {
+      continue;
+    }
+    for (Symbol name : lowered->tests) {
+      ++ran;
+      // Run through the unoptimized IR: the reference semantics are what a
+      // test is testing.
+      const interp::Outcome outcome = interp::RunNamed(
+          database.interner(), database.types(), lowered->unoptimized, name);
+      const bool returned_false =
+          outcome.ok() &&
+          outcome.value.kind() == interp::Value::Kind::kBool &&
+          !outcome.value.boolean();
+      if (outcome.ok() && !returned_false) {
+        std::fprintf(stdout, "[     ok ] %s\n",
+                     std::string(database.interner().Text(name)).c_str());
+        continue;
+      }
+      ++failed;
+      if (returned_false) {
+        std::fprintf(stdout, "[ failed ] %s: returned false\n",
+                     std::string(database.interner().Text(name)).c_str());
+      } else {
+        std::fprintf(stdout, "[ failed ] %s: %s at %s: %s\n",
+                     std::string(database.interner().Text(name)).c_str(),
+                     std::string(interp::TrapKindName(outcome.trap)).c_str(),
+                     outcome.where.c_str(), outcome.message.c_str());
+      }
+    }
+  }
+
+  std::fprintf(stdout, "\n%d test%s run, %d failed\n", ran,
+               ran == 1 ? "" : "s", failed);
+  return failed == 0 ? 0 : 1;
+}
+
 int RunModules(const Options& options) {
   if (options.inputs.size() != 1) {
     std::fprintf(stderr, "wolang: modules needs exactly one directory\n");
@@ -538,7 +603,7 @@ int Run(int argc, char** argv) {
       options.command == "check" || options.command == "tokens" ||
       options.command == "ast" || options.command == "fmt" ||
       options.command == "ir" || options.command == "modules" ||
-      options.command == "run";
+      options.command == "run" || options.command == "test";
   if (needs_inputs && options.inputs.empty()) {
     std::fprintf(stderr, "wolang: %s needs at least one path\n",
                  options.command.c_str());
@@ -557,6 +622,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "run") {
     return RunProgram(options);
+  }
+  if (options.command == "test") {
+    return RunTests(options);
   }
   if (options.command == "modules") {
     return RunModules(options);

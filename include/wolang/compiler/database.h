@@ -74,6 +74,10 @@ struct CheckedFile {
 struct LoweredFile {
   ir::Module module;
   std::vector<std::string> problems;
+  // Functions carrying `@Test`, by name, in declaration order.
+  std::vector<Symbol> tests;
+  // What `comptime` evaluation found. User-facing, unlike |problems|.
+  std::vector<Diagnostic> diagnostics;
   // The IR as lowering left it, before any pass ran. Kept so that a pass
   // that breaks something can be told apart from a lowering that did.
   ir::Module unoptimized;

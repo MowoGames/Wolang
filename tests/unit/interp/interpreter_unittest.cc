@@ -319,5 +319,69 @@ WOLANG_TEST(ValueTest, AnAbsentOptionalIsNotAPresentOne) {
   WOLANG_EXPECT_EQ(interp::Value::Absent().Describe(), "null");
 }
 
+
+// ----------------------------------------------------------- comptime -----
+
+WOLANG_TEST(ComptimeTest, EvaluatesAFunctionWithNoEffects) {
+  // A `comptime` function has no effects -- wave 5 checks that -- so it can
+  // be run inside the compiler.
+  Database db;
+  const FileId file =
+      db.AddFile("<test>", "comptime fun Fine() -> int {\n  return 2 + 2\n}\n");
+  const std::vector<Diagnostic>* diagnostics = db.Diagnostics(file);
+  WOLANG_ASSERT_NE(diagnostics, nullptr);
+  WOLANG_EXPECT(diagnostics->empty());
+}
+
+WOLANG_TEST(ComptimeTest, ATrapBecomesADiagnostic) {
+  Database db;
+  const FileId file = db.AddFile(
+      "<test>", "comptime fun Broken() -> int {\n  return 1 / 0\n}\n");
+  const std::vector<Diagnostic>* diagnostics = db.Diagnostics(file);
+  WOLANG_ASSERT_NE(diagnostics, nullptr);
+  WOLANG_ASSERT_EQ(diagnostics->size(), size_t{1});
+  WOLANG_EXPECT_EQ(diagnostics->front().code, "E0901");
+  WOLANG_EXPECT(diagnostics->front().message.find("division by zero") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(ComptimeTest, AnEndlessEvaluationStopsBeingTheCompilersProblem) {
+  Database db;
+  const FileId file = db.AddFile(
+      "<test>",
+      "comptime fun Endless() -> int {\n  var i = 0\n"
+      "  loop { i = i + 1 }\n}\n");
+  const std::vector<Diagnostic>* diagnostics = db.Diagnostics(file);
+  WOLANG_ASSERT_NE(diagnostics, nullptr);
+  WOLANG_ASSERT_EQ(diagnostics->size(), size_t{1});
+  WOLANG_EXPECT_EQ(diagnostics->front().code, "E0901");
+}
+
+WOLANG_TEST(ComptimeTest, AFunctionWithArgumentsIsLeftForItsCallSite) {
+  // Evaluating one needs the arguments, which means the call site; nothing
+  // is reported here rather than something wrong.
+  Database db;
+  const FileId file = db.AddFile(
+      "<test>", "comptime fun Twice(n: int) -> int => n + n\n");
+  const std::vector<Diagnostic>* diagnostics = db.Diagnostics(file);
+  WOLANG_ASSERT_NE(diagnostics, nullptr);
+  WOLANG_EXPECT(diagnostics->empty());
+}
+
+WOLANG_TEST(TestAttributeTest, CollectsFunctionsMarkedTest) {
+  Database db;
+  const FileId file = db.AddFile(
+      "<test>",
+      "@Test\nfun Passes() -> bool => true\n"
+      "fun Ordinary() -> bool => true\n"
+      "@Test\nfun AlsoATest() -> bool => true\n");
+
+  const LoweredFile* lowered = db.Lowered(file);
+  WOLANG_ASSERT_NE(lowered, nullptr);
+  WOLANG_ASSERT_EQ(lowered->tests.size(), size_t{2});
+  WOLANG_EXPECT_EQ(db.interner().Text(lowered->tests[0]), "Passes");
+  WOLANG_EXPECT_EQ(db.interner().Text(lowered->tests[1]), "AlsoATest");
+}
+
 }  // namespace
 }  // namespace wolang

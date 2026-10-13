@@ -4,6 +4,7 @@
 
 #include <utility>
 
+#include "wolang/interp/interpreter.h"
 #include "wolang/ir/lower.h"
 #include "wolang/ir/passes.h"
 #include "wolang/ir/verifier.h"
@@ -83,6 +84,7 @@ constexpr std::string_view kUnstatedPublicEffect = "E0704";
 constexpr std::string_view kForbiddenEffect = "E0702";
 constexpr std::string_view kUnsafeForbidden = "E0801";
 constexpr std::string_view kUngrantedCapability = "E0703";
+constexpr std::string_view kComptimeFailed = "E0901";
 
 }  // namespace
 
@@ -904,6 +906,29 @@ void Database::RegisterQueries() {
           problem.insert(0, "lowering: ");
         }
 
+        // `@Test` is read from the tree rather than carried through the
+        // IR: a test is a declaration the driver runs, not a property of
+        // the code it generates.
+        const ItemTree* tree = db.GetAs<ItemTree>(ItemTreeKey(file));
+        for (uint32_t index = 0; tree != nullptr &&
+                                 index < tree->entries.size();
+             ++index) {
+          if (tree->entries[index].kind != ItemKind::kFunction) {
+            continue;
+          }
+          const ItemId id = ResolveItem(parsed->ast, index);
+          if (!parsed->ast.Contains(id)) {
+            continue;
+          }
+          const Item& item = parsed->ast.Get(id);
+          for (AttributeId attribute : parsed->ast.Get(item.attributes)) {
+            if (interner_.Text(parsed->ast.Get(attribute).name) == "Test") {
+              result.tests.push_back(item.name);
+              break;
+            }
+          }
+        }
+
         result.unoptimized = result.module;
         ir::Optimize(&types_, &result.module);
 
@@ -911,6 +936,53 @@ void Database::RegisterQueries() {
             ir::Verify(interner_, types_, result.module);
         for (const std::string& problem : optimized.problems) {
           result.problems.push_back("after passes: " + problem);
+        }
+
+        // A `comptime` function has no effects -- which wave 5 already
+        // checks -- so it can be run here, inside the compiler. A trap is
+        // the program telling the compiler something is wrong, so it
+        // becomes a diagnostic rather than an internal note.
+        DiagnosticEngine comptime;
+        for (uint32_t index = 0; tree != nullptr &&
+                                 index < tree->entries.size();
+             ++index) {
+          const ItemTreeEntry& entry = tree->entries[index];
+          if (entry.kind != ItemKind::kFunction ||
+              !HasFlag(entry.flags, ItemFlags::kComptime)) {
+            continue;
+          }
+          const ir::Function* function =
+              result.unoptimized.Find(entry.name);
+          if (function == nullptr || function->is_declaration() ||
+              !function->ParamsOf(function->entry()).empty()) {
+            // One that takes arguments is evaluated where it is called,
+            // which needs the call site; that is a later wave.
+            continue;
+          }
+
+          // A tight budget: this runs during compilation, so a loop that
+          // does not finish has to stop being the compiler's problem.
+          interp::Limits limits;
+          limits.steps = 1'000'000;
+          const interp::Outcome outcome =
+              interp::Run(interner_, types_, result.unoptimized, *function,
+                          {}, limits);
+          if (outcome.ok()) {
+            continue;
+          }
+          const ItemId id = ResolveItem(parsed->ast, index);
+          if (!parsed->ast.Contains(id)) {
+            continue;
+          }
+          std::string message = "`";
+          message.append(interner_.Text(entry.name));
+          message.append("` could not be evaluated at compile time: ");
+          message.append(interp::TrapKindName(outcome.trap));
+          comptime.Error(kComptimeFailed, std::move(message))
+              .Primary(parsed->ast.Get(id).name_span, outcome.message);
+        }
+        for (const Diagnostic& diagnostic : comptime.diagnostics()) {
+          result.diagnostics.push_back(diagnostic);
         }
         return MakeResult(std::move(result));
       });
@@ -957,6 +1029,11 @@ void Database::RegisterQueries() {
         if (const auto* effects = db.GetAs<std::vector<Diagnostic>>(
                 EffectDiagnosticsKey(file))) {
           all.insert(all.end(), effects->begin(), effects->end());
+        }
+        if (const LoweredFile* lowered =
+                db.GetAs<LoweredFile>(LoweredFileKey(file))) {
+          all.insert(all.end(), lowered->diagnostics.begin(),
+                     lowered->diagnostics.end());
         }
         ApplyLintPolicy(file, &all);
         return MakeResult(std::move(all));
