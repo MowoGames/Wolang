@@ -5,9 +5,11 @@ ergonomics. Wolang is its own project: the compiler, runtime and libraries have
 no dependency on any game engine, and an engine is just one of the hosts it can
 be embedded into.
 
-**Status:** wave 1 of 16. The lexer and the diagnostic engine work; there is no
-parser, type checker or code generator yet. See [STATUS.md](STATUS.md) for where
-work stopped and [docs/roadmap.md](docs/roadmap.md) for what each wave adds.
+**Status:** wave 2 of 16. The lexer, the parser and the diagnostic engine work:
+a `.wo` file becomes a syntax tree, and broken syntax recovers instead of
+giving up. There is no type checker or code generator yet. See
+[STATUS.md](STATUS.md) for where work stopped and
+[docs/roadmap.md](docs/roadmap.md) for what each wave adds.
 
 ## What makes it different
 
@@ -43,7 +45,8 @@ Presets: `debug`, `asan` (address and UB sanitizers), `release`.
 
 ```sh
 ./build/debug/tools/wolang/wolang tokens examples/hello.wo
-./build/debug/tools/wolang/wolang check examples/errors.wo
+./build/debug/tools/wolang/wolang ast examples/turret.wo
+./build/debug/tools/wolang/wolang check examples/recovery.wo
 ```
 
 ## Layout
@@ -51,7 +54,7 @@ Presets: `debug`, `asan` (address and UB sanitizers), `release`.
 ```
 include/wolang/   public headers, mirrored by src/
   base/           arenas, interning, source management, diagnostics
-  syntax/         tokens and the lexer
+  syntax/         tokens, lexer, syntax tree, parser, tree printer
 src/              implementation (.cc)
 tools/wolang/     the `wolang` command line driver
 tests/            unit tests and the dependency-free test harness

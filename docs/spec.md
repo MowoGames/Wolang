@@ -62,11 +62,14 @@ parser where they introduce a declaration:
 
 ```
 always   derived  dimension  effect  enter  exit  machine  state  unit
+with     without
 ```
 
 This is deliberate. Gameplay code names variables `state`, `unit` and `machine`
 constantly, and stealing those spellings would be a daily cost for a one-time
-grammar convenience.
+grammar convenience. `with` and `without` are the query filters of
+`Query<mut Velocity, with Falling>`, and are only modifiers when a type
+follows them.
 
 **Reserved words** may not be used as identifiers (`E0011`), so that adding
 them later cannot break existing code:
@@ -149,7 +152,105 @@ whether they delimit generic arguments is the parser's decision.
 
 ---
 
-## 2. Declarations — draft
+## 2. Grammar and parsing — normative
+
+### 2.1 Statement separation
+
+A line break ends a statement. A semicolon is accepted as an explicit
+separator, and two statements on one line without one are an error (`E0040`)
+rather than a silent join.
+
+An expression continues onto the next line only when the operator stays on the
+previous line. An operator that *starts* a line begins a new statement, so this
+is two statements and not a subtraction:
+
+```wolang
+a
+-b
+```
+
+Member access is the exception: `.` and `?.` may open a line, because
+multi-line method chains are a normal way to write a pipeline.
+
+```wolang
+let closest = World.Overlap<Pawn>(position, range)
+    .Filter(|p| p.alive)
+    .Closest(position)
+```
+
+### 2.2 Operator precedence
+
+Loosest first. Every level is left associative except assignment, which is
+right associative.
+
+| Level | Operators |
+|---|---|
+| 1 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` `??=` |
+| 2 | `..` `..=` |
+| 3 | `??` |
+| 4 | `\|\|` |
+| 5 | `&&` |
+| 6 | `==` `!=` `<` `<=` `>` `>=` |
+| 7 | `\|` |
+| 8 | `^` |
+| 9 | `&` |
+| 10 | `<<` `>>` |
+| 11 | `+` `-` |
+| 12 | `*` `/` `%` |
+| 13 | `as` |
+
+Prefix operators (`-`, `!`, `~`, `*`, `&`, `&mut`, `await`, `spawn`) bind
+tighter than any binary operator. Postfix forms — call, index, `.name`,
+`?.name`, `?`, and an initializer block — bind tightest of all.
+
+### 2.3 Casts
+
+`as` performs an explicit conversion and takes a type on its right:
+
+```wolang
+let index = position as i64
+```
+
+### 2.4 Two deliberate ambiguities
+
+**Generic arguments versus comparison.** There is no turbofish. On `<` after a
+value, the parser scans ahead: if the angle brackets balance and a `(`
+immediately follows the closing `>`, it is a generic call; otherwise `<` is a
+comparison.
+
+```wolang
+World.Spawn<Projectile>(origin)   // generic call
+if a < b && c > d { }             // two comparisons
+```
+
+The scan accepts only tokens that can appear in a type argument, and
+deliberately excludes parentheses — so a function type cannot be written as an
+explicit generic argument in expression position, and `(a < b) > (c)` is read
+as a generic call. Both are rare enough to be worth the simpler rule.
+
+**Brace blocks versus struct literals.** `Path { ... }` is a struct literal,
+and a brace block after a call is an initializer block:
+
+```wolang
+let weapon = Weapon { ammo = 30 }
+World.Spawn<Projectile>(at, dir) { speed = 40.0 }
+```
+
+Inside the subject of `if`, `while`, `for`, `foreach` and `match`, a `{` opens
+the body instead, so `if ready { Fire() }` needs no parentheses.
+
+### 2.5 Error recovery
+
+Parsing never fails. A construct that cannot be parsed becomes an error node,
+one diagnostic is reported, and the parser resynchronizes on the next
+declaration, statement or closing brace. A declaration that follows a broken
+one still appears in the tree, which is what the language server needs while a
+file is half typed.
+
+The parser also stays quiet about a token the lexer already reported, so a
+stray `$$$` produces one message rather than one per layer.
+
+## 3. Declarations — draft
 
 ```wolang
 pub fn Damage(base: float, mult: float = 1.0) -> float {
@@ -194,7 +295,7 @@ unless declared `virtual`, and overriding requires `override`.
 operator; there are no exceptions. Invariant violations are faults: they stop
 the coroutine or actor rather than unwinding.
 
-## 3. Types — draft
+## 4. Types — draft
 
 | Category | Types |
 |---|---|
@@ -215,7 +316,7 @@ if let t = target { t.TakeDamage(10) }
 let name = target?.display_name ?? "none"
 ```
 
-## 4. Effects and capabilities — draft
+## 5. Effects and capabilities — draft
 
 Effects are inferred inside a module and explicit on public signatures.
 
@@ -231,7 +332,7 @@ Built-in effects: `alloc`, `io`, `rand`, `time`, `net`, `gpu`, `unsafe`,
 module forbids `rand` and `time`. A hot path forbids `alloc`. A sandboxed module
 is granted a capability set and nothing more.
 
-## 5. Units and dimensions — draft
+## 6. Units and dimensions — draft
 
 ```wolang
 dimension Length
@@ -249,7 +350,7 @@ rotation = Quat.FromAxis(up, 90deg)
 Dimensions participate in type checking and are erased before code generation,
 so unit-safe code costs nothing at runtime.
 
-## 6. Data layout — draft
+## 7. Data layout — draft
 
 ```wolang
 @layout(soa)
@@ -268,7 +369,7 @@ The attribute decides the physical layout; `foreach` maps the loop body onto
 SIMD lanes when the body allows it. The code that reads and writes fields is
 identical either way, so the layout is a measurement, not a rewrite.
 
-## 7. Concurrency — draft
+## 8. Concurrency — draft
 
 ```wolang
 async fn OpenDoor() {
@@ -282,7 +383,7 @@ Coroutines are stackless and scheduled by the host's tick groups or by the
 runtime's own scheduler. Concurrency is structured: a task belongs to the scope
 that spawned it and is cancelled with it.
 
-## 8. State machines — draft
+## 9. State machines — draft
 
 ```wolang
 machine Door {
@@ -297,7 +398,7 @@ machine Door {
 
 Checked for unreachable states and for transitions that can never fire.
 
-## 9. Reactive values — draft
+## 10. Reactive values — draft
 
 ```wolang
 class Character {
@@ -310,7 +411,7 @@ class Character {
 A `derived` field recomputes when an input changes rather than on every read,
 and never needs manual invalidation.
 
-## 10. Entities and systems — draft
+## 11. Entities and systems — draft
 
 ```wolang
 component Velocity { var value: Vec3 }
@@ -325,7 +426,7 @@ The compiler derives an access graph from the queries, schedules
 non-conflicting systems in parallel, and rejects two systems that write the
 same component without an ordering.
 
-## 11. Compile-time evaluation — draft
+## 12. Compile-time evaluation — draft
 
 ```wolang
 comptime let SinTable = Array<float>.Generate(256, |i| Sin(i * Tau / 256))

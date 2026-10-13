@@ -71,6 +71,7 @@ so there is exactly one implementation of every rule.
 | `FileId`, `NodeId`, `TypeId`, `FuncId`, `BlockId`, `ValueId` | `uint32` indices into flat arrays | compact, cache friendly, serializable |
 | `SourceSpan` | `{FileId, uint32 begin, uint32 end}` | 12 bytes; line and column are derived on demand |
 | `Token` | 16 bytes, payloads in side tables | a file of tokens stays in cache |
+| `Ast` | one flat array per node category, child lists as ranges into per-category index pools | the whole tree of a file is contiguous and serializable as-is for the query cache |
 | `Arena` | bump allocator, no destructors | per-file and per-function lifetimes are free to drop |
 
 Types are interned, so type equality is a `TypeId` comparison.

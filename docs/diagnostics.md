@@ -14,7 +14,8 @@ searched for. Codes never change meaning; retired codes are not reused.
 
 | Range | Owner | Status |
 |---|---|---|
-| `E00xx` | lexer and parser | lexer implemented (wave 1) |
+| `E0001`–`E0019` | lexer | implemented (wave 1) |
+| `E0020`–`E0049` | parser | implemented (wave 2) |
 | `E01xx` | types | wave 4 |
 | `E02xx` | pattern matching | wave 4 |
 | `E03xx` | coroutines | wave 10 |
@@ -44,7 +45,41 @@ searched for. Codes never change meaning; retired codes are not reused.
 
 Lexing never stops at the first problem: a malformed token is reported, flagged
 with `TokenFlags::kHasError`, and replaced with the best recovery value, so one
-broken literal does not hide the structure of the rest of the file.
+broken literal does not hide the structure of the rest of the file. A run of
+characters the lexer cannot start a token with is reported once, not once per
+character.
+
+## Implemented: syntax errors
+
+| Code | Message | Example |
+|---|---|---|
+| `E0020` | expected a declaration | `42` at file scope |
+| `E0021` | expected an identifier | `fn 1() {}` |
+| `E0022` | expected a specific token | `class C` without `{` |
+| `E0023` | expected a type | `fn f(a: ) {}` |
+| `E0024` | expected an expression | `let a = *` |
+| `E0025` | expected a pattern | `for in items {}` |
+| `E0026` | unmatched delimiter | a block without its `}` |
+| `E0028` | expected a block | `fn f() ???` |
+| `E0029` | duplicate modifier | `pub pub fn f() {}` |
+| `E0034` | expected a match arm | `match v { => 1 }` |
+| `E0035` | expected a `state` declaration | a `fn` inside a `machine` |
+| `E0036` | expected a transition | a stray name inside a `state` |
+| `E0037` | expected a unit definition | `unit m` with no dimension |
+| `E0040` | expected a line break between statements | `let a = 1 let b = 2` |
+| `E0041` | nesting too deep | hundreds of nested parentheses |
+| `E0042` | unknown type parameter in a `where` clause | `fn f<T>() where U: A {}` |
+| `E0043` | unexpected token after an expression | `"{a b}"` |
+
+`E0026` carries two labels: the primary one where the closing delimiter was
+expected, and a secondary one on the delimiter that was left open.
+
+Parsing never stops either. An unparsable construct becomes an error node, the
+parser resynchronizes on the next declaration, statement or closing brace, and
+the declarations around the broken one still reach the tree. The parser also
+suppresses its own message when the offending token was already reported by
+the lexer, or when the attributes and modifiers in front of a declaration
+already produced one, so each broken spot yields one diagnostic.
 
 ## Planned catalog
 
