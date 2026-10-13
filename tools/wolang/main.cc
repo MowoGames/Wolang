@@ -19,7 +19,10 @@
 #include "wolang/base/diagnostic_renderer.h"
 #include "wolang/base/source_manager.h"
 #include "wolang/base/string_interner.h"
+#include "wolang/syntax/ast.h"
+#include "wolang/syntax/ast_printer.h"
 #include "wolang/syntax/lexer.h"
+#include "wolang/syntax/parser.h"
 
 namespace wolang {
 namespace {
@@ -31,6 +34,7 @@ struct Options {
   std::vector<std::string> inputs;
   bool color = true;
   bool show_trivia = false;
+  bool show_spans = false;
 };
 
 bool StderrIsTerminal() {
@@ -50,12 +54,14 @@ void PrintUsage() {
                "commands:\n"
                "  check <files>   report diagnostics for the given files\n"
                "  tokens <files>  print the token stream of the given files\n"
+               "  ast <files>     print the syntax tree of the given files\n"
                "  version         print the version and exit\n"
                "  help            print this message\n"
                "\n"
                "options:\n"
                "  --no-color      never emit ANSI colors\n"
-               "  --trivia        include comments in `tokens` output\n",
+               "  --trivia        include comments in `tokens` output\n"
+               "  --spans         annotate `ast` output with positions\n",
                std::string(kVersion).c_str());
 }
 
@@ -156,7 +162,7 @@ void PrintTokens(const SourceManager& sources,
   }
 }
 
-int RunLexingCommand(const Options& options) {
+int RunFrontendCommand(const Options& options) {
   SourceManager sources;
   StringInterner interner;
   DiagnosticEngine diagnostics;
@@ -164,7 +170,9 @@ int RunLexingCommand(const Options& options) {
   RenderOptions render;
   render.color = options.color && StderrIsTerminal();
 
-  std::vector<TokenStream> streams;
+  AstPrintOptions print;
+  print.include_spans = options.show_spans;
+
   for (const std::string& input : options.inputs) {
     std::string error;
     const FileId file = sources.LoadFile(input, &error);
@@ -172,12 +180,17 @@ int RunLexingCommand(const Options& options) {
       std::fprintf(stderr, "wolang: %s\n", error.c_str());
       return 2;
     }
-    streams.push_back(Lex(sources, file, &interner, &diagnostics));
-  }
 
-  if (options.command == "tokens") {
-    for (const TokenStream& stream : streams) {
+    const TokenStream stream = Lex(sources, file, &interner, &diagnostics);
+    if (options.command == "tokens") {
       PrintTokens(sources, interner, stream, options.show_trivia);
+      continue;
+    }
+
+    const Ast ast = Parse(sources, stream, &interner, &diagnostics);
+    if (options.command == "ast") {
+      const std::string text = PrintAst(sources, interner, ast, print);
+      std::fputs(text.c_str(), stdout);
     }
   }
 
@@ -192,6 +205,8 @@ int Run(int argc, char** argv) {
       options.color = false;
     } else if (argument == "--trivia") {
       options.show_trivia = true;
+    } else if (argument == "--spans") {
+      options.show_spans = true;
     } else if (argument.size() > 1 && argument[0] == '-') {
       std::fprintf(stderr, "wolang: unknown option %.*s\n",
                    static_cast<int>(argument.size()), argument.data());
@@ -211,13 +226,14 @@ int Run(int argc, char** argv) {
     std::fprintf(stdout, "wolang %s\n", std::string(kVersion).c_str());
     return 0;
   }
-  if (options.command == "check" || options.command == "tokens") {
+  if (options.command == "check" || options.command == "tokens" ||
+      options.command == "ast") {
     if (options.inputs.empty()) {
       std::fprintf(stderr, "wolang: %s needs at least one input file\n",
                    options.command.c_str());
       return 2;
     }
-    return RunLexingCommand(options);
+    return RunFrontendCommand(options);
   }
 
   std::fprintf(stderr, "wolang: unknown command '%s'\n",
