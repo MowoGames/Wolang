@@ -19,6 +19,7 @@ constexpr std::string_view kNotCallable = "E0106";
 constexpr std::string_view kNotIndexable = "E0107";
 constexpr std::string_view kUnknownMember = "E0112";
 constexpr std::string_view kNonExhaustive = "E0201";
+constexpr std::string_view kMissingTraitMethod = "E0402";
 constexpr std::string_view kBadOperand = "E0108";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
 constexpr std::string_view kDimensionMismatch = "E1001";
@@ -157,6 +158,7 @@ class Checker {
   TypeId CheckIf(const Expr& expr, TypeId expected);
   TypeId CheckMatch(const Expr& expr, TypeId expected);
   void CheckExhaustive(const Expr& expr, TypeId subject);
+  void CheckTraitConformance(const Item& item);
   TypeId CheckLoop(const Expr& expr);
   TypeId CheckRange(const Expr& expr);
 
@@ -695,7 +697,48 @@ TypeId Checker::CheckCall(const Expr& expr) {
     return types_->error();
   }
 
-  const std::vector<TypeId> params = types_->ArgumentsOf(callee);
+  std::vector<TypeId> params = types_->ArgumentsOf(callee);
+  TypeId result = types_->ElementOf(callee);
+
+  // A generic signature has its parameters inferred from the arguments:
+  // `First(xs)` works out `T` from the type of `xs`, so no turbofish and no
+  // explicit argument are needed.
+  bool generic = types_->MentionsParameter(callee);
+  if (generic) {
+    TypeStore::Substitution substitution;
+    std::vector<TypeId> found;
+    found.reserve(args.size());
+    for (size_t i = 0; i < args.size(); ++i) {
+      // Checked without an expectation: the expectation is what is being
+      // inferred. A literal takes its default type, because `T` has no
+      // context to narrow it.
+      // Checked with no expectation, which is also what settles a literal
+      // on its default type -- `T` gives it no context to narrow to.
+      const TypeId actual = Adapt(Check(args[i], TypeId{}), TypeId{},
+                                  ast_.Get(args[i]).span);
+      found.push_back(actual);
+      if (i < params.size()) {
+        types_->Unify(params[i], actual, &substitution);
+      }
+    }
+
+    for (size_t i = 0; i < params.size() && i < found.size(); ++i) {
+      const TypeId expected = types_->Substitute(params[i], substitution);
+      if (!Accepts(expected, found[i])) {
+        ReportMismatch(expected, found[i], ast_.Get(args[i]).span);
+      }
+    }
+    if (params.size() != args.size()) {
+      std::string message = "expected ";
+      message.append(std::to_string(params.size()));
+      message.append(params.size() == 1 ? " argument, found "
+                                        : " arguments, found ");
+      message.append(std::to_string(args.size()));
+      Report(kWrongArguments, std::move(message), expr.span);
+    }
+    return types_->Substitute(result, substitution);
+  }
+
   if (params.size() != args.size()) {
     std::string message = "expected ";
     message.append(std::to_string(params.size()));
@@ -711,7 +754,7 @@ TypeId Checker::CheckCall(const Expr& expr) {
       ReportMismatch(expected, found, ast_.Get(args[i]).span);
     }
   }
-  return types_->ElementOf(callee);
+  return result;
 }
 
 TypeId Checker::CheckIndex(const Expr& expr) {
@@ -1509,6 +1552,49 @@ void Checker::CheckBinding(const Item& item) {
   }
 }
 
+// `extend T as Trait` promises that T has every method the trait declares.
+// The methods may come from T's own declaration or from any extension of it,
+// which is why this works from the member table rather than from this block.
+void Checker::CheckTraitConformance(const Item& item) {
+  if (!item.super_type.is_valid() || !item.target_type.is_valid()) {
+    return;
+  }
+  const TypeId trait = resolver_.Resolve(ast_, item.super_type);
+  const TypeId target = resolver_.Resolve(ast_, item.target_type);
+  if (types_->IsError(trait) || types_->IsError(target)) {
+    return;
+  }
+
+  std::string missing;
+  for (const Member& required : resolution_->MembersOf(trait)) {
+    if (required.kind != MemberKind::kMethod) {
+      continue;
+    }
+    const Member* found = resolution_->FindMember(target, required.name);
+    if (found != nullptr && found->kind == MemberKind::kMethod) {
+      continue;
+    }
+    if (!missing.empty()) {
+      missing.append(", ");
+    }
+    missing.push_back('`');
+    missing.append(interner_->Text(required.name));
+    missing.push_back('`');
+  }
+  if (missing.empty()) {
+    return;
+  }
+
+  std::string message = "`";
+  message.append(Describe(target));
+  message.append("` does not implement ");
+  message.append(missing);
+  message.append(" from `");
+  message.append(Describe(trait));
+  message.append("`");
+  Report(kMissingTraitMethod, std::move(message), item.name_span);
+}
+
 void Checker::CheckItem(ItemId id) {
   if (!ast_.Contains(id)) {
     return;
@@ -1538,6 +1624,7 @@ void Checker::CheckItem(ItemId id) {
         self_type_ = item.target_type.is_valid()
                          ? resolver_.Resolve(ast_, item.target_type)
                          : TypeId{};
+        CheckTraitConformance(item);
       } else {
         const Binding* binding = Lookup(item.name);
         self_type_ = binding != nullptr ? binding->type : TypeId{};

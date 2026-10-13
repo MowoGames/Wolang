@@ -485,7 +485,9 @@ FileResolution ResolveFile(TypeStore* types,
       continue;
     }
 
-    if (!entry.name.is_valid()) {
+    // An `extend` block is named after the type it extends; it declares no
+    // new name, so binding it would collide with the declaration itself.
+    if (!entry.name.is_valid() || entry.kind == ItemKind::kExtend) {
       continue;
     }
 
@@ -705,15 +707,10 @@ void ResolveSignatures(TypeStore* types,
   }
 
   // Now that every declaration has a type, collect the members of each named
-  // type from its children.
-  for (uint32_t index = 0; index < tree.entries.size(); ++index) {
-    const ItemTreeEntry& entry = tree.entries[index];
-    if (!DeclaresAType(entry.kind) || !resolution->item_types[index].is_valid()) {
-      continue;
-    }
-
-    TypeMembers table;
-    table.type = resolution->item_types[index];
+  // type from its children. An `extend` block contributes to the table of the
+  // type it extends, which is what makes `extend` additive.
+  const auto members_of = [&](uint32_t index) {
+    std::vector<Member> members;
     for (uint32_t child = 0; child < tree.entries.size(); ++child) {
       const ItemTreeEntry& member_entry = tree.entries[child];
       if (member_entry.parent != index || !member_entry.name.is_valid()) {
@@ -740,11 +737,56 @@ void ResolveSignatures(TypeStore* types,
           member.kind = MemberKind::kField;
           break;
       }
-      table.members.push_back(member);
+      members.push_back(member);
+    }
+    return members;
+  };
+
+  for (uint32_t index = 0; index < tree.entries.size(); ++index) {
+    const ItemTreeEntry& entry = tree.entries[index];
+    if (!DeclaresAType(entry.kind) || !resolution->item_types[index].is_valid()) {
+      continue;
     }
 
-    // A `machine`'s states are members too, so `self.state` can name one.
+    TypeMembers table;
+    table.type = resolution->item_types[index];
+    table.members = members_of(index);
+
     resolution->type_members.push_back(std::move(table));
+  }
+
+  // `extend T { ... }` adds to T's table rather than declaring its own.
+  for (uint32_t index = 0; index < tree.entries.size(); ++index) {
+    if (tree.entries[index].kind != ItemKind::kExtend) {
+      continue;
+    }
+    const ItemId item_id = ResolveItem(ast, index);
+    if (!ast.Contains(item_id)) {
+      continue;
+    }
+    const Item& item = ast.Get(item_id);
+    const TypeId target = item.target_type.is_valid()
+                              ? resolver.Resolve(ast, item.target_type)
+                              : TypeId{};
+    if (!target.is_valid()) {
+      continue;
+    }
+
+    std::vector<Member> added = members_of(index);
+    bool merged = false;
+    for (TypeMembers& table : resolution->type_members) {
+      if (table.type != target) {
+        continue;
+      }
+      table.members.insert(table.members.end(), added.begin(), added.end());
+      merged = true;
+      break;
+    }
+    if (!merged) {
+      // The type is declared in another file, which keeps its own table; the
+      // extension still has to be visible here.
+      resolution->type_members.push_back(TypeMembers{target, std::move(added)});
+    }
   }
 
   // Patch this file's own bindings, whose type only now exists. An item

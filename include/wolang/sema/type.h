@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -130,6 +131,11 @@ struct Type {
 
   // Optional, fallible, slice, array, pointer, reference: the inner type.
   // Function: the return type. Quantity: the underlying numeric type.
+  //
+  // Only meaningful for those kinds. Every Type is zeroed before use so that
+  // interning can compare bytes, which leaves this reading as TypeId{0} -- a
+  // real type -- rather than as an invalid id. Check the kind before
+  // following it, or a walk over types will recurse forever.
   TypeId element;
   // Array: its length, or zero when the length was not a constant.
   uint64_t length = 0;
@@ -236,6 +242,23 @@ class TypeStore {
   // Strips every layer of `?` and `!`, which is what a diagnostic about the
   // underlying value wants.
   TypeId StripWrappers(TypeId id) const;
+
+  // True when |id| is a type parameter, or contains one anywhere inside it.
+  // A signature that does not is already concrete and needs no inference.
+  bool MentionsParameter(TypeId id) const;
+
+  // One type parameter and what it was inferred to stand for.
+  using Substitution = std::vector<std::pair<TypeId, TypeId>>;
+
+  // Matches |pattern| against |actual|, recording what each type parameter
+  // in |pattern| has to be for the two to agree. Returns false when they
+  // cannot agree at all; a parameter already bound to something else is the
+  // interesting case.
+  bool Unify(TypeId pattern, TypeId actual, Substitution* out) const;
+
+  // Rebuilds |id| with every type parameter in |out| replaced. A parameter
+  // that was never inferred is left alone.
+  TypeId Substitute(TypeId id, const Substitution& substitution);
 
   // Width in bits of an integer or float type, or zero.
   uint32_t BitWidth(TypeId id) const;

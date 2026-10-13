@@ -308,5 +308,39 @@ WOLANG_TEST(TypeStoreTest, QuantitiesCarryTheirDimension) {
   WOLANG_EXPECT_EQ(store.Quantity(f32, Dimensions()), f32);
 }
 
+
+WOLANG_TEST(TypeStoreTest, UnifiesAndSubstitutesTypeParameters) {
+  TypeStore store;
+  StringInterner interner;
+  const TypeId t = store.Parameter(interner.Intern("T"), 0, 0);
+  const TypeId u = store.Parameter(interner.Intern("U"), 0, 1);
+  const TypeId i32 = store.default_int();
+  const TypeId f32 = store.default_float();
+
+  WOLANG_EXPECT(store.MentionsParameter(store.Slice(t, false)));
+  WOLANG_EXPECT(!store.MentionsParameter(store.Slice(i32, false)));
+
+  TypeStore::Substitution substitution;
+  WOLANG_EXPECT(store.Unify(store.Slice(t, false), store.Slice(i32, false),
+                            &substitution));
+  WOLANG_EXPECT_EQ(store.Substitute(t, substitution), i32);
+  WOLANG_EXPECT_EQ(store.Substitute(store.Optional(t), substitution),
+                   store.Optional(i32));
+
+  // A parameter already inferred cannot be inferred differently.
+  WOLANG_EXPECT(!store.Unify(t, f32, &substitution));
+
+  // A second parameter is independent.
+  WOLANG_EXPECT(store.Unify(u, f32, &substitution));
+  WOLANG_EXPECT_EQ(store.Substitute(store.Tuple({t, u}), substitution),
+                   store.Tuple({i32, f32}));
+
+  // Walking a type never follows a field its kind does not use: a tuple has
+  // no element type, and reading one would be a zeroed id pointing at a real
+  // type.
+  WOLANG_EXPECT(!store.MentionsParameter(store.Tuple({i32, f32})));
+  WOLANG_EXPECT(store.MentionsParameter(store.Tuple({i32, t})));
+}
+
 }  // namespace
 }  // namespace wolang

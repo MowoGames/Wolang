@@ -882,5 +882,127 @@ WOLANG_TEST(TypeCheck, AGuardedArmCoversNothing) {
   WOLANG_EXPECT(f.HasCode("E0201"));
 }
 
+
+// ------------------------------------------------- generics and traits -----
+
+WOLANG_TEST(TypeCheck, GenericCallsInferTheirParameters) {
+  Fixture f(R"(
+fun First<T>(items: [T]) -> T {
+  return items[0]
+}
+
+fun use(xs: [int], ys: [float]) {
+  let a = First(xs)
+  let b = First(ys)
+}
+)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "i32");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("b"), "f32");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, InferenceAcrossSeveralParameters) {
+  Fixture f(R"(
+fun Pair<A, B>(a: A, b: B) -> (A, B) {
+  return (a, b)
+}
+
+fun use() {
+  let p = Pair(1, true)
+}
+)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("p"), "(i32, bool)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AnArgumentThatCannotMatchIsReported) {
+  Fixture f(R"(
+fun First<T>(items: [T]) -> T {
+  return items[0]
+}
+
+fun use() {
+  let a = First(1)
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0101"));
+}
+
+WOLANG_TEST(TypeCheck, InferredResultStillMeetsItsExpectation) {
+  Fixture f(R"(
+fun First<T>(items: [T]) -> T {
+  return items[0]
+}
+
+fun use(xs: [int]) {
+  let a: bool = First(xs)
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0101"));
+  WOLANG_EXPECT(f.Messages().find("expected `bool`, found `i32`") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, ExtendDeclaresNoNameOfItsOwn) {
+  // `extend Pawn` is named after the type it extends, so binding it would
+  // collide with the declaration.
+  Fixture f(R"(
+struct Pawn {
+  var health: float
+}
+
+extend Pawn {
+  fun Heal() {}
+}
+
+fun use(p: Pawn) {
+  p.Heal()
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, MissingTraitMethodIsReported) {
+  Fixture f(R"(
+trait Damageable {
+  fun TakeDamage(amount: float)
+  fun IsAlive() -> bool
+}
+
+struct Pawn {
+  var health: float
+}
+
+extend Pawn as Damageable {
+  fun TakeDamage(amount: float) {}
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0402"));
+  WOLANG_EXPECT(f.Messages().find("does not implement `IsAlive`") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, ATraitSatisfiedByAnotherExtensionIsAccepted) {
+  // The methods may come from anywhere, not only from the block that names
+  // the trait.
+  Fixture f(R"(
+trait Damageable {
+  fun TakeDamage(amount: float)
+  fun IsAlive() -> bool
+}
+
+struct Pawn {
+  var health: float
+
+  fun IsAlive() -> bool => true
+}
+
+extend Pawn as Damageable {
+  fun TakeDamage(amount: float) {}
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang

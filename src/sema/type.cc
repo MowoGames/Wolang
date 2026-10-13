@@ -434,6 +434,150 @@ DimensionId TypeStore::Dimension(Symbol name, uint32_t file, uint32_t item) {
   return DimensionId{static_cast<uint32_t>(dimensions_.size() - 1)};
 }
 
+namespace {
+
+// A zeroed Type has `element` and `base` reading as TypeId{0}, which is a
+// real type rather than an invalid id, so neither field may be followed
+// without first checking that this kind actually uses it.
+bool CarriesElement(TypeKind kind) {
+  switch (kind) {
+    case TypeKind::kOptional:
+    case TypeKind::kFallible:
+    case TypeKind::kSlice:
+    case TypeKind::kArray:
+    case TypeKind::kPointer:
+    case TypeKind::kReference:
+    case TypeKind::kFunction:
+    case TypeKind::kQuantity:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool CarriesBase(TypeKind kind) {
+  return kind == TypeKind::kInstance;
+}
+
+}  // namespace
+
+bool TypeStore::MentionsParameter(TypeId id) const {
+  if (!id.is_valid()) {
+    return false;
+  }
+  const Type& type = Get(id);
+  if (type.kind == TypeKind::kParameter) {
+    return true;
+  }
+  if (CarriesElement(type.kind) && MentionsParameter(type.element)) {
+    return true;
+  }
+  if (CarriesBase(type.kind) && MentionsParameter(type.base)) {
+    return true;
+  }
+  for (TypeId arg : ArgumentsOf(id)) {
+    if (MentionsParameter(arg)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool TypeStore::Unify(TypeId pattern,
+                      TypeId actual,
+                      Substitution* out) const {
+  if (!pattern.is_valid() || !actual.is_valid()) {
+    return true;
+  }
+  if (pattern == actual) {
+    return true;
+  }
+
+  const Type& left = Get(pattern);
+  if (left.kind == TypeKind::kParameter) {
+    for (const auto& [parameter, bound] : *out) {
+      if (parameter == pattern) {
+        // Two arguments disagreeing about the same parameter is the error
+        // worth reporting, and the caller reports it as a mismatch.
+        return bound == actual;
+      }
+    }
+    out->emplace_back(pattern, actual);
+    return true;
+  }
+
+  const Type& right = Get(actual);
+  if (left.kind != right.kind) {
+    return false;
+  }
+  if (CarriesElement(left.kind) &&
+      !Unify(left.element, right.element, out)) {
+    return false;
+  }
+  if (CarriesBase(left.kind) && !Unify(left.base, right.base, out)) {
+    return false;
+  }
+
+  const std::vector<TypeId> left_args = ArgumentsOf(pattern);
+  const std::vector<TypeId> right_args = ArgumentsOf(actual);
+  if (left_args.size() != right_args.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < left_args.size(); ++i) {
+    if (!Unify(left_args[i], right_args[i], out)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+TypeId TypeStore::Substitute(TypeId id, const Substitution& substitution) {
+  if (!id.is_valid() || substitution.empty() || !MentionsParameter(id)) {
+    return id;
+  }
+
+  const Type type = Get(id);
+  if (type.kind == TypeKind::kParameter) {
+    for (const auto& [parameter, bound] : substitution) {
+      if (parameter == id) {
+        return bound;
+      }
+    }
+    return id;
+  }
+
+  std::vector<TypeId> args;
+  for (TypeId arg : ArgumentsOf(id)) {
+    args.push_back(Substitute(arg, substitution));
+  }
+  const TypeId element = CarriesElement(type.kind)
+                             ? Substitute(type.element, substitution)
+                             : type.element;
+
+  switch (type.kind) {
+    case TypeKind::kOptional:
+      return Optional(element);
+    case TypeKind::kFallible:
+      return Fallible(element, type.base);
+    case TypeKind::kSlice:
+      return Slice(element, type.is_soa);
+    case TypeKind::kArray:
+      return Array(element, type.length, type.is_soa);
+    case TypeKind::kPointer:
+      return Pointer(element, type.is_mutable);
+    case TypeKind::kReference:
+      return Reference(element, type.is_mutable);
+    case TypeKind::kTuple:
+      return Tuple(args);
+    case TypeKind::kFunction:
+      return Function(args, element);
+    case TypeKind::kInstance:
+      return Instance(Substitute(type.base, substitution), args);
+    default:
+      return id;
+  }
+}
+
 std::string TypeStore::Describe(const StringInterner& interner,
                                 TypeId id) const {
   if (!id.is_valid()) {
