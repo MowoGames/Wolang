@@ -19,7 +19,9 @@ constexpr std::string_view kNotCallable = "E0106";
 constexpr std::string_view kNotIndexable = "E0107";
 constexpr std::string_view kUnknownMember = "E0112";
 constexpr std::string_view kNonExhaustive = "E0201";
+constexpr std::string_view kBadOverride = "E0401";
 constexpr std::string_view kMissingTraitMethod = "E0402";
+constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kBadOperand = "E0108";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
 constexpr std::string_view kDimensionMismatch = "E1001";
@@ -160,6 +162,9 @@ class Checker {
   TypeId CheckMatch(const Expr& expr, TypeId expected);
   void CheckExhaustive(const Expr& expr, TypeId subject);
   void CheckTraitConformance(const Item& item, TypeId target);
+  void CheckOverride(const Item& item);
+  void CheckBounds(const TypeStore::Substitution& substitution,
+                   SourceSpan span);
   TypeId CheckLoop(const Expr& expr);
   TypeId CheckRange(const Expr& expr);
 
@@ -382,18 +387,24 @@ TypeId Checker::CheckLiteral(const Expr& expr, TypeId expected) {
       return types_->int_literal();
     }
 
-    case ExprKind::kStringLiteral:
+    case ExprKind::kStringLiteral: {
+      // A literal with no interpolation is static data, so it is a borrowed
+      // `str`. One with interpolation builds a new string at runtime, which
+      // is what makes it an owned `String`.
+      bool interpolated = false;
       for (ExprId part : ast_.Get(expr.args)) {
         const Expr& piece = ast_.Get(part);
         if (piece.kind != ExprKind::kStringText) {
           // An interpolated expression can be anything that formats; its own
           // type is checked without an expectation.
           Check(part, TypeId{});
+          interpolated = true;
         } else {
           Record(part, types_->str());
         }
       }
-      return types_->string_type();
+      return interpolated ? types_->string_type() : types_->str();
+    }
 
     case ExprKind::kCharLiteral:
       return types_->char_type();
@@ -745,6 +756,7 @@ TypeId Checker::CheckCall(const Expr& expr) {
         ReportMismatch(expected, found[i], ast_.Get(args[i]).span);
       }
     }
+    CheckBounds(substitution, expr.span);
     if (params.size() != args.size()) {
       std::string message = "expected ";
       message.append(std::to_string(params.size()));
@@ -1605,6 +1617,61 @@ void Checker::CheckBinding(const Item& item) {
   }
 }
 
+// `override` and the method it replaces have to agree that one is replacing
+// the other: silently shadowing a base method, or announcing an override of
+// something that is not there, are the two halves of the same bug.
+// A parameter carries its bounds, so once it is inferred the bound is
+// checked against what it was inferred to be. Conformance is declared --
+// `extend T as Trait` -- rather than inferred from the methods present.
+void Checker::CheckBounds(const TypeStore::Substitution& substitution,
+                          SourceSpan span) {
+  for (const auto& [parameter, inferred] : substitution) {
+    for (TypeId bound : types_->ArgumentsOf(parameter)) {
+      if (!bound.is_valid() || types_->IsError(bound) ||
+          resolution_->Satisfies(inferred, bound)) {
+        continue;
+      }
+      std::string message = "`";
+      message.append(Describe(inferred));
+      message.append("` does not satisfy `");
+      message.append(Describe(bound));
+      message.append("`");
+      Report(kBoundNotSatisfied, std::move(message), span);
+    }
+  }
+}
+
+void Checker::CheckOverride(const Item& item) {
+  if (!self_type_.is_valid() || !item.name.is_valid()) {
+    return;
+  }
+  const bool declared = HasFlag(item.flags, ItemFlags::kOverride);
+  const Member* base =
+      resolution_->FindInheritedMember(self_type_, item.name);
+  const bool replaces = base != nullptr && base->kind == MemberKind::kMethod;
+
+  if (declared && !replaces) {
+    std::string message = "`";
+    message.append(interner_->Text(item.name));
+    message.append("` is marked `override` but replaces no base method");
+    Report(kBadOverride, std::move(message), item.name_span);
+    return;
+  }
+  if (!declared && replaces) {
+    std::string message = "`";
+    message.append(interner_->Text(item.name));
+    message.append("` hides a base method; write `override`");
+    Report(kBadOverride, std::move(message), item.name_span);
+    return;
+  }
+  if (declared && replaces && !base->is_virtual && !base->is_override) {
+    std::string message = "`";
+    message.append(interner_->Text(item.name));
+    message.append("` overrides a method that is not `virtual`");
+    Report(kBadOverride, std::move(message), item.name_span);
+  }
+}
+
 // `extend T as Trait` promises that T has every method the trait declares.
 // The methods may come from T's own declaration or from any extension of it,
 // which is why this works from the member table rather than from this block.
@@ -1655,6 +1722,12 @@ void Checker::CheckItem(ItemId id) {
 
   switch (item.kind) {
     case ItemKind::kFunction:
+      // Only a method can override anything, and `self_type_` is what says
+      // whether this is one.
+      CheckOverride(item);
+      CheckFunction(item);
+      return;
+
     case ItemKind::kSystem:
     case ItemKind::kOn:
       CheckFunction(item);

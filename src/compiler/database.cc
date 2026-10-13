@@ -373,6 +373,38 @@ void Database::RegisterQueries() {
             }
           }
 
+          // Relations travel with the tables: a bound of `Actor` is only
+          // satisfiable because the declaring file says so, and a trait may
+          // be implemented in a third file.
+          for (const TypeRelations& relation : other.relations) {
+            TypeRelations* mine = nullptr;
+            for (TypeRelations& candidate : resolution.relations) {
+              if (candidate.type == relation.type) {
+                mine = &candidate;
+                break;
+              }
+            }
+            if (mine == nullptr) {
+              resolution.relations.push_back(relation);
+              continue;
+            }
+            if (!mine->base.is_valid()) {
+              mine->base = relation.base;
+            }
+            for (TypeId trait : relation.traits) {
+              bool known = false;
+              for (TypeId existing : mine->traits) {
+                if (existing == trait) {
+                  known = true;
+                  break;
+                }
+              }
+              if (!known) {
+                mine->traits.push_back(trait);
+              }
+            }
+          }
+
           // A name imported from |other_file| gets its signature from that
           // file's own pass, because an item index only means anything
           // within the file it came from.

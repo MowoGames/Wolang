@@ -100,11 +100,17 @@ struct Member {
   bool is_mutable = false;
   // Whether code outside the declaring module may name it.
   bool is_public = false;
+  // Methods: whether a derived type may replace it, and whether this one
+  // already replaces a base method.
+  bool is_virtual = false;
+  bool is_override = false;
 
   friend bool operator==(const Member& lhs, const Member& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
            lhs.type == rhs.type && lhs.is_mutable == rhs.is_mutable &&
-           lhs.is_public == rhs.is_public;
+           lhs.is_public == rhs.is_public &&
+           lhs.is_virtual == rhs.is_virtual &&
+           lhs.is_override == rhs.is_override;
   }
 };
 
@@ -199,7 +205,13 @@ class TypeStore {
   Symbol DimensionName(DimensionId dimension) const;
 
   TypeId Named(Symbol name, uint32_t file, uint32_t item);
-  TypeId Parameter(Symbol name, uint32_t owner, uint32_t index);
+  // |bounds| are the traits and base types the argument has to satisfy.
+  // Carried by the parameter itself, so a call site can check them without
+  // reaching back into the declaring file.
+  TypeId Parameter(Symbol name,
+                   uint32_t owner,
+                   uint32_t index,
+                   const std::vector<TypeId>& bounds = {});
   TypeId Instance(TypeId base, const std::vector<TypeId>& args);
   TypeId Optional(TypeId element);
   TypeId Fallible(TypeId element, TypeId error_set);

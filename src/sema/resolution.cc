@@ -119,6 +119,57 @@ const Member* FileResolution::FindMember(TypeId type, Symbol name) const {
   return nullptr;
 }
 
+TypeId FileResolution::BaseOf(TypeId type) const {
+  for (const TypeRelations& relation : relations) {
+    if (relation.type == type) {
+      return relation.base;
+    }
+  }
+  return TypeId{};
+}
+
+const Member* FileResolution::FindInheritedMember(TypeId type,
+                                                  Symbol name) const {
+  // Bounded by the number of relations, so a cycle in the base chain -- which
+  // is a declaration error, not a crash -- terminates here too.
+  TypeId current = BaseOf(type);
+  for (size_t depth = 0; depth <= relations.size() && current.is_valid();
+       ++depth) {
+    if (const Member* member = FindMember(current, name); member != nullptr) {
+      return member;
+    }
+    current = BaseOf(current);
+  }
+  return nullptr;
+}
+
+bool FileResolution::Satisfies(TypeId type, TypeId bound) const {
+  if (!type.is_valid() || !bound.is_valid()) {
+    return true;
+  }
+
+  TypeId current = type;
+  for (size_t depth = 0; depth <= relations.size() && current.is_valid();
+       ++depth) {
+    if (current == bound) {
+      return true;
+    }
+    for (const TypeRelations& relation : relations) {
+      if (relation.type != current) {
+        continue;
+      }
+      for (TypeId trait : relation.traits) {
+        if (trait == bound) {
+          return true;
+        }
+      }
+      break;
+    }
+    current = BaseOf(current);
+  }
+  return false;
+}
+
 const Binding* FileResolution::Find(Symbol name) const {
   for (const Binding& binding : scope) {
     if (binding.name == name) {
@@ -671,12 +722,20 @@ void ResolveSignatures(TypeStore* types,
 
     // A generic declaration's parameters have to be in scope while its own
     // signature is resolved.
+    // A generic declaration's parameters have to be in scope while its own
+    // signature is resolved, and each carries its bounds so a call site can
+    // check them without reaching back into this file.
     size_t pushed = 0;
     for (GenericParamId generic_id : ast.Get(item.generics)) {
       const GenericParam& generic = ast.Get(generic_id);
+      std::vector<TypeId> bounds;
+      for (TypeRefId bound : ast.Get(generic.bounds)) {
+        bounds.push_back(resolver.Resolve(ast, bound));
+      }
       resolver.PushTypeParameter(
-          generic.name, types->Parameter(generic.name, index,
-                                         static_cast<uint32_t>(pushed)));
+          generic.name,
+          types->Parameter(generic.name, index,
+                           static_cast<uint32_t>(pushed), bounds));
       ++pushed;
     }
 
@@ -722,6 +781,8 @@ void ResolveSignatures(TypeStore* types,
       member.type = resolution->item_types[child];
       member.is_mutable = HasFlag(member_entry.flags, ItemFlags::kMutable);
       member.is_public = !HasFlag(member_entry.flags, ItemFlags::kPriv);
+      member.is_virtual = HasFlag(member_entry.flags, ItemFlags::kVirtual);
+      member.is_override = HasFlag(member_entry.flags, ItemFlags::kOverride);
       switch (member_entry.kind) {
         case ItemKind::kFunction:
           member.kind = MemberKind::kMethod;
@@ -753,6 +814,19 @@ void ResolveSignatures(TypeStore* types,
     table.members = members_of(index);
 
     resolution->type_members.push_back(std::move(table));
+
+    // `class Turret : Actor` is what makes a bound of `Actor` satisfiable
+    // and what gives `override` a method to override.
+    TypeRelations relation;
+    relation.type = resolution->item_types[index];
+    const ItemId declaration = ResolveItem(ast, index);
+    if (ast.Contains(declaration)) {
+      const Item& item = ast.Get(declaration);
+      if (item.super_type.is_valid()) {
+        relation.base = resolver.Resolve(ast, item.super_type);
+      }
+    }
+    resolution->relations.push_back(std::move(relation));
   }
 
   // `extend T { ... }` adds to T's table rather than declaring its own.
@@ -787,6 +861,27 @@ void ResolveSignatures(TypeStore* types,
       // extension still has to be visible here.
       resolution->type_members.push_back(TypeMembers{target, std::move(added)});
     }
+
+    // `extend T as Trait` is the declaration of conformance.
+    if (!item.super_type.is_valid()) {
+      continue;
+    }
+    const TypeId trait = resolver.Resolve(ast, item.super_type);
+    if (!trait.is_valid()) {
+      continue;
+    }
+    TypeRelations* relation = nullptr;
+    for (TypeRelations& candidate : resolution->relations) {
+      if (candidate.type == target) {
+        relation = &candidate;
+        break;
+      }
+    }
+    if (relation == nullptr) {
+      resolution->relations.push_back(TypeRelations{target, TypeId{}, {}});
+      relation = &resolution->relations.back();
+    }
+    relation->traits.push_back(trait);
   }
 
   // Patch this file's own bindings, whose type only now exists. An item

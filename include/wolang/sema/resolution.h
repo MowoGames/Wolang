@@ -77,6 +77,22 @@ struct TypeMembers {
   }
 };
 
+// What a named type is declared to be: the type it derives from, and the
+// traits it implements. Conformance is declared rather than inferred from
+// the methods present, because `extend T as Trait` is the declaration.
+struct TypeRelations {
+  TypeId type;
+  // From `class Turret : Actor`.
+  TypeId base;
+  // From every `extend T as Trait` anywhere in the program.
+  std::vector<TypeId> traits;
+
+  friend bool operator==(const TypeRelations& lhs, const TypeRelations& rhs) {
+    return lhs.type == rhs.type && lhs.base == rhs.base &&
+           lhs.traits == rhs.traits;
+  }
+};
+
 struct FileResolution {
   // Every name visible at file scope: this file's declarations, the other
   // files of its module, and whatever its imports selected.
@@ -93,6 +109,9 @@ struct FileResolution {
   // than in the type store so that changing a field's type changes this
   // value, which is what invalidates the files that read the field.
   std::vector<TypeMembers> type_members;
+  // The base type and implemented traits of every named type this file can
+  // see, merged the same way member tables are.
+  std::vector<TypeRelations> relations;
 
   const Binding* Find(Symbol name) const;
 
@@ -103,6 +122,17 @@ struct FileResolution {
   // The member of |type| named |name|, or null.
   const Member* FindMember(TypeId type, Symbol name) const;
 
+  // The type |type| derives from, or an invalid id.
+  TypeId BaseOf(TypeId type) const;
+
+  // The member of |type|'s base chain named |name|, or null. Does not look
+  // at |type|'s own members.
+  const Member* FindInheritedMember(TypeId type, Symbol name) const;
+
+  // True when |type| may be used where |bound| is required: it is that type,
+  // derives from it, or implements it as a trait.
+  bool Satisfies(TypeId type, TypeId bound) const;
+
   // The product a dimension stands for, or the empty product.
   Dimensions ProductOf(DimensionId dimension) const;
 
@@ -110,7 +140,8 @@ struct FileResolution {
                          const FileResolution& rhs) {
     return lhs.scope == rhs.scope && lhs.item_types == rhs.item_types &&
            lhs.dimension_products == rhs.dimension_products &&
-           lhs.type_members == rhs.type_members;
+           lhs.type_members == rhs.type_members &&
+           lhs.relations == rhs.relations;
   }
 };
 

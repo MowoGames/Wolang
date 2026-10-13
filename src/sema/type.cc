@@ -175,13 +175,17 @@ TypeId TypeStore::Named(Symbol name, uint32_t file, uint32_t item) {
   return Intern(std::move(key));
 }
 
-TypeId TypeStore::Parameter(Symbol name, uint32_t owner, uint32_t index) {
+TypeId TypeStore::Parameter(Symbol name,
+                            uint32_t owner,
+                            uint32_t index,
+                            const std::vector<TypeId>& bounds) {
   Key key;
   std::memset(&key.type, 0, sizeof(key.type));
   key.type.kind = TypeKind::kParameter;
   key.type.name = name;
   key.type.declaring_file = owner;
   key.type.declaring_item = index;
+  key.args = bounds;
   return Intern(std::move(key));
 }
 

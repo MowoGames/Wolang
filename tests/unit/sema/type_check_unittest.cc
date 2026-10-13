@@ -222,12 +222,17 @@ WOLANG_TEST(TypeCheck, InfersLiteralKinds) {
       "  let b = \"text\"\n"
       "  let c = 'x'\n"
       "  let d = 1.5\n"
+      "  let e = \"a {a}\"\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "bool");
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "String");
+  // Static data, so a borrowed `str` rather than an allocation.
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "str");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "char");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("d"), "f32");
+  // Interpolation builds a new string at runtime, which is what makes it
+  // owned.
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("e"), "String");
 }
 
 WOLANG_TEST(TypeCheck, ReportsMismatchedTypes) {
@@ -1045,6 +1050,126 @@ fun take(p: Pawn?) -> float {
     return p.health
   }
   return 0.0
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+
+// --------------------------------------------- inheritance and bounds -----
+
+WOLANG_TEST(TypeCheck, AnOverrideThatReplacesNothingIsReported) {
+  Fixture f(R"(
+class Actor {
+  virtual fun Tick(dt: float) {}
+}
+
+class Pawn : Actor {
+  override fun Missing() {}
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0401"));
+  WOLANG_EXPECT(f.Messages().find("replaces no base method") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, HidingABaseMethodNeedsOverride) {
+  Fixture f(R"(
+class Actor {
+  virtual fun Tick(dt: float) {}
+}
+
+class Pawn : Actor {
+  fun Tick(dt: float) {}
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0401"));
+  WOLANG_EXPECT(f.Messages().find("write `override`") != std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, OverridingANonVirtualMethodIsReported) {
+  Fixture f(R"(
+class Actor {
+  fun Name() -> str => "actor"
+}
+
+class Pawn : Actor {
+  override fun Name() -> str => "pawn"
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0401"));
+  WOLANG_EXPECT(f.Messages().find("not `virtual`") != std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, AProperOverrideIsAccepted) {
+  Fixture f(R"(
+class Actor {
+  virtual fun Tick(dt: float) {}
+}
+
+class Pawn : Actor {
+  override fun Tick(dt: float) {}
+}
+
+class Turret : Pawn {
+  override fun Tick(dt: float) {}
+}
+)");
+  // Including through two levels: an override is itself overridable.
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AMethodOnATypeWithNoBaseIsNotAnOverride) {
+  Fixture f("struct Vec3 {\n  fun Length() -> float => 0.0\n}\n");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, ABoundIsCheckedAtTheCallSite) {
+  Fixture f(R"(
+trait Damageable {
+  fun TakeDamage(amount: float)
+}
+
+struct Pawn { var health: float }
+struct Rock {}
+
+extend Pawn as Damageable {
+  fun TakeDamage(amount: float) {}
+}
+
+fun Hurt<T: Damageable>(victim: T) {}
+
+fun use(p: Pawn, r: Rock) {
+  Hurt(p)
+  Hurt(r)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0403");
+  WOLANG_EXPECT(f.Messages().find("`Rock` does not satisfy `Damageable`") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(TypeCheck, ABaseClassSatisfiesABound) {
+  // Conformance is inherited: a bound naming a base class accepts a derived
+  // one, and a trait implemented on the base accepts it too.
+  Fixture f(R"(
+trait Damageable {
+  fun TakeDamage(amount: float)
+}
+
+class Actor {}
+class Pawn : Actor {}
+
+extend Actor as Damageable {
+  fun TakeDamage(amount: float) {}
+}
+
+fun Spawn<T: Actor>(what: T) {}
+fun Hurt<T: Damageable>(victim: T) {}
+
+fun use(p: Pawn) {
+  Spawn(p)
+  Hurt(p)
 }
 )");
   WOLANG_EXPECT_EQ(f.Codes(), "");
