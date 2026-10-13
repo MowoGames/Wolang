@@ -766,6 +766,46 @@ void ResolveSignatures(TypeStore* types,
   }
   TypeResolver resolver(types, interner, resolution, diagnostics);
 
+  // Aliases first, and repeatedly: `type A = B` where `B` is itself an alias
+  // needs B settled before A can be. An alias is transparent -- it is
+  // another spelling of its target, not a new type -- so leaving it as the
+  // opaque name pass one gave it would make `let c: Count = 5` an error.
+  size_t alias_count = 0;
+  for (const ItemTreeEntry& entry : tree.entries) {
+    alias_count += entry.kind == ItemKind::kTypeAlias ? 1 : 0;
+  }
+  for (size_t round = 0; round <= alias_count; ++round) {
+    bool changed = false;
+    for (uint32_t index = 0; index < tree.entries.size(); ++index) {
+      if (tree.entries[index].kind != ItemKind::kTypeAlias) {
+        continue;
+      }
+      const ItemId id = ResolveItem(ast, index);
+      if (!ast.Contains(id) || !ast.Get(id).type.is_valid()) {
+        continue;
+      }
+      const TypeId target = resolver.Resolve(ast, ast.Get(id).type);
+      if (target.is_valid() && target != resolution->item_types[index]) {
+        resolution->item_types[index] = target;
+        changed = true;
+      }
+    }
+    if (!changed) {
+      break;
+    }
+    // Every alias binding has to see the new target before the next round.
+    for (Binding& binding : resolution->scope) {
+      if (binding.kind != BindingKind::kType ||
+          binding.file != file_index ||
+          binding.item == Binding::kNoItem ||
+          binding.item >= tree.entries.size() ||
+          tree.entries[binding.item].kind != ItemKind::kTypeAlias) {
+        continue;
+      }
+      binding.type = resolution->item_types[binding.item];
+    }
+  }
+
   const auto signature_of = [&](const Item& item) -> TypeId {
     std::vector<TypeId> params;
     params.reserve(item.params.size());
@@ -869,6 +909,26 @@ void ResolveSignatures(TypeStore* types,
     }
 
     resolver.PopTypeParameters(pushed);
+  }
+
+  // An alias whose target is still an alias's own opaque name never
+  // settled, which means the chain comes back to itself.
+  for (uint32_t index = 0; index < tree.entries.size(); ++index) {
+    if (tree.entries[index].kind != ItemKind::kTypeAlias) {
+      continue;
+    }
+    const TypeId target = resolution->item_types[index];
+    if (types->KindOf(target) != TypeKind::kNamed) {
+      continue;
+    }
+    const Type& named = types->Get(target);
+    if (named.declaring_file != file_index ||
+        named.declaring_item >= tree.entries.size() ||
+        tree.entries[named.declaring_item].kind != ItemKind::kTypeAlias) {
+      continue;
+    }
+    resolution->cyclic_aliases.push_back(index);
+    resolution->item_types[index] = types->error();
   }
 
   // Now that every declaration has a type, collect the members of each named

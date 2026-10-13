@@ -142,6 +142,10 @@ struct FileResolution {
   // Keyed by file as well as item, because an item index only means anything
   // within the file it came from.
   std::vector<DeclaredEffects> declared_effects;
+  // Aliases whose target never settled, because the chain comes back to the
+  // alias itself. Recorded rather than reported here: the signature pass is
+  // silent by design, and the checker is the one reporter.
+  std::vector<uint32_t> cyclic_aliases;
   // Effects declared in this file, so that `uses Telemetry` resolves.
   std::vector<std::pair<Symbol, EffectId>> effect_names;
 
@@ -189,7 +193,8 @@ struct FileResolution {
            lhs.type_members == rhs.type_members &&
            lhs.relations == rhs.relations &&
            lhs.declared_effects == rhs.declared_effects &&
-           lhs.effect_names == rhs.effect_names;
+           lhs.effect_names == rhs.effect_names &&
+           lhs.cyclic_aliases == rhs.cyclic_aliases;
   }
 };
 

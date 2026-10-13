@@ -1468,5 +1468,43 @@ WOLANG_TEST(TypeCheck, ACyclicDimensionIsReported) {
   WOLANG_EXPECT_EQ(fine.Codes(), "");
 }
 
+
+// --------------------------------------------------------- type aliases ----
+
+WOLANG_TEST(TypeCheck, AnAliasIsTransparent) {
+  // An alias is another spelling of its target, not a new type.
+  Fixture f(R"(
+type Count = int
+
+fun f(n: Count) -> int => n
+
+fun g() {
+  let c: Count = 5
+  let i: int = c
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AnAliasChainSettles) {
+  Fixture f(R"(
+type Deep = Alias
+type Alias = Count
+type Count = int
+
+fun f(d: Deep) -> int => d
+)");
+  // Declared out of order on purpose: the target of one alias is another
+  // that has not been seen yet.
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, ACyclicAliasIsReported) {
+  WOLANG_EXPECT(Fixture("type A = A").HasCode("E0118"));
+
+  Fixture pair("type B = C\ntype C = B\n");
+  WOLANG_EXPECT_EQ(pair.Codes(), "E0118,E0118");
+}
+
 }  // namespace
 }  // namespace wolang

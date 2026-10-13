@@ -19,6 +19,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0050`–`E0069` | manifests, modules, packages | implemented (wave 3) |
 | `E0070` | diagnostic suppression | implemented (wave 5) |
 | `E0101`–`E0119` | types and name resolution | implemented (wave 4) |
+| `E0117`–`E0118` | sizes and cyclic declarations | implemented (wave 5) |
 | `E0120`–`E0123` | memory and references | `E0120` implemented (wave 5) |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E03xx` | coroutines | wave 10 |
@@ -190,6 +191,8 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0110` | no type with that name is in scope | `fun f(a: Nothing)` |
 | `E0111` | the name is not a type | a function used in type position |
 | `E0112` | the type has no such member | `v.z` where `Vec3` has `x` and `y` |
+| `E0117` | a value type contains itself, so it has no size | `struct S { var next: S }` |
+| `E0118` | a declaration is defined in terms of itself | `type A = A`, `class A : A`, `dimension D = D` |
 | `E0113` | the name is declared twice in one file | |
 | `E0114` | no dimension with that name | `unit m: Nothing` |
 | `E0115` | a unit conversion needs a literal with a unit | `unit cm = 5` |
@@ -217,6 +220,12 @@ because the guard may be false.
 A type whose members are not known — declared in a file this one cannot see —
 yields an error type without an `E0112`, because the unresolved import is
 already reported and one cause should produce one message.
+
+`E0117` is about storage, not about recursion: a value type stores its
+members inline, so `struct S { var next: S }` describes something of
+infinite size, and so do `S?`, `[S; 4]` and `(int, S)` inside it. One
+indirection is enough to have a size — a slice, a reference, or a `class`,
+which is a handle to a heap object.
 
 ## Planned catalog
 

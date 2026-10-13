@@ -359,7 +359,7 @@ the coroutine or actor rather than unwinding.
 | Other scalars | `bool`, `char` |
 | Strings | `String` owning, `str` borrowed |
 | Fixed arrays | `[T; N]`, a language construct: no allocation |
-| Slices | `[T]`, a borrowed view: no allocation |
+| Slices | `[T]`, a borrowed view: no allocation. An array converts to one |
 | Collections | `Array<T>`, `Map<K, V>`, `Set<T>` — library types |
 | Optionals | `T?`, which *is* `Option<T>`; references are non-nullable by default |
 | Fallible | `T!`, a value or one of an inferred set of errors |
@@ -449,6 +449,23 @@ let fine: i64 = small as i64
 Integer literals are the exception, and the reason this is not tiresome: a
 literal has arbitrary precision until it is used, so it takes whatever type
 its context expects.
+
+### 4.3b Aliases and sizes
+
+`type Count = int` is a second spelling, not a new type: a `Count` is an
+`int` everywhere. A chain of aliases settles whatever order they are written
+in, and an alias that comes back to itself is `E0118`.
+
+A value type stores its members inline, so it cannot contain itself —
+directly, or through an optional, an array or a tuple (`E0117`). One
+indirection is enough: a slice, a reference, or a `class`, which is a handle
+to a heap object.
+
+```wolang
+struct Node { var next: Node }      // E0117: no size
+struct List { var rest: [List] }    // fine: a slice is a view
+class Chain { var next: Chain }     // fine: a class is a handle
+```
 
 ### 4.4 Members
 

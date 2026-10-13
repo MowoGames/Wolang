@@ -2137,6 +2137,20 @@ void Checker::CheckItem(ItemId id) {
       CheckFunction(item, IndexOf(id));
       return;
 
+    case ItemKind::kTypeAlias: {
+      for (uint32_t cyclic : resolution_->cyclic_aliases) {
+        if (cyclic != IndexOf(id)) {
+          continue;
+        }
+        std::string message = "`";
+        message.append(interner_->Text(item.name));
+        message.append("` is an alias for itself");
+        Report(kCyclicDeclaration, std::move(message), item.name_span);
+        break;
+      }
+      return;
+    }
+
     case ItemKind::kBinding:
       CheckBinding(item);
       return;
