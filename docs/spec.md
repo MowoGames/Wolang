@@ -294,7 +294,7 @@ file is half typed.
 The parser also stays quiet about a token the lexer already reported, so a
 stray `$$$` produces one message rather than one per layer.
 
-## 3. Declarations — draft
+## 3. Declarations — normative
 
 ```wolang
 offer offer fun Damage(base: float, mult: float = 1.0) -> float {
@@ -350,7 +350,7 @@ unless declared `virtual`, and overriding requires `override`.
 operator; there are no exceptions. Invariant violations are faults: they stop
 the coroutine or actor rather than unwinding.
 
-## 4. Types — draft
+## 4. Types — normative
 
 | Category | Types |
 |---|---|
@@ -435,6 +435,69 @@ match Load(p) {
 An error is a tag without data. When an error has to carry a payload, write
 `Result<T, E>` explicitly.
 
+### 4.4 Members
+
+A type's members are its fields, its methods, its enum variants and its
+signals. Inside a method a bare name may be a member of the enclosing type,
+so `health` means `self.health` -- which is how gameplay code reads.
+
+```wolang
+class Pawn {
+  var health: float = 100.0
+
+  fun Hurt(amount: float) {
+    health = health - amount    // the field, no `self.` needed
+  }
+}
+```
+
+`extend T { ... }` adds members to `T` rather than declaring anything of its
+own, so a type's members may come from several files.
+
+A type name used as a callee is a constructor, filling the fields in
+declaration order. No arguments asks for the default value:
+
+```wolang
+let v = Vec3(1.0, 2.0, 3.0)
+let zero = Vec3()
+let bad = Vec3(1.0)          // E0102: Vec3 has 3 fields, found 1 argument
+```
+
+### 4.5 Generics
+
+Type parameters are inferred from the arguments at a call site. There is no
+turbofish, and no explicit type argument is needed:
+
+```wolang
+fun First<T>(items: [T]) -> T => items[0]
+
+let a = First(xs)            // T = int,   a: int
+let b = First(ys)            // T = float, b: float
+let c = First(1)             // E0101: expected `[T]`, found `i32`
+```
+
+A parameter inferred once cannot be inferred differently by a later argument.
+Emitting one specialization per instantiation -- monomorphization proper --
+belongs with the IR, from wave 8.
+
+### 4.6 Exhaustiveness
+
+A `match` has to cover every value its subject can take, because a value that
+falls through has nowhere to go. `bool`, optionals and enums have a value set
+the compiler enumerates, and `E0201` names what is missing; every other type
+needs a catch-all arm. An arm with a guard covers nothing, because the guard
+may be false.
+
+```wolang
+match shape {
+  Circle(r) => Area(r)
+  Point => 0.0
+}                            // E0201: does not cover `Square`
+```
+
+A bare name that is a variant of the subject's enum is the short form of that
+variant, not a new binding.
+
 ## 5. Effects and capabilities — draft
 
 Effects are inferred inside a module and explicit on public signatures.
@@ -451,7 +514,7 @@ Built-in effects: `alloc`, `io`, `rand`, `time`, `net`, `gpu`, `unsafe`,
 module forbids `rand` and `time`. A hot path forbids `alloc`. A sandboxed module
 is granted a capability set and nothing more.
 
-## 6. Units and dimensions — draft
+## 6. Units and dimensions — normative
 
 ```wolang
 dimension Length
@@ -463,8 +526,38 @@ unit s: Time
 unit ms = 0.001s
 
 let velocity = 10m / 2s        // Length/Time
-rotation = Quat.FromAxis(up, 90deg)
+let wrong = 10m + 2s           // E1001: dimensions do not match
 ```
+
+Multiplying two quantities adds their exponents and dividing subtracts them,
+so a product is dimensionless exactly when everything cancels: `10m / 2m` is
+a plain number and works anywhere one does.
+
+A **derived** dimension is declared rather than written inline, which keeps
+type syntax free of operators and makes the concept nameable:
+
+```wolang
+dimension Velocity = Length / Time
+dimension Area = Length^2
+```
+
+A dimension name **is** a type: the type of quantities carrying it. That is
+what makes a signature readable, and what makes swapping two arguments a
+compile error rather than a bug:
+
+```wolang
+fun TravelTime(distance: Length, speed: Velocity) -> Time {
+  return distance / speed
+}
+
+TravelTime(3m, 2m / 1s)        // fine
+TravelTime(3s, 2m / 1s)        // E0101: expected `Length`, found `Time`
+```
+
+A unit suffix on a number is just a symbol to the lexer; units are user
+declared, so only name resolution can say what `m` means. A dimension is
+interned by its declaration, so `Length` declared once is the same dimension
+in every file that needs it.
 
 Dimensions participate in type checking and are erased before code generation,
 so unit-safe code costs nothing at runtime.

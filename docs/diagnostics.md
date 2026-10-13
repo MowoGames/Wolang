@@ -19,9 +19,10 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0050`–`E0069` | manifests, modules, packages | implemented (wave 3) |
 | `E0101`–`E0119` | types and name resolution | implemented (wave 4) |
 | `E10xx` | units and dimensions | implemented (wave 4) |
-| `E02xx` | pattern matching | wave 5 |
+| `E0201` | pattern matching | implemented (wave 4) |
 | `E03xx` | coroutines | wave 10 |
-| `E04xx` | inheritance and traits | wave 5 |
+| `E0402` | traits | implemented (wave 4) |
+| `E0401`, `E04xx` | inheritance | wave 5 |
 | `E05xx` | entities and systems | wave 11 |
 | `E06xx` | networking | wave 16 |
 | `E07xx` | effects, determinism, capabilities | wave 5 |
@@ -132,41 +133,49 @@ P0101 = "error"
 | `E0109` | the literal does not fit its type | `let x: u8 = 300` |
 | `E0110` | no type with that name is in scope | `fun f(a: Nothing)` |
 | `E0111` | the name is not a type | a function used in type position |
+| `E0112` | the type has no such member | `v.z` where `Vec3` has `x` and `y` |
 | `E0113` | the name is declared twice in one file | |
 | `E0114` | no dimension with that name | `unit m: Nothing` |
 | `E0115` | a unit conversion needs a literal with a unit | `unit cm = 5` |
 | `E0116` | a dimension is a product of dimension names | `dimension D = 2 + 2` |
 | `E1001` | dimensions do not match | `10m + 2s` |
 | `E1002` | no unit with that name is in scope | `10parsecs` |
+| `E0201` | `match` does not cover every value | a `bool` match with only `true` |
+| `E0402` | a trait method is not implemented | `extend P as T` missing one method |
 
 An error type propagates silently: one unknown name produces one message, not
 one per use of the value it was assigned to. Type checking is also skipped
 entirely on a file the parser could not finish, because every type inferred
 around an error node is noise.
 
+`E0201` names what is missing rather than only saying the match is
+incomplete — the uncovered enum variants, or `true`/`false`, or `null`/`x?`.
+Only bool, optionals and enums have a value set the compiler can enumerate;
+every other type needs a catch-all arm. An arm with a guard covers nothing,
+because the guard may be false.
+
+A type whose members are not known — declared in a file this one cannot see —
+yields an error type without an `E0112`, because the unresolved import is
+already reported and one cause should produce one message.
+
 ## Planned catalog
 
 The entries below are specified but not implemented. They are listed here so
 that codes are allocated once and tests can be written against the catalog
-rather than against whatever the implementation happens to do.
+rather than against whatever the implementation happens to do. Codes already
+in use appear in the implemented tables above, not here.
 
 ### Errors
 
 | Code | Catches |
 |---|---|
-| `E0101` | mismatched types |
-| `E0102` | wrong number or type of arguments |
-| `E0103` | use of an uninitialized variable |
-| `E0104` | possible null dereference of a `T?` |
-| `E0105` | assignment to a `let` binding |
-| `E0106` | reference stored in a field (references are second class) |
-| `E0107` | value escapes its `region` |
-| `E0108` | use after move of a `Box<T>` |
-| `E0201` | non-exhaustive `match` |
+| `E0120` | reference stored in a field (references are second class) |
+| `E0121` | value escapes its `region` |
+| `E0122` | use after move of a `Box<T>` |
+| `E0123` | use of an uninitialized variable |
 | `E0301` | `await` outside an `async` function |
 | `E0302` | `async` function called without `await` or `spawn` |
 | `E0401` | `override` without a virtual method, or a missing `override` |
-| `E0402` | unimplemented trait method |
 | `E0501` | two systems write the same component without an ordering |
 | `E0502` | cycle in system ordering |
 | `E0601` | server-only function called from a client context |
@@ -177,8 +186,6 @@ rather than against whatever the implementation happens to do.
 | `E0801` | `unsafe` in a module that forbids it |
 | `E0901` | `comptime` assertion failed |
 | `E0902` | `comptime` evaluation needs an effect |
-| `E1001` | dimension mismatch |
-| `E1002` | unknown unit |
 
 ### Warnings
 
