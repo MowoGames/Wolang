@@ -127,6 +127,68 @@ computed one and an edit invalidates it normally.
 
 Types are interned, so type equality is a `TypeId` comparison.
 
+## The IR
+
+A typed SSA representation, and the contract between the front end and every
+back end. Four properties shape it:
+
+**Block parameters instead of phi nodes.** A value that depends on which edge
+was taken is a parameter of the block, passed by the jump. A phi node is the
+same information written where it is easy to get wrong; as a parameter it
+becomes an arity and type check the verifier already does. The verifier's
+`RejectsAUseThatIsNotDominated` test is the case this makes safe.
+
+**One id space for instructions and values.** An instruction *is* the value it
+produces, so "where did this come from" is a lookup rather than a search. A
+pass never renumbers: a dead instruction becomes an `undef` nothing uses, and
+a removed block is emptied rather than erased, because an id is an index.
+
+**Flat arrays with side pools.** Instructions, operands, successors and switch
+cases are separate vectors, the same layout the AST uses. `Builder` is what
+keeps them consistent — a hand written lowering gets that wrong.
+
+**Erasure at the boundary.** Dimensions and open literal types are
+checking-time notions, and neither exists in the IR: `Length` is `f32` and a
+bare `1.0` has settled. Erasing once, at lowering, is what makes "unit safe
+code costs nothing at runtime" true rather than aspirational.
+
+Effect rows are the exception — they are *kept*. "This call does nothing
+observable" is what licenses deleting it as dead, so the information has to
+survive into the IR rather than being erased with the units.
+
+### Lowering
+
+Lowering trusts the checker: it reads the types the checker recorded rather
+than working anything out again, and it only runs on a file that produced no
+errors. That division is what keeps the IR free of "maybe" cases.
+
+| Construct | Becomes |
+|---|---|
+| `if`, `while`, `loop` | blocks, with a parameter on the join when the `if` produces a value |
+| `&&`, `\|\|`, `??` | control flow, because the right side may not run |
+| `match` | arms tested in order, ending in `unreachable` when the checker proved coverage |
+| `T?` | `opt.present`, `opt.value`, `opt.wrap` |
+| a `var` | an `alloca` with loads and stores |
+| a field | `extract` by index |
+
+Every `var` goes in a slot and a pass promotes the ones that can be. Deciding
+during lowering would mean tracking liveness there; leaving it to a pass keeps
+lowering simple enough to be obviously correct.
+
+### The verifier
+
+Runs on **every** input, not on request, because the IR is a contract and a
+violation is a compiler bug. It checks block shape, dominance, edge arity and
+types, reachability, operand types, and a call against its callee's signature.
+
+Dominance uses the iterative set algorithm rather than Lengauer-Tarjan: it is
+slower and far easier to be sure of, which is the right trade for something
+that has to be correct rather than fast.
+
+The IR is verified **twice** — as lowering left it, and after the passes —
+because a pass that breaks an invariant and a lowering that breaks one are
+different bugs and have to be distinguishable.
+
 ## Memory model
 
 Decided in wave 0, implemented in wave 9:

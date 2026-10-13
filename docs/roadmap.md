@@ -19,7 +19,7 @@ Dates are not fixed. Scope is.
 | **3** | Query database (red-green incremental), module and package graph, `wolang.toml`, on-disk cache, `wolang fmt` | editing a function body recomputes that function only ✅ |
 | **4** | Grammar completion (`extend`, `T!`, `[T]`, `soa`, labels, Unicode identifiers) ✅, then types: generics, traits, nullability, flow typing, **units and dimensions** | the examples type check; unit mismatches are errors ✅ |
 | **5** | **Effects and capabilities**, checker v1, inheritance, second-class references, `@allow` | diagnostic catalog v1, each lint with a "fires" and a "does not fire" test ✅ |
-| **6** | Typed SSA IR, lowering, verifier, mid-level optimizations | IR dump stable, verifier green on every test input |
+| **6** | Typed SSA IR, lowering, verifier, mid-level optimizations | IR dump stable, verifier green on every test input ✅ |
 
 ## Phase B — execution
 
