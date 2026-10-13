@@ -1,5 +1,6 @@
-// A gameplay class written in Wolang. Nothing here is compiled yet: wave 1
-// only lexes, and this file doubles as the corpus the lexer is tested on.
+// A gameplay class written in Wolang. Nothing here is executed yet: the
+// compiler reaches syntax trees and module scopes, and this file doubles as
+// the corpus the front end is tested on.
 
 import engine.gameplay
 import engine.math.{Vec3, Quat}
@@ -79,11 +80,36 @@ machine Door {
   }
 }
 
-@layout(soa)
+// Layout belongs to the storage, not to the type: the same `Particle` is one
+// value here and seven parallel arrays below.
 struct Particle {
   var position: Vec3
   var velocity: Vec3
   var life: float
+}
+
+var burst: soa [Particle]
+var prototype: Particle
+
+error NoTarget, OutOfAmmo
+
+// `T?` may be absent, `T!` may fail; both are postfix, so a type reads left
+// to right.
+fn PickTarget(candidates: [Pawn]) -> Pawn?! uses rand {
+  if candidates.len == 0 {
+    return NoTarget
+  }
+  return candidates[0]
+}
+
+extend Vec3 {
+  fn Flat() -> Vec3 => Vec3(x, 0.0, z)
+}
+
+extend Barrel as Damageable {
+  fn TakeDamage(amount: float, from: Actor?) {
+    Explode()
+  }
 }
 
 system Integrate(dt: float, q: Query<mut Transform, Velocity>) after Gravity {
@@ -92,7 +118,30 @@ system Integrate(dt: float, q: Query<mut Transform, Velocity>) after Gravity {
   }
 }
 
-fn Describe(hp: int, max: int) -> String {
+fn Describe(count: int?) -> String {
+  // Optionals need no Some/None vocabulary: the type says `int?`, the pattern
+  // says `n?`, and absence is spelled `null`.
+  match count {
+    n? => "{n} left"
+    null => "unknown"
+  }
+}
+
+fn Search(grid: [[Cell]]) -> Cell? {
+  outer: for row in grid {
+    for cell in row[1..] {
+      if cell.matches {
+        return cell
+      }
+      if cell.blocked {
+        break outer
+      }
+    }
+  }
+  return null
+}
+
+fn DescribeHealth(hp: int, max: int) -> String {
   return "hp {hp} / {max} ({hp * 100 / max}%)"
 }
 
