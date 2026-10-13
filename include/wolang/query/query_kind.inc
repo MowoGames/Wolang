@@ -1,0 +1,39 @@
+// Copyright 2026 The Wolang Authors. All rights reserved.
+//
+// Every fact the compiler caches is a query. Include this file after defining
+// either macro; both default to expanding to nothing.
+//
+//   WOLANG_QUERY_INPUT(Name, Argument, Description)
+//       A fact supplied from outside: the compiler never computes it, it is
+//       set, and setting it is what starts invalidation.
+//   WOLANG_QUERY(Name, Argument, Description)
+//       A fact derived from other facts. Recomputed only when one of its
+//       dependencies actually changed.
+//
+// `Argument` documents what the key's 32-bit argument identifies.
+
+#ifndef WOLANG_QUERY_INPUT
+#define WOLANG_QUERY_INPUT(Name, Argument, Description)
+#endif
+#ifndef WOLANG_QUERY
+#define WOLANG_QUERY(Name, Argument, Description)
+#endif
+
+WOLANG_QUERY_INPUT(SourceText, "file", "the text of a source file")
+WOLANG_QUERY_INPUT(ModuleFiles, "module", "the files that make up a module")
+WOLANG_QUERY_INPUT(Workspace,
+                   "ignored",
+                   "the set of modules and the names they are known by")
+
+WOLANG_QUERY(Tokens, "file", "the token stream of a file")
+WOLANG_QUERY(ParsedFile, "file", "the syntax tree of a file")
+WOLANG_QUERY(ItemTree,
+             "file",
+             "the declarations of a file with their signatures but not their "
+             "bodies")
+WOLANG_QUERY(ModuleScope, "module", "the names a module declares")
+WOLANG_QUERY(Imports, "file", "the resolved imports of a file")
+WOLANG_QUERY(FileDiagnostics, "file", "every diagnostic reported for a file")
+
+#undef WOLANG_QUERY_INPUT
+#undef WOLANG_QUERY
