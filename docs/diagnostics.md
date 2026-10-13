@@ -19,7 +19,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0050`–`E0069` | manifests, modules, packages | implemented (wave 3) |
 | `E0070` | diagnostic suppression | implemented (wave 5) |
 | `E0101`–`E0119` | types and name resolution | implemented (wave 4) |
-| `E0117`–`E0118` | sizes and cyclic declarations | implemented (wave 5) |
+| `E0117`–`E0119` | sizes, cyclic declarations, parameters | implemented (wave 5) |
 | `E0120`–`E0123` | memory and references | `E0120` implemented (wave 5) |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E03xx` | coroutines | wave 10 |
@@ -193,6 +193,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0112` | the type has no such member | `v.z` where `Vec3` has `x` and `y` |
 | `E0117` | a value type contains itself, so it has no size | `struct S { var next: S }` |
 | `E0118` | a declaration is defined in terms of itself | `type A = A`, `class A : A`, `dimension D = D` |
+| `E0119` | a type parameter is declared twice | `fun f<T, T>()` |
 | `E0113` | the name is declared twice in one file | |
 | `E0114` | no dimension with that name | `unit m: Nothing` |
 | `E0115` | a unit conversion needs a literal with a unit | `unit cm = 5` |

@@ -20,6 +20,7 @@ constexpr std::string_view kNotIndexable = "E0107";
 constexpr std::string_view kUnknownMember = "E0112";
 constexpr std::string_view kInfiniteType = "E0117";
 constexpr std::string_view kCyclicDeclaration = "E0118";
+constexpr std::string_view kDuplicateParameter = "E0119";
 constexpr std::string_view kNonExhaustive = "E0201";
 constexpr std::string_view kBadOverride = "E0401";
 constexpr std::string_view kMissingTraitMethod = "E0402";
@@ -1827,8 +1828,23 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
 
 size_t Checker::PushGenerics(const Item& item, uint32_t owner) {
   size_t pushed = 0;
+  std::vector<Symbol> seen;
   for (GenericParamId generic_id : ast_.Get(item.generics)) {
     const GenericParam& generic = ast_.Get(generic_id);
+
+    // `<T, T>` would make one of the two unreachable, and which one depends
+    // on a shadowing rule nobody should have to know.
+    bool duplicate = false;
+    for (Symbol earlier : seen) {
+      duplicate |= earlier == generic.name;
+    }
+    seen.push_back(generic.name);
+    if (duplicate) {
+      std::string message = "type parameter `";
+      message.append(interner_->Text(generic.name));
+      message.append("` is declared twice");
+      Report(kDuplicateParameter, std::move(message), generic.span);
+    }
     std::vector<TypeId> bounds;
     for (TypeRefId bound : ast_.Get(generic.bounds)) {
       bounds.push_back(resolver_.Resolve(ast_, bound));

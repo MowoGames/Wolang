@@ -1506,5 +1506,25 @@ WOLANG_TEST(TypeCheck, ACyclicAliasIsReported) {
   WOLANG_EXPECT_EQ(pair.Codes(), "E0118,E0118");
 }
 
+
+WOLANG_TEST(TypeCheck, ADuplicateTypeParameterIsReported) {
+  // Which of the two wins depends on a shadowing rule nobody should have to
+  // know, so neither does.
+  WOLANG_EXPECT(Fixture("fun f<T, T>(x: T) {}").HasCode("E0119"));
+  WOLANG_EXPECT(
+      Fixture("struct S<A, A> { var v: A }").HasCode("E0119"));
+}
+
+WOLANG_TEST(TypeCheck, ABoundMayNameAnEarlierParameter) {
+  Fixture f(R"(
+trait Show {
+  fun Render()
+}
+
+fun take<A: Show, B: A>(a: A, b: B) {}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang
