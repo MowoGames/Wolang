@@ -1,0 +1,8 @@
+BasedOnStyle: Chromium
+Standard: c++20
+ColumnLimit: 80
+IndentWidth: 2
+DerivePointerAlignment: false
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+IncludeBlocks: Preserve
