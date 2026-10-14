@@ -1,0 +1,156 @@
+// Owning a value on the heap.
+//
+// A `class` value is already a handle to a heap object, and nothing frees
+// one: there is no collector, and a language that collects nothing has to
+// give the program a way to say when something goes away. Destructors and
+// moves are that way (D87), and these two are what they are for (D102).
+//
+// `Owned<T>` is sole ownership: one name holds the value, moving it hands
+// it over, and the destructor frees it. `Shared<T>` is shared ownership:
+// a count beside the value, `Clone` to take another handle on it, and the
+// last one out frees it.
+
+need std.mem.{ViewFromRaw, SizeOf}
+
+extern "C" fun wolang_object_alloc(size: u64) -> *mut u8
+extern "C" fun wolang_object_free(at: *mut u8)
+
+/// One value on the heap, owned by one name.
+///
+/// Moving it hands the value over; the name it was moved out of no longer
+/// holds one, which the checker enforces (`E0122`). What it holds is
+/// freed when it goes out of scope.
+offer class Owned<T> {
+  var at: *mut u8
+  // Whether this handle still owns the value. A moved-from `Owned` is
+  // not destroyed twice -- the compiler's drop flags see to that -- and
+  // `Release` is what makes giving the value away without freeing it
+  // possible.
+  var live: bool = true
+
+  deinit  {
+    if live {
+      wolang_object_free(at)
+    }
+  }
+
+  /// What it holds.
+  fun Get() -> T uses unsafe {
+    var held = ViewFromRaw<T>(at, 1)
+    return held[0]
+  }
+
+  /// Replaces what it holds.
+  fun Set(value: T) uses unsafe {
+    var held = ViewFromRaw<T>(at, 1)
+    held[0] = value
+  }
+
+  /// Gives up ownership without freeing, and answers where the value is.
+  ///
+  /// `unsafe` because nothing here can promise that something else will
+  /// free it. For handing a value to C, which then owns it.
+  fun Release() -> *mut u8 uses unsafe {
+    live = false
+    return at
+  }
+}
+
+/// `value`, moved onto the heap.
+offer fun OwnedNew<T>(value: T) -> Owned<T> uses unsafe {
+  const at = wolang_object_alloc(SizeOf(value) as u64)
+  var held = ViewFromRaw<T>(at, 1)
+  held[0] = value
+  return Owned<T>(at, true)
+}
+
+// A count and the value beside it, which is what one allocation of a
+// shared value is.
+struct Cell<T> {
+  var count: s64
+  var value: T
+}
+
+/// One value on the heap with several handles on it.
+///
+/// `Clone` takes another handle and the last one out frees the value.
+/// There is no implicit copy: a type with a destructor is moved rather
+/// than copied, so taking another handle is something the program says.
+offer class Shared<T> {
+  var at: *mut u8
+  var live: bool = true
+
+  deinit  {
+    if live {
+      var cell = ViewFromRaw<Cell<T>>(at, 1)
+      const left = cell[0].count - 1
+      cell[0].count = left
+      if left == 0 {
+        wolang_object_free(at)
+      }
+    }
+  }
+
+  /// What it holds.
+  fun Get() -> T uses unsafe {
+    var cell = ViewFromRaw<Cell<T>>(at, 1)
+    return cell[0].value
+  }
+
+  /// Replaces what it holds. Every handle sees the new value, which is
+  /// what sharing means.
+  fun Set(value: T) uses unsafe {
+    var cell = ViewFromRaw<Cell<T>>(at, 1)
+    cell[0].value = value
+  }
+
+  /// Another handle on the same value.
+  fun Clone() -> Shared<T> uses unsafe {
+    var cell = ViewFromRaw<Cell<T>>(at, 1)
+    cell[0].count = cell[0].count + 1
+    return Shared<T>(at, true)
+  }
+
+  /// How many handles there are on the value.
+  fun Count() -> int uses unsafe {
+    var cell = ViewFromRaw<Cell<T>>(at, 1)
+    return cell[0].count as int
+  }
+}
+
+/// `value`, moved onto the heap with one handle on it.
+offer fun SharedNew<T>(value: T) -> Shared<T> uses unsafe {
+  const empty = Cell<T>(1, value)
+  const at = wolang_object_alloc(SizeOf(empty) as u64)
+  var cell = ViewFromRaw<Cell<T>>(at, 1)
+  cell[0] = empty
+  return Shared<T>(at, true)
+}
+
+// ------------------------------------------------------------- tests ---
+
+struct Pair {
+  var a: int
+  var b: int
+}
+
+@Test
+fun OwnedHoldsAValue() -> bool uses unsafe {
+  var held = OwnedNew(Pair(3, 4))
+  const first = held.Get()
+  held.Set(Pair(5, 6))
+  const second = held.Get()
+  return first.a == 3 && first.b == 4 && second.a == 5 && second.b == 6
+}
+
+@Test
+fun SharedCountsItsHandles() -> bool uses unsafe {
+  var first = SharedNew(Pair(1, 2))
+  const one = first.Count()
+  var second = first.Clone()
+  const two = first.Count()
+  // Both handles see the same value, which is the point of sharing.
+  second.Set(Pair(7, 8))
+  const seen = first.Get()
+  return one == 1 && two == 2 && seen.a == 7 && seen.b == 8
+}

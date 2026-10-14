@@ -1467,7 +1467,17 @@ TypeId Checker::Instantiate(ExprId id, const Expr& expr, TypeId declared) {
   arguments.reserve(parameters.size());
   for (TypeId parameter : parameters) {
     TypeId bound = types_->Substitute(parameter, substitution);
-    if (bound == parameter) {
+    // Whether anything said what this parameter is. Asked of the
+    // substitution rather than inferred from the answer, because a
+    // parameter may legitimately be bound to *itself*: inside
+    // `class Holder<T>`, `Holder<T>(value)` binds `T` to the `T` in
+    // scope, and reading that as "nothing bound it" made a type unable to
+    // construct one of itself (D102).
+    bool named = false;
+    for (const auto& [written, value] : substitution) {
+      named |= written == parameter;
+    }
+    if (!named && bound == parameter) {
       // Nothing bound it: say so where it was written, rather than
       // letting a type parameter travel into a layout.
       std::string message = "`";

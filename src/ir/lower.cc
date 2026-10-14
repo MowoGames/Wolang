@@ -1967,9 +1967,8 @@ class Lowerer {
       const uint32_t free = DeclareExternal(
           name, types_->Function({types_->u64()}, types_->void_type()));
       module_->functions[free].foreign_symbol = name;
-      const InstId word =
-          builder_->Add(Opcode::kCast, types_->u64(), {value});
-      builder_->Call(free, types_->void_type(), {word});
+      builder_->Call(free, types_->void_type(),
+                     {AsDeclared(free, 0, value)});
     }
   }
 
@@ -2215,6 +2214,26 @@ class Lowerer {
       return value;
     }
     return builder_->Add(Opcode::kCast, to, {value});
+  }
+
+  // |value| in the type parameter |which| of |callee| is declared with.
+  //
+  // The same runtime function may be declared twice: once by a library
+  // that wrote `extern "C" fun wolang_object_free(at: *mut u8)` and once
+  // here, where a handle is a word. Only one declaration survives --
+  // they are deduplicated by name -- so a call made here has to say what
+  // that one says (D102).
+  InstId AsDeclared(uint32_t callee, size_t which, InstId value) {
+    const std::vector<TypeId> params =
+        types_->ArgumentsOf(module_->functions[callee].type);
+    if (which >= params.size() || !params[which].is_valid()) {
+      return value;
+    }
+    const TypeId wanted = Erase(params[which]);
+    if (!wanted.is_valid() || wanted == ValueType(value)) {
+      return value;
+    }
+    return builder_->Add(Opcode::kCast, wanted, {value});
   }
 
   uint32_t DeclareRuntime(Symbol name, TypeId type) {
@@ -3378,7 +3397,8 @@ class Lowerer {
       const uint32_t free = DeclareExternal(
           name, types_->Function({word}, types_->void_type()));
       module_->functions[free].foreign_symbol = name;
-      return builder_->Call(free, types_->void_type(), {data});
+      return builder_->Call(free, types_->void_type(),
+                            {AsDeclared(free, 0, data)});
     }
 
     // `RunSystems(world, delta)` is not a call either: what it stands for

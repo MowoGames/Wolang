@@ -1118,3 +1118,24 @@ handed over as one array, so the loop itself is arithmetic. Same answer,
 filter names, and an array of pointers built per query -- both of which
 archetype storage would remove, and neither of which is worth the
 complexity before something needs it.
+
+**D102. `Owned<T>` and `Shared<T>` are what destructors were for.** A
+`class` value is a handle to a heap object and nothing frees one: there is
+no collector, so the language has to let a program say when something goes
+away. `Owned<T>` is sole ownership -- moving it hands the value over, and
+its destructor frees it. `Shared<T>` is a count beside the value, with
+`Clone` to take another handle and the last one out freeing it. Both are
+ordinary Wolang in `std.own`, over `deinit`, moves and the three
+intrinsics of D100.
+
+No implicit copy for either, and that falls out rather than being decided:
+a type with a destructor is moved rather than copied (D87), so taking
+another handle is something the program says.
+
+Two compiler bugs came out of writing them. A type could not construct one
+of itself -- `Holder<T>(value)` inside `class Holder<T>` bound `T` to the
+`T` in scope, and a check that read "bound to itself" as "nothing bound
+it" rejected it. And a runtime function declared both by a library
+(`extern "C" fun wolang_object_free(at: *mut u8)`) and by lowering (where
+a handle is a word) kept one declaration and two opinions about its
+parameter; a call now says what the surviving declaration says.
