@@ -1,0 +1,204 @@
+// Building and inspecting text.
+//
+// A `text` is a pointer and a length (D67): a view of bytes somebody else
+// owns. That makes a view cheap and a *built* string somebody's
+// responsibility -- so what builds one is a `Builder`, which owns its
+// bytes and gives them back in `deinit` (D91).
+
+need std.mem.{ArrayNew, BytesFromRaw, Free}
+
+/// How many bytes a piece of text is. Not how many characters: UTF-8 is
+/// bytes, and the two numbers differ exactly where it matters.
+offer fun Length(value: text) -> int {
+  return value.length as int
+}
+
+offer fun IsEmpty(value: text) -> bool {
+  return value.length == 0
+}
+
+/// The bytes of `value`, as a view. Nothing is copied.
+offer fun Bytes(value: text) -> []u8 uses unsafe {
+  return BytesFromRaw(value.data, value.length as int)
+}
+
+/// Whether the two hold the same bytes.
+offer fun Equals(left: text, right: text) -> bool uses unsafe {
+  if left.length != right.length {
+    return false
+  }
+  const a = Bytes(left)
+  const b = Bytes(right)
+  var i = 0
+  while i < a.len {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+/// Whether `value` starts with `prefix`.
+offer fun StartsWith(value: text, prefix: text) -> bool uses unsafe {
+  if prefix.length > value.length {
+    return false
+  }
+  const a = Bytes(value)
+  const b = Bytes(prefix)
+  var i = 0
+  while i < b.len {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+/// Where `needle` first appears in `value`, or -1.
+offer fun IndexOf(value: text, needle: text) -> int uses unsafe {
+  if needle.length == 0 {
+    return 0
+  }
+  if needle.length > value.length {
+    return -1
+  }
+  const a = Bytes(value)
+  const b = Bytes(needle)
+  var start = 0
+  while start <= a.len - b.len {
+    var i = 0
+    var same = true
+    while i < b.len {
+      if a[start + i] != b[i] {
+        same = false
+        i = b.len
+      } else {
+        i = i + 1
+      }
+    }
+    if same {
+      return start
+    }
+    start = start + 1
+  }
+  return -1
+}
+
+/// Text that owns its bytes.
+///
+/// Appending copies into storage the builder grew, so what comes out of
+/// `Text()` stays valid until the builder goes away -- which is what a
+/// destructor is for, and why this is a class and not a function.
+offer class Builder {
+  var bytes: []u8
+  var count: int = 0
+
+  deinit  {
+    Free(bytes)
+  }
+
+  fun Len() -> int {
+    return count
+  }
+
+  /// What has been built, as a view of the builder's own bytes.
+  fun Text() -> text uses unsafe {
+    return BytesAsText(bytes, count)
+  }
+
+  fun Clear() {
+    count = 0
+  }
+
+  fun Append(value: text) uses unsafe {
+    const source = Bytes(value)
+    Reserve(count + source.len)
+    var i = 0
+    while i < source.len {
+      bytes[count + i] = source[i]
+      i = i + 1
+    }
+    count = count + source.len
+  }
+
+  fun AppendByte(value: u8) uses unsafe {
+    Reserve(count + 1)
+    bytes[count] = value
+    count = count + 1
+  }
+
+  fun Reserve(wanted: int) uses unsafe {
+    if wanted <= bytes.len {
+      return
+    }
+    var capacity = bytes.len * 2
+    if capacity < wanted {
+      capacity = wanted
+    }
+    if capacity < 16 {
+      capacity = 16
+    }
+    const grown = ArrayNew<u8>(capacity)
+    var i = 0
+    while i < count {
+      grown[i] = bytes[i]
+      i = i + 1
+    }
+    Free(bytes)
+    bytes = grown
+  }
+}
+
+offer fun BuilderNew() -> Builder uses unsafe {
+  return Builder(ArrayNew<u8>(0), 0)
+}
+
+// A view of the first `length` bytes, as text. The bytes are the
+// builder's and stay where they are; what this makes is the pair that
+// names them.
+fun BytesAsText(buffer: []u8, length: int) -> text uses unsafe {
+  return TextFromRaw(buffer.data, length)
+}
+
+offer fun TextFromRaw(data: *u8, length: int) -> text uses unsafe
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun MeasuresAndCompares() -> bool uses unsafe {
+  if Length("hello") != 5 || !IsEmpty("") {
+    return false
+  }
+  if !Equals("abc", "abc") || Equals("abc", "abd") || Equals("ab", "abc") {
+    return false
+  }
+  return StartsWith("hello world", "hello") && !StartsWith(
+      "hello",
+      "hello world")
+}
+
+@Test
+fun FindsASubstring() -> bool uses unsafe {
+  if IndexOf("hello world", "world") != 6 {
+    return false
+  }
+  if IndexOf("hello", "l") != 2 {
+    return false
+  }
+  return IndexOf("hello", "z") == -1 && IndexOf("hello", "") == 0
+}
+
+@Test
+fun BuildsText() -> bool uses unsafe {
+  var builder = BuilderNew()
+  builder.Append("hello")
+  builder.AppendByte(32)
+  builder.Append("world")
+  if builder.Len() != 11 {
+    return false
+  }
+  const built = builder.Text()
+  return Equals(built, "hello world")
+}

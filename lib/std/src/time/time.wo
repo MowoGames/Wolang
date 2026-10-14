@@ -1,0 +1,77 @@
+// Clocks.
+//
+// Two of them, because they answer different questions: a monotonic one
+// for "how long did that take", which never goes backwards, and a wall
+// clock for "when was that", which does when the system is corrected
+// (D92). Mixing them up is the bug this separation exists to prevent.
+
+// `CLOCK_MONOTONIC` and `CLOCK_REALTIME` on Darwin and Linux alike. The
+// numbers differ between the two systems for the *other* clocks, which is
+// why only these two are offered.
+const kMonotonic: int = 6
+const kRealtime: int = 0
+
+/// A point in time, as the two numbers every system reports it as.
+offer struct Instant {
+  var seconds: s64 = 0
+  var nanos: s64 = 0
+}
+
+// `timespec` is two 64-bit numbers on both systems this runs on, which is
+// what makes `Instant` the right shape to hand the kernel directly.
+extern "C" fun clock_gettime(clock: s32, out: *Instant) -> s32
+
+fun Read(clock: int) -> Instant uses unsafe {
+  var spec = Instant(0, 0)
+  const _status = clock_gettime(clock as s32, &spec)
+  return spec
+}
+
+/// How long the machine has been up, as seconds and nanoseconds.
+///
+/// Monotonic: the difference between two of these is a duration, and it
+/// is never negative no matter what happens to the system clock.
+offer fun Now() -> Instant uses unsafe {
+  return Read(kMonotonic)
+}
+
+/// What the system thinks the time is, as seconds since the epoch.
+offer fun WallClock() -> Instant uses unsafe {
+  return Read(kRealtime)
+}
+
+/// How many nanoseconds there are between `from` and `to`.
+offer fun Elapsed(from: Instant, to: Instant) -> s64 {
+  const seconds = to.seconds - from.seconds
+  return seconds * 1000000000 + (to.nanos - from.nanos)
+}
+
+/// The same, in milliseconds, which is what a frame budget is written in.
+offer fun ElapsedMillis(from: Instant, to: Instant) -> s64 {
+  return Elapsed(from, to) / 1000000
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun TimeMovesForward() -> bool uses unsafe {
+  const first = Now()
+  // Enough work to take measurable time, and small enough numbers that
+  // the sum cannot overflow -- arithmetic traps here rather than wrapping.
+  var spin = 0
+  var i = 0
+  while i < 10000 {
+    spin = spin + (i & 255)
+    i = i + 1
+  }
+  const second = Now()
+  // Monotonic means never backwards, and a hundred thousand additions
+  // take more than nothing.
+  return Elapsed(first, second) >= 0 && second.seconds >= first.seconds
+}
+
+@Test
+fun TheWallClockIsPastTheEpoch() -> bool uses unsafe {
+  // Any machine running this is well past 2020, which is 1577836800.
+  return WallClock().seconds > 1577836800
+}

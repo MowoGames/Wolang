@@ -34,12 +34,8 @@ using IWidth = arm64::Width;
 constexpr Register kIntegerPool[] = {
     Register::kX19, Register::kX20, Register::kX21, Register::kX22,
     Register::kX23, Register::kX24, Register::kX25, Register::kX26,
+    Register::kX27,
 };
-// Where a virtual call keeps the body it looked up while it lays out the
-// arguments. Out of the pool because it has to survive both the lookup
-// call and everything the argument setup touches, and callee saved so the
-// lookup itself cannot clobber it.
-constexpr Register kVirtualTarget = Register::kX27;
 constexpr FloatRegister kFloatPool[] = {
     FloatRegister::kV8,  FloatRegister::kV9,  FloatRegister::kV10,
     FloatRegister::kV11, FloatRegister::kV12, FloatRegister::kV13,
@@ -332,6 +328,15 @@ class FunctionEmitter {
       offset += 8;
     }
 
+    // Eight bytes for a virtual call to keep the body it looked up while
+    // it lays the arguments out. A frame slot rather than a register,
+    // because a register held out of the allocator's pool costs every
+    // loop in the program and virtual calls are rare (D85).
+    if (HasVirtualCall()) {
+      virtual_target_ = offset;
+      offset += 8;
+    }
+
     for (size_t i = 0; i < values_.size(); ++i) {
       if (values_[i].holding != Holding::kArea) {
         continue;
@@ -434,6 +439,16 @@ class FunctionEmitter {
   // The address of a frame area in |target|. A frame can be larger than an
   // `add` immediate reaches, so the offset may have to go through a
   // register of its own.
+  // Whether any instruction here calls through an object.
+  bool HasVirtualCall() const {
+    for (const ir::Inst& inst : function_.instructions) {
+      if (inst.opcode == ir::Opcode::kVirtualCall) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void AreaAddress(Register target, uint32_t area) {
     if (area < 4096) {
       assembler_.AddImm(IWidth::k64, target, Register::kSp, area);
@@ -1451,6 +1466,16 @@ class FunctionEmitter {
         return;
       }
 
+      case ir::Opcode::kLocalAddress: {
+        // Where the slot is: the frame area the layout reserved for it
+        // (D94).
+        const ir::InstId slot = function_.OperandsOf(inst)[0];
+        const Register reg = DestInt(id, 0);
+        AreaAddress(reg, Info(slot).area);
+        FinishInt(id, reg);
+        return;
+      }
+
       case ir::Opcode::kGlobalAddress: {
         // Asked for rather than baked in: the runtime owns the storage so
         // that a global written here is the one the reference tier reads
@@ -1595,7 +1620,9 @@ class FunctionEmitter {
         IWidth::k64, kCallScratch,
         reinterpret_cast<uint64_t>(&runtime::wolang_class_lookup));
     assembler_.Blr(kCallScratch);
-    assembler_.Mov(IWidth::k64, kVirtualTarget, Register::kX0);
+    // Areas are offsets from the stack pointer in this tier.
+    assembler_.Str(IWidth::k64, Register::kX0, Register::kSp,
+                   static_cast<int32_t>(virtual_target_));
     // Nothing registered a body for this slot: the class was compiled by
     // a tier that is not this one, or the object was never a class at
     // all. A trap rather than a jump to zero, which is what this was
@@ -1605,7 +1632,7 @@ class FunctionEmitter {
           TrapLabel(ir::TrapKind::kNoBody, id,
                     "a virtual call found no compiled body for this "
                     "method");
-      assembler_.CmpImm(IWidth::k64, kVirtualTarget, 0);
+      assembler_.CmpImm(IWidth::k64, Register::kX0, 0);
       assembler_.BCond(Condition::kEq, missing);
     }
 
@@ -1643,7 +1670,10 @@ class FunctionEmitter {
       }
     }
 
-    assembler_.Blr(kVirtualTarget);
+    const Register target = kCallScratch;
+    assembler_.Ldr(IWidth::k64, target, Register::kSp,
+                   static_cast<int32_t>(virtual_target_));
+    assembler_.Blr(target);
     StoreResult(id, returned, indirect);
   }
 
@@ -2550,6 +2580,9 @@ class FunctionEmitter {
   const std::vector<uint64_t>& foreign_;
   const std::vector<std::pair<uint64_t, uint64_t>>& strings_;
   uint32_t trap_site_base_ = 0;
+  // Where a virtual call parks the body it looked up, as an offset from
+  // the frame pointer. Zero when the function has none.
+  uint32_t virtual_target_ = 0;
 
   Assembler assembler_;
   std::vector<ValueInfo> values_;

@@ -1533,6 +1533,15 @@ class Lowerer {
       return builder_->Add(Opcode::kMakeStruct, target, {address, token});
     }
 
+    // A reference where a raw pointer is wanted. The same address, and
+    // the checker already decided it was allowed (D8) -- the cast is here
+    // so that the IR's types stay exact.
+    if (source_type.is_valid() && source_type != target &&
+        types_->KindOf(source_type) == TypeKind::kReference &&
+        types_->KindOf(target) == TypeKind::kPointer) {
+      return builder_->Add(Opcode::kCast, target, {value});
+    }
+
     // A derived handle where its base is wanted. Nothing happens at run
     // time -- a base's fields are the first fields of what derives from it
     // (D84), so the address is the same address -- but the IR says so,
@@ -1984,6 +1993,11 @@ class Lowerer {
       }
 
       case ExprKind::kIndex: {
+        // `xs[a..b]` is a view of part of something, not an element of it.
+        if (ast().Contains(expr.rhs) &&
+            ast().Get(expr.rhs).kind == ExprKind::kRange) {
+          return LowerSliceRange(expr, type);
+        }
         // Through the address when there is one, so that reading one
         // element of a buffer does not copy the buffer. A place that is
         // only readable -- an aggregate that is a value and not anywhere
@@ -2750,6 +2764,17 @@ class Lowerer {
   // second class (`E0120`), so the slot cannot outlive its frame.
   InstId Address(ExprId place, InstId value) {
     if (const Place at = PlaceOf(place); at.addressable()) {
+      // `&x` on a whole local: a slot is not an address in a tier with
+      // real frames, and this is the one place that needs it to be one
+      // (D94). Reading and writing a slot goes through the slot itself,
+      // which is what lets a slot be promoted out of memory at all.
+      if (at.slot.is_valid() && at.path.empty() &&
+          !at.soa_record.is_valid()) {
+        return builder_->Add(
+            Opcode::kLocalAddress,
+            types_->Pointer(Erase(at.root_type), /*is_mutable=*/true),
+            {at.slot});
+      }
       return AddressOfPlace(at);
     }
     if (!value.is_valid()) {
@@ -2875,6 +2900,11 @@ class Lowerer {
         return base;
       }
       case ExprKind::kIndex: {
+        // A range makes a view rather than naming a place.
+        if (ast().Contains(expr.rhs) &&
+            ast().Get(expr.rhs).kind == ExprKind::kRange) {
+          return place;
+        }
         const TypeId sequence = Erase(TypeOf(expr.lhs));
         if (IsView(sequence)) {
           // A view is a pointer and a length, so indexing one starts from
@@ -2903,6 +2933,77 @@ class Lowerer {
       default:
         return place;
     }
+  }
+
+  // `xs[a..b]`: a view of part of a sequence (D93).
+  //
+  // The pointer is where element `a` is and the length is `b - a`, so a
+  // slice of a slice is two words of arithmetic and no copy. A slice may
+  // start at the end -- an empty tail is a useful thing to ask for -- so
+  // the bound for both ends is one past the length, which is what
+  // `index.check` compares against.
+  InstId LowerSliceRange(const Expr& expr, TypeId type) {
+    const TypeId sequence = Erase(TypeOf(expr.lhs));
+    const TypeId element = Erase(types_->ElementOf(sequence));
+    const TypeId slice = Erase(type);
+    const TypeId pointer = types_->Pointer(element, /*is_mutable=*/true);
+
+    // Where the elements are, and how many there are.
+    InstId data;
+    InstId length;
+    if (IsView(sequence)) {
+      const InstId view = Value(expr.lhs);
+      data = builder_->Extract(pointer, view, 0);
+      length = builder_->Extract(types_->default_int(), view, 1);
+    } else {
+      Place base = PlaceOf(expr.lhs);
+      InstId storage;
+      if (base.addressable()) {
+        storage = AddressOfPlace(base);
+      } else {
+        storage = builder_->Add(Opcode::kAlloca, sequence);
+        builder_->Add(Opcode::kStore, TypeId{}, {storage, Value(expr.lhs)});
+      }
+      length = builder_->ConstInt(
+          types_->default_int(),
+          static_cast<uint64_t>(types_->Get(sequence).length));
+      const InstId zero = builder_->ConstInt(types_->default_int(), 0);
+      data = builder_->IndexAddress(pointer, storage, zero, length);
+    }
+
+    const Expr& range = ast().Get(expr.rhs);
+    const InstId begin = ast().Contains(range.lhs)
+                             ? Value(range.lhs)
+                             : builder_->ConstInt(types_->default_int(), 0);
+    const InstId end =
+        ast().Contains(range.rhs) ? Value(range.rhs) : length;
+
+    // One past the length: a view may end at the end, and may start
+    // there too.
+    const InstId one = builder_->ConstInt(types_->default_int(), 1);
+    const InstId limit = builder_->Add(Opcode::kAdd, types_->default_int(),
+                                       {length, one});
+    builder_->Mutable(limit).is_unchecked = true;
+    builder_->Add(Opcode::kIndexCheck, TypeId{}, {end, limit});
+    const InstId after_begin = builder_->Add(
+        Opcode::kAdd, types_->default_int(), {end, one});
+    builder_->Mutable(after_begin).is_unchecked = true;
+    builder_->Add(Opcode::kIndexCheck, TypeId{}, {begin, after_begin});
+
+    // The first element of the view, reached without a check of its own:
+    // the two above are what says it is in range.
+    const InstId first =
+        builder_->IndexAddress(pointer, data, begin, limit);
+    builder_->Mutable(first).is_unchecked = true;
+    const InstId count = builder_->Add(Opcode::kSub,
+                                       types_->default_int(), {end, begin});
+    builder_->Mutable(count).is_unchecked = true;
+    // A view's length is a word, the way every other view's is: the two
+    // halves of a slice are a pointer and a count, and the count is what
+    // the runtime and the other tier expect to find there.
+    const InstId word =
+        builder_->Add(Opcode::kCast, types_->u64(), {count});
+    return builder_->Add(Opcode::kMakeStruct, slice, {first, word});
   }
 
   // An element of storage laid out one array per field, as a place with
@@ -3458,11 +3559,16 @@ class Lowerer {
         ast().Get(expr.lhs).kind != ExprKind::kPath) {
       return InstId{};
     }
-    if (interner_->Text(ast().Get(expr.lhs).name) != "BytesFromRaw") {
+    const std::string_view called = interner_->Text(ast().Get(expr.lhs).name);
+    // `TextFromRaw` is the same instruction with a different name: a
+    // `text` is a pointer and a length too (D67), so what both stand for
+    // is the pair rather than a call.
+    if (called != "BytesFromRaw" && called != "TextFromRaw") {
       return InstId{};
     }
     const TypeId slice = Erase(type);
-    if (types_->KindOf(slice) != TypeKind::kSlice) {
+    if (types_->KindOf(slice) != TypeKind::kSlice &&
+        types_->KindOf(slice) != TypeKind::kStr) {
       return InstId{};
     }
     const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);

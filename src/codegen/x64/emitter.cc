@@ -31,13 +31,8 @@ using IWidth = x64::Width;
 // arm64: `rbx` and `r12` through `r15`, of which one holds the context, and
 // `rbp` is the frame pointer a backtrace follows.
 constexpr Register kIntegerPool[] = {
-    Register::kRbx, Register::kR12, Register::kR13,
+    Register::kRbx, Register::kR12, Register::kR13, Register::kR14,
 };
-// Where a virtual call keeps the body it looked up while it lays out the
-// arguments. Out of the pool because it has to survive both the lookup
-// call and the argument setup, and callee saved so the lookup cannot
-// clobber it.
-constexpr Register kVirtualTarget = Register::kR14;
 
 // There are no callee saved floating point registers in this ABI at all,
 // which is a fact about the platform and not a choice: every one of the
@@ -385,6 +380,15 @@ class FunctionEmitter {
       offset += 8;
     }
 
+    // Eight bytes for a virtual call to park the body it looked up while
+    // it lays the arguments out. A frame slot rather than a register,
+    // because a register held out of the pool costs every loop in the
+    // program and virtual calls are rare (D85).
+    if (HasVirtualCall()) {
+      virtual_target_ = offset;
+      offset += 8;
+    }
+
     for (size_t i = 0; i < values_.size(); ++i) {
       if (values_[i].holding != Holding::kArea) {
         continue;
@@ -413,6 +417,16 @@ class FunctionEmitter {
   }
 
   // ------------------------------------------------------------ the frame --
+
+  // Whether any instruction here calls through an object.
+  bool HasVirtualCall() const {
+    for (const ir::Inst& inst : function_.instructions) {
+      if (inst.opcode == ir::Opcode::kVirtualCall) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   Address Slot(uint32_t offset) const {
     return Address{Register::kRsp, static_cast<int32_t>(offset)};
@@ -1282,6 +1296,16 @@ class FunctionEmitter {
         return;
       }
 
+      case ir::Opcode::kLocalAddress: {
+        // Where the slot is: the frame area the layout reserved for it
+        // (D94).
+        const ir::InstId slot = function_.OperandsOf(inst)[0];
+        const Register reg = DestInt(id, 0);
+        assembler_.Lea(reg, Slot(Info(slot).area));
+        FinishInt(id, reg);
+        return;
+      }
+
       case ir::Opcode::kGlobalAddress: {
         // Asked for rather than baked in, for the reason above: one
         // storage for both tiers (D88).
@@ -1429,13 +1453,13 @@ class FunctionEmitter {
         IWidth::k64, kCallScratch,
         reinterpret_cast<uint64_t>(&runtime::wolang_class_lookup));
     assembler_.CallRegister(kCallScratch);
-    assembler_.Mov(IWidth::k64, kVirtualTarget, Register::kRax);
+    assembler_.Store(IWidth::k64, Slot(virtual_target_), Register::kRax);
     {
       const Label missing =
           TrapLabel(ir::TrapKind::kNoBody, id,
                     "a virtual call found no compiled body for this "
                     "method");
-      assembler_.CmpImmediate(IWidth::k64, kVirtualTarget, 0);
+      assembler_.CmpImmediate(IWidth::k64, Register::kRax, 0);
       assembler_.Jcc(Condition::kEqual, missing);
     }
 
@@ -1472,7 +1496,8 @@ class FunctionEmitter {
       }
     }
 
-    assembler_.CallRegister(kVirtualTarget);
+    assembler_.Load(IWidth::k64, kCallScratch, Slot(virtual_target_));
+    assembler_.CallRegister(kCallScratch);
     StoreResult(id, returned, indirect);
   }
 
@@ -2408,6 +2433,8 @@ class FunctionEmitter {
   const std::vector<uint64_t>& foreign_;
   const std::vector<std::pair<uint64_t, uint64_t>>& strings_;
   uint32_t trap_site_base_ = 0;
+  // Where a virtual call parks the body it looked up.
+  uint32_t virtual_target_ = 0;
 
   Assembler assembler_;
   std::vector<ValueInfo> values_;

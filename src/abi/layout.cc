@@ -23,6 +23,10 @@ ValueClass LayoutStore::ClassOf(TypeId type) const {
     // this tier dereferences one -- only the foreign side does -- so it
     // needs no more than that.
     case TypeKind::kPointer:
+    // A reference is an address too. The difference between it and a raw
+    // pointer is what the language promises about it (D8), and a promise
+    // has no representation.
+    case TypeKind::kReference:
     // An error set is which error it is, and that is a number.
     case TypeKind::kErrorSet:
       return ValueClass::kInteger;
@@ -579,6 +583,7 @@ uint32_t LayoutStore::BitsOf(TypeId type) const {
     case TypeKind::kChar:
       return 32;
     case TypeKind::kPointer:
+    case TypeKind::kReference:
       return 64;
     case TypeKind::kErrorSet:
       return 32;

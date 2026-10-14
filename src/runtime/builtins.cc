@@ -3,6 +3,9 @@
 #include "wolang/runtime/builtins.h"
 
 #include "wolang/runtime/arena.h"
+#include "wolang/runtime/classes.h"
+#include "wolang/runtime/files.h"
+#include "wolang/runtime/globals.h"
 #include "wolang/runtime/signal.h"
 #include "wolang/runtime/text.h"
 
@@ -52,6 +55,14 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_object_alloc)},
       {"wolang_object_free",
        reinterpret_cast<void*>(&wolang_object_free)},
+      {"wolang_open_read", reinterpret_cast<void*>(&wolang_open_read)},
+      {"wolang_open_write", reinterpret_cast<void*>(&wolang_open_write)},
+      {"wolang_class_register",
+       reinterpret_cast<void*>(&wolang_class_register)},
+      {"wolang_class_lookup",
+       reinterpret_cast<void*>(&wolang_class_lookup)},
+      {"wolang_global_address",
+       reinterpret_cast<void*>(&wolang_global_address)},
       {"wolang_text_from_int",
        reinterpret_cast<void*>(&wolang_text_from_int)},
       {"wolang_text_from_float",

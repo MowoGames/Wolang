@@ -1,0 +1,143 @@
+// Files, over the four calls every system has.
+//
+// Reading a whole file is what a program wants nine times in ten, so that
+// is what this offers; the handle-level calls are here because the tenth
+// time exists. Paths are `text`, which is bytes with a length -- the same
+// thing every one of these calls takes (D92).
+
+need std.mem.{ArrayNew, BytesFromRaw}
+
+// Opening a file goes through the platform layer rather than through
+// `open` directly: the flags are not the same number on two systems, and
+// a library cannot say both (D92). Everything else here is the call
+// itself.
+extern "C" fun wolang_open_read(path: *u8, length: u64) -> s32
+extern "C" fun wolang_open_write(path: *u8, length: u64) -> s32
+extern "C" fun close(fd: s32) -> s32
+extern "C" fun read(fd: s32, buffer: *u8, count: u64) -> s64
+extern "C" fun write(fd: s32, buffer: *u8, count: u64) -> s64
+
+/// An open file. Closing it is `deinit`'s job, so a handle that goes out
+/// of scope leaves no descriptor behind.
+offer class File {
+  var fd: s32 = -1
+
+  deinit  {
+    if fd >= 0 {
+      Close()
+    }
+  }
+
+  fun IsOpen() -> bool {
+    return fd >= 0
+  }
+
+  fun Close() uses unsafe {
+    if fd >= 0 {
+      const _status = close(fd)
+      fd = -1
+    }
+  }
+
+  /// Fills `buffer` and says how many bytes arrived: zero at the end of
+  /// the file, negative when the system refused.
+  fun Read(buffer: []u8) -> int uses unsafe {
+    if fd < 0 {
+      return -1
+    }
+    return read(fd, buffer.data, buffer.len as u64) as int
+  }
+
+  fun Write(bytes: []u8) -> int uses unsafe {
+    if fd < 0 {
+      return -1
+    }
+    return write(fd, bytes.data, bytes.len as u64) as int
+  }
+}
+
+/// Opens `path` for reading. The handle is closed when it goes away.
+offer fun Open(path: text) -> File uses unsafe {
+  return File(wolang_open_read(path.data, path.length))
+}
+
+/// Opens `path` for writing, making it or emptying it first.
+offer fun Create(path: text) -> File uses unsafe {
+  return File(wolang_open_write(path.data, path.length))
+}
+
+/// Reads the whole of `path` into fresh storage.
+///
+/// The caller owns what comes back and gives it to `Free` -- which is
+/// what a `[]u8` is: a view of bytes that are somewhere, and here the
+/// somewhere is an allocation.
+offer fun ReadAll(path: text, limit: int) -> []u8 uses unsafe {
+  var file = Open(path)
+  var buffer = ArrayNew<u8>(limit)
+  if !file.IsOpen() {
+    return BytesOf(buffer, 0)
+  }
+  var filled = 0
+  while filled < limit {
+    const window = BytesOf(buffer, limit)
+    const got = file.Read(window)
+    if got <= 0 {
+      break
+    }
+    filled = filled + got
+  }
+  return BytesOf(buffer, filled)
+}
+
+/// Writes `bytes` to `path`, replacing what was there.
+offer fun WriteAll(path: text, bytes: []u8) -> bool uses unsafe {
+  var file = Create(path)
+  if !file.IsOpen() {
+    return false
+  }
+  return file.Write(bytes) == bytes.len
+}
+
+// A view of the first `length` bytes of `buffer`. A slice of a slice,
+// which is a language construct and allocates nothing.
+fun BytesOf(buffer: []u8, length: int) -> []u8 {
+  if length <= 0 {
+    return buffer[0..0]
+  }
+  if length >= buffer.len {
+    return buffer
+  }
+  return buffer[0..length]
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun WritesAndReadsBack() -> bool uses unsafe {
+  const path = "/tmp/wolang-fs-test.txt"
+  const message = "hello from wolang"
+  // A `text` is a pointer and a length; this is the view of those bytes.
+  const bytes = BytesFromRaw(message.data, message.length as int)
+  if !WriteAll(path, bytes) {
+    return false
+  }
+  const read_back = ReadAll(path, 64)
+  if read_back.len != bytes.len {
+    return false
+  }
+  // The same bytes in the same order.
+  var i = 0
+  while i < read_back.len {
+    if read_back[i] != bytes[i] {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+@Test
+fun ReportsAMissingFile() -> bool uses unsafe {
+  var file = Open("/tmp/wolang-does-not-exist-9e3f")
+  return !file.IsOpen()
+}

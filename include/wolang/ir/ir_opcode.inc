@@ -94,6 +94,10 @@ WOLANG_IR_OP(VariantPayload, "variant.payload",
              "what the variant |field| carries, read out of an enum "
              "value. Undefined when the value is a different variant, "
              "which a `match` is what stops happening")
+WOLANG_IR_OP(LocalAddress, "local.addr",
+             "where a slot is. `&x` on a whole local: the reference tier "
+             "answers with the slot itself, and a tier with real frames "
+             "answers with the address of it")
 WOLANG_IR_OP(GlobalAddress, "global.addr",
              "where a module-level `var` lives. The runtime owns the "
              "storage, so a global written in one tier is the one read in "

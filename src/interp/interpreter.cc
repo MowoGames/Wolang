@@ -628,6 +628,12 @@ class Interpreter {
         return carried.elements()[position];
       }
 
+      case ir::Opcode::kLocalAddress:
+        // A slot *is* where the value is in this tier: there are no
+        // frame addresses here, and a place is a path (D94). What crosses
+        // the C boundary is bounced into real memory by the marshaller.
+        return Operand(frame, inst, 0);
+
       case ir::Opcode::kGlobalAddress: {
         // The runtime owns the storage, so the address is the same one
         // compiled code would get (D88).

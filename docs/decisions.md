@@ -938,3 +938,38 @@ trap -- so it is done in sixty-four bits and masked back. And a function
 value in a field had no way into memory in the reference tier until now:
 it is a module and an index there, so what goes into the field is the
 token a call turns back into the value.
+
+**D92. The platform's numbers stay in the platform layer.** `open` is a C
+call the language can make, but its flags are not the same number on two
+systems -- `O_CREAT` is 64 on Linux and 512 on Darwin. A library written
+in Wolang cannot say both, and the version that guessed opened a file with
+no write permission on one of them, which is how the first `std.fs` test
+failed. So the flags live in C, behind `wolang_open_read` and
+`wolang_open_write`, and everything above them is Wolang.
+
+The clocks are two functions rather than one for the same reason the
+language has two words for mutability: they answer different questions. A
+monotonic clock never goes backwards and is what "how long did that take"
+wants; a wall clock does go backwards when the system is corrected and is
+what "when was that" wants. One function would make the wrong one the
+default half the time.
+
+**D93. `xs[a..b]` is a view, and a slice of a slice is arithmetic.** The
+pointer is where element `a` is and the length is `b - a`, so no copy
+happens and a view of part of a buffer costs two words. Both ends may be
+the length itself -- an empty tail is a useful thing to ask for -- so the
+bound each is checked against is one past it.
+
+**D94. A slot is not an address.** `&x` on a whole local needs the address
+of the frame slot, which the reference tier does not have: its places are
+paths, not numbers. So there is an instruction for it -- the reference
+tier answers with the slot, a tier with real frames answers with the
+address -- and it is emitted *only* where an address is wanted.
+
+The first version emitted it for every read and write of a local, which
+made every slot's address escape and stopped slot promotion dead: a loop
+counter went back to making a round trip through the frame, at a third of
+the speed. The lesson is the one the register allocator taught in wave 8:
+a change that makes something expressible has to be confined to where it
+is needed, because the optimizer's questions are about what *cannot*
+happen.
