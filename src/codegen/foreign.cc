@@ -9,6 +9,7 @@
 
 #include "wolang/codegen/arm64/assembler.h"
 #include "wolang/codegen/code_block.h"
+#include "wolang/runtime/builtins.h"
 
 namespace wolang {
 namespace codegen {
@@ -83,7 +84,10 @@ class Caller : public interp::ForeignCaller {
       return false;
     }
     const std::string name(symbol);
-    void* target = ::dlsym(RTLD_DEFAULT, name.c_str());
+    void* target = runtime::LookupSymbol(name);
+    if (target == nullptr) {
+      target = ::dlsym(RTLD_DEFAULT, name.c_str());
+    }
     if (target == nullptr) {
       return false;
     }

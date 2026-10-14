@@ -7,6 +7,7 @@
 
 #include "harness/test.h"
 #include "wolang/codegen/foreign.h"
+#include "wolang/abi/layout.h"
 #include "wolang/compiler/database.h"
 
 namespace wolang {
@@ -48,12 +49,15 @@ class Fixture {
     if (foreign_ == nullptr) {
       foreign_ = codegen::MakeForeignCaller();
     }
+    abi::LayoutStore layouts(db_.types(), *resolution);
     const interp::Outcome reference =
         interp::RunNamed(db_.interner(), db_.types(), lowered->unoptimized,
-                         symbol, arguments, {}, nullptr, foreign_.get());
+                         symbol, arguments, {}, nullptr, foreign_.get(),
+                         &layouts);
     const interp::Outcome optimized =
         interp::RunNamed(db_.interner(), db_.types(), lowered->module,
-                         symbol, arguments, {}, nullptr, foreign_.get());
+                         symbol, arguments, {}, nullptr, foreign_.get(),
+                         &layouts);
     if (Describe(reference) != Describe(optimized)) {
       return "<the passes changed the meaning: " + Describe(reference) +
              " then " + Describe(optimized) + ">";
@@ -573,6 +577,55 @@ fun Scoped(n: int) -> int {
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Scoped", {Fixture::Int(41)}), "42");
+}
+
+WOLANG_TEST(CodegenTest, RunsAStacklessCoroutine) {
+  // A `task` is split into a state machine before anything runs, so both
+  // tiers execute ordinary functions and structs -- which is why a
+  // coroutine is covered by the same differential check as everything else.
+  Fixture f(R"(
+task fun Yield()
+
+task fun Twice(n: int) -> int {
+  wait Yield()
+  const doubled = n * 2
+  wait Yield()
+  return doubled + n
+}
+
+task fun Outer(n: int) -> int {
+  const once = wait Twice(n)
+  const twice = wait Twice(once)
+  return twice
+}
+)");
+  // Two suspensions and a result that survives both of them.
+  WOLANG_EXPECT_EQ(f.Run("Twice", {Fixture::Int(5)}), "15");
+  // A task waiting on a task: the callee's frame lives inside the caller's.
+  WOLANG_EXPECT_EQ(f.Run("Outer", {Fixture::Int(2)}), "18");
+}
+
+WOLANG_TEST(CodegenTest, SuspendsInsideALoop) {
+  // The state the machine comes back to is a block in the middle of a loop,
+  // which is the case a state machine has to get right and the one a
+  // dominance check catches when it does not.
+  Fixture f(R"(
+task fun Yield()
+
+task fun Count(n: int) -> int {
+  var total = 0
+  var i = 0
+  while i < n {
+    wait Yield()
+    total = total + i
+    i = i + 1
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Count", {Fixture::Int(5)}), "10");
+  WOLANG_EXPECT_EQ(f.Run("Count", {Fixture::Int(0)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Count", {Fixture::Int(100)}), "4950");
 }
 
 }  // namespace

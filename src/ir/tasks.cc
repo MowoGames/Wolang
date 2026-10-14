@@ -416,6 +416,24 @@ class Splitter {
           Add(target, dispatch, Opcode::kLoad, type, {address});
     }
 
+    // Every address into the frame is taken here, in the one block that
+    // dominates every state: the dispatch can jump straight into the middle
+    // of the body, so an address taken in an earlier block would not be
+    // defined on that path. This is the thing a state machine gets wrong,
+    // and the verifier is what says so.
+    std::vector<InstId> slot_address(source.instructions.size(), InstId{});
+    for (const auto& [slot, field] : frame.slots) {
+      slot_address[slot.index] =
+          FieldAddress(target, dispatch, frame, frame_pointer, field,
+                       FieldType(frame, field));
+    }
+    std::vector<InstId> wait_address(source.instructions.size(), InstId{});
+    for (const auto& [wait, field] : frame.waits) {
+      wait_address[wait.index] =
+          FieldAddress(target, dispatch, frame, frame_pointer, field,
+                       FieldType(frame, field));
+    }
+
     const LinearOrder order = Linearize(source);
     std::vector<BlockId> arrival(source.blocks.size(), BlockId{});
     for (BlockId block : order.blocks) {
@@ -433,8 +451,12 @@ class Splitter {
       const Block& body = source.Get(block);
 
       // A block parameter stays a block parameter: a value that depends on
-      // which edge arrived is the same question here as it was there.
-      for (size_t i = 0; i < body.param_count; ++i) {
+      // which edge arrived is the same question here as it was there. The
+      // entry's parameters are the exception -- they are the function's,
+      // and they live in the frame now.
+      const size_t first =
+          block == source.entry() ? body.param_count : 0;
+      for (size_t i = first; i < body.param_count; ++i) {
         const InstId id = body.instructions[i];
         Inst copy;
         copy.opcode = Opcode::kParam;
@@ -464,19 +486,12 @@ class Splitter {
         if (inst.opcode == Opcode::kAlloca) {
           // A slot becomes a field of the frame, and its address is what
           // every load and store already took.
-          uint32_t field = 0;
-          for (const auto& [slot, slot_field] : frame.slots) {
-            if (slot == id) {
-              field = slot_field;
-            }
-          }
-          map[id.index] = FieldAddress(target, current, frame,
-                                       frame_pointer, field, inst.type);
+          map[id.index] = slot_address[id.index];
           continue;
         }
 
         if (inst.opcode == Opcode::kWaitCall) {
-          current = EmitSuspension(target, current, frame, frame_pointer,
+          current = EmitSuspension(target, current, wait_address[id.index],
                                    state_address, state_type, source, inst,
                                    id, &map, &states);
           continue;
@@ -566,8 +581,7 @@ class Splitter {
   // the rest of the body continues in.
   BlockId EmitSuspension(Function* target,
                          BlockId current,
-                         const Frame& frame,
-                         InstId frame_pointer,
+                         InstId sub,
                          InstId state_address,
                          TypeId state_type,
                          const Function& source,
@@ -575,16 +589,7 @@ class Splitter {
                          InstId id,
                          std::vector<InstId>* map,
                          std::vector<BlockId>* states) {
-    uint32_t field = 0;
-    for (const auto& [wait, wait_field] : frame.waits) {
-      if (wait == id) {
-        field = wait_field;
-      }
-    }
     const Frame* callee = FrameOf(inst.payload.callee);
-    const TypeId sub_type = FieldType(frame, field);
-    const InstId sub = FieldAddress(target, current, frame, frame_pointer,
-                                    field, sub_type);
     if (callee == nullptr) {
       // A recursive task, already reported. Leave the body unreachable
       // rather than emitting a machine that cannot work.

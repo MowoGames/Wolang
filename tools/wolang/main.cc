@@ -26,6 +26,7 @@
 #include "wolang/compiler/cache.h"
 #include "wolang/compiler/database.h"
 #include "wolang/codegen/compiler.h"
+#include "wolang/abi/layout.h"
 #include "wolang/codegen/foreign.h"
 #include "wolang/compiler/workspace.h"
 #include "wolang/format/formatter.h"
@@ -494,9 +495,12 @@ int RunProgram(const Options& options) {
   if (compiled != nullptr && compiled->Contains(main)) {
     outcome = compiled->Run(main, {});
   } else {
+    // The interpreter needs the layout to read a value it only has the
+    // address of, which a task frame is.
+    abi::LayoutStore layouts(database.types(), program_file->resolution);
     outcome = interp::RunNamed(database.interner(), database.types(),
                                program->module, main, {}, {}, &output,
-                               foreign.get());
+                               foreign.get(), &layouts);
   }
 
   std::fputs(output.text.c_str(), stdout);
@@ -560,9 +564,13 @@ int RunTests(const Options& options) {
       ++ran;
       // Run through the unoptimized IR: the reference semantics are what a
       // test is testing.
+      const CheckedFile* checked = database.Checked(file);
+      abi::LayoutStore layouts(database.types(),
+                               checked != nullptr ? checked->resolution
+                                                  : FileResolution{});
       const interp::Outcome outcome = interp::RunNamed(
           database.interner(), database.types(), lowered->unoptimized, name,
-          {}, {}, nullptr, foreign.get());
+          {}, {}, nullptr, foreign.get(), &layouts);
       const bool returned_false =
           outcome.ok() &&
           outcome.value.kind() == interp::Value::Kind::kBool &&

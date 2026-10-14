@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "harness/test.h"
+#include "wolang/abi/layout.h"
 #include "wolang/compiler/database.h"
 
 namespace wolang {

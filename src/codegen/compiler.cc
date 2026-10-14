@@ -18,6 +18,7 @@
 #include "wolang/codegen/code_block.h"
 #include "wolang/abi/layout.h"
 #include "wolang/codegen/runtime.h"
+#include "wolang/runtime/builtins.h"
 
 namespace wolang {
 namespace codegen {
@@ -258,8 +259,11 @@ void CompiledModule::Impl::Compile() {
       continue;
     }
     const std::string symbol(interner_.Text(function.foreign_symbol));
-    foreign[i] = reinterpret_cast<uint64_t>(
-        ::dlsym(RTLD_DEFAULT, symbol.c_str()));
+    void* address = runtime::LookupSymbol(symbol);
+    if (address == nullptr) {
+      address = ::dlsym(RTLD_DEFAULT, symbol.c_str());
+    }
+    foreign[i] = reinterpret_cast<uint64_t>(address);
     reasons[i] = foreign[i] == 0
                      ? "is `extern` and its symbol was not found"
                      : "is `extern`, called at the address the loader gave";

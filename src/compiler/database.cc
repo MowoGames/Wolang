@@ -7,6 +7,7 @@
 #include "wolang/interp/interpreter.h"
 #include "wolang/ir/lower.h"
 #include "wolang/ir/passes.h"
+#include "wolang/ir/tasks.h"
 #include "wolang/ir/verifier.h"
 #include "wolang/syntax/lexer.h"
 #include "wolang/syntax/parser.h"
@@ -955,6 +956,14 @@ void Database::RegisterQueries() {
         LoweredFile result;
         ir::LowerFile(&interner_, &types_, checked->resolution, parsed->ast,
                       checked->body, effects, &result.module);
+
+        // A `task` is not a function the way the machine means it, so it is
+        // split into a state machine here -- before the verifier, so the
+        // result is checked, and before the passes, so they see ordinary
+        // code. Nothing below this point knows what a coroutine is.
+        abi::LayoutStore layouts(types_, checked->resolution);
+        ir::SplitTasks(&interner_, &types_, &layouts, &result.module,
+                       &result.diagnostics);
 
         // Verified on every input rather than on request: the IR is the
         // contract between the front end and every back end, so a violation
