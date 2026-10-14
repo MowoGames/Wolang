@@ -45,7 +45,7 @@ offer component Motion {
   var value: Vec3
 }
 
-offer trait Damageable {
+offer ability Damageable {
   fun TakeDamage(amount: float, from: Actor?)
 }
 

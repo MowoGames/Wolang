@@ -560,7 +560,7 @@ void Database::RegisterQueries() {
           }
 
           // Relations travel with the tables: a bound of `Actor` is only
-          // satisfiable because the declaring file says so, and a trait may
+          // satisfiable because the declaring file says so, and an ability may
           // be implemented in a third file.
           for (const TypeRelations& relation : other.relations) {
             TypeRelations* mine = nullptr;
@@ -577,16 +577,16 @@ void Database::RegisterQueries() {
             if (!mine->base.is_valid()) {
               mine->base = relation.base;
             }
-            for (TypeId trait : relation.traits) {
+            for (TypeId ability : relation.abilities) {
               bool known = false;
-              for (TypeId existing : mine->traits) {
-                if (existing == trait) {
+              for (TypeId existing : mine->abilities) {
+                if (existing == ability) {
                   known = true;
                   break;
                 }
               }
               if (!known) {
-                mine->traits.push_back(trait);
+                mine->abilities.push_back(ability);
               }
             }
           }

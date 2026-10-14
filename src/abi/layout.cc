@@ -53,9 +53,9 @@ ValueClass LayoutStore::ClassOf(TypeId type) const {
       // A struct, a component or an enum stores its members inline. A
       // class is a handle to a heap object, so a value of one is an
       // address -- which is why it travels in a register and why a method
-      // of a class mutates the object it was called on. A trait value is
+      // of a class mutates the object it was called on. An ability value is
       // a pair, so it is an aggregate whatever implements it.
-      if (resolution_.IsTrait(type)) {
+      if (resolution_.IsAbility(type)) {
         return ValueClass::kAggregate;
       }
       return types_.IsHandle(type) ? ValueClass::kInteger
@@ -326,7 +326,7 @@ uint32_t LayoutStore::FieldCount(TypeId type) const {
       return 2;
     case TypeKind::kInstance:
     case TypeKind::kNamed: {
-      if (resolution_.IsTrait(type)) {
+      if (resolution_.IsAbility(type)) {
         return 2;
       }
       if (IsTagOnly(type)) {
@@ -371,7 +371,7 @@ TypeId LayoutStore::FieldType(TypeId type, uint32_t index) const {
     }
     case TypeKind::kInstance:
     case TypeKind::kNamed: {
-      if (resolution_.IsTrait(type)) {
+      if (resolution_.IsAbility(type)) {
         // What it points at, and which class that is.
         return types_.u64();
       }
@@ -493,10 +493,10 @@ Layout LayoutStore::Compute(TypeId type) {
       break;
   }
 
-  // A trait value: what it points at, and which class that is. Two words
+  // An ability value: what it points at, and which class that is. Two words
   // for the same reason a slice is two -- neither half is a member anyone
   // declared, and a call on it needs both (D86).
-  if (resolution_.IsTrait(type)) {
+  if (resolution_.IsAbility(type)) {
     layout.size = 16;
     layout.align = 8;
     layout.offsets.push_back(0);

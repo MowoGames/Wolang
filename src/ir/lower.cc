@@ -704,11 +704,11 @@ class Lowerer {
 
     std::vector<VirtualSlot> slots;
 
-    // What the traits this type implements asked for. The selector is the
-    // *trait's* declaration, so a call through a trait value finds the
+    // What the abilities this type implements asked for. The selector is the
+    // *ability's* declaration, so a call through an ability value finds the
     // body without knowing what implements it (D86).
-    for (TypeId trait : resolution().TraitsOf(type)) {
-      for (const Member& wanted : resolution().MembersOf(trait)) {
+    for (TypeId ability : resolution().AbilitiesOf(type)) {
+      for (const Member& wanted : resolution().MembersOf(ability)) {
         if (wanted.kind != MemberKind::kMethod) {
           continue;
         }
@@ -763,10 +763,10 @@ class Lowerer {
     return (static_cast<uint64_t>(member.file) << 32) | member.item;
   }
 
-  // What a trait call can actually call.
+  // What an ability call can actually call.
   //
   // A method of a value type takes `self` as a value; a call through a
-  // trait has only an address, because it does not know what is there.
+  // ability has only an address, because it does not know what is there.
   // So the table gets a one-line function that loads the value and calls
   // the method -- the thunk every vtable over value types needs.
   //
@@ -1418,7 +1418,7 @@ class Lowerer {
 
   void LowerFunction(const Item& item, uint32_t index) {
     if (index >= module_->functions.size() || !item.body.is_valid()) {
-      // A declaration with no body -- a trait method, an `extern` -- has
+      // A declaration with no body -- an ability method, an `extern` -- has
       // nothing to lower. It keeps its signature so a call can still name
       // it.
       return;
@@ -1571,18 +1571,18 @@ class Lowerer {
            Coerce(value, from, held, source)});
     }
 
-    // A value where a trait is wanted: the pair that says what it is and
+    // A value where an ability is wanted: the pair that says what it is and
     // which class that is (D86). A class hands over its handle; a value
     // type has to be somewhere first, so it is put in a slot and the
     // address of that is what travels -- which is safe for the reason a
-    // `str` is: a trait value cannot be stored in a field, so it cannot
+    // `str` is: an ability value cannot be stored in a field, so it cannot
     // outlive the frame it points into.
     if (source_type.is_valid() && source_type != target &&
-        resolution().IsTrait(target) && !resolution().IsTrait(source_type)) {
+        resolution().IsAbility(target) && !resolution().IsAbility(source_type)) {
       InstId address = value;
       if (!types_->IsHandle(source_type)) {
         // Copied onto the heap rather than pointed at where it is. A
-        // trait value is the one thing in this language that outlives the
+        // ability value is the one thing in this language that outlives the
         // expression it was made in -- a list of shapes is the point of
         // having it -- and the reference tier's locals have no addresses
         // that survive a call, so a borrow could not work in every tier.
@@ -2332,7 +2332,7 @@ class Lowerer {
       case TypeKind::kBool:
         return TextFromRuntime("wolang_text_from_bool", {value});
       default:
-        // Anything else needs a formatting trait, which arrives with the
+        // Anything else needs a formatting ability, which arrives with the
         // rest of `core`.
         return builder_->ConstString(str, "<?>");
     }
@@ -3551,7 +3551,7 @@ class Lowerer {
         return Coerce(value, built, type);
       }
       // A function from another file. Lowering is per file, so it gets a
-      // declaration here -- the same shape a trait method or an `extern`
+      // declaration here -- the same shape an ability method or an `extern`
       // has, and what the linker will resolve.
       if (binding != nullptr && binding->kind == BindingKind::kFunction) {
         const uint32_t target =
@@ -3956,11 +3956,11 @@ class Lowerer {
       return InstId{};
     }
 
-    // A call on a trait value: the pair says what to call it on and which
+    // A call on an ability value: the pair says what to call it on and which
     // class that is, and the method's own declaration says which method
     // (D86). Nothing about the implementing type is known here, which is
     // the point.
-    if (resolution().IsTrait(owner)) {
+    if (resolution().IsAbility(owner)) {
       const InstId pointer =
           builder_->Add(Opcode::kExtract, types_->u64(), {receiver});
       module_->functions[current_function_].Get(pointer).field = 0;

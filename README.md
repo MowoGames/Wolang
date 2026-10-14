@@ -26,7 +26,7 @@ fun main() uses io {
 
 ## What makes it different
 
-Wolang takes traits, exhaustive `match`, `Result`, `comptime` and optionals from
+Wolang takes abilities, exhaustive `match`, `Result`, `comptime` and optionals from
 the usual places. These five are the parts it is actually built around:
 
 | | |

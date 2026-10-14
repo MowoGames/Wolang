@@ -20,13 +20,13 @@ what catches a lint that is right in the example and wrong everywhere else.
 | Feature | Notes |
 |---|---|
 | `override` against the base chain | all three halves: `override` with nothing to override, hiding a base method without `override`, overriding something not `virtual` (`E0401`) |
-| Trait bounds at call sites | `E0403`, checked once a parameter is inferred |
-| `TypeRelations` | a named type's base class and the traits it implements, merged across files like member tables |
+| Ability bounds at call sites | `E0403`, checked once a parameter is inferred |
+| `TypeRelations` | a named type's base class and the abilities it implements, merged across files like member tables |
 
 Conformance is **declared**, not inferred from the methods present:
-`extend T as Trait` is the declaration, and `Satisfies` walks the base chain
-and the trait list. A bound naming a base class accepts a derived type, and a
-trait implemented on the base accepts it too.
+`extend T as Ability` is the declaration, and `Satisfies` walks the base chain
+and the ability list. A bound naming a base class accepts a derived type, and a
+ability implemented on the base accepts it too.
 
 A type parameter carries its bounds (`TypeStore::Parameter` takes them), so a
 call site checks a bound without reaching back into the declaring file. That
@@ -49,7 +49,7 @@ where `arena` actually allocates.
 
 An unused local is reported where it goes out of scope, which is also where
 the last chance to use it was. A name starting with `_` opts out. A
-declaration with no body — a trait method, an `extern` — has nowhere to use
+declaration with no body — an ability method, an `extern` — has nowhere to use
 its parameters, so it is exempt; an invalid span is what carries that.
 
 `W0102` fires once per block rather than once per statement after the jump.
@@ -145,7 +145,7 @@ gets. The check looks at the declared row as well as the inferred one, so
 |---|---|
 | No implicit numeric conversions, not even widening (D15a) | a conversion that is always spelled is one that can always be found; arbitrary-precision literals remove the tiresome case. Retires the planned `W0114`. |
 | An uninterpolated string literal is `text`, not `Text` | static data in the binary, not an allocation. Interpolation builds a string at runtime, which is what makes *that* owned. |
-| Trait conformance is declared, not structural | `extend T as Trait` is the declaration; a type that happens to have the right methods has not promised anything |
+| Ability conformance is declared, not structural | `extend T as Ability` is the declaration; a type that happens to have the right methods has not promised anything |
 | Effect inference is one query per module | a per-declaration query makes mutual recursion a query cycle, and the answer would depend on evaluation order |
 | An `offer` function with effects must state them | the only alternative is a cycle between modules' effect queries |
 | An empty effect row is a claim, not ignorance | `comptime` needs to say "nothing observable"; "not stated" is the absence of an entry |
@@ -157,7 +157,7 @@ gets. The check looks at the declared row as well as the inferred one, so
 - **`fun Name() -> text => "actor"` was a type error.** A string literal was
   always `Text`, so the idiomatic borrowed return did not type check.
 - **An unknown `extend` target was reported twice** — once by the member
-  pass and once by the trait check, which resolved it again.
+  pass and once by the ability check, which resolved it again.
 - **Two test fixtures asserted on all diagnostics**, so the first lint broke
   32 tests that only meant "this compiles". `Codes()` is now errors only,
   with `Warnings()` beside it.

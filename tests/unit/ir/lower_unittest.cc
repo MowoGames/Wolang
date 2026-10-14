@@ -220,10 +220,10 @@ fun Use() -> int {
 }
 
 WOLANG_TEST(LowerTest, ADeclarationWithNoBodyKeepsItsSignature) {
-  // A trait method has nothing to lower, and the signature is what a call
+  // An ability method has nothing to lower, and the signature is what a call
   // needs.
   Fixture f(R"(
-trait Damageable {
+ability Damageable {
   fun TakeDamage(amount: float)
 }
 )");

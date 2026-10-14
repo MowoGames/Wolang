@@ -16,7 +16,7 @@ bool DeclaresAModuleName(ItemKind kind) {
     case ItemKind::kClass:
     case ItemKind::kStruct:
     case ItemKind::kEnum:
-    case ItemKind::kTrait:
+    case ItemKind::kAbility:
     case ItemKind::kComponent:
     case ItemKind::kTag:
     case ItemKind::kSystem:

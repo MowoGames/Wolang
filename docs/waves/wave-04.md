@@ -1,4 +1,4 @@
-# Wave 4 — the type system, units, generics and traits
+# Wave 4 — the type system, units, generics and abilities
 
 **Status:** complete. 377 unit tests, all passing in Debug, sanitizers and
 Release.
@@ -22,7 +22,7 @@ conditions.
 |---|---|
 | Unicode XID identifiers, NFC enforced | tables generated from Unicode 16.0 by `tools/gen/gen_unicode_tables.py` into `include/wolang/base/unicode_tables.inc`; `E0013`, `E0014` |
 | Nesting block comments | `/* /* */ */`; `E0012` on an unterminated one |
-| `extend T` and `extend T as Trait` | replaces `impl`, target first (D21) |
+| `extend T` and `extend T as Ability` | replaces `impl`, target first (D21) |
 | `error NotFound, Corrupt` | one declaration binds several tags |
 | Postfix `T!` | reads left to right and combines as `Pawn?!` (D13) |
 | `[]T` and `[N]T` | language constructs, not library types (D10) |
@@ -109,8 +109,8 @@ What it checks:
   arguments asks for the default value;
 - **generic calls**, inferring parameters from the arguments — no turbofish
   and no explicit type argument (D18);
-- **trait conformance**, from the member table rather than from the block
-  that names the trait, so a method may come from anywhere;
+- **ability conformance**, from the member table rather than from the block
+  that names the ability, so a method may come from anywhere;
 - **exhaustive `match`**, naming what is missing;
 - **nullability**, with `if const`, `?.`, `??`, an `x?` pattern, and an
   explicit `p != null` in either order.
@@ -144,7 +144,7 @@ reader stale. `Database.MemberTablesSurviveABodyEdit` and
 
 `E0101`–`E0112` for types and members, `E0113`–`E0116` for resolution and
 dimension declarations, `E0201` for a non-exhaustive `match`, `E0402` for an
-unimplemented trait method, `E1001`–`E1002` for dimensions and units.
+unimplemented ability method, `E1001`–`E1002` for dimensions and units.
 
 Two rules keep the output honest:
 
@@ -186,7 +186,7 @@ Two rules keep the output honest:
   saves a character. Notation is now chosen by magnitude, which costs `1e10`
   coming back expanded.
 - **An unknown `extend` target was reported twice**, once by the member pass
-  and once by the trait check.
+  and once by the ability check.
 - **The formatter dropped a shebang**, so `fmt --write` would stop an
   executable script from being one.
 - **The formatter dropped a derived dimension's product**, silently turning
@@ -209,7 +209,7 @@ Two rules keep the output honest:
 
 - **Monomorphization.** Inference and substitution are done; emitting one
   specialization per instantiation belongs with the IR in wave 8.
-- Trait bounds (`where T: Actor`) are parsed and the parameters are in scope,
+- Ability bounds (`where T: Actor`) are parsed and the parameters are in scope,
   but a bound is not yet checked against the argument.
 - `E0401`: `override` without a virtual method.
 - The formatter puts every attribute and every block on its own line, while

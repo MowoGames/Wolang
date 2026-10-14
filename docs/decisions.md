@@ -133,8 +133,8 @@ pair that says what a module does: it *needs* names from elsewhere and
 words describe the relationship rather than borrowing a convention. `fn`,
 `import` and `pub` are reserved, so old habits get a message.
 
-**D21. `extend T` and `extend T as Trait` replace `impl`.** The target comes
-first either way, so the declaration reads as a sentence. `impl Trait for
+**D21. `extend T` and `extend T as Ability` replace `impl`.** The target comes
+first either way, so the declaration reads as a sentence. `impl Ability for
 Type` is a known stumbling block: its word order matches neither English nor
 intuition. `impl` is reserved, so the Rust spelling gets a message rather than
 a confusing parse failure.
@@ -233,7 +233,7 @@ anyway.
 say "nothing observable"; "not stated" is the absence of an entry. Conflating
 the two would make every unannotated function look pure.
 
-**D35d. Trait conformance is declared, not structural.** `extend T as Trait`
+**D35d. Ability conformance is declared, not structural.** `extend T as Ability`
 is the declaration. A type that happens to have the right methods has not
 promised anything, and a bound is a promise.
 
@@ -816,21 +816,21 @@ array rather than a hash map.
 A class gets the header only when something in its chain is virtual, so a
 `class` with no virtual methods costs exactly what it did before.
 
-**D86. A trait value is a pair: what it points at, and which class that
+**D86. An ability value is a pair: what it points at, and which class that
 is.** Two words, like a slice, and for the same reason -- neither half is
 a member anyone declared, and a call on it needs both. The method is named
-by the *trait's* declaration, so the body is found without the call site
+by the *ability's* declaration, so the body is found without the call site
 knowing anything about what implements it.
 
 A class hands over its handle, because that is already an address. A
-value type is **copied onto the heap**: a trait value is the one thing in
+value type is **copied onto the heap**: an ability value is the one thing in
 this language that outlives the expression that made it -- a list of
 shapes is the point of having it -- and the reference tier's locals have
 no address that survives a call, so a borrow of a local could not work in
 every tier. Nothing frees the copy yet; that waits for destructors, and it
 is the next thing this needs.
 
-A method of a value type takes `self` as a value, and a trait call has
+A method of a value type takes `self` as a value, and an ability call has
 only an address, so the table gets a one-line function that loads the
 value and calls the method. Every vtable over value types needs that
 thunk; a class needs none.
@@ -838,7 +838,7 @@ thunk; a class needs none.
 The same `wolang_class_lookup` answers both this and a `virtual` call,
 because both ask the same question: this object, this method declaration,
 which body? That is what made the selector worth having instead of a slot
-number -- a class's own virtuals and every trait it implements share one
+number -- a class's own virtuals and every ability it implements share one
 table without agreeing about an ordering.
 
 **D87. `deinit` is what a type does when a value of it goes away, and that
@@ -925,7 +925,7 @@ is the return on generics across modules and destructors: before either,
 a growable container could not be written in the language at all.
 
 A map compares and hashes through `fun(K) -> int` and `fun(K, K) -> bool`
-rather than through a trait. A trait would need a `Self` type to say
+rather than through an ability. An ability would need a `Self` type to say
 "equal to another one of me", which the language does not have yet -- and
 the shape this leads to is honest rather than apologetic: `MapNew(IntHash,
 IntEquals)` says what it does, and a map keyed by something unusual needs
@@ -999,7 +999,7 @@ many connections arrived.
 
 **D96. A type says how to walk itself with three names.** `for x in thing`
 asks `thing.Iterate()` for something with `Next` and `Value`, and that is
-the whole protocol. A trait would be the obvious home for it, but a trait
+the whole protocol. An ability would be the obvious home for it, but an ability
 that said "what I walk over" needs an associated type the language does
 not have -- and three names need no new feature at all.
 
@@ -1152,3 +1152,14 @@ It runs again after the passes, for the calls whose arguments only became
 constant once propagation had been through. A trap is reported the way it
 is for one with no arguments (`E0901`), because a `comptime` call that
 divides by zero is the program telling the compiler something is wrong.
+
+**D104. `trait` is spelled `ability`.** The concept is unchanged -- a set
+of requirements a type can satisfy, with static dispatch through a bound
+and dynamic dispatch through a value (D86) -- and the word is the one a
+gameplay programmer already uses for "what this thing can do".
+`ability Drawable { ... }` and `extend Circle as Drawable { ... }` read as
+one sentence, which `trait` never quite did.
+
+The old spelling stays reserved so that a file written before the rename
+says `trait is now spelled ability` rather than failing to parse
+somewhere further along.

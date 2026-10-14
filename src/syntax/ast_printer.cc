@@ -193,7 +193,7 @@ class Printer {
 
     if (item.super_type.is_valid()) {
       Break();
-      Open(child, HasFlag(item.flags, ItemFlags::kTraitImpl) ? "as"
+      Open(child, HasFlag(item.flags, ItemFlags::kAbilityImpl) ? "as"
                                                              : "extends");
       Break();
       PrintType(item.super_type, Step(child));

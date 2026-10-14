@@ -69,13 +69,13 @@ the IR free of "maybe" cases the back ends would inherit.
 | a field | `extract` by index, from the member table's declaration order |
 | a constructor | `struct`, fields in order |
 
-A declaration with no body — a trait method, an `extern`, a host function —
+A declaration with no body — an ability method, an `extern`, a host function —
 has a signature and no blocks. Everything that walks blocks says so rather
 than assuming an entry exists, which is what `Function::is_declaration()` is
 for.
 
 A call into another file gets a signature-only entry in the module, the same
-shape a trait method has.
+shape an ability method has.
 
 ### The verifier — `src/ir/verifier.cc`
 
@@ -181,7 +181,7 @@ failing expectation, which is the point of both.
   the form; reading it back is what wave 12's differential fuzzing needs, not
   wave 6.
 - String interpolation lowers to `undef`: building a string at runtime needs
-  the formatting traits from `core`, which is wave 7.
+  the formatting abilities from `core`, which is wave 7.
 - Destructuring a `const` lowers the initializer and drops the pattern.
 - `for`, `foreach`, `defer`, `task` and the entity constructs are not
   lowered yet; each belongs with the wave that gives it semantics.

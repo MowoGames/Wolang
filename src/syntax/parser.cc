@@ -103,7 +103,7 @@ bool StartsItem(TokenKind kind) {
     case TokenKind::kKwClass:
     case TokenKind::kKwStruct:
     case TokenKind::kKwEnum:
-    case TokenKind::kKwTrait:
+    case TokenKind::kKwAbility:
     case TokenKind::kKwExtend:
     case TokenKind::kKwComponent:
     case TokenKind::kKwTag:
@@ -732,8 +732,8 @@ ItemId Parser::ParseItem(bool allow_error_item) {
       return ParseAggregate(std::move(item), start, ItemKind::kClass);
     case TokenKind::kKwStruct:
       return ParseAggregate(std::move(item), start, ItemKind::kStruct);
-    case TokenKind::kKwTrait:
-      return ParseAggregate(std::move(item), start, ItemKind::kTrait);
+    case TokenKind::kKwAbility:
+      return ParseAggregate(std::move(item), start, ItemKind::kAbility);
     case TokenKind::kKwComponent:
       return ParseAggregate(std::move(item), start, ItemKind::kComponent);
     case TokenKind::kKwEnum:
@@ -1088,7 +1088,7 @@ ItemId Parser::ParseFunction(Item item, size_t start) {
 }
 
 ItemId Parser::ParseAggregate(Item item, size_t start, ItemKind kind) {
-  Advance();  // `class`, `struct`, `trait` or `component`
+  Advance();  // `class`, `struct`, `ability` or `component`
   item.kind = kind;
   item.name = ExpectName(&item.name_span);
 
@@ -1168,12 +1168,12 @@ ItemId Parser::ParseExtend(Item item, size_t start) {
     generics.push_back(id);
   }
 
-  // `extend T` adds inherent members; `extend T as Trait` implements a trait
+  // `extend T` adds inherent members; `extend T as Ability` implements an ability
   // for it. The target comes first either way, which is what makes the form
   // read as a sentence.
   item.target_type = ParseType();
   if (Eat(TokenKind::kKwAs)) {
-    item.flags |= ItemFlags::kTraitImpl;
+    item.flags |= ItemFlags::kAbilityImpl;
     item.super_type = ParseType();
   }
 

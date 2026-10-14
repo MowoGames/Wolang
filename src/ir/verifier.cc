@@ -366,7 +366,7 @@ class Verifier {
 
       case Opcode::kNew:
         // A class, whose handle is what it produces -- or a pointer, which
-        // is what boxing a value looks like: a trait value over a struct
+        // is what boxing a value looks like: an ability value over a struct
         // needs the struct to be somewhere that outlives the frame (D86).
         if (arity(0) && !types_.IsHandle(inst.type) &&
             types_.KindOf(inst.type) != TypeKind::kPointer) {

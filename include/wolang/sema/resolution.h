@@ -20,7 +20,7 @@ namespace wolang {
 
 // What a name refers to.
 enum class BindingKind : uint8_t {
-  kType,       // struct, class, enum, trait, component, tag, type alias
+  kType,       // struct, class, enum, ability, component, tag, type alias
   kFunction,
   kValue,      // a module-level `let` or `var`
   kLocal,      // a local binding, a parameter, or a pattern binding
@@ -90,34 +90,34 @@ struct TypeMembers {
   // so one of them being the type itself would have no size. A class holds a
   // reference, so it may contain itself.
   bool is_value = false;
-  // A trait: a type nothing is an instance of directly. A value of one is
+  // An ability: a type nothing is an instance of directly. A value of one is
   // a pair -- what it points at and which class that is -- so that a call
   // on it can find the body (D86).
-  bool is_trait = false;
+  bool is_ability = false;
   // The declaration's own type parameters, in order. Needed to work out what
   // a field of `Holder<int>` is: zip these with the instance's arguments.
   std::vector<TypeId> parameters;
 
   friend bool operator==(const TypeMembers& lhs, const TypeMembers& rhs) {
     return lhs.type == rhs.type && lhs.members == rhs.members &&
-           lhs.is_value == rhs.is_value && lhs.is_trait == rhs.is_trait &&
+           lhs.is_value == rhs.is_value && lhs.is_ability == rhs.is_ability &&
            lhs.parameters == rhs.parameters;
   }
 };
 
 // What a named type is declared to be: the type it derives from, and the
-// traits it implements. Conformance is declared rather than inferred from
-// the methods present, because `extend T as Trait` is the declaration.
+// abilities it implements. Conformance is declared rather than inferred from
+// the methods present, because `extend T as Ability` is the declaration.
 struct TypeRelations {
   TypeId type;
   // From `class Turret : Actor`.
   TypeId base;
-  // From every `extend T as Trait` anywhere in the program.
-  std::vector<TypeId> traits;
+  // From every `extend T as Ability` anywhere in the program.
+  std::vector<TypeId> abilities;
 
   friend bool operator==(const TypeRelations& lhs, const TypeRelations& rhs) {
     return lhs.type == rhs.type && lhs.base == rhs.base &&
-           lhs.traits == rhs.traits;
+           lhs.abilities == rhs.abilities;
   }
 };
 
@@ -151,7 +151,7 @@ struct FileResolution {
   // than in the type store so that changing a field's type changes this
   // value, which is what invalidates the files that read the field.
   std::vector<TypeMembers> type_members;
-  // The base type and implemented traits of every named type this file can
+  // The base type and implemented abilities of every named type this file can
   // see, merged the same way member tables are.
   std::vector<TypeRelations> relations;
   // The effect row written after `uses` on a declaration. A declaration with
@@ -182,12 +182,12 @@ struct FileResolution {
   // from a file this one cannot see, or anything that is not a named type.
   bool IsValueType(TypeId type) const;
 
-  // True when |type| is a `trait`.
-  bool IsTrait(TypeId type) const;
+  // True when |type| is a `ability`.
+  bool IsAbility(TypeId type) const;
 
-  // The traits |type| implements, from every `extend T as Trait` the
+  // The abilities |type| implements, from every `extend T as Ability` the
   // merge saw.
-  std::span<const TypeId> TraitsOf(TypeId type) const;
+  std::span<const TypeId> AbilitiesOf(TypeId type) const;
 
   // The members of |type|, or an empty span when none are known -- which is
   // the case for a type declared in a file this one cannot see.
@@ -214,7 +214,7 @@ struct FileResolution {
   EffectId FindEffect(Symbol name, const StringInterner& interner) const;
 
   // True when |type| may be used where |bound| is required: it is that type,
-  // derives from it, or implements it as a trait.
+  // derives from it, or implements it as an ability.
   bool Satisfies(TypeId type, TypeId bound) const;
 
   // The product a dimension stands for, or the empty product.

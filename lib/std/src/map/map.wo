@@ -1,7 +1,7 @@
 // A hash map, open addressed.
 //
 // Keys are compared and hashed through function values the map is built
-// with, rather than through a trait with a `Self` type the language does
+// with, rather than through an ability with a `Self` type the language does
 // not have yet (D91). That is not a workaround so much as the honest
 // shape: `MapNew(IntHash, IntEquals)` says what it does, and a map keyed
 // by something unusual needs no new declaration anywhere.

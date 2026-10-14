@@ -82,7 +82,7 @@ enum class ItemKind : uint8_t {
   kStruct,
   kEnum,
   kVariant,   // A member of an enum.
-  kTrait,
+  kAbility,
   kExtend,
   kComponent,
   kTag,
@@ -119,8 +119,8 @@ enum class ItemFlags : uint16_t {
   kExpressionBody = 1 << 9,
   // The parser recovered inside this item; its children are incomplete.
   kHasError = 1 << 10,
-  // `extend T as Trait` rather than `extend T`.
-  kTraitImpl = 1 << 11,
+  // `extend T as Ability` rather than `extend T`.
+  kAbilityImpl = 1 << 11,
   // `need a.b.{c, d}` rather than `need a.b`.
   kNeedList = 1 << 12,
   // The declaration has a body. Recorded as a flag because the item tree
@@ -276,7 +276,7 @@ WOLANG_AST_FLAG_OPS(PatternFlags)
 
 // ---------------------------------------------------------------- nodes -----
 
-// Declarations, including the members of a class, trait or enum. One struct
+// Declarations, including the members of a class, ability or enum. One struct
 // covers every declaration kind: items are the least numerous nodes, and a
 // uniform shape keeps the parser and every later pass free of casts.
 struct Item {
@@ -296,7 +296,7 @@ struct Item {
   // Function parameters, signal and `on` parameters, enum variant fields,
   // component and struct fields are members instead.
   AstRange<ParamId> params;
-  // Class, struct, trait, impl, component and enum members.
+  // Class, struct, ability, impl, component and enum members.
   AstRange<ItemId> members;
   AstRange<StateId> states;
   AstRange<OrderingId> orderings;
@@ -309,7 +309,7 @@ struct Item {
 
   // Binding and alias type, or a function's return type.
   TypeRefId type;
-  // Class base type, or the trait of a trait impl.
+  // Class base type, or the ability of an ability impl.
   TypeRefId super_type;
   // The type an `impl` block applies to.
   TypeRefId target_type;

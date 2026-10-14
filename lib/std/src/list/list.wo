@@ -103,7 +103,7 @@ offer class List<T> {
 /// Walks a list from front to back.
 ///
 /// `Next` moves and says whether there is anything there; `Value` is what
-/// it is standing on. Three names and no trait, because a trait that
+/// it is standing on. Three names and no ability, because an ability that
 /// said "what I walk over" needs an associated type the language does not
 /// have yet (D96).
 offer class ListWalk<T> {

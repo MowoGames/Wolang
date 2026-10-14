@@ -90,7 +90,7 @@ the floor visible in the source rather than hidden in the compiler.
 `"n={n} f={f}"` lowers to conversions and concatenations of those
 intrinsics, picking the conversion by each piece's type. A piece whose type
 has no conversion yet becomes `<?>` rather than an error, because the real
-answer is a formatting trait and that arrives with the rest of `core`.
+answer is a formatting ability and that arrives with the rest of `core`.
 
 ### `lib/core`, in Wolang
 
@@ -150,9 +150,9 @@ leaving it to discipline.
 
 - A `comptime` function with arguments, evaluated at its call site, and a
   `comptime` value used as a type or an array length.
-- Formatting traits in `core`, which is what turns `<?>` into a real
+- Formatting abilities in `core`, which is what turns `<?>` into a real
   conversion for a struct or an enum.
-- `for` and `foreach` are still not lowered; iterators need the trait
+- `for` and `foreach` are still not lowered; iterators need the ability
   machinery.
 - `T!` and error propagation with `?` are checked but not lowered.
 - The rest of `core`: slices, iterators, math. Each wants a language feature

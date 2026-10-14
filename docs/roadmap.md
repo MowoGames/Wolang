@@ -17,7 +17,7 @@ Dates are not fixed. Scope is.
 | **1** | CMake project, test harness, base layer (arenas, interning, source manager, diagnostics with a rustc-style renderer), **lexer** | `wolang tokens` and `wolang check` work; lexer covered by tests ✅ |
 | **2** | AST in flat arrays, recursive-descent parser with a Pratt expression parser, error recovery, s-expression tree printer | every construct in `docs/spec.md` parses; golden AST tests ✅ |
 | **3** | Query database (red-green incremental), module and package graph, `wolang.toml`, on-disk cache, `wolang fmt` | editing a function body recomputes that function only ✅ |
-| **4** | Grammar completion (`extend`, `T!`, `[]T`, `soa`, labels, Unicode identifiers) ✅, then types: generics, traits, nullability, flow typing, **units and dimensions** | the examples type check; unit mismatches are errors ✅ |
+| **4** | Grammar completion (`extend`, `T!`, `[]T`, `soa`, labels, Unicode identifiers) ✅, then types: generics, abilities, nullability, flow typing, **units and dimensions** | the examples type check; unit mismatches are errors ✅ |
 | **5** | **Effects and capabilities**, checker v1, inheritance, second-class references, `@allow` | diagnostic catalog v1, each lint with a "fires" and a "does not fire" test ✅ |
 | **6** | Typed SSA IR, lowering, verifier, mid-level optimizations | IR dump stable, verifier green on every test input ✅ |
 
@@ -75,7 +75,7 @@ The library is written in Wolang, with a thin non-Wolang floor:
 
 | Layer | Language | Notes |
 |---|---|---|
-| `core` | Wolang | No allocation, no effects: `Option`, `Result`, slices, iterators, math, formatting traits. Usable on WASM and embedded targets. |
+| `core` | Wolang | No allocation, no effects: `Option`, `Result`, slices, iterators, math, formatting abilities. Usable on WASM and embedded targets. |
 | `std` | Wolang | Collections, strings, time, filesystem, process, threads, networking. Calls the platform layer through `extern "C"`. |
 | `math`, `game` | Wolang | Vectors and matrices, ECS, state machines, tweening, input and asset abstractions — host agnostic. |
 | intrinsics | compiler | Things the language cannot express: `memcpy`, atomics, SIMD operations, `sqrt`/`fma`, memory barriers. Declared as `@intrinsic fn` and lowered straight to IR operations, with no FFI cost. |

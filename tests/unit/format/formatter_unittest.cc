@@ -416,7 +416,7 @@ WOLANG_TEST(Formatter, FormatsEveryDeclarationKind) {
       "tag Falling\n"
       "component Velocity {\n  var value: Vec3\n}\n"
       "enum State {\n  Idle\n  Chase(target: Pawn)\n}\n"
-      "trait Damageable {\n  fun TakeDamage(amount: float)\n}\n"
+      "ability Damageable {\n  fun TakeDamage(amount: float)\n}\n"
       "extend Barrel as Damageable {\n"
       "  fun TakeDamage(amount: float) {}\n"
       "}\n"

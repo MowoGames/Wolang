@@ -25,7 +25,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0130` | a module-level declaration with no type written | wave 12 |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E0301`–`E0305` | suspension and tasks | implemented (wave 10) |
-| `E0401`–`E0403` | inheritance, traits, bounds | implemented (waves 4–5) |
+| `E0401`–`E0403` | inheritance, abilities, bounds | implemented (waves 4–5) |
 | `E05xx` | entities and systems | wave 11 |
 | `E06xx` | networking | wave 16 |
 | `E0701`–`E0704` | effects, determinism, capabilities | implemented (wave 5) |
@@ -132,7 +132,7 @@ P0101 = "error"
 | `W0102` | this code is never reached | a statement after `return` |
 
 A name starting with `_` is never reported, which is how an unused parameter
-is marked deliberate. A declaration with no body — a trait method, an
+is marked deliberate. A declaration with no body — an ability method, an
 `extern` — has nowhere to use its parameters, so it is exempt. `W0102` is
 reported once per block rather than once per statement after the jump.
 
@@ -210,7 +210,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E1001` | dimensions do not match | `10m + 2s` |
 | `E1002` | no unit with that name is in scope | `10parsecs` |
 | `E0201` | `match` does not cover every value | a `bool` match with only `true` |
-| `E0402` | a trait method is not implemented | `extend P as T` missing one method |
+| `E0402` | an ability method is not implemented | `extend P as T` missing one method |
 | `E0403` | a type argument does not satisfy a bound | `Hurt(rock)` where `T: Damageable` |
 | `E0401` | `override` disagrees with the base method | marked `override` with nothing to override |
 | `E0120` | a field holds a reference | `var r: &int` |
@@ -224,6 +224,9 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0128` | `@After` or `@Before` names something that is not a system | `@After(Grabity)` |
 | `E0129` | the orderings between systems form a cycle | `@After(B)` on A and `@After(A)` on B |
 | `E0130` | a module-level `const` or `var` with no type written | `const five = 5` at file scope |
+| `E0131` | a `for` over something that cannot be walked | `for x in 5` |
+| `E0132` | a function with a declared result can reach its end without returning one | `fun F() -> int { 42 }` |
+| `E0133` | a type parameter appears nowhere in a signature, so no call can say what it is | `fun F<T>(n: int) -> bool` |
 | `E0070` | `@allow` is missing a code or a reason | `@allow(W0101)` |
 
 An error type propagates silently: one unknown name produces one message, not

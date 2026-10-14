@@ -100,6 +100,7 @@ WOLANG_PUNCT(QuestionQuestionEq, "?\?=")
 
 // ---------------------------------------------------------------- keywords --
 
+WOLANG_KEYWORD(KwAbility, "ability")
 WOLANG_KEYWORD(KwAfter, "after")
 WOLANG_KEYWORD(KwArena, "arena")
 WOLANG_KEYWORD(KwAs, "as")
@@ -139,7 +140,6 @@ WOLANG_KEYWORD(KwStruct, "struct")
 WOLANG_KEYWORD(KwSystem, "system")
 WOLANG_KEYWORD(KwTag, "tag")
 WOLANG_KEYWORD(KwTask, "task")
-WOLANG_KEYWORD(KwTrait, "trait")
 WOLANG_KEYWORD(KwTrue, "true")
 WOLANG_KEYWORD(KwType, "type")
 WOLANG_KEYWORD(KwUnsafe, "unsafe")
@@ -213,6 +213,9 @@ WOLANG_RESERVED("switch")
 WOLANG_RESERVED("template")
 WOLANG_RESERVED("this")
 WOLANG_RESERVED("throw")
+// The old spelling of `ability`, kept reserved so that a file written
+// before the rename says so rather than failing to parse (D104).
+WOLANG_RESERVED("trait")
 WOLANG_RESERVED("transactional")
 WOLANG_RESERVED("try")
 WOLANG_RESERVED("typedef")

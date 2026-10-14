@@ -20,8 +20,8 @@ std::string_view ItemKindName(ItemKind kind) {
       return "enum";
     case ItemKind::kVariant:
       return "variant";
-    case ItemKind::kTrait:
-      return "trait";
+    case ItemKind::kAbility:
+      return "ability";
     case ItemKind::kExtend:
       return "extend";
     case ItemKind::kComponent:

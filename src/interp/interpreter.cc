@@ -737,7 +737,7 @@ class Interpreter {
 
       case ir::Opcode::kVirtualCall: {
         // The token, then the receiver, then the arguments: one shape
-        // whether the receiver came from a class handle or out of a trait
+        // whether the receiver came from a class handle or out of an ability
         // value's pair.
         const Value& token_value = Operand(frame, inst, 0);
         if (token_value.kind() != Value::Kind::kInt) {

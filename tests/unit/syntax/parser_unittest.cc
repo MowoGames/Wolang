@@ -520,14 +520,14 @@ WOLANG_TEST(Parser, ExpressionBodiedFunction) {
   WOLANG_EXPECT(fixture.BodyTree().find("(binary +") == 0);
 }
 
-WOLANG_TEST(Parser, TraitMethodsNeedNoBody) {
+WOLANG_TEST(Parser, AbilityMethodsNeedNoBody) {
   Fixture fixture(
-      "trait Damageable {\n"
+      "ability Damageable {\n"
       "  fun TakeDamage(amount: float, from: Actor?)\n"
       "  fun IsAlive() -> bool\n"
       "}");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT(fixture.TreeContains("(trait Damageable"));
+  WOLANG_EXPECT(fixture.TreeContains("(ability Damageable"));
   WOLANG_EXPECT(!fixture.TreeContains("(block"));
 }
 
@@ -590,12 +590,12 @@ WOLANG_TEST(Parser, ExtendBlocks) {
   WOLANG_EXPECT(inherent.TreeContains("(target"));
 
   // The target comes first either way, so the form reads as a sentence.
-  Fixture trait_impl(
+  Fixture ability_impl(
       "extend Barrel as Damageable { fun TakeDamage(a: float) { Explode() } }");
-  WOLANG_EXPECT(trait_impl.Codes().empty());
-  WOLANG_EXPECT(trait_impl.TreeContains("(as\n"));
-  WOLANG_EXPECT(trait_impl.TreeContains("(type Damageable)"));
-  WOLANG_EXPECT(trait_impl.TreeContains("(type Barrel)"));
+  WOLANG_EXPECT(ability_impl.Codes().empty());
+  WOLANG_EXPECT(ability_impl.TreeContains("(as\n"));
+  WOLANG_EXPECT(ability_impl.TreeContains("(type Damageable)"));
+  WOLANG_EXPECT(ability_impl.TreeContains("(type Barrel)"));
 
   // `impl` is reserved, so old habits produce a message rather than silence.
   Fixture old_spelling("impl Vec3 { }");

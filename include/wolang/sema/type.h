@@ -51,7 +51,7 @@ enum class TypeKind : uint8_t {
   kFloatLiteral,
   kString,
   kStr,
-  // A declared struct, class, enum, trait, component or tag.
+  // A declared struct, class, enum, ability, component or tag.
   kNamed,
   // A type parameter inside a generic declaration.
   kParameter,
@@ -293,7 +293,7 @@ class TypeStore {
   // True when a value of |type| is a handle to a heap object: a `class`,
   // through any number of aliases.
   bool IsHandle(TypeId type) const;
-  // |bounds| are the traits and base types the argument has to satisfy.
+  // |bounds| are the abilities and base types the argument has to satisfy.
   // Carried by the parameter itself, so a call site can check them without
   // reaching back into the declaring file.
   TypeId Parameter(Symbol name,

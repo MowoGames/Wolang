@@ -38,7 +38,7 @@ and every later pass free of casts.
 
 Recursive descent for declarations and statements, Pratt for expressions, with
 thirteen precedence levels. Everything in `docs/spec.md` parses: declarations,
-generics with `where` clauses, effect lists, traits and impls, enums with
+generics with `where` clauses, effect lists, abilities and impls, enums with
 payload variants, components, tags, systems with ordering, signals and
 handlers, bindings including `derived`, type aliases, dimensions and units,
 effects, state machines, extern functions, `comptime` declarations.

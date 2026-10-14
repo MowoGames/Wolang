@@ -1393,13 +1393,13 @@ fun Inherited() -> int {
   WOLANG_EXPECT_EQ(f.Run("Inherited", {}), "7070");
 }
 
-WOLANG_TEST(CodegenTest, CallsAMethodThroughATraitBound) {
+WOLANG_TEST(CodegenTest, CallsAMethodThroughAnAbilityBound) {
   // Static dispatch: the bound says every `T` has an `Area`, so the body
   // calls it and one copy of the function is made per type that was
-  // passed. Which is what makes a generic algorithm over a trait cost
+  // passed. Which is what makes a generic algorithm over an ability cost
   // nothing at run time.
   Fixture f(R"(
-trait Shape {
+ability Shape {
   fun Area() -> int
 }
 
@@ -1436,18 +1436,18 @@ fun Both() -> int {
   WOLANG_EXPECT_EQ(f.Run("Both", {}), "1209");
 }
 
-WOLANG_TEST(CodegenTest, CallsThroughATraitValue) {
-  // Dynamic dispatch without inheritance: a trait value is a pair -- what
+WOLANG_TEST(CodegenTest, CallsThroughAnAbilityValue) {
+  // Dynamic dispatch without inheritance: an ability value is a pair -- what
   // it points at and which class that is -- and the call finds the body
   // from the pair alone (D86). A class hands over its handle; a struct is
-  // copied onto the heap, because a trait value outlives the expression
+  // copied onto the heap, because an ability value outlives the expression
   // that made it.
   //
   // The two implementations have nothing in common, which is the point:
   // one is a value type and the other a handle, and `Measure` was
   // compiled knowing neither.
   Fixture f(R"(
-trait Shape {
+ability Shape {
   fun Area() -> int
 }
 

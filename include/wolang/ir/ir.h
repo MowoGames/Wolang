@@ -226,7 +226,7 @@ struct Function {
 
   bool has_source() const { return source_item != kNoSource; }
 
-  // A declaration with no body -- a trait method, an `extern`, a host
+  // A declaration with no body -- an ability method, an `extern`, a host
   // function -- has a signature and no blocks. Everything that walks blocks
   // has to say so, rather than assuming an entry exists.
   bool is_declaration() const { return blocks.empty(); }
@@ -264,7 +264,7 @@ struct Function {
 // because the token travels with the object rather than with the module.
 //
 // Which method is being called is named by the *declaration* it was
-// written as -- a trait's `fun Area()`, or the `virtual fun Describe()` of
+// written as -- an ability's `fun Area()`, or the `virtual fun Describe()` of
 // whichever class first declared it -- rather than by a slot number. An
 // override implements the selector of what it overrides, so one number
 // means one method in every module that can see the declaration, and

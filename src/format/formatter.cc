@@ -563,7 +563,7 @@ class Formatter {
 
       case ItemKind::kClass:
       case ItemKind::kStruct:
-      case ItemKind::kTrait:
+      case ItemKind::kAbility:
       case ItemKind::kComponent: {
         Put(ItemKindName(item.kind));
         Put(" ");
@@ -598,7 +598,7 @@ class Formatter {
         EmitGenerics(item.generics);
         Put(" ");
         EmitType(item.target_type);
-        if (HasFlag(item.flags, ItemFlags::kTraitImpl)) {
+        if (HasFlag(item.flags, ItemFlags::kAbilityImpl)) {
           Put(" as ");
           EmitType(item.super_type);
         }

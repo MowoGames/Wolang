@@ -517,11 +517,18 @@ void Lexer::LexIdentifierOrKeyword() {
   }
 
   if (IsReservedWord(spelling)) {
-    std::string message = "`";
-    message.append(spelling);
-    message.append("` is reserved for future use");
-    Report(kReservedWord, std::move(message), SpanFrom(begin),
-           "pick a different name");
+    // `trait` is the one reserved word that used to *be* a keyword, so it
+    // says what to write now rather than "pick a different name" (D104).
+    if (spelling == "trait") {
+      Report(kReservedWord, "`trait` is now spelled `ability`",
+             SpanFrom(begin), "write `ability` here");
+    } else {
+      std::string message = "`";
+      message.append(spelling);
+      message.append("` is reserved for future use");
+      Report(kReservedWord, std::move(message), SpanFrom(begin),
+             "pick a different name");
+    }
   }
   PushToken(TokenKind::kIdentifier, begin, symbol.index);
 }

@@ -63,7 +63,7 @@ bool DeclaresAType(ItemKind kind) {
     case ItemKind::kClass:
     case ItemKind::kStruct:
     case ItemKind::kEnum:
-    case ItemKind::kTrait:
+    case ItemKind::kAbility:
     case ItemKind::kComponent:
     case ItemKind::kTag:
     case ItemKind::kTypeAlias:
@@ -173,7 +173,7 @@ std::span<const Member> FileResolution::MembersOf(TypeId type) const {
   TypeMembers built;
   built.type = type;
   built.is_value = declared->is_value;
-  built.is_trait = declared->is_trait;
+  built.is_ability = declared->is_ability;
   built.parameters = declared->parameters;
   built.members = declared->members;
   for (Member& member : built.members) {
@@ -218,19 +218,19 @@ EffectId FileResolution::FindEffect(Symbol name,
   return EffectId{};
 }
 
-std::span<const TypeId> FileResolution::TraitsOf(TypeId type) const {
+std::span<const TypeId> FileResolution::AbilitiesOf(TypeId type) const {
   for (const TypeRelations& entry : relations) {
     if (entry.type == type) {
-      return entry.traits;
+      return entry.abilities;
     }
   }
   return {};
 }
 
-bool FileResolution::IsTrait(TypeId type) const {
+bool FileResolution::IsAbility(TypeId type) const {
   for (const TypeMembers& table : type_members) {
     if (table.type == type) {
-      return table.is_trait;
+      return table.is_ability;
     }
   }
   return false;
@@ -275,8 +275,8 @@ bool FileResolution::Satisfies(TypeId type, TypeId bound) const {
       if (relation.type != current) {
         continue;
       }
-      for (TypeId trait : relation.traits) {
-        if (trait == bound) {
+      for (TypeId ability : relation.abilities) {
+        if (ability == bound) {
           return true;
         }
       }
@@ -1388,8 +1388,8 @@ void ResolveSignatures(TypeStore* types,
     // A class is a reference to a heap object; everything else here stores
     // its members inline.
     table.is_value = entry.kind != ItemKind::kClass &&
-                     entry.kind != ItemKind::kTrait;
-    table.is_trait = entry.kind == ItemKind::kTrait;
+                     entry.kind != ItemKind::kAbility;
+    table.is_ability = entry.kind == ItemKind::kAbility;
     // The declaration's own parameters, interned against it, so that a field
     // of `Holder<int>` can be worked out by substitution.
     const ItemId owner_id = ResolveItem(ast, index);
@@ -1454,12 +1454,12 @@ void ResolveSignatures(TypeStore* types,
       resolution->type_members.push_back(std::move(extension));
     }
 
-    // `extend T as Trait` is the declaration of conformance.
+    // `extend T as Ability` is the declaration of conformance.
     if (!item.super_type.is_valid()) {
       continue;
     }
-    const TypeId trait = resolver.Resolve(ast, item.super_type);
-    if (!trait.is_valid()) {
+    const TypeId ability = resolver.Resolve(ast, item.super_type);
+    if (!ability.is_valid()) {
       continue;
     }
     TypeRelations* relation = nullptr;
@@ -1473,7 +1473,7 @@ void ResolveSignatures(TypeStore* types,
       resolution->relations.push_back(TypeRelations{target, TypeId{}, {}});
       relation = &resolution->relations.back();
     }
-    relation->traits.push_back(trait);
+    relation->abilities.push_back(ability);
   }
 
   // Patch this file's own bindings, whose type only now exists. An item

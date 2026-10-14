@@ -58,11 +58,11 @@ Thai and Vietnamese names work.
 ### 1.5 Keywords
 
 ```
-after     arena     as        before    break     class     component comptime
-const     continue  defer     else      enum      error     extend    extern
-false     for       foreach   fun       if        in        loop      match
-mut       need      null      offer     on        override  priv      return
-self      signal    spawn     struct    system    tag       task      trait
+ability   after     arena     as        before    break     class     component
+comptime  const     continue  defer     else      enum      error     extend
+extern    false     for       foreach   fun       if        in        loop
+match     mut       need      null      offer     on        override  priv
+return    self      signal    spawn     struct    system    tag       task
 true      type      unsafe    uses      var       virtual   wait      where
 while
 ```
@@ -326,7 +326,7 @@ enum AiState {
   Chase(target: Pawn)
 }
 
-trait Damageable {
+ability Damageable {
   fun TakeDamage(amount: float, from: Actor?)
 }
 
@@ -343,8 +343,8 @@ type Health = int
 error NotFound, Corrupt
 ```
 
-`extend T` adds inherent members to a type; `extend T as Trait` implements a
-trait for it. The target comes first either way, so the declaration reads as a
+`extend T` adds inherent members to a type; `extend T as Ability` implements a
+ability for it. The target comes first either way, so the declaration reads as a
 sentence. (`impl` is reserved, so the Rust spelling produces a message rather
 than a confusing parse failure.)
 

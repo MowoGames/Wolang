@@ -898,7 +898,7 @@ WOLANG_TEST(TypeCheck, AGuardedArmCoversNothing) {
 }
 
 
-// ------------------------------------------------- generics and traits -----
+// ------------------------------------------------- generics and abilities -----
 
 WOLANG_TEST(TypeCheck, GenericCallsInferTheirParameters) {
   Fixture f(R"(
@@ -1043,9 +1043,9 @@ fun use(p: Pawn) {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
-WOLANG_TEST(TypeCheck, MissingTraitMethodIsReported) {
+WOLANG_TEST(TypeCheck, MissingAbilityMethodIsReported) {
   Fixture f(R"(
-trait Damageable {
+ability Damageable {
   fun TakeDamage(amount: float)
   fun IsAlive() -> bool
 }
@@ -1063,11 +1063,11 @@ extend Pawn as Damageable {
                 std::string::npos);
 }
 
-WOLANG_TEST(TypeCheck, ATraitSatisfiedByAnotherExtensionIsAccepted) {
+WOLANG_TEST(TypeCheck, AnAbilitySatisfiedByAnotherExtensionIsAccepted) {
   // The methods may come from anywhere, not only from the block that names
-  // the trait.
+  // the ability.
   Fixture f(R"(
-trait Damageable {
+ability Damageable {
   fun TakeDamage(amount: float)
   fun IsAlive() -> bool
 }
@@ -1202,7 +1202,7 @@ WOLANG_TEST(TypeCheck, AMethodOnATypeWithNoBaseIsNotAnOverride) {
 
 WOLANG_TEST(TypeCheck, ABoundIsCheckedAtTheCallSite) {
   Fixture f(R"(
-trait Damageable {
+ability Damageable {
   fun TakeDamage(amount: float)
 }
 
@@ -1227,9 +1227,9 @@ fun use(p: Pawn, r: Rock) {
 
 WOLANG_TEST(TypeCheck, ABaseClassSatisfiesABound) {
   // Conformance is inherited: a bound naming a base class accepts a derived
-  // one, and a trait implemented on the base accepts it too.
+  // one, and an ability implemented on the base accepts it too.
   Fixture f(R"(
-trait Damageable {
+ability Damageable {
   fun TakeDamage(amount: float)
 }
 
@@ -1277,9 +1277,9 @@ fun f(_unused: int, used: int) -> int {
 }
 
 WOLANG_TEST(TypeCheck, ADeclarationWithNoBodyHasNoUnusedParameters) {
-  // A trait method has nowhere to use its parameters.
+  // An ability method has nowhere to use its parameters.
   Fixture f(R"(
-trait Damageable {
+ability Damageable {
   fun TakeDamage(amount: float, from: int)
 }
 )");
@@ -1585,7 +1585,7 @@ WOLANG_TEST(TypeCheck, ADuplicateTypeParameterIsReported) {
 
 WOLANG_TEST(TypeCheck, ABoundMayNameAnEarlierParameter) {
   Fixture f(R"(
-trait Show {
+ability Show {
   fun Render()
 }
 

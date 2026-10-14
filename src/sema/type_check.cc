@@ -25,7 +25,7 @@ constexpr std::string_view kCyclicDeclaration = "E0118";
 constexpr std::string_view kDuplicateParameter = "E0119";
 constexpr std::string_view kNonExhaustive = "E0201";
 constexpr std::string_view kBadOverride = "E0401";
-constexpr std::string_view kMissingTraitMethod = "E0402";
+constexpr std::string_view kMissingAbilityMethod = "E0402";
 constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadConversion = "E0124";
@@ -303,7 +303,7 @@ class Checker {
   void NarrowOnNullCheck(ExprId condition);
   TypeId CheckMatch(const Expr& expr, TypeId expected);
   void CheckExhaustive(const Expr& expr, TypeId subject);
-  void CheckTraitConformance(const Item& item, TypeId target);
+  void CheckAbilityConformance(const Item& item, TypeId target);
 
   // Reports a value type that contains itself, which would have no size.
   void CheckSized(const Item& item, TypeId type);
@@ -483,7 +483,7 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
     return true;
   }
   // A derived class fits where its base is wanted, and a type fits where a
-  // trait it implements is wanted. Both are the same question -- "is this
+  // ability it implements is wanted. Both are the same question -- "is this
   // one of those" -- and the resolution answers it from the `:` and the
   // `extend ... as ...` it saw.
   //
@@ -2022,7 +2022,7 @@ TypeId Checker::CheckLoop(const Expr& expr) {
       }
     }
     // A type that says how to walk itself yields what its iterator's
-    // `Value` gives back (D96). Three names and no trait, because a trait
+    // `Value` gives back (D96). Three names and no ability, because an ability
     // would need an associated type to say "what I walk over".
     if (const TypeId walked = IteratedElement(sequence); walked.is_valid()) {
       element = walked;
@@ -2651,7 +2651,7 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
         ReportMismatch(type, found, ast_.Get(param.default_value).span);
       }
     }
-    // A declaration with no body -- a trait method, an `extern` -- has
+    // A declaration with no body -- an ability method, an `extern` -- has
     // nowhere to use its parameters, so an unused one says nothing. An
     // invalid span is what opts a binding out of W0101.
     Bind(param.name, type, param.is_mutable,
@@ -2811,7 +2811,7 @@ void Checker::CheckBinding(const Item& item) {
 // something that is not there, are the two halves of the same bug.
 // A parameter carries its bounds, so once it is inferred the bound is
 // checked against what it was inferred to be. Conformance is declared --
-// `extend T as Trait` -- rather than inferred from the methods present.
+// `extend T as Ability` -- rather than inferred from the methods present.
 // Keeps what a generic call was inferred to be, in the callee's parameter
 // order. The order matters: it is what names the specialization, and two
 // call sites that inferred the same arguments have to land on the same name
@@ -2999,20 +2999,20 @@ void Checker::CheckSized(const Item& item, TypeId type) {
   }
 }
 
-// `extend T as Trait` promises that T has every method the trait declares.
+// `extend T as Ability` promises that T has every method the ability declares.
 // The methods may come from T's own declaration or from any extension of it,
 // which is why this works from the member table rather than from this block.
-void Checker::CheckTraitConformance(const Item& item, TypeId target) {
+void Checker::CheckAbilityConformance(const Item& item, TypeId target) {
   if (!item.super_type.is_valid() || !target.is_valid()) {
     return;
   }
-  const TypeId trait = resolver_.Resolve(ast_, item.super_type);
-  if (types_->IsError(trait) || types_->IsError(target)) {
+  const TypeId ability = resolver_.Resolve(ast_, item.super_type);
+  if (types_->IsError(ability) || types_->IsError(target)) {
     return;
   }
 
   std::string missing;
-  for (const Member& required : resolution_->MembersOf(trait)) {
+  for (const Member& required : resolution_->MembersOf(ability)) {
     if (required.kind != MemberKind::kMethod) {
       continue;
     }
@@ -3036,9 +3036,9 @@ void Checker::CheckTraitConformance(const Item& item, TypeId target) {
   message.append("` does not implement ");
   message.append(missing);
   message.append(" from `");
-  message.append(Describe(trait));
+  message.append(Describe(ability));
   message.append("`");
-  Report(kMissingTraitMethod, std::move(message), item.name_span);
+  Report(kMissingAbilityMethod, std::move(message), item.name_span);
 }
 
 // `@allow(W0101, reason = "...")` silences one code for one declaration. The
@@ -3141,7 +3141,7 @@ void Checker::CheckItem(ItemId id) {
 
     case ItemKind::kClass:
     case ItemKind::kStruct:
-    case ItemKind::kTrait:
+    case ItemKind::kAbility:
     case ItemKind::kComponent:
     case ItemKind::kEnum:
     case ItemKind::kExtend: {
@@ -3158,7 +3158,7 @@ void Checker::CheckItem(ItemId id) {
         self_type_ = item.target_type.is_valid()
                          ? resolver_.Resolve(ast_, item.target_type)
                          : TypeId{};
-        CheckTraitConformance(item, self_type_);
+        CheckAbilityConformance(item, self_type_);
       } else {
         const Binding* binding = Lookup(item.name);
         self_type_ = binding != nullptr ? binding->type : TypeId{};

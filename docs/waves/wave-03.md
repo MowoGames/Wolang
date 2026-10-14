@@ -188,4 +188,4 @@ cache automatically. New: `wolang fmt` (with `--check` and `--write`),
 
 ## Next
 
-Wave 4: types, generics, traits, nullability and units. See `STATUS.md`.
+Wave 4: types, generics, abilities, nullability and units. See `STATUS.md`.
