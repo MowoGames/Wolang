@@ -1766,5 +1766,47 @@ fun InALoop(n: int) uses io {
   WOLANG_EXPECT_EQ(f.Codes(), "E0122");
 }
 
+WOLANG_TEST(TypeCheckTest, RejectsAReferenceThatOutlivesWhatItPointsInto) {
+  // A reference is second class (D8): it may be passed inwards and never
+  // kept somewhere that outlives it. A `region` is one scope it can fail
+  // to outlive; the call frame is the other.
+  Fixture f(R"(
+fun Returned() -> &int {
+  var x = 1
+  return &x
+}
+
+fun OutOfRegion() {
+  var outer = &0
+  region {
+    var inner = 2
+    outer = &inner
+  }
+}
+
+fun AsTheRegionsValue() -> int {
+  let kept = region {
+    var inner = 2
+    &inner
+  }
+  return *kept
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0121,E0121,E0121");
+}
+
+WOLANG_TEST(TypeCheckTest, AReferenceInsideItsOwnScopeIsFine) {
+  Fixture f(R"(
+fun Local() -> int {
+  region {
+    var inner = 2
+    let kept = &inner
+    return *kept
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang

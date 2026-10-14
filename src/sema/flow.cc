@@ -8,6 +8,7 @@
 namespace wolang {
 namespace {
 
+constexpr std::string_view kEscapesRegion = "E0121";
 constexpr std::string_view kUsedAfterMove = "E0122";
 constexpr std::string_view kUsedBeforeWritten = "E0123";
 
@@ -33,6 +34,10 @@ enum class State : uint8_t {
 
 struct Local {
   Symbol name;
+  // The region nesting this local was declared at. Zero is the function
+  // body, which is a region in the only sense that matters here: a
+  // reference to a local cannot outlive the frame the local is in.
+  uint32_t depth = 0;
   State state = State::kUnwritten;
   // Reported once: a variable used three times after being moved is one
   // mistake, not three.
@@ -120,6 +125,44 @@ class Checker {
     }
   }
 
+  // The local a `&x` refers to, or an invalid symbol when the expression is
+  // not a reference to a name.
+  Symbol Referent(ExprId id) const {
+    if (!ast_.Contains(id)) {
+      return Symbol();
+    }
+    const Expr& expr = ast_.Get(id);
+    if (expr.kind != ExprKind::kUnary || expr.op != TokenKind::kAmp) {
+      return Symbol();
+    }
+    if (!ast_.Contains(expr.lhs) ||
+        ast_.Get(expr.lhs).kind != ExprKind::kPath) {
+      return Symbol();
+    }
+    return ast_.Get(expr.lhs).name;
+  }
+
+  // Reports a reference that would outlive what it points into. |depth| is
+  // where the reference is going: a shallower depth outlives a deeper one,
+  // and -1 is outside the call altogether.
+  void CheckEscape(ExprId value, int depth, SourceSpan span) {
+    const Symbol referent = Referent(value);
+    if (!referent.is_valid()) {
+      return;
+    }
+    const Local* local = Find(referent);
+    if (local == nullptr || static_cast<int>(local->depth) <= depth) {
+      return;
+    }
+    std::string message = "a reference to `";
+    message.append(interner_.Text(referent));
+    message.append("` would outlive what it points into");
+    diagnostics_->Error(kEscapesRegion, std::move(message))
+        .Primary(span, "escapes here")
+        .Note("a reference is second class: it may be passed inwards, "
+              "never kept somewhere that outlives it");
+  }
+
   // Whether the use at |id| was accepted as a borrow rather than taken by
   // value. Only the checker knows, because only it knows which conversion
   // rule it applied.
@@ -175,7 +218,7 @@ class Checker {
           return Flow::kFalls;
         }
         locals_.push_back(
-            Local{pattern.name,
+            Local{pattern.name, depth_,
                   stmt.expr.is_valid() ? State::kLive : State::kUnwritten,
                   false});
         return Flow::kFalls;
@@ -184,6 +227,9 @@ class Checker {
       case StmtKind::kReturn:
         if (stmt.expr.is_valid()) {
           Expression(stmt.expr);
+          // Nothing inside this function outlives the call, so a reference
+          // to a local cannot be returned at all.
+          CheckEscape(stmt.expr, -1, ast_.Get(stmt.expr).span);
         }
         return Flow::kDiverges;
 
@@ -240,6 +286,8 @@ class Checker {
           Report(name, expr.span);
         }
         if (Local* local = Find(name)) {
+          CheckEscape(expr.rhs, static_cast<int>(local->depth),
+                      expr.span);
           // Assigning to a name that was moved out of gives it a value
           // again, which is the whole of what makes `var` and moves get
           // along.
@@ -333,8 +381,30 @@ class Checker {
         Body(expr.rhs);
         return Flow::kFalls;
 
+      case ExprKind::kRegion: {
+        // The block's value leaves the region, so a reference to something
+        // declared inside it would outlive the arena it points into. The
+        // body's statements are walked here rather than through the block
+        // case, because the check needs the inner names still in scope.
+        ++depth_;
+        const size_t base = locals_.size();
+        const bool is_block = ast_.Contains(expr.lhs) &&
+                              ast_.Get(expr.lhs).kind == ExprKind::kBlock;
+        Flow flow = Flow::kFalls;
+        if (is_block) {
+          flow = Statements(ast_.Get(expr.lhs).stmts);
+          CheckEscape(ValueOf(expr.lhs), static_cast<int>(depth_) - 1,
+                      expr.span);
+        } else {
+          flow = Expression(expr.lhs);
+          CheckEscape(expr.lhs, static_cast<int>(depth_) - 1, expr.span);
+        }
+        locals_.resize(base);
+        --depth_;
+        return flow;
+      }
+
       case ExprKind::kUnsafe:
-      case ExprKind::kRegion:
       case ExprKind::kAwait:
       case ExprKind::kSpawn:
       case ExprKind::kTry:
@@ -377,6 +447,24 @@ class Checker {
       default:
         return Flow::kFalls;
     }
+  }
+
+  // The expression a block evaluates to: its last statement, when that
+  // statement is an expression. What a `region { ... }` hands outwards.
+  ExprId ValueOf(ExprId block) const {
+    if (!ast_.Contains(block)) {
+      return ExprId();
+    }
+    const Expr& expr = ast_.Get(block);
+    if (expr.kind != ExprKind::kBlock) {
+      return block;
+    }
+    const std::span<const StmtId> stmts = ast_.Get(expr.stmts);
+    if (stmts.empty() || !ast_.Contains(stmts.back())) {
+      return ExprId();
+    }
+    const Stmt& last = ast_.Get(stmts.back());
+    return last.kind == StmtKind::kExpr ? last.expr : ExprId();
   }
 
   // A loop body, walked twice.
@@ -461,6 +549,7 @@ class Checker {
   const TypedBody& typed_;
   DiagnosticEngine* diagnostics_;
   std::vector<Local> locals_;
+  uint32_t depth_ = 0;
 };
 
 }  // namespace

@@ -207,6 +207,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0403` | a type argument does not satisfy a bound | `Hurt(rock)` where `T: Damageable` |
 | `E0401` | `override` disagrees with the base method | marked `override` with nothing to override |
 | `E0120` | a field holds a reference | `var r: &int` |
+| `E0121` | a reference would outlive what it points into | `return &local` |
 | `E0122` | a value that was moved out of is used again | `let b = a` then `Take(a)` where `a: String` |
 | `E0123` | a variable is used before anything is written to it | `var x: int` then `return x` |
 | `E0124` | the conversion is not between numbers | `s as int` where `s: str` |
@@ -232,6 +233,11 @@ adds is `E0802`: the C boundary takes numbers, `bool` and pointers, because
 everything crossing it has to mean the same on both sides, and a type whose
 layout this compiler decides unilaterally — a slice, a string, an optional —
 does not.
+
+`E0121` is the escape rule for a second-class reference (D8): a reference may
+be passed inwards and never kept somewhere that outlives it. Two scopes can
+be failed to outlive -- a `region`, whose value leaves it, and the call
+frame, which a `return` leaves.
 
 `E0122` is the other half of the same walk. A type that owns a resource --
 today a `String`, later a `Box<T>` -- cannot be in two places, so handing it
@@ -278,7 +284,6 @@ in use appear in the implemented tables above, not here.
 
 | Code | Catches |
 |---|---|
-| `E0121` | value escapes its `region` |
 | `E0301` | `await` outside an `async` function |
 | `E0302` | `async` function called without `await` or `spawn` |
 | `E0501` | two systems write the same component without an ordering |
