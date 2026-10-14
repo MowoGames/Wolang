@@ -22,7 +22,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0117`–`E0119` | sizes, cyclic declarations, parameters | implemented (wave 5) |
 | `E0120`–`E0124` | memory, references and conversions | `E0120` (wave 5), `E0123`, `E0124` (waves 8–9) |
 | `E0201` | pattern matching | implemented (wave 4) |
-| `E0301`–`E0302` | suspension | implemented (wave 10) |
+| `E0301`–`E0305` | suspension and tasks | implemented (wave 10) |
 | `E0401`–`E0403` | inheritance, traits, bounds | implemented (waves 4–5) |
 | `E05xx` | entities and systems | wave 11 |
 | `E06xx` | networking | wave 16 |
@@ -150,6 +150,9 @@ unused.
 | `E0801` | `unsafe` where the package forbids it | `unsafe { }` under `unsafe = "deny"` |
 | `E0301` | `wait` outside a `task` function | `fun f() { wait g() }` |
 | `E0302` | a `task` called without `wait` or `spawn` | `fun f() { g() }` where `g` is a task |
+| `E0303` | `wait` is not the whole of its expression | `const x = n + wait f()` |
+| `E0304` | a task waits on itself | `task fun f() { wait f() }` |
+| `E0305` | `wait` on a task from another module | `wait other.Work()` |
 | `E0802` | a type with no C representation crosses the `extern` boundary | `extern "C" fun f(s: text)` |
 | `E0803` | an `extern` function has a body | `extern "C" fun f() { }` |
 
@@ -225,6 +228,17 @@ incomplete — the uncovered enum variants, or `true`/`false`, or `null`/`x?`.
 Only bool, optionals and enums have a value set the compiler can enumerate;
 every other type needs a catch-all arm. An arm with a guard covers nothing,
 because the guard may be false.
+
+`E0303`, `E0304` and `E0305` are the shape of the transform showing through,
+and each says so rather than pretending otherwise. A task is split into a
+state machine whose frame holds everything that outlives a suspension, so:
+a `wait` has to be the whole of its expression, because anything else in
+that expression would be a value the frame has nowhere to keep; a task
+cannot wait on itself, because its frame would contain itself; and a `wait`
+on a task from another module needs the frame layout that module computed,
+which lowering -- one file at a time -- does not have. The first will relax
+when the transform spills values of its own; the last when there is a
+whole-program step, the same one cross-file monomorphization needs.
 
 Suspension is both a word and an effect. `wait` is where a function
 suspends and `task` is how a signature says it may, which keeps the

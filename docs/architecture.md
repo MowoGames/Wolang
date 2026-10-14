@@ -338,6 +338,40 @@ off. The second column is the one that measures this tier's code quality; the
 first includes a loop clang turns into vector code, which a scalar tier is
 not trying to be within 3x of.
 
+## Tasks
+
+A `task` is stackless, and the whole of that decision is one transform.
+
+Everything that outlives a suspension goes in a **frame**: the state it left
+off at, its parameters, its result, one field per slot the body keeps, and
+one field per `wait` for the frame of what it waits on. The function becomes
+`F$resume(frame) -> bool` with a switch over where it left off, and a `wait`
+becomes "poll the callee; if it is not finished, record the state and
+return". After the transform there are no tasks -- only functions and
+structs -- which is why the interpreter and the code generator need to know
+nothing about suspension, and why the differential check between them covers
+coroutines for free.
+
+Three consequences are worth knowing:
+
+- **A frame costs bytes, not a stack.** A task that waits four times keeps
+  twenty bytes. A hundred thousand of them is two megabytes, which is the
+  difference between a benchmark and an impossibility.
+- **The callee's frame lives inside the caller's.** A static call graph needs
+  no allocation per `wait`, and recursion is rejected (`E0304`) rather than
+  silently needing an unbounded frame.
+- **The frame layout is computed per file**, so a `wait` on a task from
+  another module is `E0305`. A task with no body -- `std.tasks.Yield` -- is
+  the exception and the suspension primitive: the compiler writes its
+  machine, which suspends once and then finishes.
+
+`spawn` allocates a frame, writes the arguments into it, and hands the pair
+to the scheduler in `runtime/`. The scheduler holds *kinds and frames*, never
+function pointers: the transform generates one `wolang$dispatch(kind, frame)`
+for the whole module, so the same scheduler advances a task whether the
+program is being interpreted or has been compiled. Round robin, cooperative,
+single threaded; parallelism is a later wave.
+
 ## The C boundary
 
 An `extern` declaration is implemented outside the language, reached through
@@ -418,7 +452,9 @@ keeps that complexity out of the core.
 | `include/wolang/ir`, `src/ir` | the typed SSA IR, lowering, the verifier, the passes, the printer |
 | `include/wolang/interp`, `src/interp` | the interpreter, values, intrinsics |
 | `include/wolang/sema/flow.h`, `src/sema/flow.cc` | definite assignment, moves and reference escape -- one walk, three rules |
-| `include/wolang/codegen`, `src/codegen` | type layout, register allocation, the arm64 assembler and emitter, the runtime a trap reports through |
+| `include/wolang/abi`, `src/abi` | how a value is laid out in memory: what the emitter, the C boundary and the interpreter all have to agree on |
+| `include/wolang/codegen`, `src/codegen` | register allocation, the target seam, the arm64 assembler and emitter, the runtime a trap reports through |
+| `include/wolang/runtime`, `src/runtime` | what a running program needs from the host: task frames and the scheduler |
 | `benchmarks` | the gameplay kernels, their C++ counterparts, and the script that compares them |
 | `lib/core`, `lib/std` | the standard library, written in Wolang |
 | `tools/wolang` | the command line driver |
