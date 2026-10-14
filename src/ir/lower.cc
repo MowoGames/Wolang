@@ -63,11 +63,13 @@ class Lowerer {
           const TypedBody& typed,
           std::span<const std::pair<ItemId, EffectRow>> effects,
           ForeignLookup foreign,
+          const AccessGraph* systems,
           Module* module)
       : interner_(interner),
         types_(types),
         here_(Context{file_index, &resolution, &ast, &typed, effects}),
         foreign_(std::move(foreign)),
+        systems_(systems),
         module_(module),
         resolver_(types, interner, &resolution, &discarded_),
         self_name_(interner->Intern("self")) {}
@@ -233,6 +235,36 @@ class Lowerer {
       case ItemKind::kMachine:
         DeclareMachine(id, item);
         break;
+
+      case ItemKind::kSystem: {
+        // A system is a function of the world and the time step.
+        //
+        // Its queries are not parameters at run time: a `Query` says what
+        // the system touches, and what it is *given* is the world to ask.
+        // So the shape every system compiles to is the same one, which is
+        // what lets a stage be an array of addresses (D101).
+        Function function;
+        function.name = item.name;
+        function.type = types_->Function(
+            {types_->u64(), types_->Float(FloatWidth::k32)},
+            types_->void_type());
+        function.effects = EffectsOf(id, &function.effects_known);
+        function.source_file = file_index();
+        function.source_item = IndexOf(id) == 0xFFFFFFFFu
+                                   ? Function::kNoSource
+                                   : function.source_item;
+        if (const Binding* binding = resolution().Find(item.name);
+            binding != nullptr) {
+          function.source_file = binding->file;
+          function.source_item = binding->item;
+        }
+        Remember(function.source_file, function.source_item,
+                 module_->functions.size());
+        indices_.push_back(Declared{id, module_->functions.size(),
+                                    item.name, file_index()});
+        module_->functions.push_back(std::move(function));
+        break;
+      }
 
       case ItemKind::kClass:
       case ItemKind::kStruct:
@@ -931,6 +963,10 @@ class Lowerer {
         break;
       case ItemKind::kMachine:
         DefineMachine(id, item);
+        break;
+
+      case ItemKind::kSystem:
+        LowerSystem(item, IndexOf(id));
         break;
 
       case ItemKind::kClass:
@@ -3345,6 +3381,20 @@ class Lowerer {
       return builder_->Call(free, types_->void_type(), {data});
     }
 
+    // `RunSystems(world, delta)` is not a call either: what it stands for
+    // is this file's schedule, which only the compiler knows. Every
+    // stage's systems are handed to the runtime together, because a stage
+    // is exactly a set that may run at the same time (D101).
+    if (ast().Contains(expr.lhs) &&
+        ast().Get(expr.lhs).kind == ExprKind::kPath &&
+        interner_->Text(ast().Get(expr.lhs).name) == "RunSystems" &&
+        arguments.size() == 2) {
+      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      if (binding == nullptr || !binding->has_body) {
+        return RunSchedule(arguments[0], arguments[1]);
+      }
+    }
+
     // `SizeOf(value)` is not a call: how many bytes a value of its type
     // takes is a question only a tier can answer, so the instruction
     // carries the type and each tier answers it. The value itself is not
@@ -4631,6 +4681,303 @@ class Lowerer {
     return builder_->Call(index, result, std::move(operands));
   }
 
+  // What a `system` becomes: a function of the world and the time step,
+  // with its queries opened from that world.
+  //
+  // The queries are built here rather than passed in because a `Query` is
+  // a *declaration* of access, not a value the caller has: the system says
+  // `Query<mut Position, Velocity>` and what it needs is a walk over the
+  // entities of that world which have both (D101).
+  void LowerSystem(const Item& item, uint32_t index) {
+    if (index >= module_->functions.size() || !item.body.is_valid()) {
+      return;
+    }
+    Builder builder(module_, FunctionId{index});
+    builder.types = types_;
+    current_function_ = index;
+    builder_ = &builder;
+    locals_.clear();
+    loops_.clear();
+    deferred_.clear();
+    scope_depth_ = 0;
+
+    const BlockId entry = builder.AddBlock("entry");
+    builder.SetCurrent(entry);
+    const TypeId word = types_->u64();
+    const TypeId step = types_->Float(FloatWidth::k32);
+    const InstId world = builder.AddParam(entry, word);
+    const InstId delta = builder.AddParam(entry, step);
+
+    // Every cursor this system opened, closed again on the way out: a
+    // query is a walk over the world as it was when the walk started, so
+    // it holds something that has to be given back.
+    std::vector<InstId> cursors;
+    for (ParamId param_id : ast().Get(item.params)) {
+      const Param& param = ast().Get(param_id);
+      const TypeId declared =
+          param.type.is_valid()
+              ? Erase(resolver_.Resolve(ast(), param.type))
+              : TypeId{};
+      if (IsQuery(declared)) {
+        const InstId cursor = OpenQuery(world, param.type);
+        cursors.push_back(cursor);
+        locals_.push_back(Local{param.name, InstId{}, cursor, declared});
+        continue;
+      }
+      // The time step, which is the one other thing a system may ask for.
+      if (declared.is_valid() &&
+          types_->KindOf(declared) == TypeKind::kFloat) {
+        locals_.push_back(Local{param.name, InstId{},
+                                Coerce(delta, step, declared), declared});
+        continue;
+      }
+      locals_.push_back(
+          Local{param.name, InstId{}, builder.Undef(declared), declared});
+    }
+
+    return_type_ = types_->void_type();
+    Lower(item.body);
+    for (const InstId cursor : cursors) {
+      CloseQuery(cursor);
+    }
+    if (!builder.Terminated()) {
+      builder.ReturnVoid();
+    }
+    builder_ = nullptr;
+  }
+
+  // This file's systems, stage by stage, handed to the runtime.
+  //
+  // The schedule is a property of the declarations -- which is the whole
+  // argument for an ECS being in the language rather than in a library --
+  // so the call the program wrote becomes the stages the compiler worked
+  // out (D82, D101).
+  InstId RunSchedule(InstId world, InstId delta) {
+    const TypeId word = types_->u64();
+    const TypeId step = types_->Float(FloatWidth::k32);
+    const TypeId nothing = types_->void_type();
+    // What the runtime holds is a number, and a `World` is that number in
+    // its first field -- so the handle is read out of the object the same
+    // way any other field of it would be.
+    InstId handle = world;
+    if (types_->IsHandle(ValueType(world))) {
+      const InstId address =
+          builder_->Add(Opcode::kFieldAddress,
+                        types_->Pointer(word, /*is_mutable=*/true), {world});
+      builder_->Mutable(address).field = 0;
+      handle = builder_->Add(Opcode::kLoad, word, {address});
+    }
+    const Symbol add = interner_->Intern("wolang_stage_add");
+    const uint32_t collect =
+        DeclareRuntime(add, types_->Function({word}, nothing));
+    const Symbol run = interner_->Intern("wolang_stage_run");
+    const uint32_t callee =
+        DeclareRuntime(run, types_->Function({word, step}, nothing));
+    const InstId step_value = Coerce(delta, ValueType(delta), step);
+    InstId last;
+    const std::vector<std::vector<Symbol>> none;
+    for (const std::vector<Symbol>& stage :
+         systems_ != nullptr ? systems_->stages : none) {
+      bool any = false;
+      for (const Symbol name : stage) {
+        const uint32_t index = IndexOfName(name);
+        if (index == 0xFFFFFFFFu) {
+          // A system from another file of the module: that file's own
+          // `RunSystems` runs it, because the address of a function is
+          // something only the module holding it can give.
+          continue;
+        }
+        const InstId address = builder_->Add(Opcode::kFuncAddress, word);
+        builder_->Mutable(address).payload.callee = index;
+        builder_->Call(collect, nothing, {address});
+        any = true;
+      }
+      if (any) {
+        last = builder_->Call(callee, nothing, {handle, step_value});
+      }
+    }
+    // A file with no systems still ran: the call is what the program
+    // wrote, and running nothing is what it means there.
+    return last.is_valid()
+               ? last
+               : builder_->Call(callee, nothing, {handle, step_value});
+  }
+
+  bool IsQuery(TypeId type) const {
+    return type.is_valid() && types_->KindOf(type) == TypeKind::kInstance &&
+           types_->Get(type).base == types_->query();
+  }
+
+  // The cursor for one `Query<...>`, built from the written type: which
+  // components an entity must have and which it must not.
+  //
+  // Read from the syntax rather than from the resolved type because
+  // `with` and `without` describe access rather than the type itself --
+  // both resolve to the component, and only the written form says which
+  // is which.
+  InstId OpenQuery(InstId world, TypeRefId written) {
+    std::vector<uint64_t> required;
+    std::vector<uint64_t> excluded;
+    if (ast().Contains(written)) {
+      for (TypeRefId argument : ast().Get(ast().Get(written).args)) {
+        if (!ast().Contains(argument)) {
+          continue;
+        }
+        const TypeRef& filter = ast().Get(argument);
+        TypeId component = Erase(resolver_.Resolve(ast(), argument));
+        // `mut T` resolves to a mutable reference to the component; what
+        // names the column is the component itself.
+        if (types_->KindOf(component) == TypeKind::kReference) {
+          component = Erase(types_->ElementOf(component));
+        }
+        if (!component.is_valid()) {
+          continue;
+        }
+        const uint64_t token = ClassTokenOf(*types_, component);
+        if (filter.kind == TypeRefKind::kWithout) {
+          excluded.push_back(token);
+        } else {
+          required.push_back(token);
+        }
+      }
+    }
+
+    const TypeId word = types_->u64();
+    const TypeId words = types_->Pointer(word, /*is_mutable=*/true);
+    const InstId wanted = TokenArray(required);
+    const InstId refused = TokenArray(excluded);
+    const Symbol open = interner_->Intern("wolang_query_open");
+    const uint32_t callee = DeclareRuntime(
+        open, types_->Function({word, words, word, words, word}, word));
+    return builder_->Call(
+        callee, word,
+        {world, wanted, builder_->ConstInt(word, required.size()), refused,
+         builder_->ConstInt(word, excluded.size())});
+  }
+
+  // A run of tokens in memory, and the address of the first.
+  //
+  // None of them is a null address, which is what the runtime reads as
+  // "no filter" -- and the address is an element's rather than the slot's,
+  // because that is the one thing a slot of any type can hand to C.
+  InstId TokenArray(const std::vector<uint64_t>& tokens) {
+    const TypeId word = types_->u64();
+    const TypeId words = types_->Pointer(word, /*is_mutable=*/true);
+    if (tokens.empty()) {
+      return builder_->Add(Opcode::kCast, words,
+                           {builder_->ConstInt(word, 0)});
+    }
+    // A local array, the way the language's own `var xs: [N]u64` is: a
+    // slot of an array type with element addresses into it. A slot of
+    // several words would be a thing only the tiers with real frames
+    // understand.
+    const TypeId array =
+        types_->Array(word, tokens.size(), /*is_soa=*/false);
+    const InstId room = builder_->Add(Opcode::kAlloca, array);
+    for (size_t i = 0; i < tokens.size(); ++i) {
+      const InstId at = builder_->Add(
+          Opcode::kIndexAddress, types_->Pointer(word, /*is_mutable=*/true),
+          {room, builder_->ConstInt(word, i),
+           builder_->ConstInt(word, tokens.size())});
+      builder_->Add(Opcode::kStore, TypeId{},
+                    {at, builder_->ConstInt(word, tokens[i])});
+    }
+    return builder_->Add(
+        Opcode::kIndexAddress, words,
+        {room, builder_->ConstInt(word, 0),
+         builder_->ConstInt(word, tokens.size())});
+  }
+
+  void CloseQuery(InstId cursor) {
+    const TypeId word = types_->u64();
+    const Symbol close = interner_->Intern("wolang_query_close");
+    const uint32_t callee = DeclareRuntime(
+        close, types_->Function({word}, types_->void_type()));
+    builder_->Call(callee, types_->void_type(), {cursor});
+  }
+
+  // `foreach x in q`: the walk the query stands for.
+  //
+  // `x` is bound to where the component *is*, not to a copy of it: a
+  // system that writes says so in its signature, and what it writes has
+  // to be the component the world holds (D101).
+  void LowerQueryLoop(const Expr& expr, TypeId query) {
+    const TypeId word = types_->u64();
+    const InstId cursor = Value(expr.lhs);
+    // The first component the query names is what the body walks over:
+    // `Query<mut Position, Velocity>` binds a `Position`, and the rest
+    // are what an entity must also have (D101). The arguments rather than
+    // the element, because an instance of a built-in has no element -- the
+    // components *are* its arguments.
+    const std::vector<TypeId> named = types_->ArgumentsOf(query);
+    TypeId component =
+        named.empty() ? TypeId{} : Erase(Apply(named.front()));
+    if (types_->KindOf(component) == TypeKind::kReference) {
+      component = Erase(types_->ElementOf(component));
+    }
+
+    // Where every matching entity's component is, asked for once, and
+    // then a loop that is arithmetic: a call per entity was most of what
+    // running a system cost (D101).
+    const TypeId addresses = types_->Pointer(word, /*is_mutable=*/false);
+    const Symbol walk = interner_->Intern("wolang_query_walk");
+    const uint32_t ask =
+        DeclareRuntime(walk, types_->Function({word}, addresses));
+    const Symbol length = interner_->Intern("wolang_query_length");
+    const uint32_t how_many =
+        DeclareRuntime(length, types_->Function({word}, word));
+    const InstId first = builder_->Call(ask, addresses, {cursor});
+    const InstId count = builder_->Call(how_many, word, {cursor});
+
+    const BlockId header = builder_->AddBlock("query.header");
+    const BlockId body = builder_->AddBlock("query.body");
+    const BlockId exit = builder_->AddBlock("query.exit");
+    const InstId index = builder_->Add(Opcode::kAlloca, word);
+    builder_->Add(Opcode::kStore, TypeId{},
+                  {index, builder_->ConstInt(word, 0)});
+    builder_->Jump(header);
+
+    builder_->SetCurrent(header);
+    const InstId at = builder_->Add(Opcode::kLoad, word, {index});
+    const InstId more =
+        builder_->Add(Opcode::kLt, types_->bool_type(), {at, count});
+    builder_->Branch(more, body, exit);
+
+    builder_->SetCurrent(body);
+    const InstId slot = builder_->Add(
+        Opcode::kIndexAddress, types_->Pointer(word, /*is_mutable=*/false),
+        {first, at, count});
+    builder_->Mutable(slot).is_unchecked = true;
+    const InstId held = builder_->Add(Opcode::kLoad, word, {slot});
+    // The address is a number as far as the boundary is concerned; what
+    // the body reads is the component at it.
+    const InstId component_at = builder_->Add(
+        Opcode::kCast, types_->Pointer(component, /*is_mutable=*/true),
+        {held});
+
+    const size_t depth = locals_.size();
+    loops_.push_back(LoopTarget{expr.label, exit, header, scope_depth_});
+    if (ast().Contains(expr.pattern) &&
+        ast().Get(expr.pattern).kind == PatternKind::kBinding) {
+      // Bound as a slot: reading it loads through the address and writing
+      // it stores through it, which is what makes `mut` in the query mean
+      // what it says.
+      locals_.push_back(Local{ast().Get(expr.pattern).name, component_at,
+                              InstId{}, component});
+    }
+    Lower(expr.rhs);
+    locals_.resize(depth);
+    loops_.pop_back();
+    if (!builder_->Terminated()) {
+      const InstId next = builder_->Add(
+          Opcode::kAdd, word, {at, builder_->ConstInt(word, 1)});
+      builder_->Mutable(next).is_unchecked = true;
+      builder_->Add(Opcode::kStore, TypeId{}, {index, next});
+      builder_->Jump(header);
+    }
+    builder_->SetCurrent(exit);
+  }
+
   // `for i in a..b` and `for x in xs`.
   //
   // Both are a counting loop: a range counts between its bounds, and a
@@ -4642,6 +4989,12 @@ class Lowerer {
     const TypeId sequence_type = Erase(TypeOf(expr.lhs));
     const bool over_range = ast().Contains(expr.lhs) &&
                             ast().Get(expr.lhs).kind == ExprKind::kRange;
+
+    // A query: the walk over the world the system declared it wanted.
+    if (!over_range && IsQuery(sequence_type)) {
+      LowerQueryLoop(expr, sequence_type);
+      return;
+    }
 
     // A type that says how to walk itself: `Iterate` hands back something
     // with `Next` and `Value`, and the loop is those three calls (D96).
@@ -4847,6 +5200,9 @@ class Lowerer {
   TypeStore* types_;
   Context here_;
   ForeignLookup foreign_;
+  // The module's schedule: which systems may run together, and in what
+  // order the stages go (D82).
+  const AccessGraph* systems_ = nullptr;
   Module* module_;
   // Lowering runs only on a file the checker accepted, so nothing here can
   // report: the engine is where the resolver's complaints go to be
@@ -4940,9 +5296,10 @@ void LowerFile(StringInterner* interner,
                const TypedBody& typed,
                std::span<const std::pair<ItemId, EffectRow>> effects,
                ForeignLookup foreign,
+               const AccessGraph* systems,
                Module* module) {
   Lowerer lowerer(interner, types, file_index, resolution, ast, typed,
-                  effects, std::move(foreign), module);
+                  effects, std::move(foreign), systems, module);
   lowerer.Run();
 }
 

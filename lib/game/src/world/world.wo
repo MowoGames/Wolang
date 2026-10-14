@@ -174,3 +174,73 @@ fun ForgetsADespawnedEntity() -> bool uses unsafe {
   world.Destroy()
   return before && !after && living == 0
 }
+
+/// Runs every `system` of the calling file, stage by stage.
+///
+/// What a stage is, is the compiler's answer: the systems in one may run
+/// at the same time because none of them writes what another reads, and
+/// the runtime starts a thread per system in it (D101). It has no body
+/// for the same reason `TokenOf` has none -- the schedule is a property of
+/// the declarations, and only the compiler can see them all.
+///
+/// The systems that run are the ones in the file that calls this: the
+/// address of a function is something only the module holding it can
+/// give. A program whose systems live in several files calls it once per
+/// file.
+offer fun RunSystems(world: World, delta: f32) uses unsafe
+
+component Health {
+  var value: int
+}
+
+component Shield {
+  var value: int
+}
+
+component Dead {
+  var at: int
+}
+
+// Two systems over different components, so the schedule puts them in one
+// stage and the runtime runs them at the same time.
+system Decay(q: Query<mut Health, without Dead>) {
+  foreach h in q {
+    h.value = h.value - 1
+  }
+}
+
+system Recharge(q: Query<mut Shield>) {
+  foreach s in q {
+    s.value = s.value + 2
+  }
+}
+
+@Test
+fun RunsTheSystemsOverTheWorld() -> bool uses unsafe {
+  var world = WorldNew()
+  const living = world.Spawn()
+  Add(world, living, Health(10))
+  Add(world, living, Shield(0))
+  const gone = world.Spawn()
+  Add(world, gone, Health(5))
+  Add(world, gone, Dead(1))
+
+  RunSystems(world, 0.016)
+  RunSystems(world, 0.016)
+
+  var health = 0
+  if const held = Get<Health>(world, living) {
+    health = held.value
+  }
+  var shield = 0
+  if const held = Get<Shield>(world, living) {
+    shield = held.value
+  }
+  // The dead one is filtered out by `without Dead`, so its health stays.
+  var untouched = 0
+  if const held = Get<Health>(world, gone) {
+    untouched = held.value
+  }
+  world.Destroy()
+  return health == 8 && shield == 4 && untouched == 5
+}

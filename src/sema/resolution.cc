@@ -782,10 +782,18 @@ TypeId TypeResolver::Resolve(const Ast& ast, TypeRefId id) {
                                HasFlag(type.flags, TypeRefFlags::kMutable));
 
     case TypeRefKind::kMut:
+      // `mut T` in a query is a write, and what the loop over it binds is
+      // something assignable -- so the argument resolves to a mutable
+      // reference to the component. The access graph still reads the
+      // syntax, because `with` and `without` are reads of a *fact* rather
+      // than of the component (D101).
+      return types_->Reference(Resolve(ast, type.element),
+                               /*is_mutable=*/true);
+
     case TypeRefKind::kWith:
     case TypeRefKind::kWithout:
-      // Query modifiers describe access, not the type itself; the access
-      // graph in wave 11 reads them from the syntax.
+      // A filter: whether an entity has the component, which is reading
+      // the fact rather than the value.
       return Resolve(ast, type.element);
   }
   return types_->error();

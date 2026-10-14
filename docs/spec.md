@@ -931,3 +931,55 @@ wolang build path/to/package -O3 -o program
 that runs on its own. Both come from the same IR, and a function the
 ahead-of-time backend cannot translate is named rather than quietly left
 to trap.
+
+## Running the systems
+
+A world holds entities and their components:
+
+```wolang
+need game.world.{WorldNew, Add, Get, RunSystems, TokenOf, Has}
+
+component Position {
+  var x: f32
+  var y: f32
+}
+
+component Velocity {
+  var x: f32
+  var y: f32
+}
+
+system Integrate(q: Query<mut Position, Velocity>) {
+  foreach p in q {
+    p.x = p.x + 1.0
+  }
+}
+
+fun main() uses unsafe {
+  var world = WorldNew()
+  const entity = world.Spawn()
+  Add(world, entity, Position(0.0, 0.0))
+  Add(world, entity, Velocity(1.0, 0.0))
+
+  RunSystems(world, 0.016)
+
+  if const p = Get<Position>(world, entity) {
+    // p.x is 1.0
+  }
+  world.Destroy()
+}
+```
+
+`Add`, `Get`, `Remove` and `Has` work on one entity at a time; a `system`
+works on every entity that matches its query. `foreach p in q` binds where
+the first component the query names *is*, so a `mut` query writes the
+world rather than a copy.
+
+`RunSystems(world, delta)` runs the systems of the file that calls it,
+stage by stage: every system in a stage runs at the same time as the
+others in it, because the compiler has proved that none of them writes
+what another reads (`wolang systems <dir>` prints the stages). A program
+whose systems live in several files calls it once per file.
+
+A component's storage is one dense array per component type, so a walk
+over every `Position` is a walk over contiguous memory.

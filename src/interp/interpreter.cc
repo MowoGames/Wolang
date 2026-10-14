@@ -233,7 +233,8 @@ class Interpreter {
     }
     return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
                 "read a type through a pointer that this tier cannot "
-                "lay out");
+                "lay out: " +
+                    types_.Describe(interner_, type));
   }
 
   Value StoreThroughPointer(const ir::Function& function,
@@ -401,6 +402,43 @@ class Interpreter {
     // thunk, because the reference tier has to work on a machine with no
     // backend at all. They get the same arguments the boundary would --
     // addresses, with a buffer already copied out to real memory.
+    // A stage of a schedule, in a tier whose values are not addresses:
+    // the systems are remembered as the values they are and run one after
+    // another (D101). A stage is a set the compiler proved independent,
+    // so running them in a row gives what running them together gives.
+    if (symbol == "wolang_stage_add" && !arguments.empty() &&
+        arguments[0].kind() == Value::Kind::kFunction) {
+      stage_.push_back(arguments[0]);
+      return Value();
+    }
+    if (symbol == "wolang_stage_run") {
+      std::vector<Value> stage;
+      stage.swap(stage_);
+      for (const Value& system : stage) {
+        const auto* home =
+            static_cast<const ir::Module*>(system.module());
+        if (home == nullptr || system.function() >= home->functions.size()) {
+          continue;
+        }
+        std::vector<Value> given;
+        if (arguments.size() >= 2) {
+          given.push_back(arguments[0]);
+          given.push_back(arguments[1]);
+        }
+        Outcome inner;
+        const ir::Function* system_function =
+            &home->functions[system.function()];
+        const ir::Module* where = home;
+        Link(&system_function, &where);
+        Call(*system_function, where, std::move(given), &inner, caller);
+        if (!inner.ok()) {
+          *outcome = inner;
+          return Value();
+        }
+      }
+      return Value();
+    }
+
     // A thread, in a tier whose values are not addresses: the body is
     // run here and now, on this thread (D97). A program whose answer does
     // not depend on interleaving gives the same answer either way, which
@@ -1835,6 +1873,9 @@ class Interpreter {
   ForeignCaller* foreign_ = nullptr;
   abi::LayoutStore* layouts_ = nullptr;
   std::span<const ir::Module* const> linked_;
+  // The systems of the stage being put together, for the tier that runs
+  // them itself.
+  std::vector<Value> stage_;
 
   // The class a token names, looked for in the module that is running and
   // then in everything linked with it: the object may have been made

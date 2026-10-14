@@ -68,11 +68,38 @@ uint64_t wolang_query_open(uint64_t world,
                            uint64_t excluded_count);
 // Moves to the next entity and says whether there is one.
 bool wolang_query_next(uint64_t cursor);
+// Moves to the next entity and gives back where its first component is,
+// or null at the end of the walk: the step and the address a body needs
+// are the same question, and asking it once is half the calls (D101).
+void* wolang_query_step(uint64_t cursor);
+// Where every matching entity's first component is, and how many there
+// are. What `foreach` walks: an array the runtime filled when the query
+// opened, so that the loop itself makes no call at all.
+void* const* wolang_query_walk(uint64_t cursor);
+uint64_t wolang_query_length(uint64_t cursor);
 // The entity the cursor is on, or zero.
 uint64_t wolang_query_entity(uint64_t cursor);
 // Where that entity's component of |token| is, or null.
 void* wolang_query_component(uint64_t cursor, uint64_t token);
 void wolang_query_close(uint64_t cursor);
+
+// One stage of a schedule: the systems in it, then all of them at once.
+//
+// A stage is a set of systems the compiler has proved do not write what
+// another reads, which is what makes running them together safe (D82).
+// The threads are here rather than in the generated code because what a
+// `system` compiles to is an ordinary function, and starting threads for
+// a few of them is the same work every time.
+//
+// Added one at a time rather than as an array, because a function is a
+// value in every tier while an array of addresses is only a thing in the
+// two that have addresses: the reference tier hands over values it
+// understands and runs them one after another, which gives the same
+// answer for a stage -- nothing in one can see what another does.
+//
+// |system| is the address of a `void(uint64_t world, float delta)`.
+void wolang_stage_add(void* system);
+void wolang_stage_run(uint64_t world, float delta);
 
 }  // extern "C"
 

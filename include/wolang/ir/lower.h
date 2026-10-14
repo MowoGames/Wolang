@@ -10,6 +10,7 @@
 #include "wolang/base/string_interner.h"
 #include "wolang/ir/ir.h"
 #include "wolang/sema/resolution.h"
+#include "wolang/sema/systems.h"
 #include "wolang/sema/type_check.h"
 #include <functional>
 
@@ -56,6 +57,9 @@ struct ForeignFile {
 // and then the generic stays a declaration, which the interpreter handles.
 using ForeignLookup = std::function<ForeignFile(uint32_t file)>;
 
+// |systems| is the module's schedule, or null when it has none. The
+// stages are a module question and lowering is per file, so lowering is
+// told rather than asking -- the same arrangement as |effects| (D101).
 void LowerFile(StringInterner* interner,
                TypeStore* types,
                uint32_t file_index,
@@ -64,6 +68,7 @@ void LowerFile(StringInterner* interner,
                const TypedBody& typed,
                std::span<const std::pair<ItemId, EffectRow>> effects,
                ForeignLookup foreign,
+               const AccessGraph* systems,
                Module* module);
 
 }  // namespace ir

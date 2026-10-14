@@ -1993,6 +1993,24 @@ TypeId Checker::CheckLoop(const Expr& expr) {
     const TypeId sequence = Check(expr.lhs, TypeId{});
     // A slice or array yields its elements; a range yields its bound type.
     TypeId element = types_->ElementOf(sequence);
+    // A query yields the first component it names: `Query<mut Position,
+    // Velocity>` walks the entities that have both and binds the
+    // `Position` of each. The arguments rather than the element, because
+    // the components *are* the arguments of the instance (D101).
+    bool through_reference = false;
+    if (types_->KindOf(sequence) == TypeKind::kInstance &&
+        types_->Get(sequence).base == types_->query()) {
+      const std::vector<TypeId> named = types_->ArgumentsOf(sequence);
+      if (!named.empty()) {
+        element = named.front();
+        if (types_->KindOf(element) == TypeKind::kReference) {
+          // Written `mut`: the binding is assignable, which is what makes
+          // a system that writes say so once, in its signature.
+          through_reference = true;
+          element = types_->ElementOf(element);
+        }
+      }
+    }
     // A type that says how to walk itself yields what its iterator's
     // `Value` gives back (D96). Three names and no trait, because a trait
     // would need an associated type to say "what I walk over".
@@ -2019,10 +2037,9 @@ TypeId Checker::CheckLoop(const Expr& expr) {
     // that component is what makes the loop's binding assignable: a
     // system that writes says so in its signature, so the body does not
     // have to repeat it.
-    const bool writes = types_->KindOf(sequence) == TypeKind::kInstance &&
-                        types_->Get(sequence).base == types_->query() &&
-                        types_->Get(sequence).is_mutable;
-    BindPattern(expr.pattern, element, writes);
+    // `mut Position` resolves to a mutable reference to the component,
+    // so the binding is assignable exactly when the query said `mut`.
+    BindPattern(expr.pattern, element, through_reference);
   }
 
   // A loop body's value is discarded, so it is a statement position: a

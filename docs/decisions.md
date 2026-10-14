@@ -1067,3 +1067,54 @@ This was a hole rather than a decision: such a function compiled, and
 returned whatever the register held. `E0132` is the diagnostic, and
 `loop { }` with no `break` in it is not an error because it never reaches
 the end at all.
+
+**D100. A world the runtime holds, and three intrinsics to reach it.**
+`component`, `Query` and `system` with a schedule have existed since wave
+11 with nowhere to put the data: a system was checked, laid out in a
+stage, and could not run. The storage is one dense array per component
+token -- the same `(file << 32) | item` number a class carries -- with an
+entity index beside it, held by the runtime.
+
+In the runtime rather than in Wolang because a world is a map from a
+*type* to an array, and the language cannot spell a map whose keys are
+types. A token can, so the library asks for the array it means. Three
+things the compiler had to answer for that to be writable in Wolang:
+`TokenOf<T>()` (the number, carried in a `Token<T>` so that the result
+type says which), `SizeOf(value)` (how many bytes a value takes, which
+only a tier knows -- hence `type.size`), and `ViewFromRaw<T>` (a view of
+memory as values, the way `BytesFromRaw` is one of bytes).
+
+Three real bugs fell out of writing it, each silent before:
+`E0133` -- a type parameter that appears nowhere in a signature can never
+be said by a call, and such a call lowered to a body that was not there;
+a generic body calling another generic *of its own file* looked for it in
+the calling file and found a declaration instead; and `return value`
+where `T?` was declared emitted no wrap at all, because the checker
+records the type the *context* wanted and lowering believed it. The last
+one is why `Coerce` now asks the value what it is rather than asking the
+expression.
+
+**D101. A system is a function of the world, and a stage is a set of them
+run at once.** `system S(q: Query<mut Position, Velocity>)` compiles to
+`void S(uint64_t world, float delta)`: the query is not a parameter at run
+time but a declaration of access, so what the body gets is a walk over
+the entities of that world which have what it named. `RunSystems(world,
+delta)` is the schedule the compiler worked out -- stage by stage, with
+the runtime starting a thread per system in a stage, which is what the
+stage *means* (D82).
+
+`mut T` in a query resolves to a mutable reference to the component. That
+is what makes the loop's binding assignable -- a system that writes says
+so once, in its signature -- and what the loop binds is where the
+component *is*, not a copy of it.
+
+What `foreach` costs was worth three rounds. A call per entity to ask
+where the component is, with a lock and two lookups inside it, ran 100k
+entities in 6.5 ms per frame. The walk goes along the first component's
+column by index rather than along the smallest; the filter's columns are
+resolved once per query instead of per entity; and the addresses are
+handed over as one array, so the loop itself is arithmetic. Same answer,
+1.2 ms. What is left is one lookup per entity per extra component the
+filter names, and an array of pointers built per query -- both of which
+archetype storage would remove, and neither of which is worth the
+complexity before something needs it.

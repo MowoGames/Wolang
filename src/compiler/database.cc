@@ -1047,10 +1047,17 @@ void Database::RegisterQueries() {
                                  &other_parsed->ast, &other_checked->body};
         };
 
+        // The schedule, when this file's module has systems in it: which
+        // of them may run at the same time is a module question, so it is
+        // prepared here the way the effect rows are (D101).
+        const AccessGraph* schedule =
+            module.is_valid() ? db.GetAs<AccessGraph>(ModuleSystemsKey(module))
+                              : nullptr;
+
         LoweredFile result;
         ir::LowerFile(&interner_, &types_, file.index, checked->resolution,
                       parsed->ast, checked->body, effects, foreign,
-                      &result.module);
+                      schedule, &result.module);
 
         // A `task` is not a function the way the machine means it, so it is
         // split into a state machine here -- before the verifier, so the
