@@ -341,20 +341,26 @@ class Verifier {
         break;
 
       case Opcode::kFieldAddress:
-        // The operand is an address and so is the result: a field address
-        // is pointer arithmetic the layout decides, which is why it is an
-        // instruction rather than an add. A class is an address too -- a
-        // handle to a heap object -- which is why a method of one reads
-        // and writes the object itself.
-        if (arity(1) && types_.KindOf(type_of(0)) != TypeKind::kPointer &&
-            !types_.IsHandle(type_of(0))) {
-          Fail(At(id) + " takes a field address inside something that is "
-                        "not an address");
+      case Opcode::kIndexAddress: {
+        // The operand is an address and so is the result: an address
+        // inside an aggregate is arithmetic the layout decides, which is
+        // why it is an instruction rather than an add.
+        //
+        // Three things count as an address. A pointer. A class handle,
+        // which is why a method of one reads and writes the object
+        // itself. And a slot, whose value *is* where it lives -- the same
+        // convention a load and a store already rely on.
+        const uint32_t operands_wanted =
+            inst.opcode == Opcode::kFieldAddress ? 1u : 2u;
+        if (arity(operands_wanted) && !IsAddress(operands[0])) {
+          Fail(At(id) + " takes an address inside something that is not an "
+                        "address");
         }
         if (types_.KindOf(inst.type) != TypeKind::kPointer) {
           Fail(At(id) + " produces something that is not a pointer");
         }
         break;
+      }
 
       case Opcode::kNew:
         // The type is what the handle points at, and a handle is what it
@@ -473,6 +479,18 @@ class Verifier {
       return {};
     }
     return function_.SuccessorsOf(function_.Get(terminator));
+  }
+
+  // Whether |value| is something an address can be taken inside of: a
+  // pointer, a class handle, or a slot -- whose value *is* where it lives,
+  // the same convention a load and a store already rely on.
+  bool IsAddress(InstId value) const {
+    if (!function_.Contains(value)) {
+      return false;
+    }
+    const Inst& inst = function_.Get(value);
+    return types_.KindOf(inst.type) == TypeKind::kPointer ||
+           types_.IsHandle(inst.type) || inst.opcode == Opcode::kAlloca;
   }
 
   const StringInterner& interner_;

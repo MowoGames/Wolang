@@ -58,6 +58,9 @@ class Builder {
   // method's `self` is read and written through: the receiver arrives as a
   // pointer, so a field of it is an address rather than a copy.
   InstId FieldAddress(TypeId pointer, InstId base, uint32_t field);
+  // The address of an element, given the address of the array and the
+  // index as a value. What writing one element of a buffer goes through.
+  InstId IndexAddress(TypeId pointer, InstId base, InstId index);
   InstId Insert(TypeId type, InstId aggregate, InstId value, uint32_t field);
 
   // Terminators. Each ends the current block; a second one is dropped.

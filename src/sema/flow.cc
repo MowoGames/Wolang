@@ -217,9 +217,19 @@ class Checker {
         if (pattern.kind != PatternKind::kBinding) {
           return Flow::kFalls;
         }
+        // An array with no initializer starts as zeroes, in every tier,
+        // and is not reported as unwritten. Element-level tracking is not
+        // something this pass can do -- a write inside a loop may not
+        // happen -- so the choice is between a buffer nobody can fill one
+        // element at a time and an array that starts at zero. Every other
+        // type still has to be given a value.
+        const bool zero_filled =
+            !stmt.expr.is_valid() && ast_.Contains(stmt.type) &&
+            ast_.Get(stmt.type).kind == TypeRefKind::kArray;
         locals_.push_back(
             Local{pattern.name, depth_,
-                  stmt.expr.is_valid() ? State::kLive : State::kUnwritten,
+                  stmt.expr.is_valid() || zero_filled ? State::kLive
+                                                      : State::kUnwritten,
                   false});
         return Flow::kFalls;
       }
@@ -254,12 +264,44 @@ class Checker {
   // The name an assignment writes, or an invalid symbol when the target is
   // anything else. Only a whole variable counts as written: a field of an
   // uninitialized struct is not a place to write to.
+  // The variable an assignment writes to, walking through the fields and
+  // the elements on the way: `buf[i] = v` and `o.inner.n = v` write to
+  // `buf` and to `o`. Reading the target instead -- which is what this
+  // did when it only understood a bare name -- reports a variable as used
+  // before it was written on the very line that writes it.
   Symbol AssignedName(ExprId id) const {
-    if (!ast_.Contains(id)) {
-      return Symbol();
+    ExprId current = id;
+    while (ast_.Contains(current)) {
+      const Expr& target = ast_.Get(current);
+      if (target.kind == ExprKind::kField ||
+          target.kind == ExprKind::kOptionalField ||
+          target.kind == ExprKind::kIndex) {
+        current = target.lhs;
+        continue;
+      }
+      return target.kind == ExprKind::kPath ? target.name : Symbol();
     }
-    const Expr& target = ast_.Get(id);
-    return target.kind == ExprKind::kPath ? target.name : Symbol();
+    return Symbol();
+  }
+
+  // The index expressions on the way to an assignment's target, which are
+  // read even though the target is written.
+  void IndicesOf(ExprId id) {
+    ExprId current = id;
+    while (ast_.Contains(current)) {
+      const Expr& target = ast_.Get(current);
+      if (target.kind == ExprKind::kIndex) {
+        Expression(target.rhs);
+        current = target.lhs;
+        continue;
+      }
+      if (target.kind == ExprKind::kField ||
+          target.kind == ExprKind::kOptionalField) {
+        current = target.lhs;
+        continue;
+      }
+      return;
+    }
   }
 
   Flow Expression(ExprId id) {
@@ -281,6 +323,9 @@ class Checker {
           Expression(expr.lhs);
           return Flow::kFalls;
         }
+        // The index expressions are read even though the target is
+        // written: `buf[i] = v` reads `i`.
+        IndicesOf(expr.lhs);
         if (expr.op != TokenKind::kEq) {
           // A compound assignment reads the target as well.
           Report(name, expr.span);

@@ -80,6 +80,10 @@ WOLANG_IR_OP(Index, "index", "reads element |rhs| of an array or slice")
 WOLANG_IR_OP(FieldAddress, "field.addr",
              "the address of field |index| of the aggregate at an address. "
              "What a frame that outlives its function is read through")
+WOLANG_IR_OP(IndexAddress, "index.addr",
+             "the address of element |rhs| of the array at an address. The "
+             "dynamic counterpart of a field address, and what writing one "
+             "element of a buffer goes through rather than copying it")
 
 // -------------------------------------------------------------- optionals ---
 

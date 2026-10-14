@@ -905,6 +905,11 @@ class Lowerer {
         LowerLoop(expr);
         return InstId{};
 
+      case ExprKind::kFor:
+      case ExprKind::kForeach:
+        LowerForLoop(expr);
+        return InstId{};
+
       case ExprKind::kUnsafe:
       case ExprKind::kRegion:
         // Neither changes the value; both are checked, not lowered.
@@ -1177,10 +1182,9 @@ class Lowerer {
   }
 
   InstId LowerField(ExprId id, const Expr& expr, TypeId type) {
-    // Through an address when there is one -- a raw pointer, or the handle
-    // a class value is -- so that the field is read from the object rather
-    // than from a copy of it.
-    if (const Place place = PlaceOf(id); place.pointer.is_valid()) {
+    // Through an address when there is one, so that the field is read
+    // where it lives rather than out of a copy of the whole aggregate.
+    if (const Place place = PlaceOf(id); place.addressable()) {
       return Coerce(ReadPlace(place), TypeAt(place), type);
     }
     const InstId object = Value(expr.lhs);
@@ -1241,26 +1245,32 @@ class Lowerer {
 
   // Where a value lives.
   //
-  // A root and a path of field indices from it. The root is one of three
-  // things, because they are read and written differently: a local's slot
-  // holds a structured value, so changing a field of it is a read, an
-  // insert and a write back; a pointer addresses memory, so it is an
-  // address computation and a store; and a plain value -- a parameter, a
-  // method's receiver -- can be read from but not written to.
+  // A root and a path of steps from it. A step is a field, or an element
+  // whose index is a value -- which is the difference between what the
+  // layout knows and what only the run knows.
   //
-  // Keeping the path separate from the root is what makes `a.b.c = v` work
-  // at any depth, which before this wave compiled to nothing at all.
+  // The root is a slot, a pointer, or a plain value. The first two are
+  // addresses, so a place rooted in one is read and written where it is;
+  // the third -- a parameter, a method's receiver on a value type -- can
+  // only be read, and the checker reports an assignment to it (`E0125`).
+  struct Step {
+    uint32_t field = 0;
+    // Valid for an element: the index, as a value.
+    InstId index;
+    TypeId type;
+  };
+
   struct Place {
     InstId slot;
     InstId pointer;
     InstId value;
-    std::vector<uint32_t> path;
+    std::vector<Step> path;
     TypeId root_type;
 
     bool readable() const {
       return slot.is_valid() || pointer.is_valid() || value.is_valid();
     }
-    bool writable() const {
+    bool addressable() const {
       return slot.is_valid() || pointer.is_valid();
     }
   };
@@ -1301,14 +1311,25 @@ class Lowerer {
           // read and written through it rather than through a copy.
           place.pointer = Value(expr.lhs);
           place.root_type = owner;
-          place.path.push_back(FieldIndex(owner, expr.name));
+          place.path.push_back(
+              Step{FieldIndex(owner, expr.name), InstId{}, Erase(TypeOf(id))});
           return place;
         }
         Place base = PlaceOf(expr.lhs);
         if (!base.readable()) {
           return place;
         }
-        base.path.push_back(FieldIndex(TypeAt(base), expr.name));
+        base.path.push_back(Step{FieldIndex(TypeAt(base), expr.name),
+                                 InstId{}, Erase(TypeOf(id))});
+        return base;
+      }
+      case ExprKind::kIndex: {
+        Place base = PlaceOf(expr.lhs);
+        if (!base.readable()) {
+          return place;
+        }
+        base.path.push_back(
+            Step{0, Value(expr.rhs), Erase(TypeOf(id))});
         return base;
       }
       default:
@@ -1326,8 +1347,7 @@ class Lowerer {
     place.root_type = self_type_;
     if (types_->IsHandle(self_type_)) {
       // A class receiver is the object's address, so a method of one
-      // writes to the object. A value receiver is a copy, and the checker
-      // reports an assignment to a field of it (`E0125`).
+      // writes to the object.
       place.pointer = self_;
     } else {
       place.value = self_;
@@ -1339,17 +1359,15 @@ class Lowerer {
     if (member == nullptr || member->kind != MemberKind::kField) {
       return Place{};
     }
-    place.path.push_back(FieldIndex(self_type_, name));
+    place.path.push_back(Step{FieldIndex(self_type_, name), InstId{},
+                              Erase(member->type)});
     return place;
   }
 
   // The type at the end of a place's path.
   TypeId TypeAt(const Place& place) {
-    TypeId at = Erase(place.root_type);
-    for (uint32_t field : place.path) {
-      at = Erase(FieldTypeAt(at, field));
-    }
-    return at;
+    return place.path.empty() ? Erase(place.root_type)
+                              : Erase(place.path.back().type);
   }
 
   TypeId FieldTypeAt(TypeId owner, uint32_t field) {
@@ -1369,77 +1387,50 @@ class Lowerer {
     return field < parts.size() ? parts[field] : types_->error();
   }
 
+  // The address of a place, walking the path one step at a time. Only for
+  // a place with an address to begin with.
+  InstId AddressOfPlace(const Place& place) {
+    InstId address = place.slot.is_valid() ? place.slot : place.pointer;
+    for (const Step& step : place.path) {
+      const TypeId pointer = types_->Pointer(Erase(step.type), true);
+      address = step.index.is_valid()
+                    ? builder_->IndexAddress(pointer, address, step.index)
+                    : builder_->FieldAddress(pointer, address, step.field);
+    }
+    return address;
+  }
+
   // Reads what a place holds.
   InstId ReadPlace(const Place& place) {
-    TypeId at = Erase(place.root_type);
-    if (place.pointer.is_valid()) {
-      InstId address = place.pointer;
-      for (uint32_t field : place.path) {
-        const TypeId field_type = Erase(FieldTypeAt(at, field));
-        address = builder_->FieldAddress(
-            types_->Pointer(field_type, /*is_mutable=*/true), address,
-            field);
-        at = field_type;
+    if (place.addressable()) {
+      if (place.path.empty() && place.slot.is_valid()) {
+        return builder_->Add(Opcode::kLoad, Erase(place.root_type),
+                             {place.slot});
       }
-      return builder_->Add(Opcode::kLoad, at, {address});
+      return builder_->Add(Opcode::kLoad, TypeAt(place),
+                           {AddressOfPlace(place)});
     }
-    InstId value = place.slot.is_valid()
-                       ? builder_->Add(Opcode::kLoad, at, {place.slot})
-                       : place.value;
-    for (uint32_t field : place.path) {
-      const TypeId field_type = Erase(FieldTypeAt(at, field));
-      value = builder_->Extract(field_type, value, field);
-      at = field_type;
+    // A value with no location: the fields are read out of it.
+    InstId value = place.value;
+    for (const Step& step : place.path) {
+      value = step.index.is_valid()
+                  ? builder_->Add(Opcode::kIndex, Erase(step.type),
+                                  {value, step.index})
+                  : builder_->Extract(Erase(step.type), value, step.field);
     }
     return value;
   }
 
-  // Writes |value| into a place. Through a pointer it is a store; into a
-  // slot it is a read, an insert and a write back, which is correct because
-  // a local's address cannot escape -- references are second class
-  // (`E0120`), so nothing else can be looking at it meanwhile.
+  // Writes |value| into a place, where it lives. Nothing is copied and
+  // nothing is rebuilt: one `store` through the address the path works out,
+  // which is what makes filling a buffer a write per element rather than a
+  // copy per element.
   void WritePlace(const Place& place, InstId value) {
-    if (!value.is_valid() || !place.writable()) {
+    if (!value.is_valid() || !place.addressable()) {
       return;
     }
-    if (place.pointer.is_valid()) {
-      InstId address = place.pointer;
-      TypeId at = Erase(place.root_type);
-      for (uint32_t field : place.path) {
-        const TypeId field_type = Erase(FieldTypeAt(at, field));
-        address = builder_->FieldAddress(
-            types_->Pointer(field_type, /*is_mutable=*/true), address,
-            field);
-        at = field_type;
-      }
-      builder_->Add(Opcode::kStore, TypeId{}, {address, value});
-      return;
-    }
-    if (place.path.empty()) {
-      builder_->Add(Opcode::kStore, TypeId{}, {place.slot, value});
-      return;
-    }
-    const TypeId root = Erase(place.root_type);
-    const InstId whole = builder_->Add(Opcode::kLoad, root, {place.slot});
     builder_->Add(Opcode::kStore, TypeId{},
-                  {place.slot, Rebuild(place, 0, root, whole, value)});
-  }
-
-  // The aggregate with one field replaced, at whatever depth the path says.
-  InstId Rebuild(const Place& place,
-                 size_t depth,
-                 TypeId owner,
-                 InstId aggregate,
-                 InstId value) {
-    const uint32_t field = place.path[depth];
-    if (depth + 1 == place.path.size()) {
-      return builder_->Insert(owner, aggregate, value, field);
-    }
-    const TypeId inner = Erase(FieldTypeAt(owner, field));
-    const InstId nested = builder_->Extract(inner, aggregate, field);
-    return builder_->Insert(
-        owner, aggregate,
-        Rebuild(place, depth + 1, inner, nested, value), field);
+                  {AddressOfPlace(place), value});
   }
 
   InstId LowerAssign(const Expr& expr) {
@@ -1967,6 +1958,117 @@ class Lowerer {
       }
     }
     return false;
+  }
+
+  // `for i in a..b` and `for x in xs`.
+  //
+  // Both are a counting loop: a range counts between its bounds, and a
+  // sequence counts its elements and reads one per turn. Written out here
+  // rather than desugared in the parser, because the index is a slot the
+  // loop owns and the binding is not -- a body cannot assign to it, and
+  // the IR says so by never giving it an address.
+  void LowerForLoop(const Expr& expr) {
+    const TypeId sequence_type = Erase(TypeOf(expr.lhs));
+    const bool over_range = ast_.Contains(expr.lhs) &&
+                            ast_.Get(expr.lhs).kind == ExprKind::kRange;
+
+    // What the index counts in, and what it counts to.
+    InstId start;
+    InstId limit;
+    bool inclusive = false;
+    Place sequence;
+    TypeId element;
+    if (over_range) {
+      const Expr& range = ast_.Get(expr.lhs);
+      inclusive = range.op == TokenKind::kDotDotEq;
+      element = Erase(TypeOf(expr.lhs));
+      if (!element.is_valid() ||
+          types_->KindOf(element) != TypeKind::kInt) {
+        element = types_->default_int();
+      }
+      start = range.lhs.is_valid() ? Coerce(Value(range.lhs),
+                                            TypeOf(range.lhs), element)
+                                   : builder_->ConstInt(element, 0);
+      limit = range.rhs.is_valid() ? Coerce(Value(range.rhs),
+                                            TypeOf(range.rhs), element)
+                                   : builder_->ConstInt(element, 0);
+    } else {
+      element = Erase(types_->ElementOf(sequence_type));
+      sequence = PlaceOf(expr.lhs);
+      if (!sequence.readable()) {
+        // A sequence that is not a place -- a temporary -- still has to
+        // live somewhere to be indexed.
+        sequence.slot = Address(expr.lhs, Value(expr.lhs));
+        sequence.root_type = sequence_type;
+      }
+      start = builder_->ConstInt(types_->default_int(), 0);
+      limit = builder_->ConstInt(
+          types_->default_int(),
+          static_cast<uint64_t>(types_->Get(sequence_type).length));
+    }
+
+    const TypeId counter_type =
+        over_range ? element : types_->default_int();
+    const InstId index = builder_->Add(Opcode::kAlloca, counter_type);
+    builder_->Add(Opcode::kStore, TypeId{}, {index, start});
+
+    const BlockId header = builder_->AddBlock("for.header");
+    const BlockId body = builder_->AddBlock("for.body");
+    const BlockId step = builder_->AddBlock("for.step");
+    const BlockId exit = builder_->AddBlock("for.exit");
+
+    builder_->Jump(header);
+    builder_->SetCurrent(header);
+    const InstId current =
+        builder_->Add(Opcode::kLoad, counter_type, {index});
+    const InstId keep_going = builder_->Add(
+        inclusive ? Opcode::kLe : Opcode::kLt, types_->bool_type(),
+        {current, limit});
+    builder_->Branch(keep_going, body, exit);
+
+    // `continue` goes to the step rather than to the header, or the index
+    // would never advance and the loop would not end.
+    loops_.push_back(LoopTarget{expr.name, exit, step, scope_depth_ + 1});
+    builder_->SetCurrent(body);
+    const size_t depth = locals_.size();
+    ++scope_depth_;
+
+    InstId bound = current;
+    TypeId bound_type = counter_type;
+    if (!over_range) {
+      Place at = sequence;
+      at.path.push_back(Step{0, current, element});
+      bound = ReadPlace(at);
+      bound_type = element;
+    }
+    if (ast_.Contains(expr.pattern)) {
+      const Pattern& pattern = ast_.Get(expr.pattern);
+      if (pattern.kind == PatternKind::kBinding) {
+        locals_.push_back(
+            Local{pattern.name, InstId{}, bound, bound_type});
+      }
+    }
+
+    Lower(expr.rhs);
+    RunDeferred(scope_depth_);
+    ForgetDeferred(scope_depth_);
+    --scope_depth_;
+    locals_.resize(depth);
+    if (!builder_->Terminated()) {
+      builder_->Jump(step);
+    }
+    loops_.pop_back();
+
+    builder_->SetCurrent(step);
+    const InstId before =
+        builder_->Add(Opcode::kLoad, counter_type, {index});
+    const InstId one = builder_->ConstInt(counter_type, 1);
+    const InstId next =
+        builder_->Add(Opcode::kAdd, counter_type, {before, one});
+    builder_->Add(Opcode::kStore, TypeId{}, {index, next});
+    builder_->Jump(header);
+
+    builder_->SetCurrent(exit);
   }
 
   void LowerLoop(const Expr& expr) {

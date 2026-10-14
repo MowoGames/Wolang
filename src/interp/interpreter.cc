@@ -399,7 +399,11 @@ class Interpreter {
                     "an undefined value was used");
 
       case ir::Opcode::kAlloca: {
-        frame->slots.push_back(Value());
+        // Zeroed, the way a slot is in the compiled tiers. The two have to
+        // agree about a slot that was only partly written -- one element
+        // of a buffer, one field of a struct -- and `E0123` is what
+        // catches reading one that was never written at all.
+        frame->slots.push_back(ZeroOf(inst.type));
         return Value::Slot(static_cast<uint32_t>(frame->slots.size() - 1));
       }
       case ir::Opcode::kFuncAddress:
@@ -428,6 +432,16 @@ class Interpreter {
       }
       case ir::Opcode::kLoad: {
         const Value& slot = Operand(frame, inst, 0);
+        if (slot.kind() == Value::Kind::kPlace) {
+          const Value* at = Walk(frame, slot);
+          if (at == nullptr || at->is_undefined()) {
+            return Trap(outcome, TrapKind::kUndefinedValue,
+                        At(function, id),
+                        "read a part of a slot before anything was "
+                        "written to it");
+          }
+          return *at;
+        }
         if (slot.kind() == Value::Kind::kInt) {
           // A raw pointer. Reading through one is `unsafe` and the checker
           // said so; here it means what it says, and the interpreter reads
@@ -449,6 +463,15 @@ class Interpreter {
       }
       case ir::Opcode::kStore: {
         const Value& slot = Operand(frame, inst, 0);
+        if (slot.kind() == Value::Kind::kPlace) {
+          Value* at = Walk(frame, slot);
+          if (at == nullptr) {
+            return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
+                        "wrote outside the slot");
+          }
+          *at = Operand(frame, inst, 1);
+          return Value::Void();
+        }
         if (slot.kind() == Value::Kind::kInt) {
           return StoreThroughPointer(function, slot,
                                      Operand(frame, inst, 1), id, outcome);
@@ -526,11 +549,42 @@ class Interpreter {
         return array.elements()[index.integer()];
       }
 
+      case ir::Opcode::kIndexAddress: {
+        // The element of an array at an address. Inside a slot it is a
+        // place -- a path -- because the interpreter's values carry their
+        // shape rather than living at addresses.
+        const Value& base = Operand(frame, inst, 0);
+        const Value& index = Operand(frame, inst, 1);
+        const TypeId array = AddressedType(function, inst, 0);
+        const uint64_t length = types_.Get(array).length;
+        if (index.integer() >= length) {
+          return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
+                      "index is outside a length of " +
+                          std::to_string(length));
+        }
+        if (base.kind() == Value::Kind::kSlot ||
+            base.kind() == Value::Kind::kPlace) {
+          return Extend(base, static_cast<uint32_t>(index.integer()));
+        }
+        if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "took an element address without an address to take "
+                      "it from");
+        }
+        const uint64_t stride = layouts_->StrideOf(array);
+        return Value::Int(base.integer() + index.integer() * stride,
+                          IntWidth::k64, /*is_signed=*/false);
+      }
+
       case ir::Opcode::kFieldAddress: {
         // The address of a field, which is the layout's answer and nobody
         // else's -- the interpreter's own values carry their shape, so this
         // is the one question it cannot answer alone.
         const Value& base = Operand(frame, inst, 0);
+        if (base.kind() == Value::Kind::kSlot ||
+            base.kind() == Value::Kind::kPlace) {
+          return Extend(base, inst.field);
+        }
         if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
           return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
                       "took a field address without an address to take it "
@@ -643,6 +697,106 @@ class Interpreter {
       default:
         return Arithmetic(frame, id, inst, outcome);
     }
+  }
+
+  // A value of |type| with every part zero. What a slot starts as.
+  Value ZeroOf(TypeId type) {
+    switch (types_.KindOf(type)) {
+      case TypeKind::kBool:
+        return Value::Bool(false);
+      case TypeKind::kFloat:
+        return Value::Float(0.0, types_.Get(type).float_width);
+      case TypeKind::kInt:
+        return Value::Int(0, types_.Get(type).int_width,
+                          types_.Get(type).is_signed);
+      case TypeKind::kChar:
+        return Value::Int(0, IntWidth::k32, /*is_signed=*/false);
+      case TypeKind::kPointer:
+      case TypeKind::kNamed:
+        if (types_.IsHandle(type)) {
+          return Value::Int(0, IntWidth::k64, /*is_signed=*/false);
+        }
+        break;
+      case TypeKind::kOptional:
+        return Value::Absent();
+      default:
+        break;
+    }
+    if (types_.KindOf(type) == TypeKind::kPointer) {
+      return Value::Int(0, IntWidth::k64, /*is_signed=*/false);
+    }
+    if (types_.KindOf(type) == TypeKind::kArray) {
+      const TypeId element = types_.ElementOf(type);
+      std::vector<Value> elements;
+      elements.reserve(static_cast<size_t>(types_.Get(type).length));
+      for (uint64_t i = 0; i < types_.Get(type).length; ++i) {
+        elements.push_back(ZeroOf(element));
+      }
+      return Value::Aggregate(std::move(elements));
+    }
+    if (types_.KindOf(type) == TypeKind::kNamed ||
+        types_.KindOf(type) == TypeKind::kTuple) {
+      std::vector<Value> elements;
+      if (layouts_ != nullptr) {
+        for (uint32_t i = 0; i < layouts_->FieldCount(type); ++i) {
+          elements.push_back(ZeroOf(layouts_->FieldType(type, i)));
+        }
+      }
+      return Value::Aggregate(std::move(elements));
+    }
+    // Something with no zero: a string, a slice, a function. Undefined is
+    // the honest answer, and reading one is a trap.
+    return Value();
+  }
+
+  // Where a place points, inside the frame it belongs to. Null when the
+  // path does not fit the value -- which the verifier makes impossible and
+  // a trap reports rather than a crash.
+  static Value* Walk(Frame* frame, const Value& place) {
+    const uint32_t slot = static_cast<uint32_t>(place.integer());
+    if (slot >= frame->slots.size()) {
+      return nullptr;
+    }
+    Value* at = &frame->slots[slot];
+    for (uint32_t step : place.path()) {
+      if (at->kind() != Value::Kind::kAggregate ||
+          step >= at->elements().size()) {
+        return nullptr;
+      }
+      // The elements are shared for cheap copying, so writing into one
+      // needs a copy of its own first.
+      at = at->ElementForWriting(step);
+      if (at == nullptr) {
+        return nullptr;
+      }
+    }
+    return at;
+  }
+
+  // One more step along a place. A slot with no path is where it starts.
+  static Value Extend(const Value& base, uint32_t step) {
+    std::vector<uint32_t> path;
+    if (base.kind() == Value::Kind::kPlace) {
+      path = base.path();
+      path.push_back(step);
+      return Value::Place(static_cast<uint32_t>(base.integer()),
+                          std::move(path));
+    }
+    path.push_back(step);
+    return Value::Place(base.slot(), std::move(path));
+  }
+
+  // What an address instruction is taken inside of: a pointer's target, a
+  // class's own storage, or -- for a slot -- the slot's type.
+  TypeId AddressedType(const ir::Function& function,
+                       const ir::Inst& inst,
+                       size_t operand) const {
+    const TypeId type = TypeOf(function, inst, operand);
+    if (types_.IsHandle(type) ||
+        types_.KindOf(type) != TypeKind::kPointer) {
+      return type;
+    }
+    return types_.ElementOf(type);
   }
 
   // A numeric conversion written with `as`. The target type is the

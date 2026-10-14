@@ -400,6 +400,20 @@ class FunctionEmitter {
     return target;
   }
 
+  // What an address instruction is taken inside of: a pointer's target, a
+  // class's own storage, or -- for a slot, whose value is where it lives --
+  // the slot's own type. Taking the wrong one puts every field at offset
+  // zero, which reads as a value that is wrong rather than as a program
+  // that crashes.
+  TypeId AddressedType(ir::InstId base) const {
+    const TypeId type = TypeOf(base);
+    if (types_.IsHandle(type) ||
+        types_.KindOf(type) != TypeKind::kPointer) {
+      return type;
+    }
+    return types_.ElementOf(type);
+  }
+
   // The address a load or a store works through. A slot's address is a
   // frame offset; a pointer's is whatever the pointer holds. Both are
   // addresses, which is why one opcode covers reading a local and reading
@@ -987,21 +1001,40 @@ class FunctionEmitter {
         // field access already emits -- the difference is that the result
         // is the address rather than what is at it.
         const ir::InstId base = function_.OperandsOf(inst)[0];
-        // Through a pointer it is what the pointer points at; through a
-        // class handle it is the class's own storage. Taking the wrong one
-        // puts every field at offset zero, which reads as a value that is
-        // wrong rather than as a program that crashes.
-        const TypeId base_type = TypeOf(base);
-        const TypeId aggregate = types_.IsHandle(base_type)
-                                     ? base_type
-                                     : types_.ElementOf(base_type);
-        const abi::Layout& layout = layouts_.ObjectOf(aggregate);
+        const abi::Layout& layout = layouts_.ObjectOf(AddressedType(base));
         const uint32_t offset =
             inst.field < layout.offsets.size() ? layout.offsets[inst.field]
                                                : 0;
-        const Register address = UseInt(base, 1);
+        const Register address = AddressOf(base, 1);
         const Register reg = DestInt(id, 0);
         assembler_.AddImm(IWidth::k64, reg, address, offset);
+        FinishInt(id, reg);
+        return;
+      }
+
+      case ir::Opcode::kIndexAddress: {
+        // The element of an array at an address: the index times the
+        // stride, bounds checked the same way reading one is.
+        const std::span<const ir::InstId> operands =
+            function_.OperandsOf(inst);
+        const TypeId array = AddressedType(operands[0]);
+        const uint64_t length = types_.Get(array).length;
+        const Register index = UseInt(operands[1], 1);
+        const Register limit = Scratch(2);
+        assembler_.MovImmediate(IWidth::k64, limit, length);
+        assembler_.Cmp(IWidth::k64, index, limit);
+        const Label trap = TrapLabel(
+            ir::TrapKind::kOutOfBounds, id,
+            "index is outside a length of " + std::to_string(length));
+        assembler_.BCond(Condition::kHs, trap);
+
+        const Register address = AddressOf(operands[0], 3);
+        const Register offset = Scratch(2);
+        assembler_.MovImmediate(IWidth::k64, offset,
+                                layouts_.StrideOf(array));
+        assembler_.Mul(IWidth::k64, offset, index, offset);
+        const Register reg = DestInt(id, 0);
+        assembler_.Add(IWidth::k64, reg, address, offset);
         FinishInt(id, reg);
         return;
       }

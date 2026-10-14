@@ -39,6 +39,13 @@ class Value {
     // matters because lowering is per file, so the same index means
     // different functions in two of them.
     kFunction,
+    // Somewhere inside a slot: the slot, and the steps to walk from it.
+    //
+    // The compiled tiers have addresses for this; the interpreter's values
+    // carry their shape instead, so a place is a path rather than a
+    // number. It is what `field.addr` and `index.addr` produce when what
+    // they are taken inside of is a frame slot.
+    kPlace,
   };
 
   Value() = default;
@@ -57,6 +64,7 @@ class Value {
   static Value Absent();
   static Value Slot(uint32_t index);
   static Value Function(uint32_t index, const void* module);
+  static Value Place(uint32_t slot, std::vector<uint32_t> path);
 
   Kind kind() const { return kind_; }
   bool is_undefined() const { return kind_ == Kind::kUndefined; }
@@ -71,6 +79,13 @@ class Value {
   const std::vector<Value>& elements() const { return *elements_; }
   uint32_t slot() const { return integer_ == 0 ? 0 : integer_ - 1; }
   uint32_t function() const { return static_cast<uint32_t>(integer_); }
+  const std::vector<uint32_t>& path() const { return *path_; }
+
+  // Element |index|, ready to be written to. The elements are shared so
+  // that copying a value is cheap, so writing into one needs a copy of its
+  // own first -- which is what keeps two copies of an aggregate two
+  // values rather than one.
+  Value* ElementForWriting(uint32_t index);
   const void* module() const { return module_; }
 
   IntWidth int_width() const { return int_width_; }
@@ -103,6 +118,8 @@ class Value {
   // Which module a function value belongs to. Not owned: a module outlives
   // every run over it.
   const void* module_ = nullptr;
+  // The steps of a place, shared so that extending one is cheap.
+  std::shared_ptr<const std::vector<uint32_t>> path_;
 };
 
 // Masks |bits| to |width|, which is where wrapping happens and the only

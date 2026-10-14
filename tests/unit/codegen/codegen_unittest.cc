@@ -894,6 +894,81 @@ fun StoredInASlot() -> int {
   WOLANG_EXPECT_EQ(f.Run("StoredInASlot", {}), "-8");
 }
 
+WOLANG_TEST(CodegenTest, CountsAndFillsBuffers) {
+  // `for` over a range and over a sequence, and writing one element of a
+  // buffer. All three were silently nothing before this wave: the loop
+  // lowered to an undefined value and the element write to no instruction
+  // at all, so a program that filled a buffer computed with zeroes.
+  Fixture f(R"(
+fun Count(n: int) -> int {
+  var total = 0
+  for i in 0..n {
+    total = total + i
+  }
+  return total
+}
+
+fun Inclusive(n: int) -> int {
+  var total = 0
+  for i in 1..=n {
+    total = total + i
+  }
+  return total
+}
+
+fun FillAndSum() -> int {
+  var buf: [8]int
+  for i in 0..8 {
+    buf[i] = i * i
+  }
+  var total = 0
+  for v in buf {
+    total = total + v
+  }
+  return total
+}
+
+fun WritesOneElement() -> int {
+  var buf: [4]int
+  buf[2] = 7
+  // The rest is zero: a slot starts that way in every tier, which is what
+  // makes filling a buffer one element at a time work.
+  return buf[0] + buf[1] + buf[2] + buf[3]
+}
+
+fun BreaksAndContinues(n: int) -> int {
+  var total = 0
+  for i in 0..n {
+    if i == 5 {
+      break
+    }
+    if i == 2 {
+      continue
+    }
+    total = total + i
+  }
+  return total
+}
+
+fun NestedLoops(n: int) -> int {
+  var total = 0
+  for i in 0..n {
+    for j in 0..n {
+      total = total + i * j
+    }
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Count", {Fixture::Int(10)}), "45");
+  WOLANG_EXPECT_EQ(f.Run("Count", {Fixture::Int(0)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Inclusive", {Fixture::Int(4)}), "10");
+  WOLANG_EXPECT_EQ(f.Run("FillAndSum", {}), "140");
+  WOLANG_EXPECT_EQ(f.Run("WritesOneElement", {}), "7");
+  WOLANG_EXPECT_EQ(f.Run("BreaksAndContinues", {Fixture::Int(100)}), "8");
+  WOLANG_EXPECT_EQ(f.Run("NestedLoops", {Fixture::Int(4)}), "36");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

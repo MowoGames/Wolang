@@ -130,6 +130,10 @@ InstId Builder::FieldAddress(TypeId pointer, InstId base, uint32_t field) {
   return id;
 }
 
+InstId Builder::IndexAddress(TypeId pointer, InstId base, InstId index) {
+  return Add(Opcode::kIndexAddress, pointer, {base, index});
+}
+
 InstId Builder::Insert(TypeId type,
                        InstId aggregate,
                        InstId value,

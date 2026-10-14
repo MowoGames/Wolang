@@ -109,6 +109,32 @@ Value Value::Function(uint32_t index, const void* module) {
   return value;
 }
 
+Value Value::Place(uint32_t slot, std::vector<uint32_t> path) {
+  Value value;
+  value.kind_ = Kind::kPlace;
+  value.integer_ = slot;
+  value.path_ =
+      std::make_shared<const std::vector<uint32_t>>(std::move(path));
+  return value;
+}
+
+Value* Value::ElementForWriting(uint32_t index) {
+  if (kind_ != Kind::kAggregate || elements_ == nullptr) {
+    return nullptr;
+  }
+  if (index >= elements_->size()) {
+    return nullptr;
+  }
+  if (elements_.use_count() > 1) {
+    elements_ = std::make_shared<const std::vector<Value>>(*elements_);
+  }
+  // The storage is const so that a shared value cannot be changed through
+  // another handle to it; this is the one place that writes, and it has
+  // just made the storage its own.
+  auto* elements = const_cast<std::vector<Value>*>(elements_.get());
+  return &(*elements)[index];
+}
+
 int64_t Value::signed_integer() const {
   const uint32_t count = BitsOf(int_width_);
   if (count >= 64) {
@@ -157,6 +183,14 @@ std::string Value::Describe() const {
       return "slot " + std::to_string(slot());
     case Kind::kFunction:
       return "function " + std::to_string(function());
+    case Kind::kPlace: {
+      std::string text = "slot " + std::to_string(integer_);
+      for (uint32_t step : *path_) {
+        text.append(".");
+        text.append(std::to_string(step));
+      }
+      return text;
+    }
   }
   return "?";
 }
@@ -183,6 +217,8 @@ bool operator==(const Value& lhs, const Value& rhs) {
       // The same function of the same module, which is what makes two
       // handlers comparable.
       return lhs.integer_ == rhs.integer_ && lhs.module_ == rhs.module_;
+    case Value::Kind::kPlace:
+      return lhs.integer_ == rhs.integer_ && *lhs.path_ == *rhs.path_;
     case Value::Kind::kAggregate:
       return *lhs.elements_ == *rhs.elements_;
     case Value::Kind::kOptional:
