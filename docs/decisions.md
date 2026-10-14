@@ -973,3 +973,26 @@ the speed. The lesson is the one the register allocator taught in wave 8:
 a change that makes something expressible has to be confined to where it
 is needed, because the optimizer's questions are about what *cannot*
 happen.
+
+**D95. A server asks which connections are ready.** The blocking loop held
+one client at a time: `read` waits, and everything else waits with it. The
+polled loop asks the kernel which of the descriptors it is holding has
+something to say, so one thread serves as many connections as the system
+will give descriptors for -- and an idle connection costs one entry in a
+kernel table rather than a thread.
+
+Measured on this machine, against the same handler: 500 concurrent
+clients, 20,000 requests, **43,455 requests a second and no errors**. The
+blocking loop cannot be measured the same way at all -- with 500 clients
+it serves them one after another.
+
+The mechanism is the platform's and the loop is Wolang. kqueue here and
+epoll there differ in structure size and field order, which is not
+something a library written in this language can spell, so `poll.h` is
+three calls and `http.poll` is a class over them. The same division as
+`std.fs` (D92), for the same reason.
+
+One request per ready connection per turn, rather than draining each: a
+client that keeps asking would otherwise hold the loop for as long as it
+likes. The listener *is* drained, because it reports readable once however
+many connections arrived.

@@ -150,3 +150,82 @@ offer fun Run(port: int, handle: fun(Request) -> Response) -> s32 uses io, unsaf
     const _served = Serve(connection, handle)
   }
 }
+
+/// The same server, holding many connections at once.
+///
+/// One loop, one thread, and a poller that says which connections have
+/// something to say (D95). A blocking `Serve` holds one client no matter
+/// how fast the rest of the server is; this holds as many as the system
+/// will give descriptors for, and the cost per idle connection is one
+/// entry in a kernel table.
+///
+/// `most` is how many ready descriptors one wait may report. Everything
+/// else waits for the next turn, which is what keeps one noisy client
+/// from starving the rest.
+offer fun RunPolled(port: int, most: int, handle: fun(Request) -> Response) -> s32 uses io, unsafe {
+  const listener = Listen(port, 128)
+  if listener < 0 {
+    Print("http: cannot listen")
+    return listener
+  }
+  var poller = PollerNew(most)
+  if !poller.IsOpen() {
+    Print("http: cannot poll")
+    return -1
+  }
+  const _listening = SetNonBlocking(listener)
+  if !poller.Watch(listener) {
+    Print("http: cannot watch the listener")
+    return -1
+  }
+  Print("http: listening, polled")
+
+  loop {
+    const ready = poller.Wait(1000)
+    if ready <= 0 {
+      continue
+    }
+    var i = 0
+    while i < ready {
+      const fd = poller.At(i)
+      i = i + 1
+      if fd == listener {
+        // Everything waiting to be accepted, not just one: the listener
+        // reports readable once per turn however many arrived.
+        loop {
+          const connection = Accept(listener)
+          if connection < 0 {
+            break
+          }
+          const _client = SetNonBlocking(connection)
+          if !poller.Watch(connection) {
+            const _closed = Close(connection)
+          }
+        }
+        continue
+      }
+      // One request per turn from each ready connection, so a client
+      // that keeps asking does not hold the loop.
+      if !ServeOnce(fd, handle) {
+        const _forgotten = poller.Forget(fd)
+        const _closed = Close(fd)
+      }
+    }
+  }
+}
+
+/// Reads one request from `connection` and answers it. False when the
+/// connection is done with -- closed, broken, or asking for something
+/// this server will not parse.
+fun ServeOnce(connection: int, handle: fun(Request) -> Response) -> bool uses io, unsafe {
+  var buffer: [4096]u8
+  const received = Read(connection as s32, &buffer[0], 4096)
+  if received <= 0 {
+    return false
+  }
+  var ok = false
+  arena {
+    ok = Answer(connection as s32, buffer, received, handle)
+  }
+  return ok
+}

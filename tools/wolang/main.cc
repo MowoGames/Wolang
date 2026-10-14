@@ -157,9 +157,15 @@ bool CollectInputs(Database* database,
       if (!LoadPackage(database, input, load_diagnostics)) {
         return false;
       }
+      // Every module the database now holds, including the ones a
+      // previous argument brought in: a shared dependency is loaded once
+      // and its files belong to one list, so they are added once too.
       for (const Module& module : database->modules()) {
         for (FileId file : module.files) {
-          files->push_back(file);
+          if (std::find(files->begin(), files->end(), file) ==
+              files->end()) {
+            files->push_back(file);
+          }
         }
       }
       continue;

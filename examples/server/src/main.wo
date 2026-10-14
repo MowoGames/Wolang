@@ -6,7 +6,7 @@
 // `uses unsafe` on a declaration means.
 
 need std.io.{Print}
-need http.{NotFound, Ok, Request, Response, Run}
+need http.{NotFound, Ok, Request, Response, RunPolled}
 
 fun Route(request: Request) -> Response {
   if request.path == "/" {
@@ -24,5 +24,6 @@ fun Route(request: Request) -> Response {
 
 fun main() uses io, unsafe {
   Print("server: http://127.0.0.1:8080")
-  const _code = Run(8080, Route)
+  // Polled rather than blocking: one loop, many connections (D95).
+  const _code = RunPolled(8080, 256, Route)
 }

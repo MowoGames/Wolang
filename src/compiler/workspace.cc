@@ -75,6 +75,24 @@ DirectoryContents ReadDirectory(const fs::path& directory,
 
 class Loader {
  public:
+  // Seeded from what the database already holds, so that loading two
+  // packages that share a dependency loads the dependency once: the
+  // second `LoadPackage` is a new Loader, and without this it declares
+  // every name in `std` a second time.
+  void SeedFromDatabase() {
+    for (size_t i = 0; i < database_->package_count(); ++i) {
+      const Package* package =
+          database_->GetPackage(PackageId{static_cast<uint32_t>(i)});
+      if (package == nullptr || package->directory.empty()) {
+        continue;
+      }
+      std::error_code failed;
+      const fs::path canonical =
+          fs::weakly_canonical(fs::path(package->directory), failed);
+      loaded_.push_back(failed ? package->directory : canonical.string());
+    }
+  }
+
   Loader(Database* database,
          DiagnosticEngine* diagnostics,
          const WorkspaceOptions& options)
@@ -231,6 +249,7 @@ bool LoadPackage(Database* database,
                  DiagnosticEngine* diagnostics,
                  const WorkspaceOptions& options) {
   Loader loader(database, diagnostics, options);
+  loader.SeedFromDatabase();
   return loader.Load(fs::path(directory), /*is_root=*/true);
 }
 

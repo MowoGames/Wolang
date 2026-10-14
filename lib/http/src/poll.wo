@@ -1,0 +1,75 @@
+// Which connections are ready.
+//
+// A server that blocks in `read` holds one connection at a time; one that
+// asks "which of these has something for me" holds thousands (D95). The
+// mechanism differs by system -- kqueue here, epoll there -- so the three
+// calls are the platform's and the loop above them is Wolang.
+
+need std.mem.{ArrayNew, Free}
+
+extern "C" fun wolang_poll_create() -> s32
+extern "C" fun wolang_poll_close(poller: s32)
+extern "C" fun wolang_poll_add(poller: s32, fd: s32) -> s32
+extern "C" fun wolang_poll_remove(poller: s32, fd: s32) -> s32
+extern "C" fun wolang_poll_wait(
+    poller: s32,
+    timeout: s32,
+    out: *mut s32,
+    max: s32) -> s32
+extern "C" fun wolang_set_nonblocking(fd: s32) -> s32
+
+/// Watches descriptors and says which are readable.
+offer class Poller {
+  var handle: s32 = -1
+  var ready: []s32
+
+  deinit  {
+    if handle >= 0 {
+      wolang_poll_close(handle)
+    }
+    Free(ready)
+  }
+
+  fun IsOpen() -> bool {
+    return handle >= 0
+  }
+
+  fun Watch(fd: int) -> bool uses unsafe {
+    return wolang_poll_add(handle, fd as s32) == 0
+  }
+
+  fun Forget(fd: int) -> bool uses unsafe {
+    return wolang_poll_remove(handle, fd as s32) == 0
+  }
+
+  /// Waits up to `timeout` milliseconds and gives back how many
+  /// descriptors are ready. `At` names them.
+  fun Wait(timeout: int) -> int uses unsafe {
+    if handle < 0 {
+      return -1
+    }
+    return wolang_poll_wait(handle, timeout as s32, &ready[0], ready.len as s32) as int
+  }
+
+  fun At(index: int) -> int {
+    if index < 0 || index >= ready.len {
+      return -1
+    }
+    return ready[index] as int
+  }
+}
+
+/// A poller that can report up to `most` ready descriptors at a time.
+offer fun PollerNew(most: int) -> Poller uses unsafe {
+  var room = most
+  if room < 8 {
+    room = 8
+  }
+  return Poller(wolang_poll_create(), ArrayNew<s32>(room))
+}
+
+/// Stops a descriptor from blocking: a read with nothing to read returns
+/// instead of waiting, which is what lets one loop serve many.
+offer fun SetNonBlocking(fd: int) -> bool uses unsafe {
+  return wolang_set_nonblocking(fd as s32) == 0
+}
