@@ -20,7 +20,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0070` | diagnostic suppression | implemented (wave 5) |
 | `E0101`–`E0119` | types and name resolution | implemented (wave 4) |
 | `E0117`–`E0119` | sizes, cyclic declarations, parameters | implemented (wave 5) |
-| `E0120`–`E0124` | memory, references and conversions | `E0120` (wave 5), `E0123`, `E0124` (waves 8–9) |
+| `E0120`–`E0125` | memory, references, conversions, receivers | `E0120` (wave 5), `E0123`–`E0124` (waves 8–9), `E0125` (wave 10) |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E0301`–`E0305` | suspension and tasks | implemented (wave 10) |
 | `E0401`–`E0403` | inheritance, traits, bounds | implemented (waves 4–5) |
@@ -216,6 +216,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0122` | a value that was moved out of is used again | `const b = a` then `Take(a)` where `a: Text` |
 | `E0123` | a variable is used before anything is written to it | `var x: int` then `return x` |
 | `E0124` | the conversion is not between numbers | `s as int` where `s: text` |
+| `E0125` | a method of a value type assigns to a field of `self` | `struct P { fun F() { x = 1 } }` |
 | `E0070` | `@allow` is missing a code or a reason | `@allow(W0101)` |
 
 An error type propagates silently: one unknown name produces one message, not
@@ -294,6 +295,13 @@ removed implicit widening, not as a reinterpretation of bits -- so a
 narrowing conversion that would change the value traps, the same way an
 overflowing add does, and converting anything that is not a number is
 `E0124` rather than a cast that quietly means something.
+
+`E0125` is the difference between a value and a handle, reported where it
+would otherwise be invisible. A method of a `struct` is passed a copy of
+the object, so assigning to a field of `self` would change the copy and
+nothing else; a method of a `class` is passed the handle, so the same line
+changes the object. Before the receiver existed at all this compiled to
+nothing -- which is the kind of silence a diagnostic exists to replace.
 
 A type whose members are not known — declared in a file this one cannot see —
 yields an error type without an `E0112`, because the unresolved import is

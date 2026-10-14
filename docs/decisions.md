@@ -466,3 +466,13 @@ cache dirty. A read of a clean cache is a load. The alternative -- a method
 without parentheses -- would be simpler and would make the spec's sentence
 false, so the sentence stays and the analysis gets written.
 
+**D64. A keyword is a name where only a name can appear.** After a `.`, and
+where a declaration gives its own name, a keyword is read as a name:
+`o.tag`, `need std.task`, `var state: int`. There is nothing for it to be
+ambiguous with in those positions, and the alternative is a language that
+makes its users rename their data -- `tag`, `state`, `task` and `component`
+are words gameplay code wants. A keyword in an *expression* is still a
+keyword, so a field named one is written `self.tag` rather than `tag`.
+Making every declaration keyword contextual everywhere would remove that
+last wrinkle and is a bigger change to the grammar than it looks.
+
