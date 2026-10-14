@@ -26,6 +26,11 @@ offer class List<T> {
     return count
   }
 
+  /// What `for value in list` walks with.
+  fun Iterate() -> ListWalk<T> {
+    return ListWalk<T>(self, -1)
+  }
+
   fun Capacity() -> int {
     return items.len
   }
@@ -95,6 +100,26 @@ offer class List<T> {
   }
 }
 
+/// Walks a list from front to back.
+///
+/// `Next` moves and says whether there is anything there; `Value` is what
+/// it is standing on. Three names and no trait, because a trait that
+/// said "what I walk over" needs an associated type the language does not
+/// have yet (D96).
+offer class ListWalk<T> {
+  var over: List<T>
+  var at: int = -1
+
+  fun Next() -> bool {
+    at = at + 1
+    return at < over.Len()
+  }
+
+  fun Value() -> T {
+    return over.At(at)
+  }
+}
+
 /// An empty list, with no storage until something is pushed.
 offer fun ListNew<T>() -> List<T> uses unsafe {
   return List<T>(ArrayNew<T>(0), 0)
@@ -143,4 +168,19 @@ fun SetsInPlace() -> bool uses unsafe {
   list.Push(2.5)
   list.Set(1, 9.5)
   return list.At(0) == 1.5 && list.At(1) == 9.5
+}
+
+@Test
+fun WalksEveryElement() -> bool uses unsafe {
+  var list = ListNew<int>()
+  list.Push(2)
+  list.Push(3)
+  list.Push(4)
+  var total = 0
+  var seen = 0
+  for value in list {
+    total = total + value
+    seen = seen + 1
+  }
+  return total == 9 && seen == 3
 }

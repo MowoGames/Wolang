@@ -996,3 +996,19 @@ One request per ready connection per turn, rather than draining each: a
 client that keeps asking would otherwise hold the loop for as long as it
 likes. The listener *is* drained, because it reports readable once however
 many connections arrived.
+
+**D96. A type says how to walk itself with three names.** `for x in thing`
+asks `thing.Iterate()` for something with `Next` and `Value`, and that is
+the whole protocol. A trait would be the obvious home for it, but a trait
+that said "what I walk over" needs an associated type the language does
+not have -- and three names need no new feature at all.
+
+The loop is built in lowering rather than desugared in the parser, so a
+diagnostic points at the loop the program wrote. `E0131` is what a `for`
+over something with none of those names reports, and it says which three
+to add.
+
+Walking borrows. `for key in map` asks the map how to be walked and reads
+what comes back; it does not take what the name holds, so the map is
+still there afterwards -- which the move analysis had to be told, because
+an owning value handed to anything is otherwise a move (D87).

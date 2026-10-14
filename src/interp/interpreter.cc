@@ -191,6 +191,17 @@ class Interpreter {
         break;
     }
 
+    // A class handle, a reference, an error tag: everything whose value
+    // is a number of its own size, including the ones whose *kind* is a
+    // named type rather than an integer.
+    if (layouts_ != nullptr && layouts_->IsSupported(type) &&
+        layouts_->ClassOf(type) == abi::ValueClass::kInteger) {
+      const uint32_t size = std::max(layouts_->SizeOf(type), 1u);
+      uint64_t raw = 0;
+      std::memcpy(&raw, address, std::min<size_t>(size, sizeof(raw)));
+      return Value::Int(raw, IntWidth::k64, /*is_signed=*/false);
+    }
+
     // The same, read back: an aggregate is its fields at their offsets.
     if (layouts_ != nullptr && layouts_->IsSupported(type) &&
         layouts_->ClassOf(type) == abi::ValueClass::kAggregate) {

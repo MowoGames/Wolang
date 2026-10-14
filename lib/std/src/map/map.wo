@@ -32,6 +32,11 @@ offer class Map<K, V> {
     return count
   }
 
+  /// What `for key in map` walks with: the keys, and `Get` for the rest.
+  fun Iterate() -> MapWalk<K, V> {
+    return MapWalk<K, V>(self, -1)
+  }
+
   /// Where `key` is, or where it would go. -1 when there is no room,
   /// which cannot happen while the load factor is kept under one.
   fun Slot(key: K) -> int {
@@ -132,6 +137,31 @@ offer class Map<K, V> {
   }
 }
 
+/// Walks the entries of a map, in whatever order the table holds them.
+///
+/// A map is a table with holes, so walking it means skipping them: that
+/// is why this is a class with a position rather than an index into
+/// anything the caller can see.
+offer class MapWalk<K, V> {
+  var over: Map<K, V>
+  var at: int = -1
+
+  fun Next() -> bool {
+    at = at + 1
+    while at < over.filled.len {
+      if over.filled[at] {
+        return true
+      }
+      at = at + 1
+    }
+    return false
+  }
+
+  fun Value() -> K {
+    return over.keys[at]
+  }
+}
+
 /// An empty map, with no table until something is put in it.
 offer fun MapNew<K, V>(hash: fun(K) -> int, equals: fun(K, K) -> bool) -> Map<K, V> uses unsafe {
   return Map<K, V>(
@@ -178,6 +208,24 @@ fun PutsAndGets() -> bool uses unsafe {
     return false
   }
   return map.Get(50, -1) == -1 && !map.Has(50) && map.Has(7)
+}
+
+@Test
+fun WalksEveryKey() -> bool uses unsafe {
+  var map = MapNew<int, int>(IntHash, IntEquals)
+  var i = 0
+  while i < 20 {
+    map.Put(i, i * 2)
+    i = i + 1
+  }
+  var keys = 0
+  var sum = 0
+  for key in map {
+    keys = keys + 1
+    sum = sum + map.Get(key, 0)
+  }
+  // Every key once, and the values that go with them: 2 * (0 + ... + 19).
+  return keys == 20 && sum == 380
 }
 
 @Test

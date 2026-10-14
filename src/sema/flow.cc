@@ -446,9 +446,16 @@ class Checker {
       }
 
       case ExprKind::kWhile:
+        Expression(expr.lhs);
+        Body(expr.rhs);
+        return Flow::kFalls;
+
       case ExprKind::kFor:
       case ExprKind::kForeach:
-        Expression(expr.lhs);
+        // Walking something borrows it: the loop asks it how to be
+        // walked and reads what comes back, which is reading *through*
+        // the name rather than taking what it holds (D96).
+        Borrowed(expr.lhs);
         Body(expr.rhs);
         return Flow::kFalls;
 

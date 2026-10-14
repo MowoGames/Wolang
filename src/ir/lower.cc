@@ -369,7 +369,9 @@ class Lowerer {
   // instantiated with: two call sites that inferred the same arguments
   // reach the same copy.
   uint32_t Instantiate(ItemId item, ExprId call) {
-    return Instantiate(item, call, Context{});
+    // The current file's view, for the same reason as above: a copy
+    // queued now is lowered later, when the current file may differ.
+    return Instantiate(item, call, here_);
   }
 
   uint32_t Instantiate(ItemId item, ExprId call, const Context& where) {
@@ -461,7 +463,13 @@ class Lowerer {
     // Where the body is: the member table says which file and which
     // declaration, which is all that is needed whether the type was
     // written here or imported from another module.
-    Context where;
+    // The context the body belongs to, always -- not only when it comes
+    // from another file. A copy asked for *while* another file's body was
+    // being lowered is queued, and by the time the queue reaches it the
+    // current file is somebody else's again: without this the body was
+    // looked for in the wrong syntax tree and the function came out
+    // empty (D79).
+    Context where = here_;
     if (member.file != file_index()) {
       if (!foreign_) {
         return 0xFFFFFFFFu;
@@ -4423,6 +4431,111 @@ class Lowerer {
     return false;
   }
 
+  // The type `Iterate` on |owner| hands back, or an invalid id when the
+  // type does not say how to walk itself.
+  TypeId IteratorOf(TypeId owner) {
+    if (types_->KindOf(owner) != TypeKind::kNamed &&
+        types_->KindOf(owner) != TypeKind::kInstance) {
+      return TypeId{};
+    }
+    const Member* iterate =
+        FindAnyMember(owner, interner_->Intern("Iterate"));
+    if (iterate == nullptr || iterate->kind != MemberKind::kMethod ||
+        types_->KindOf(iterate->type) != TypeKind::kFunction) {
+      return TypeId{};
+    }
+    const TypeId iterator = Erase(Apply(types_->ElementOf(iterate->type)));
+    // It has to answer the other two questions as well, or the loop has
+    // nothing to ask.
+    if (FindAnyMember(iterator, interner_->Intern("Next")) == nullptr ||
+        FindAnyMember(iterator, interner_->Intern("Value")) == nullptr) {
+      return TypeId{};
+    }
+    return iterator;
+  }
+
+  // `for x in thing` where the thing says how to walk itself.
+  //
+  // Three calls and a loop: `Iterate` once, then `Next` until it says no,
+  // with `Value` inside. Written out here rather than desugared in the
+  // parser, so that a diagnostic points at the loop the program wrote.
+  void LowerIteratorLoop(const Expr& expr, TypeId sequence_type) {
+    const TypeId iterator = IteratorOf(sequence_type);
+    InstId sequence;
+    {
+      // Read through rather than taken: the loop borrows what it walks.
+      const Borrowing borrowing(this);
+      sequence = Value(expr.lhs);
+    }
+    const InstId walker =
+        CallMethod(sequence_type, sequence, interner_->Intern("Iterate"),
+                   {}, iterator);
+    const InstId slot = builder_->Add(Opcode::kAlloca, iterator);
+    builder_->Add(Opcode::kStore, TypeId{}, {slot, walker});
+
+    const BlockId header = builder_->AddBlock("for.header");
+    const BlockId body = builder_->AddBlock("for.body");
+    const BlockId exit = builder_->AddBlock("for.exit");
+    builder_->Jump(header);
+
+    builder_->SetCurrent(header);
+    const InstId current =
+        builder_->Add(Opcode::kLoad, iterator, {slot});
+    const InstId more =
+        CallMethod(iterator, current, interner_->Intern("Next"), {},
+                   types_->bool_type());
+    builder_->Branch(more, body, exit);
+
+    builder_->SetCurrent(body);
+    const Member* value =
+        FindAnyMember(iterator, interner_->Intern("Value"));
+    const TypeId element =
+        value != nullptr ? Erase(Apply(types_->ElementOf(value->type)))
+                         : types_->error();
+    const InstId held = builder_->Add(Opcode::kLoad, iterator, {slot});
+    const InstId element_value =
+        CallMethod(iterator, held, interner_->Intern("Value"), {}, element);
+
+    const size_t depth = locals_.size();
+    loops_.push_back(LoopTarget{expr.label, exit, header, scope_depth_});
+    if (ast().Contains(expr.pattern) &&
+        ast().Get(expr.pattern).kind == PatternKind::kBinding) {
+      locals_.push_back(Local{ast().Get(expr.pattern).name, InstId{},
+                              element_value, element});
+    }
+    Lower(expr.rhs);
+    locals_.resize(depth);
+    loops_.pop_back();
+    if (!builder_->Terminated()) {
+      builder_->Jump(header);
+    }
+    builder_->SetCurrent(exit);
+  }
+
+  // Calls |name| on |receiver|, which the caller has already worked out
+  // the type of. For the loops and the destructors that build calls the
+  // source did not write.
+  InstId CallMethod(TypeId owner,
+                    InstId receiver,
+                    Symbol name,
+                    std::vector<InstId> arguments,
+                    TypeId result) {
+    const Member* member = FindAnyMember(owner, name);
+    if (member == nullptr) {
+      return builder_->Undef(result);
+    }
+    const uint32_t index = MethodIndex(owner, *member);
+    if (index == 0xFFFFFFFFu) {
+      return builder_->Undef(result);
+    }
+    std::vector<InstId> operands;
+    operands.push_back(receiver);
+    for (InstId argument : arguments) {
+      operands.push_back(argument);
+    }
+    return builder_->Call(index, result, std::move(operands));
+  }
+
   // `for i in a..b` and `for x in xs`.
   //
   // Both are a counting loop: a range counts between its bounds, and a
@@ -4434,6 +4547,13 @@ class Lowerer {
     const TypeId sequence_type = Erase(TypeOf(expr.lhs));
     const bool over_range = ast().Contains(expr.lhs) &&
                             ast().Get(expr.lhs).kind == ExprKind::kRange;
+
+    // A type that says how to walk itself: `Iterate` hands back something
+    // with `Next` and `Value`, and the loop is those three calls (D96).
+    if (!over_range && IteratorOf(sequence_type).is_valid()) {
+      LowerIteratorLoop(expr, sequence_type);
+      return;
+    }
 
     // What the index counts in, and what it counts to.
     InstId start;

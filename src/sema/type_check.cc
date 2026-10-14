@@ -39,6 +39,9 @@ constexpr std::string_view kSelfNotMutable = "E0125";
 constexpr std::string_view kCannotInfer = "E0126";
 // A module-level `const` or `var` with no type written.
 constexpr std::string_view kModuleBindingNeedsType = "E0130";
+// A `for` over something that is not a sequence and says no other way to
+// walk it.
+constexpr std::string_view kNotIterable = "E0131";
 constexpr std::string_view kWaitOutsideTask = "E0301";
 constexpr std::string_view kTaskNotWaited = "E0302";
 constexpr std::string_view kWaitNotWholeExpression = "E0303";
@@ -292,6 +295,7 @@ class Checker {
   // The member of the enclosing type named |name|, or null when there is no
   // enclosing type or it has no such member.
   const Member* SelfMember(Symbol name) const;
+  TypeId IteratedElement(TypeId sequence) const;
   TypeId CheckIf(const Expr& expr, TypeId expected);
   void NarrowOnNullCheck(ExprId condition);
   TypeId CheckMatch(const Expr& expr, TypeId expected);
@@ -660,6 +664,40 @@ TypeId Checker::CheckLiteral(const Expr& expr, TypeId expected) {
 }
 
 // ------------------------------------------------------------ expressions ---
+
+// What `for x in value` binds when the value's own type says how to walk
+// it: `Iterate` hands back something with `Next` and `Value`, and this is
+// what `Value` gives.
+TypeId Checker::IteratedElement(TypeId sequence) const {
+  const TypeId named = types_->StripWrappers(sequence);
+  if (types_->KindOf(named) != TypeKind::kNamed &&
+      types_->KindOf(named) != TypeKind::kInstance) {
+    return TypeId{};
+  }
+  const auto member_of = [&](TypeId owner, std::string_view name) {
+    // Looked up rather than interned: a name nothing in the program ever
+    // wrote cannot be a member of anything, and this is a const query.
+    const Symbol symbol = interner_->Lookup(name);
+    if (const Member* own = resolution_->FindMember(owner, symbol)) {
+      return own;
+    }
+    return resolution_->FindInheritedMember(owner, symbol);
+  };
+
+  const Member* iterate = member_of(named, "Iterate");
+  if (iterate == nullptr || iterate->kind != MemberKind::kMethod ||
+      types_->KindOf(iterate->type) != TypeKind::kFunction) {
+    return TypeId{};
+  }
+  const TypeId iterator = types_->ElementOf(iterate->type);
+  const Member* next = member_of(iterator, "Next");
+  const Member* value = member_of(iterator, "Value");
+  if (next == nullptr || value == nullptr ||
+      types_->KindOf(value->type) != TypeKind::kFunction) {
+    return TypeId{};
+  }
+  return types_->ElementOf(value->type);
+}
 
 const Member* Checker::SelfMember(Symbol name) const {
   if (!self_type_.is_valid()) {
@@ -1952,8 +1990,27 @@ TypeId Checker::CheckLoop(const Expr& expr) {
     const TypeId sequence = Check(expr.lhs, TypeId{});
     // A slice or array yields its elements; a range yields its bound type.
     TypeId element = types_->ElementOf(sequence);
-    if (!element.is_valid()) {
+    // A type that says how to walk itself yields what its iterator's
+    // `Value` gives back (D96). Three names and no trait, because a trait
+    // would need an associated type to say "what I walk over".
+    if (const TypeId walked = IteratedElement(sequence); walked.is_valid()) {
+      element = walked;
+    } else if (!element.is_valid()) {
       element = types_->IsNumeric(sequence) ? sequence : types_->error();
+      // A query is walked by the scheduler rather than by a method, so it
+      // needs no `Iterate` (D82).
+      const bool is_query =
+          types_->KindOf(sequence) == TypeKind::kInstance &&
+          types_->Get(sequence).base == types_->query();
+      if (!types_->IsError(sequence) && !types_->IsNumeric(sequence) &&
+          !is_query) {
+        std::string message = "`";
+        message.append(Describe(sequence));
+        message.append("` cannot be walked over");
+        Report(kNotIterable, std::move(message), expr.span,
+               "give it `fun Iterate()` returning something with `Next` "
+               "and `Value`");
+      }
     }
     // A query yields the component it was declared over, and `mut` on
     // that component is what makes the loop's binding assignable: a
@@ -3031,6 +3088,19 @@ void Checker::CheckItem(ItemId id) {
       } else {
         const Binding* binding = Lookup(item.name);
         self_type_ = binding != nullptr ? binding->type : TypeId{};
+        // Inside `class List<T>`, `self` is a `List<T>` rather than a
+        // `List`: the parameters are in scope, and a method that hands
+        // `self` to something expecting the instance would otherwise be
+        // handing over the declaration (D78).
+        if (self_type_.is_valid()) {
+          const std::span<const TypeId> parameters =
+              resolution_->ParametersOf(self_type_);
+          if (!parameters.empty()) {
+            self_type_ = types_->Instance(
+                self_type_,
+                std::vector<TypeId>(parameters.begin(), parameters.end()));
+          }
+        }
         CheckBaseChain(item, self_type_);
         CheckSized(item, self_type_);
       }
