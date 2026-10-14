@@ -1680,5 +1680,91 @@ fun Write(p: *i32, n: i32) {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheckTest, RejectsUseAfterMove) {
+  // A `String` owns its bytes, so it cannot be in two places. Which use
+  // moves and which borrows is the question "what did the context want":
+  // `String` moves, `str` borrows (D15b).
+  Fixture f(R"(
+offer fun Print(text: str) uses io
+
+fun Moved(n: int) uses io {
+  let a = "value {n}"
+  let b = a
+  Print(b)
+  Print(a)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0122");
+}
+
+WOLANG_TEST(TypeCheckTest, ABorrowDoesNotMove) {
+  Fixture f(R"(
+offer fun Print(text: str) uses io
+
+fun Borrowed(n: int) uses io {
+  let a = "value {n}"
+  Print(a)
+  Print(a)
+  Print(a)
+}
+
+fun Rewritten(n: int) uses io {
+  var a = "value {n}"
+  let b = a
+  a = "other {n}"
+  Print(a)
+  Print(b)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheckTest, AMoveOnOnePathIsAMove) {
+  // A value moved on one branch is gone at the join: the other branch
+  // cannot know which way control came.
+  Fixture f(R"(
+offer fun Take(text: String) uses io
+
+fun Maybe(c: bool, n: int) uses io {
+  let a = "value {n}"
+  if c {
+    Take(a)
+  }
+  Take(a)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0122");
+}
+
+WOLANG_TEST(TypeCheckTest, CopyingANumberIsNotAMove) {
+  Fixture f(R"(
+fun Twice(n: int) -> int {
+  let a = n
+  let b = a
+  return a + b
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheckTest, AMoveInALoopBodyIsAMoveTwice) {
+  // The second iteration moves what the first one already did, which is
+  // the mistake worth reporting -- and the reason a loop body is walked
+  // twice.
+  Fixture f(R"(
+offer fun Take(text: String) uses io
+
+fun InALoop(n: int) uses io {
+  let a = "value {n}"
+  var i = 0
+  while i < n {
+    Take(a)
+    i = i + 1
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0122");
+}
+
 }  // namespace
 }  // namespace wolang

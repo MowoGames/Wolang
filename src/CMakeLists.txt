@@ -31,7 +31,7 @@ add_library(wolang_core STATIC
     ir/verifier.cc
     sema/dimension.cc
     sema/effect.cc
-    sema/initialization.cc
+    sema/flow.cc
     sema/resolution.cc
     sema/type.cc
     sema/type_check.cc
@@ -83,7 +83,7 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/ir_opcode.inc
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/dimension.h
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/effect.h
-        ${PROJECT_SOURCE_DIR}/include/wolang/sema/initialization.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/sema/flow.h
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/resolution.h
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/type.h
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/type_check.h

@@ -34,6 +34,12 @@ struct TypedBody {
   // pairs. The module-wide fixpoint needs these: a row cannot be inferred
   // from one body alone.
   std::vector<std::pair<uint32_t, uint32_t>> callees;
+  // Expressions that were accepted as an implicit borrow: an owned
+  // `String` where a `str` was wanted (D15b). Recorded because it is the
+  // difference between a use that moves and a use that does not, and only
+  // the checker knows which rule it applied.
+  std::vector<ExprId> borrows;
+
   // What a generic call was inferred to be: the call expression, and the
   // type arguments in the callee's parameter order.
   //

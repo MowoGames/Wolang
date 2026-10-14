@@ -638,7 +638,10 @@ int RunAsm(const Options& options) {
         std::fprintf(stdout, "@%s: %u bytes\n", name.c_str(), bytes);
         continue;
       }
-      std::fprintf(stdout, "@%s: interpreted, %s\n", name.c_str(),
+      // A foreign declaration is not "left to the interpreter": it has no
+      // body on either side.
+      std::fprintf(stdout, "@%s: %s%s\n", name.c_str(),
+                   function.is_foreign() ? "" : "interpreted, ",
                    std::string(compiled->SkipReason(function.name)).c_str());
     }
   }

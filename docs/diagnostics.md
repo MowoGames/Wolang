@@ -207,6 +207,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0403` | a type argument does not satisfy a bound | `Hurt(rock)` where `T: Damageable` |
 | `E0401` | `override` disagrees with the base method | marked `override` with nothing to override |
 | `E0120` | a field holds a reference | `var r: &int` |
+| `E0122` | a value that was moved out of is used again | `let b = a` then `Take(a)` where `a: String` |
 | `E0123` | a variable is used before anything is written to it | `var x: int` then `return x` |
 | `E0124` | the conversion is not between numbers | `s as int` where `s: str` |
 | `E0070` | `@allow` is missing a code or a reason | `@allow(W0101)` |
@@ -231,6 +232,17 @@ adds is `E0802`: the C boundary takes numbers, `bool` and pointers, because
 everything crossing it has to mean the same on both sides, and a type whose
 layout this compiler decides unilaterally — a slice, a string, an optional —
 does not.
+
+`E0122` is the other half of the same walk. A type that owns a resource --
+today a `String`, later a `Box<T>` -- cannot be in two places, so handing it
+somewhere moves it and the name it was in no longer holds a value. Which use
+moves and which merely borrows is the question "what did the context want":
+a `String` where a `String` is expected moves, and a `String` where a `str`
+is expected is the implicit borrow of D15b. A write gives the name a value
+again. Writes merge by intersection and moves by union: a value moved on one
+branch is gone at the join, while a value written on one branch is not
+written. A loop body is walked twice, because the second iteration moving
+what the first one moved is the mistake worth reporting.
 
 `E0123` is definite assignment: a variable is reported when *any* path to a
 use fails to write it, which is why a loop body does not count -- it may not
@@ -267,7 +279,6 @@ in use appear in the implemented tables above, not here.
 | Code | Catches |
 |---|---|
 | `E0121` | value escapes its `region` |
-| `E0122` | use after move of a `Box<T>` |
 | `E0301` | `await` outside an `async` function |
 | `E0302` | `async` function called without `await` or `spawn` |
 | `E0501` | two systems write the same component without an ordering |

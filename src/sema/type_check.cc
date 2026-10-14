@@ -2,7 +2,7 @@
 
 #include "wolang/sema/type_check.h"
 
-#include "wolang/sema/initialization.h"
+#include "wolang/sema/flow.h"
 
 #include <functional>
 #include <string>
@@ -1638,6 +1638,13 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
   if (!(keep_open && !expected.is_valid())) {
     type = Adapt(type, expected, expr.span);
   }
+  // An owned string handed where a borrowed one is wanted is a borrow, and
+  // the flow analysis has to know: a borrow does not move.
+  if (expected.is_valid() &&
+      types_->KindOf(expected) == TypeKind::kStr &&
+      types_->KindOf(type) == TypeKind::kString) {
+    result_.borrows.push_back(id);
+  }
   Record(id, type);
   return type;
 }
@@ -2383,12 +2390,12 @@ TypedBody TypeCheckItem(TypeStore* types,
   Checker checker(types, interner, resolution, ast, item_indices);
   TypedBody body = checker.Run(item, item_index);
 
-  // Definite assignment is a separate walk: it needs no types, only names
-  // and the shape of the control flow, and keeping it apart is what keeps
-  // the type checker from growing a second analysis inside it.
-  DiagnosticEngine initialization;
-  CheckInitialization(ast, *interner, item, &initialization);
-  for (const Diagnostic& diagnostic : initialization.diagnostics()) {
+  // Definite assignment and moves are a separate walk over the same tree:
+  // both are about paths rather than about types, and keeping them apart is
+  // what stops the type checker from growing a second analysis inside it.
+  DiagnosticEngine flow;
+  CheckFlow(ast, *interner, *types, body, item, &flow);
+  for (const Diagnostic& diagnostic : flow.diagnostics()) {
     body.diagnostics.push_back(diagnostic);
   }
   return body;
