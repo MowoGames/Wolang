@@ -1163,3 +1163,25 @@ one sentence, which `trait` never quite did.
 The old spelling stays reserved so that a file written before the rename
 says `trait is now spelled ability` rather than failing to parse
 somewhere further along.
+
+**D105. The bounds check a loop already made is removed.** `while i <
+bodies.len { bodies[i].x }` compared the same two values twice: once
+because the program said so, and once because reading an element must not
+be allowed to read anything else. The second is removed where the first
+is the *same* comparison against the same length, on the edge where it was
+true -- the one shape that needs no proof about arithmetic.
+
+Two things had to come first. A field read of something built right here
+is forwarded (`extract 1` of a `soa.new` is the count it was given), which
+is what makes the length of `SoaNew<Body>(kCount)` the constant `kCount`
+again; and facts are inherited only along an edge into a block with one
+way in, which is what makes one pass over the blocks sound -- a loop
+header has two ways in, so it starts knowing nothing, and its body is
+told what the branch said.
+
+The 1M-entity integration went from 43.3 ms to 25.1 ms, and the one-field
+pass from 44.7 to 22.3. What is left in the loop is a multiply, four adds
+and the loads -- and the AoS variant now wins the integration benchmark
+(21.1 ms against 25.1), which is the honest answer for a pass that
+touches four fields of six: `soa` is for the ones that touch one or two,
+where it is ahead by a quarter.

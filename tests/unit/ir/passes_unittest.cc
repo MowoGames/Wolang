@@ -333,11 +333,10 @@ fun Total(values: []int) -> int {
   WOLANG_EXPECT(optimized.find("extract", loop) == std::string::npos);
 }
 
-WOLANG_TEST(PassTest, KeepsTheBoundsCheckInsideTheLoop) {
-  // The one part of an element address that is about *this* element. It
-  // produces no value, so a pass that treats it as pure deletes it, and a
-  // pass that treats it as loop invariant moves it somewhere it checks
-  // nothing -- both of which this noticed.
+WOLANG_TEST(PassTest, DropsTheBoundsCheckTheLoopAlreadyMade) {
+  // `while i < bodies.len` is the same comparison the element read has to
+  // make, so the second one is removed -- and the arithmetic around it is
+  // out of the loop (D105).
   Fixture f(R"(
 struct Body {
   var x: float = 0.0
@@ -358,10 +357,35 @@ fun Sum(bodies: soa []Body) -> float {
   const std::string optimized = f.Optimized("Sum");
   const size_t loop = optimized.find("// loop.header");
   WOLANG_EXPECT(loop != std::string::npos);
-  WOLANG_EXPECT(optimized.find("index.check", loop) != std::string::npos);
-  // And the arithmetic around it is gone from the loop: what is left is a
-  // multiply and two adds, with the field's array found before it.
+  WOLANG_EXPECT(optimized.find("index.check", loop) == std::string::npos);
   WOLANG_EXPECT(optimized.find("soa.addr") == std::string::npos);
+}
+
+WOLANG_TEST(PassTest, KeepsABoundsCheckNothingProved) {
+  // The one part of an element address that is about *this* element. It
+  // produces no value, so a pass that treats it as pure deletes it, and a
+  // pass that treats it as loop invariant moves it somewhere it checks
+  // nothing -- both of which this noticed. Here the loop counts one
+  // thing and the index is another, so the check has to stay.
+  Fixture f(R"(
+struct Body {
+  var x: float = 0.0
+  var y: float = 0.0
+}
+
+fun Sum(bodies: soa []Body, at: int) -> float {
+  var total = 0.0
+  var i = 0
+  while i < 4 {
+    total = total + bodies[at].x
+    i = i + 1
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string optimized = f.Optimized("Sum");
+  WOLANG_EXPECT(optimized.find("index.check") != std::string::npos);
 }
 
 WOLANG_TEST(PassTest, EveryPassLeavesTheFunctionVerifiable) {

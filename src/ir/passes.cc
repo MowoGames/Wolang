@@ -22,6 +22,11 @@ void Discard(Function* function, InstId id) {
   inst.cases_count = 0;
 }
 
+// Takes |id| out of the block that holds it, leaving the instruction
+// itself in place so that every operand's numbering still means what it
+// did.
+void EraseFromBlock(Function* function, InstId id);
+
 // Replaces every use of |from| with |to|.
 bool ReplaceAllUses(Function* function, InstId from, InstId to) {
   bool changed = false;
@@ -1462,6 +1467,175 @@ bool HoistLoopInvariants(TypeStore* types, Function* function) {
   return changed;
 }
 
+// ------------------------------------------------ fields of a build ---
+
+// `extract i, X` where `X` was built right here: the value that went in.
+//
+// Lowering builds a slice or a view and then reads its parts back -- a
+// length to compare an index against, a pointer to add an offset to -- and
+// until this pass those reads were opaque. Forwarding them is what makes
+// the length of `SoaNew<Body>(kCount)` the constant `kCount` again, which
+// is what lets the next pass see that an index below `kCount` is in
+// bounds (D105).
+bool ForwardFields(TypeStore* types, Function* function) {
+  (void)types;
+  bool changed = false;
+  for (uint32_t i = 0; i < function->instructions.size(); ++i) {
+    const InstId id{i};
+    const Inst& inst = function->Get(id);
+    if (inst.opcode != Opcode::kExtract) {
+      continue;
+    }
+    const std::span<const InstId> operands = function->OperandsOf(inst);
+    if (operands.empty() || !function->Contains(operands[0])) {
+      continue;
+    }
+    const Inst& source = function->Get(operands[0]);
+    InstId value;
+    if (source.opcode == Opcode::kMakeStruct) {
+      const std::span<const InstId> fields = function->OperandsOf(source);
+      if (inst.field < fields.size()) {
+        value = fields[inst.field];
+      }
+    } else if (source.opcode == Opcode::kSoaNew && inst.field == 1) {
+      // A view is where the storage is and how many records it holds; the
+      // count is what the instruction was given.
+      const std::span<const InstId> given = function->OperandsOf(source);
+      if (!given.empty()) {
+        value = given[0];
+      }
+    }
+    if (!value.is_valid() || !function->Contains(value)) {
+      continue;
+    }
+    // Only when the types agree: a field read at a different width is a
+    // conversion, and this pass does not do conversions.
+    if (function->Get(value).type != inst.type) {
+      continue;
+    }
+    changed |= ReplaceAllUses(function, id, value);
+  }
+  return changed;
+}
+
+// --------------------------------------------------- bounds checks ---
+
+// Removes the bounds check an enclosing condition has already made.
+//
+// `while i < count { xs[i] }` checks `i < count` twice: once because the
+// program said so and once because reading an element must not be
+// allowed to read anything else. The second one is what this removes --
+// but only where the first one is the *same* comparison against the same
+// length, reached on the edge where it was true, which is the only shape
+// where no proof about arithmetic is needed (D105).
+//
+// The gain is a compare and a branch per element per loop, which on a
+// loop over a million records is the difference between two passes over
+// memory and three.
+bool EliminateBoundsChecks(TypeStore* types, Function* function) {
+  (void)types;
+  const LinearOrder order = Linearize(*function);
+  if (order.blocks.size() < 2) {
+    return false;
+  }
+  const size_t count = function->blocks.size();
+
+  // What is known on the way into each block: the comparisons that must
+  // have held. Only "this index is below this length", which is all a
+  // bounds check needs.
+  struct Known {
+    InstId index;
+    InstId length;
+  };
+  std::vector<std::vector<Known>> entering(count);
+  std::vector<uint32_t> arrivals(count, 0);
+  for (BlockId block : order.blocks) {
+    const InstId last = function->TerminatorOf(block);
+    if (!function->Contains(last)) {
+      continue;
+    }
+    for (BlockId successor :
+         function->SuccessorsOf(function->Get(last))) {
+      if (successor.is_valid() && successor.index < count) {
+        ++arrivals[successor.index];
+      }
+    }
+  }
+
+  bool changed = false;
+  for (BlockId block : order.blocks) {
+    // What this block knows. A block with more than one way in knows
+    // nothing it was told on one of them: facts are inherited only where
+    // there is a single way in, which is what makes one pass over the
+    // blocks sound -- a loop header has two ways in and therefore starts
+    // empty, and its body, which has one, is told what the branch said.
+    const std::vector<Known> here =
+        arrivals[block.index] <= 1 ? entering[block.index]
+                                   : std::vector<Known>();
+
+    const std::vector<InstId> instructions =
+        function->blocks[block.index].instructions;
+    for (const InstId id : instructions) {
+      if (!function->Contains(id)) {
+        continue;
+      }
+      const Inst& inst = function->Get(id);
+      if (inst.opcode != Opcode::kIndexCheck) {
+        continue;
+      }
+      const std::span<const InstId> operands = function->OperandsOf(inst);
+      if (operands.size() < 2) {
+        continue;
+      }
+      bool known = false;
+      for (const Known& fact : here) {
+        known |= fact.index == operands[0] && fact.length == operands[1];
+      }
+      if (known) {
+        // Taken out of the block rather than turned into an `undef`: a
+        // check produces no value, and an `undef` with no type is not
+        // something the verifier should have to accept.
+        EraseFromBlock(function, id);
+        changed = true;
+      }
+    }
+
+    // What the edges out of this block say.
+    const InstId last = function->TerminatorOf(block);
+    if (!function->Contains(last)) {
+      continue;
+    }
+    const Inst& jump = function->Get(last);
+    const std::span<const BlockId> successors =
+        function->SuccessorsOf(jump);
+    for (size_t which = 0; which < successors.size(); ++which) {
+      const BlockId successor = successors[which];
+      if (!successor.is_valid() || successor.index >= count ||
+          arrivals[successor.index] > 1) {
+        continue;
+      }
+      std::vector<Known> passed = here;
+      if (jump.opcode == Opcode::kBranch && which == 0) {
+        // The edge taken when the condition held. A compare of an index
+        // against a length is exactly what a bounds check asks, so this
+        // is the one fact worth carrying.
+        const std::span<const InstId> operands =
+            function->OperandsOf(jump);
+        if (!operands.empty() && function->Contains(operands[0])) {
+          const Inst& condition = function->Get(operands[0]);
+          const std::span<const InstId> compared =
+              function->OperandsOf(condition);
+          if (condition.opcode == Opcode::kLt && compared.size() == 2) {
+            passed.push_back(Known{compared[0], compared[1]});
+          }
+        }
+      }
+      entering[successor.index] = std::move(passed);
+    }
+  }
+  return changed;
+}
+
 // --------------------------------------------- element addresses ---
 
 // Turns an element address into the arithmetic it is.
@@ -1631,10 +1805,12 @@ void Optimize(TypeStore* types,
     bool changed = false;
     changed |= InlineCalls(types, module, function);
     changed |= FoldConstants(types, function);
+    changed |= ForwardFields(types, function);
     changed |= SimplifyControlFlow(types, function);
     changed |= PromoteSlots(types, function);
     changed |= EliminateCommonSubexpressions(types, function);
     changed |= HoistLoopInvariants(types, function);
+    changed |= EliminateBoundsChecks(types, function);
     changed |= EliminateDeadCode(types, module, function);
     if (!changed) {
       return;
