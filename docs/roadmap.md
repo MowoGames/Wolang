@@ -26,7 +26,7 @@ Dates are not fixed. Scope is.
 | Wave | Content | Exit criterion |
 |---|---|---|
 | **7** | IR interpreter (the reference semantics), `comptime` evaluation, `wolang run`, first `core` modules written in Wolang | `examples/hello.wo` runs; `@Test` functions execute ✅ |
-| **8** | Dev tier: copy-and-patch code generation (arm64 first, then x64), faults, unwind tables, symbolization | gameplay microbenchmarks within 3x of C++ |
+| **8** | Dev tier: copy-and-patch code generation (arm64 first, then x64), faults, unwind tables, symbolization | gameplay microbenchmarks within 3x of C++ ✅ (three of four against `-O2`; all four against scalar C++) |
 | **9** | Memory: value semantics, second-class references, `Box`/`Rc`, `region` blocks, optional GC; C ABI FFI | a program with no `class` links no collector |
 
 ## Phase C — the gamedev core

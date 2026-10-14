@@ -154,7 +154,16 @@ code costs nothing at runtime" true rather than aspirational.
 
 Effect rows are the exception — they are *kept*. "This call does nothing
 observable" is what licenses deleting it as dead, so the information has to
-survive into the IR rather than being erased with the units.
+survive into the IR rather than being erased with the units. A row carries a
+second bit, `effects_known`: an empty row is an *assertion* (D38), so a
+function whose row was never inferred — a declaration from another file —
+has to read as unknown rather than as one that does nothing.
+
+What the row does **not** yet license is the removal it was kept for. An
+effect row says nothing about trapping, and deleting a call that would have
+faulted turns a faulting program into one that does not — the same argument
+that makes arithmetic impure (D15c). The row becomes actionable when the IR
+can also say "this function cannot trap".
 
 ### Lowering
 
@@ -174,6 +183,43 @@ errors. That division is what keeps the IR free of "maybe" cases.
 Every `var` goes in a slot and a pass promotes the ones that can be. Deciding
 during lowering would mean tracking liveness there; leaving it to a pass keeps
 lowering simple enough to be obviously correct.
+
+**A generic function is not lowered at all.** It is a recipe, and emitting it
+would put a `T` in the IR that every back end would then need an answer for.
+Instead the checker records what each generic call was inferred to be, and
+lowering emits one specialization per instantiation, named after its
+arguments: `Identity<i32>`. Two call sites that inferred the same arguments
+reach the same copy. A generic body calling another generic passes its own
+parameters along, so the inner instantiation only becomes concrete when the
+outer one does — which makes the worklist, not a second pass, the right
+shape.
+
+### The passes
+
+| Pass | Does |
+|---|---|
+| `InlineCalls` | replaces a call to a small function with the body it calls |
+| `FoldConstants` | arithmetic and comparison on two constants |
+| `PromoteSlots` | turns a slot into values, inserting block parameters where a value depends on the path taken |
+| `SimplifyControlFlow` | a constant branch becomes a jump, a block one block reaches is merged into it, unreachable blocks go |
+| `EliminateDeadCode` | drops what nothing reads and nothing can observe |
+
+Two of them are where the id design pays off. Inlining splices the callee's
+blocks in and turns the **call instruction itself into the parameter** of the
+block control comes back to: every operand that read the call's result now
+reads the parameter, and nothing is rewritten. Merging a block into its one
+predecessor substitutes the block's parameters with the values the jump
+carried, which is what lets a block with parameters be merged at all — and
+an inlined body always comes back through one.
+
+Slot promotion is SSA construction: a loop counter written every iteration
+becomes a block parameter on the loop header. It is what the block-parameter
+form was chosen for, and it is the difference between a loop that keeps its
+variables in registers and one that makes a round trip through the frame
+every iteration — measured at three times the speed on the benchmarks. It
+declines in one case: a block that needs a parameter whose predecessor ends
+in a branch rather than a jump, because only a jump can carry arguments and
+this pass does not split edges.
 
 ### The verifier
 
@@ -237,6 +283,61 @@ An interpolated string lowers to conversions and concatenations of these,
 which is why `lib/std/src/io` declares them even though source code rarely
 names them.
 
+## The dev tier
+
+Copy-and-patch code generation for arm64 (D5). Every A64 instruction is four
+bytes, so "a stencil with holes for the operands" is a word and a bit field —
+which is what the assembler in `codegen/arm64` is. Its encodings are checked
+against a system assembler's, because an encoder that is almost right
+produces code that almost works and nothing further up can tell.
+
+**Linear scan from the start** (D39), not accumulator stencils. The allocator
+hands out **callee-saved registers only** — nine integer and eight floating
+point. That is what makes a call need no spilling around it: every value the
+allocator placed survives a call because the callee is obliged to restore it.
+The prologue saves the ones a function used.
+
+An aggregate never gets a register: a struct, a tuple, an array and an
+optional each live in a frame area, and the value of such an SSA name is its
+address. Aggregates are passed and returned by pointer, which for the return
+is also what the platform ABI does. The cost is a copy the optimizing tier
+will want to avoid; the benefit is that one rule covers every aggregate
+however it was produced.
+
+**A trap in compiled code is the interpreter's trap.** Each site carries the
+kind, the place and the message the interpreter would have produced, and the
+check before the operation branches to a three-word stub that calls the host.
+Reporting is a non-local exit — the host records the trap and leaves through
+a landing pad — so the path that does not fault pays for nothing but the
+untaken branch. The checks are the answer to this wave's open question:
+portable and predictable, with the plan to remove them where range analysis
+proves them unnecessary, which is the same analysis dead arithmetic needs.
+
+Every compiled function builds a frame record whether it needs one or not,
+which is the whole unwind information this tier needs: a trap walks the chain
+of frame pointers and symbolizes each return address, so a fault deep in
+compiled code names its callers.
+
+The tier **compiles what it can and says what it did not**. A function that
+holds a string, calls something uncompilable, or wants more argument
+registers than exist is left to the interpreter, and `wolang asm` prints the
+reason. The interpreter is the reference semantics and always available, so
+declining is cheap and guessing would not be.
+
+### How it is known to be right
+
+Three tiers run the same program on every test: the interpreter on the
+unoptimized IR (the reference), the interpreter on the optimized IR (did the
+passes preserve meaning), and the compiled code (does this tier agree).
+`wolang test` does the same for every `@Test` in a package — the tests of
+`lib/core` run in both tiers and are compared.
+
+`benchmarks/run.sh` compares the four gameplay kernels against the same
+kernels in C++, twice: against `-O2`, and against `-O2` with vectorization
+off. The second column is the one that measures this tier's code quality; the
+first includes a loop clang turns into vector code, which a scalar tier is
+not trying to be within 3x of.
+
 ## Memory model
 
 Decided in wave 0, implemented in wave 9:
@@ -284,10 +385,16 @@ keeps that complexity out of the core.
 | `include/wolang/query`, `src/query` | the query engine and the query catalog |
 | `include/wolang/compiler`, `src/compiler` | item trees, the database, manifests, modules, workspace loading, the cache |
 | `include/wolang/format`, `src/format` | the formatter |
+| `include/wolang/sema`, `src/sema` | types, dimensions, name resolution, type checking, effects |
+| `include/wolang/ir`, `src/ir` | the typed SSA IR, lowering, the verifier, the passes, the printer |
+| `include/wolang/interp`, `src/interp` | the interpreter, values, intrinsics |
+| `include/wolang/codegen`, `src/codegen` | type layout, register allocation, the arm64 assembler and emitter, the runtime a trap reports through |
+| `benchmarks` | the gameplay kernels, their C++ counterparts, and the script that compares them |
+| `lib/core`, `lib/std` | the standard library, written in Wolang |
 | `tools/wolang` | the command line driver |
 | `tests/harness` | the dependency-free test harness |
 | `tests/unit` | unit tests mirroring the source tree |
 | `examples` | `.wo` sources, also used as compiler corpus |
 
-Planned directories, one per wave that introduces them: `sema`, `check`, `ir`,
-`opt`, `interp`, `codegen`, `runtime`, `object`, `interop`, `ecs`, `net`.
+Planned directories, one per wave that introduces them: `object`, `interop`,
+`ecs`, `net`.

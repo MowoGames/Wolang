@@ -282,3 +282,88 @@ granted `capabilities = "net"` and nothing else; inferred error sets mean
 TLS is bound, not written — BoringSSL or rustls through the C ABI (wave 9).
 Nobody should write TLS, and pretending otherwise would be the one decision
 here that could not be walked back.
+
+## Code generation
+
+**D41. `as` converts between numbers and does nothing else, and a narrowing
+conversion traps.** D33 removed implicit widening, so `as` is the only
+numeric conversion there is — not a reinterpretation of bits, which is what
+`unsafe` is for. Converting anything that is not a number is `E0124`. A
+conversion that cannot hold the value traps rather than keeping the low
+bits, because overflow traps everywhere else in this language and a cast
+that quietly changed a number would be the one place it does not.
+
+**D42. A generic function is never lowered; one specialization is emitted per
+instantiation.** A generic declaration is a recipe, and lowering it would put
+a `T` in the IR that every back end would then need an answer for — the
+verifier rightly rejects a call passing an `i32` where a `T` is declared. The
+specialization is named after its arguments, so two call sites that inferred
+the same arguments share one copy. Cross-file instantiation needs
+whole-program lowering and waits for the linking story.
+
+**D43. A trap in compiled code is a check before the operation, not a signal
+handler.** This was wave 8's open question. A check costs an instruction and
+an untaken branch on every arithmetic operation; a handler is free on the hot
+path but is tied to the platform, cannot work for WASM, and makes every
+arithmetic instruction a potential non-local exit. The check is portable and
+predictable, and the plan is to remove it where range analysis proves it
+unnecessary — the same analysis that would let dead arithmetic be deleted
+(D15c). Paying for a check that an analysis can later remove is a better
+place to be than depending on a mechanism one target cannot have.
+
+**D44. The register allocator hands out callee-saved registers only.** Nine
+integer registers and eight floating point ones instead of twenty-odd, and in
+exchange a call needs no spilling around it: every value the allocator placed
+survives a call because the callee is obliged to restore it. The prologue
+saves what the function used. For a dev tier that compiles fast and has to be
+right, removing the caller-save problem is worth more than the extra
+registers.
+
+**D45. An aggregate lives in the frame and is passed by pointer.** A struct, a
+tuple, an array and an optional never get a register in this tier: the value
+of such an SSA name is an address. One rule then covers every aggregate
+however it was produced, and the return convention coincides with the
+platform's indirect return. Scattering fields across registers is an
+optimizing-tier decision.
+
+**D46. A trap is reported by a non-local exit.** Generated code calls the host
+through the one pointer it keeps, and the host records the trap and leaves
+through a landing pad established when compiled code was entered. A generated
+frame holds machine values and nothing that needs unwinding, so leaving
+through one costs nothing — and the alternative, a check after every call,
+would be paid on the path that does not fault. The context has to live
+outside automatic storage: an object changed between `setjmp` and `longjmp`
+has an indeterminate value afterwards, and the optimizer is entitled to fold
+the trap kind back to the zero it was initialized with. It did.
+
+**D47. The trap vocabulary belongs to the IR, not to the interpreter.** A
+division by zero is a property of the operation. Both tiers have to name it
+identically or the differential check between them would be comparing two
+vocabularies.
+
+**D48. A trap message says only what both tiers know.** The interpreter could
+print the offending index; compiled code cannot put a runtime value into a
+string it built while compiling. Keeping the dynamic value out of the message
+is what makes the two tiers' outcomes comparable in full — and the value is
+in the frame, which is where a debugger looks for it.
+
+**D49. Every compiled function builds a frame record, even a leaf.** Two
+instructions in the prologue, and in exchange a stack walk is two loads per
+frame and needs no unwind table at all. A trap deep in compiled code can
+name its callers, which is what makes a fault in generated code debuggable
+before there is a debugger.
+
+**D50. The dev tier compiles what it can and says what it did not.** A
+function holding a string, calling something uncompilable, or wanting more
+argument registers than exist is left to the interpreter, and `wolang asm`
+prints the reason. The interpreter is the reference semantics and is always
+there, so declining is cheap — and a tier that guessed would be the one thing
+nobody could debug.
+
+**D51. `wolang run` stays on the interpreter until the FFI arrives.** Any
+interesting `main` prints something, and printing goes through an intrinsic
+the dev tier cannot call yet. The compiled tier is exercised where it is
+honest to: `wolang test` runs every `@Test` in both tiers and compares, and
+`wolang bench` times it. Running `main` through compiled code would also
+quietly drop the step limit, which is a property of the run and not
+something a tier gets to change.

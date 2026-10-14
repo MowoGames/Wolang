@@ -450,6 +450,30 @@ Integer literals are the exception, and the reason this is not tiresome: a
 literal has arbitrary precision until it is used, so it takes whatever type
 its context expects.
 
+`as` converts between numbers and nothing else. It exists because there are
+no implicit conversions, not as a reinterpretation of bits — converting a
+`str`, a struct or a `bool` with it is `E0124`, and reading a value's bits
+is what `unsafe` is for.
+
+A conversion that cannot hold the value **traps**. Overflow traps everywhere
+else in this language, so a cast that quietly kept the low bits would be the
+one place a number changes silently:
+
+```wolang
+fun Narrow(n: i32) -> u8 => n as u8
+
+Narrow(200)       // 200
+Narrow(300)       // traps: the value does not fit
+Narrow(-1)        // traps: and neither does this one
+```
+
+A float converted to an integer truncates toward zero — `-2.75 as int` is
+`-2` — and traps when the truncated value does not fit, or when it is not a
+number. A float converted to a narrower float rounds; an integer converted
+to a float rounds when the integer has more significant bits than the float
+has mantissa, which is not a trap because no information about magnitude is
+lost.
+
 ### 4.3b Aliases and sizes
 
 `type Count = int` is a second spelling, not a new type: a `Count` is an
