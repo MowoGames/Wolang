@@ -383,6 +383,32 @@ off. The second column is the one that measures this tier's code quality; the
 first includes a loop clang turns into vector code, which a scalar tier is
 not trying to be within 3x of.
 
+## Places: where a value lives
+
+A field of a struct, an element of a buffer, a method's receiver and what a
+pointer points at are all the same question -- *where is this value* -- and
+lowering answers it once, in one place. A **place** is a root and a path of
+steps: the root is a slot, a pointer, or a value with no location at all,
+and each step is a field (which the layout knows) or an element (which only
+the run knows).
+
+Reading and writing both go through that path, so `o.inner.n = 42` is one
+store at the address the path works out rather than a copy of `o`. Which
+matters more than it sounds: before this existed, assigning to a field
+compiled to *nothing at all*, and so did assigning to an element.
+
+The interpreter has no addresses -- its values carry their shape instead --
+so a place there is literally a path: which frame, which slot, and the steps
+from it. An element step adds to the step before it, the way pointer
+arithmetic does; a field step goes inwards. It names its frame because a
+slice of a local array is passed to callees, and holding the frame is safe
+for the same reason the escape rule exists.
+
+A **slice** is this model's payoff: a pointer and a length, with the length
+as an operand of the element-address instruction rather than a property of
+the type. One bounds check covers an array, a slice and a borrowed string,
+and no tier has to know which one it is looking at.
+
 ## Tasks
 
 A `task` is stackless, and the whole of that decision is one transform.

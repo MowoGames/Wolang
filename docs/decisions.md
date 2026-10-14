@@ -476,3 +476,26 @@ keyword, so a field named one is written `self.tag` rather than `tag`.
 Making every declaration keyword contextual everywhere would remove that
 last wrinkle and is a bigger change to the grammar than it looks.
 
+**D65. One address model, three tiers.** A field of a place, an element of
+a buffer and a method's receiver are all "somewhere inside something", and
+each tier answers that its own way: the compiled tiers have real addresses,
+and the interpreter -- whose values carry their shape rather than living in
+memory -- has a *place*: a frame, a slot and the steps to walk from it. An
+element step adds to the one before it, because a pointer to element three
+plus two points at element five; a field step goes inwards. A place names
+its frame, so a slice of a local array can be passed to a callee, and that
+is safe for the same reason `E0121` exists.
+
+What this replaced was worse than slow: assigning to a field compiled to
+nothing, assigning to an element compiled to nothing, and `for` over a
+range lowered to an undefined value. Three silent wrong answers, found by
+writing the programs a buffer needs.
+
+**D66. The length of a sequence is an operand, not a property of a type.**
+An array knows how long it is and a slice does not, so `index.addr` takes
+the length as its third operand and the bounds check reads that. One check
+covers an array, a slice and a borrowed string, and no tier has to know
+which it is looking at. `.len` is an `int` for the same reason it exists:
+it is read in arithmetic and compared with literals far more often than it
+is handed to an allocator.
+
