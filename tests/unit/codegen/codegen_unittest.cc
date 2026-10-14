@@ -399,6 +399,31 @@ fun Many(a: int, b: int, c: int, d: int, e: int) -> int {
                    "115");
 }
 
+WOLANG_TEST(CodegenTest, CompilesAGenericThroughMonomorphization) {
+  // A generic function has no code until something instantiates it, so
+  // this tier never sees a `T`: it compiles the copy, and the copy is as
+  // concrete as anything else.
+  Fixture f(R"(
+fun Larger<T>(a: T, b: T) -> T {
+  if a > b {
+    return a
+  }
+  return b
+}
+
+fun PickInt(a: int, b: int) -> int => Larger(a, b)
+
+fun PickFloat(a: float, b: float) -> float => Larger(a, b)
+)");
+  WOLANG_EXPECT_EQ(f.Run("PickInt", {Fixture::Int(3), Fixture::Int(9)}),
+                   "9");
+  WOLANG_EXPECT_EQ(f.Run("PickFloat", {Fixture::Float(2.5),
+                                       Fixture::Float(1.5)}),
+                   "2.5");
+  WOLANG_EXPECT_EQ(f.Skipped("Larger<i32>"), "");
+  WOLANG_EXPECT_EQ(f.Skipped("Larger<f32>"), "");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

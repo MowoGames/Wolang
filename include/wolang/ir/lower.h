@@ -3,6 +3,10 @@
 #ifndef WOLANG_IR_LOWER_H_
 #define WOLANG_IR_LOWER_H_
 
+#include <span>
+#include <utility>
+#include <vector>
+
 #include "wolang/base/string_interner.h"
 #include "wolang/ir/ir.h"
 #include "wolang/sema/resolution.h"
@@ -27,11 +31,16 @@ namespace ir {
 // deliberately naive: SROA promotes the slots whose address never escapes,
 // and leaving that to a pass keeps lowering simple enough to be obviously
 // correct.
+// |effects| is what each declaration of this file does, after the
+// module-wide fixpoint, prepared by the caller: effects are a module
+// question (D36) and lowering is per file, so lowering is told rather than
+// asking.
 void LowerFile(StringInterner* interner,
                TypeStore* types,
                const FileResolution& resolution,
                const Ast& ast,
                const TypedBody& typed,
+               std::span<const std::pair<ItemId, EffectRow>> effects,
                Module* module);
 
 }  // namespace ir

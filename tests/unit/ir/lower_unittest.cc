@@ -5,9 +5,11 @@
 #include <string>
 #include <string_view>
 
+#include "harness/temp_tree.h"
 #include "harness/test.h"
 #include "wolang/compiler/database.h"
 #include "wolang/ir/printer.h"
+#include "wolang/compiler/workspace.h"
 
 namespace wolang {
 namespace {
@@ -44,6 +46,11 @@ class Fixture {
       result.append(problem);
     }
     return result;
+  }
+
+  const LoweredFile* Lowered() { return db_.Lowered(file_); }
+  Symbol Interned(std::string_view name) {
+    return db_.interner().Intern(name);
   }
 
   // The body of one function, so a test does not have to spell out the
@@ -400,6 +407,124 @@ fun Pick(n: int) -> int {
   WOLANG_EXPECT_EQ(f.Problems(), "");
   const std::string body = f.Function("Pick");
   WOLANG_EXPECT(body.find("and %") != std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, EmitsOneSpecializationPerInstantiation) {
+  // A generic function is a recipe, not a function: it has no code until
+  // something instantiates it. Before monomorphization the IR carried `T`
+  // and the verifier rightly rejected every call to it.
+  Fixture f(R"(
+fun Identity<T>(value: T) -> T {
+  return value
+}
+
+fun UseInt() -> int => Identity(1) + Identity(2)
+
+fun UseFloat() -> float => Identity(1.5)
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  // Two call sites with the same argument share one copy; a different
+  // argument gets its own.
+  WOLANG_EXPECT_EQ(f.Function("Identity<i32>"),
+                   "fun @Identity<i32>(%0: i32) -> i32 {\n"
+                   "^0:  // entry\n"
+                   "  ret %0\n"
+                   "}\n");
+  WOLANG_EXPECT_EQ(f.Function("Identity<f32>"),
+                   "fun @Identity<f32>(%0: f32) -> f32 {\n"
+                   "^0:  // entry\n"
+                   "  ret %0\n"
+                   "}\n");
+  // The generic itself is not in the IR at all.
+  WOLANG_EXPECT_EQ(f.Function("Identity"), "<not found>");
+}
+
+WOLANG_TEST(LowerTest, SpecializesThroughAGenericCaller) {
+  // The inner call's type argument is the outer function's type parameter,
+  // so it only becomes concrete once the outer one is instantiated.
+  Fixture f(R"(
+fun Identity<T>(value: T) -> T => value
+
+fun Twice<T>(value: T) -> T => Identity(Identity(value))
+
+fun Use() -> int => Twice(3)
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT_EQ(f.Function("Twice<i32>"),
+                   "fun @Twice<i32>(%0: i32) -> i32 {\n"
+                   "^0:  // entry\n"
+                   "  %1 = call @Identity<i32>, %0\n"
+                   "  %2 = call @Identity<i32>, %1\n"
+                   "  ret %2\n"
+                   "}\n");
+}
+
+WOLANG_TEST(LowerTest, AnUninferredEffectRowReadsAsUnknown) {
+  // An empty row is an assertion -- "nothing observable" (D38) -- so a
+  // function whose row was never inferred must not read as one that does
+  // nothing. Effects are inferred per module, and a file outside a package
+  // has no module, so this is what a standalone file gets.
+  Fixture f(R"(
+fun Quiet() -> int => 1
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const LoweredFile* lowered = f.Lowered();
+  WOLANG_EXPECT(lowered != nullptr);
+  if (lowered != nullptr) {
+    const ir::Function* quiet = lowered->module.Find(f.Interned("Quiet"));
+    WOLANG_EXPECT(quiet != nullptr);
+    if (quiet != nullptr) {
+      WOLANG_EXPECT(!quiet->effects_known);
+      WOLANG_EXPECT(quiet->effects.empty());
+    }
+  }
+}
+
+WOLANG_TEST(LowerTest, CarriesTheInferredEffectRowIntoTheIr) {
+  // Wave 6 decided effect rows belong in the IR; this is what makes the
+  // stored row an answer rather than a default nobody filled in. The rows
+  // come from the module-wide fixpoint, so this needs a real package.
+  testing::TempTree tree("lower-effects");
+  tree.Write("wolang.toml", "[package]\nname = \"game\"\nversion = \"1\"\n");
+  tree.Write("src/main.wo", R"(
+fun Quiet() -> int => 1
+
+fun Loud() uses io {
+  Shout()
+}
+
+offer fun Shout() uses io
+)");
+  Database db;
+  DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(LoadPackage(&db, tree.path(), &diagnostics));
+
+  for (size_t i = 0; i < db.file_count(); ++i) {
+    const FileId file{static_cast<uint32_t>(i)};
+    const LoweredFile* lowered = db.Lowered(file);
+    if (lowered == nullptr ||
+        lowered->module.Find(db.interner().Intern("Quiet")) == nullptr) {
+      continue;
+    }
+    const ir::Function* quiet =
+        lowered->module.Find(db.interner().Intern("Quiet"));
+    const ir::Function* loud =
+        lowered->module.Find(db.interner().Intern("Loud"));
+    WOLANG_EXPECT(quiet != nullptr && loud != nullptr);
+    if (quiet == nullptr || loud == nullptr) {
+      return;
+    }
+    // Known and empty is an assertion: this function does nothing
+    // observable.
+    WOLANG_EXPECT(quiet->effects_known);
+    WOLANG_EXPECT(quiet->effects.empty());
+    // Inferred, not declared: `Loud` says `uses io` and the row reached the
+    // IR through the fixpoint either way.
+    WOLANG_EXPECT(loud->effects_known);
+    WOLANG_EXPECT(loud->effects.Contains(BuiltinEffect::kIo));
+    return;
+  }
+  WOLANG_EXPECT(false);
 }
 
 }  // namespace

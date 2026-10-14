@@ -137,6 +137,12 @@ struct Function {
   // What the function does. Carried into the IR rather than erased, because
   // "this call has no effects" is what licenses deleting it as dead.
   EffectRow effects;
+  // Whether |effects| is an answer or an absence. An empty row is an
+  // assertion -- "nothing observable" (D38) -- so a function whose row was
+  // never inferred must not read as one that does nothing: a declaration
+  // from another file, or a specialization lowered before its row existed,
+  // is unknown rather than pure.
+  bool effects_known = false;
   // Block 0 is the entry, and its parameters are the function's.
   std::vector<Block> blocks;
   std::vector<Inst> instructions;

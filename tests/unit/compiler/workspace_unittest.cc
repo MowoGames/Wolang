@@ -13,58 +13,13 @@
 #include <unistd.h>
 #endif
 
+#include "harness/temp_tree.h"
 #include "harness/test.h"
 
 namespace wolang {
 namespace {
 
-namespace fs = std::filesystem;
-
-int ProcessId() {
-#if defined(_WIN32)
-  return _getpid();
-#else
-  return static_cast<int>(getpid());
-#endif
-}
-
-// A directory tree created for one test and removed with it. The process id is
-// part of the name so that suites running in parallel cannot collide.
-class TempTree {
- public:
-  explicit TempTree(std::string_view name) {
-    std::error_code error;
-    root_ = fs::temp_directory_path(error) /
-            ("wolang-test-" + std::to_string(ProcessId()) + "-" +
-             std::string(name));
-    fs::remove_all(root_, error);
-    fs::create_directories(root_, error);
-  }
-
-  ~TempTree() {
-    std::error_code error;
-    fs::remove_all(root_, error);
-  }
-
-  TempTree(const TempTree&) = delete;
-  TempTree& operator=(const TempTree&) = delete;
-
-  void Write(std::string_view relative, std::string_view text) {
-    const fs::path path = root_ / relative;
-    std::error_code error;
-    fs::create_directories(path.parent_path(), error);
-    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-    stream.write(text.data(), static_cast<std::streamsize>(text.size()));
-  }
-
-  std::string path() const { return root_.string(); }
-  std::string path(std::string_view relative) const {
-    return (root_ / relative).string();
-  }
-
- private:
-  fs::path root_;
-};
+using testing::TempTree;
 
 std::string Codes(const DiagnosticEngine& diagnostics) {
   std::string result;

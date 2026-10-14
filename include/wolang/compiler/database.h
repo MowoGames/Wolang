@@ -83,18 +83,6 @@ struct LoweredFile {
   ir::Module unoptimized;
 };
 
-// The effect row of one declaration, after the module-wide fixpoint.
-struct InferredEffects {
-  uint32_t file = 0;
-  uint32_t item = 0;
-  EffectRow row;
-
-  friend bool operator==(const InferredEffects& lhs,
-                         const InferredEffects& rhs) {
-    return lhs.file == rhs.file && lhs.item == rhs.item &&
-           lhs.row == rhs.row;
-  }
-};
 
 // What every declaration of a module actually does. Computed in one query so
 // that a cycle of mutually recursive functions is a loop inside a single

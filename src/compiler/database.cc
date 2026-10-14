@@ -548,6 +548,9 @@ void Database::RegisterQueries() {
           result.body.used_names.insert(result.body.used_names.end(),
                                         body.used_names.begin(),
                                         body.used_names.end());
+          result.body.instantiations.insert(
+              result.body.instantiations.end(), body.instantiations.begin(),
+              body.instantiations.end());
           result.items.push_back(std::move(body));
         }
         result.resolution = resolution;
@@ -890,9 +893,29 @@ void Database::RegisterQueries() {
           }
         }
 
+        // What each declaration does, by syntax item. Effects are inferred
+        // per module (D36) and lowering is per file, so the rows are
+        // prepared here and handed over rather than asked for there.
+        std::vector<std::pair<ItemId, EffectRow>> effects;
+        const ModuleId module = ModuleOf(file);
+        if (module.is_valid()) {
+          if (const auto* rows =
+                  db.GetAs<ModuleEffectRows>(ModuleEffectsKey(module))) {
+            for (const InferredEffects& entry : rows->rows) {
+              if (entry.file != file.index) {
+                continue;
+              }
+              const ItemId item = ResolveItem(parsed->ast, entry.item);
+              if (parsed->ast.Contains(item)) {
+                effects.emplace_back(item, entry.row);
+              }
+            }
+          }
+        }
+
         LoweredFile result;
         ir::LowerFile(&interner_, &types_, checked->resolution, parsed->ast,
-                      checked->body, &result.module);
+                      checked->body, effects, &result.module);
 
         // Verified on every input rather than on request: the IR is the
         // contract between the front end and every back end, so a violation

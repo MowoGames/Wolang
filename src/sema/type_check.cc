@@ -250,7 +250,7 @@ class Checker {
   TypeId CheckUnary(const Expr& expr, TypeId expected);
   TypeId CheckBinary(const Expr& expr);
   TypeId CheckAssign(const Expr& expr);
-  TypeId CheckCall(const Expr& expr);
+  TypeId CheckCall(ExprId id, const Expr& expr);
   TypeId CheckIndex(const Expr& expr);
   TypeId CheckField(const Expr& expr);
   void CheckConstructor(const Expr& expr, TypeId type);
@@ -274,6 +274,8 @@ class Checker {
   // True when |type| reaches |target| through fields stored inline.
   bool ReachesByValue(TypeId type, TypeId target, int depth) const;
   void CheckOverride(const Item& item);
+  void RecordInstantiation(ExprId id,
+                           const TypeStore::Substitution& substitution);
   void CheckBounds(const TypeStore::Substitution& substitution,
                    SourceSpan span);
   TypeId CheckLoop(const Expr& expr);
@@ -838,7 +840,7 @@ TypeId Checker::CheckAssign(const Expr& expr) {
   return types_->void_type();
 }
 
-TypeId Checker::CheckCall(const Expr& expr) {
+TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
   // A type name used as a callee is a constructor: `Vec3()` produces a Vec3.
   // Field types arrive with member resolution, so the arguments are checked
   // without expectations until then.
@@ -907,6 +909,7 @@ TypeId Checker::CheckCall(const Expr& expr) {
       }
     }
     CheckBounds(substitution, expr.span);
+    RecordInstantiation(id, substitution);
     if (params.size() != args.size()) {
       std::string message = "expected ";
       message.append(std::to_string(params.size()));
@@ -1472,7 +1475,7 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
     }
 
     case ExprKind::kCall:
-      type = CheckCall(expr);
+      type = CheckCall(id, expr);
       break;
     case ExprKind::kIndex:
       type = CheckIndex(expr);
@@ -1913,6 +1916,43 @@ void Checker::CheckBinding(const Item& item) {
 // A parameter carries its bounds, so once it is inferred the bound is
 // checked against what it was inferred to be. Conformance is declared --
 // `extend T as Trait` -- rather than inferred from the methods present.
+// Keeps what a generic call was inferred to be, in the callee's parameter
+// order. The order matters: it is what names the specialization, and two
+// call sites that inferred the same arguments have to land on the same name
+// or the module would carry a copy per call rather than per instantiation.
+void Checker::RecordInstantiation(
+    ExprId id,
+    const TypeStore::Substitution& substitution) {
+  if (!id.is_valid() || substitution.empty()) {
+    return;
+  }
+  std::vector<std::pair<uint32_t, TypeId>> ordered;
+  for (const auto& [parameter, inferred] : substitution) {
+    if (!inferred.is_valid()) {
+      continue;
+    }
+    // An argument that is itself a type parameter is kept rather than
+    // dropped: it happens in a generic body calling another generic, and
+    // the specialization that instantiates the outer one is what turns it
+    // into something concrete.
+    ordered.emplace_back(types_->Get(parameter).declaring_item, inferred);
+  }
+  if (ordered.size() != substitution.size()) {
+    return;
+  }
+  std::sort(ordered.begin(), ordered.end(),
+            [](const std::pair<uint32_t, TypeId>& lhs,
+               const std::pair<uint32_t, TypeId>& rhs) {
+              return lhs.first < rhs.first;
+            });
+  std::vector<TypeId> arguments;
+  arguments.reserve(ordered.size());
+  for (const auto& [index, type] : ordered) {
+    arguments.push_back(type);
+  }
+  result_.instantiations.emplace_back(id, std::move(arguments));
+}
+
 void Checker::CheckBounds(const TypeStore::Substitution& substitution,
                           SourceSpan span) {
   for (const auto& [parameter, inferred] : substitution) {

@@ -90,6 +90,23 @@ class EffectRow {
   std::vector<EffectId> effects_;
 };
 
+// The effect row of one declaration, after the module-wide fixpoint.
+//
+// Lives with the effect vocabulary rather than with the query that computes
+// it, because lowering carries these rows into the IR and the IR layer may
+// not depend on the compiler layer.
+struct InferredEffects {
+  uint32_t file = 0;
+  uint32_t item = 0;
+  EffectRow row;
+
+  friend bool operator==(const InferredEffects& lhs,
+                         const InferredEffects& rhs) {
+    return lhs.file == rhs.file && lhs.item == rhs.item &&
+           lhs.row == rhs.row;
+  }
+};
+
 }  // namespace wolang
 
 #endif  // WOLANG_SEMA_EFFECT_H_

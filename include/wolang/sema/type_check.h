@@ -4,6 +4,7 @@
 #define WOLANG_SEMA_TYPE_CHECK_H_
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "wolang/base/diagnostic.h"
@@ -33,6 +34,15 @@ struct TypedBody {
   // pairs. The module-wide fixpoint needs these: a row cannot be inferred
   // from one body alone.
   std::vector<std::pair<uint32_t, uint32_t>> callees;
+  // What a generic call was inferred to be: the call expression, and the
+  // type arguments in the callee's parameter order.
+  //
+  // Recorded here because inference is what found them and lowering is what
+  // needs them: a generic function has no code until it is instantiated, so
+  // the IR carries one specialization per entry in this list and none for
+  // the generic itself.
+  std::vector<std::pair<ExprId, std::vector<TypeId>>> instantiations;
+
   // The item tree index of the declaration this body belongs to, so that a
   // caller elsewhere can be matched to it.
   uint32_t item_index = 0xFFFFFFFFu;

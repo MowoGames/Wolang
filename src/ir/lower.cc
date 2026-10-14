@@ -2,6 +2,7 @@
 
 #include "wolang/ir/lower.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "wolang/ir/builder.h"
@@ -39,12 +40,14 @@ class Lowerer {
           const FileResolution& resolution,
           const Ast& ast,
           const TypedBody& typed,
+          std::span<const std::pair<ItemId, EffectRow>> effects,
           Module* module)
       : interner_(interner),
         types_(types),
         resolution_(resolution),
         ast_(ast),
         typed_(typed),
+        effects_(effects),
         module_(module) {}
 
   void Run() {
@@ -55,6 +58,20 @@ class Lowerer {
     }
     for (ItemId id : ast_.Get(ast_.root())) {
       Define(id);
+    }
+
+    // A generic function has no code of its own; it gets one copy per
+    // instantiation. Lowering a specialization can discover more of them --
+    // a generic body calling another generic -- so this is a worklist
+    // rather than a second pass.
+    while (!pending_.empty()) {
+      const Pending work = pending_.back();
+      pending_.pop_back();
+      substitution_ = work.substitution;
+      if (ast_.Contains(work.item)) {
+        LowerFunction(ast_.Get(work.item), work.index);
+      }
+      substitution_.clear();
     }
   }
 
@@ -69,10 +86,20 @@ class Lowerer {
     switch (item.kind) {
       case ItemKind::kFunction: {
         const Binding* binding = resolution_.Find(item.name);
+        const TypeId signature =
+            binding != nullptr ? binding->type : TypeId{};
+        // A generic declaration is not a function: it is a recipe for one.
+        // Emitting it would put `T` in the IR, which every back end would
+        // then need an answer for -- and the verifier rightly rejects a
+        // call that passes an `i32` where a `T` is declared.
+        if (signature.is_valid() && types_->MentionsParameter(signature)) {
+          generics_.emplace_back(item.name, id);
+          break;
+        }
         Function function;
         function.name = item.name;
-        function.type =
-            binding != nullptr ? Erase(binding->type) : TypeId{};
+        function.type = Erase(signature);
+        function.effects = EffectsOf(id, &function.effects_known);
         indices_.emplace_back(id, module_->functions.size());
         module_->functions.push_back(std::move(function));
         break;
@@ -90,6 +117,138 @@ class Lowerer {
       default:
         break;
     }
+  }
+
+  // What a declaration does, as the module-wide inference found it. An
+  // absence is not an empty row: see `Function::effects_known`.
+  EffectRow EffectsOf(ItemId id, bool* known) const {
+    for (const auto& [item, row] : effects_) {
+      if (item == id) {
+        *known = true;
+        return row;
+      }
+    }
+    *known = false;
+    return EffectRow();
+  }
+
+  // The substitution in force, applied. Inside a specialization every `T`
+  // the checker recorded stands for something concrete.
+  TypeId Apply(TypeId type) {
+    if (substitution_.empty() || !type.is_valid()) {
+      return type;
+    }
+    return types_->Substitute(type, substitution_);
+  }
+
+  ItemId FindGeneric(Symbol name) const {
+    for (const auto& [generic, id] : generics_) {
+      if (generic == name) {
+        return id;
+      }
+    }
+    return ItemId{};
+  }
+
+  const std::vector<TypeId>* FindInstantiation(ExprId call) const {
+    for (const auto& [id, arguments] : typed_.instantiations) {
+      if (id == call) {
+        return &arguments;
+      }
+    }
+    return nullptr;
+  }
+
+  // The type parameters a signature mentions, in declaration order. The
+  // order is what matches them to the arguments inference recorded.
+  std::vector<TypeId> ParametersIn(TypeId type) const {
+    std::vector<std::pair<uint32_t, TypeId>> found;
+    CollectParameters(type, &found);
+    std::sort(found.begin(), found.end(),
+              [](const std::pair<uint32_t, TypeId>& lhs,
+                 const std::pair<uint32_t, TypeId>& rhs) {
+                return lhs.first < rhs.first;
+              });
+    std::vector<TypeId> parameters;
+    for (const auto& [index, parameter] : found) {
+      if (parameters.empty() || parameters.back() != parameter) {
+        parameters.push_back(parameter);
+      }
+    }
+    return parameters;
+  }
+
+  void CollectParameters(
+      TypeId type,
+      std::vector<std::pair<uint32_t, TypeId>>* found) const {
+    if (!type.is_valid()) {
+      return;
+    }
+    if (types_->KindOf(type) == TypeKind::kParameter) {
+      found->emplace_back(types_->Get(type).declaring_item, type);
+      return;
+    }
+    const TypeId element = types_->ElementOf(type);
+    if (element.is_valid() && element != type) {
+      CollectParameters(element, found);
+    }
+    for (TypeId argument : types_->ArgumentsOf(type)) {
+      if (argument != type) {
+        CollectParameters(argument, found);
+      }
+    }
+  }
+
+  // One specialization per instantiation, named after what it was
+  // instantiated with: two call sites that inferred the same arguments
+  // reach the same copy.
+  uint32_t Instantiate(ItemId item, ExprId call) {
+    const std::vector<TypeId>* arguments = FindInstantiation(call);
+    const Binding* binding = resolution_.Find(ast_.Get(item).name);
+    if (arguments == nullptr || binding == nullptr) {
+      return 0xFFFFFFFFu;
+    }
+    const std::vector<TypeId> parameters = ParametersIn(binding->type);
+    if (parameters.size() != arguments->size()) {
+      return 0xFFFFFFFFu;
+    }
+
+    TypeStore::Substitution substitution;
+    std::string suffix = "<";
+    for (size_t i = 0; i < parameters.size(); ++i) {
+      // Mapped through the substitution in force: a generic body calling
+      // another generic passes its own parameters along, and by the time
+      // this copy exists they stand for something.
+      const TypeId concrete = Erase(Apply((*arguments)[i]));
+      if (!concrete.is_valid() || types_->MentionsParameter(concrete)) {
+        return 0xFFFFFFFFu;
+      }
+      substitution.emplace_back(parameters[i], concrete);
+      if (i != 0) {
+        suffix.append(", ");
+      }
+      suffix.append(types_->Describe(*interner_, concrete));
+    }
+    suffix.push_back('>');
+
+    std::string mangled(interner_->Text(ast_.Get(item).name));
+    mangled.append(suffix);
+    const Symbol name = interner_->Intern(mangled);
+    for (const auto& [existing, index] : specializations_) {
+      if (existing == name) {
+        return index;
+      }
+    }
+
+    Function function;
+    function.name = name;
+    function.type = Erase(types_->Substitute(binding->type, substitution));
+    function.effects = EffectsOf(item, &function.effects_known);
+    const auto index = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(function));
+    specializations_.emplace_back(name, index);
+    pending_.push_back(Pending{item, substitution, index});
+    return index;
   }
 
   uint32_t IndexOf(ItemId id) const {
@@ -244,7 +403,7 @@ class Lowerer {
 
   TypeId TypeOf(ExprId id) {
     const TypeId recorded = typed_.TypeOf(id);
-    return Erase(recorded.is_valid() ? recorded : types_->error());
+    return Erase(Apply(recorded.is_valid() ? recorded : types_->error()));
   }
 
   // Dimensions participate in type checking and are gone by code
@@ -479,7 +638,7 @@ class Lowerer {
         return LowerOptionalField(expr, type);
 
       case ExprKind::kCall:
-        return LowerCall(expr, type);
+        return LowerCall(id, expr, type);
 
       case ExprKind::kBlock:
         return LowerBlockValue(id, expr, type);
@@ -799,7 +958,7 @@ class Lowerer {
     return InstId{};
   }
 
-  InstId LowerCall(const Expr& expr, TypeId type) {
+  InstId LowerCall(ExprId id, const Expr& expr, TypeId type) {
     const TypeId callee_type =
         ast_.Contains(expr.lhs) ? TypeOf(expr.lhs) : TypeId{};
     const std::vector<TypeId> params =
@@ -819,6 +978,18 @@ class Lowerer {
     if (ast_.Contains(expr.lhs) &&
         ast_.Get(expr.lhs).kind == ExprKind::kPath) {
       const Symbol name = ast_.Get(expr.lhs).name;
+      const ItemId generic = FindGeneric(name);
+      if (generic.is_valid()) {
+        const uint32_t specialization = Instantiate(generic, id);
+        if (specialization != 0xFFFFFFFFu) {
+          return builder_->Call(specialization, type,
+                                std::move(arguments));
+        }
+        // Inference did not reach a concrete type for every parameter,
+        // which only happens in a body that is itself generic and not
+        // instantiated. There is nothing to call.
+        return builder_->Undef(type);
+      }
       const uint32_t callee = IndexOfName(name);
       if (callee != 0xFFFFFFFFu) {
         return builder_->Call(callee, type, std::move(arguments));
@@ -1212,12 +1383,25 @@ class Lowerer {
   }
 
 
+  struct Pending {
+    ItemId item;
+    TypeStore::Substitution substitution;
+    uint32_t index = 0;
+  };
+
   StringInterner* interner_;
   TypeStore* types_;
   const FileResolution& resolution_;
   const Ast& ast_;
   const TypedBody& typed_;
+  std::span<const std::pair<ItemId, EffectRow>> effects_;
   Module* module_;
+
+  // Generic declarations by name: a recipe, not a function.
+  std::vector<std::pair<Symbol, ItemId>> generics_;
+  std::vector<std::pair<Symbol, uint32_t>> specializations_;
+  std::vector<Pending> pending_;
+  TypeStore::Substitution substitution_;
 
   Builder* builder_ = nullptr;
   uint32_t current_function_ = 0;
@@ -1234,8 +1418,9 @@ void LowerFile(StringInterner* interner,
                const FileResolution& resolution,
                const Ast& ast,
                const TypedBody& typed,
+               std::span<const std::pair<ItemId, EffectRow>> effects,
                Module* module) {
-  Lowerer lowerer(interner, types, resolution, ast, typed, module);
+  Lowerer lowerer(interner, types, resolution, ast, typed, effects, module);
   lowerer.Run();
 }
 
