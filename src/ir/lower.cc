@@ -87,6 +87,9 @@ class Lowerer {
       Define(id, TypeId{});
     }
 
+    // Everything a module-level `var` needs doing before anything runs.
+    EmitFileInit();
+
     // A generic function has no code of its own; it gets one copy per
     // instantiation. Lowering a specialization can discover more of them --
     // a generic body calling another generic -- so this is a worklist
@@ -133,6 +136,14 @@ class Lowerer {
     }
     const Item& item = ast().Get(id);
     switch (item.kind) {
+      case ItemKind::kDeinit:
+        // What the type does when a value of it goes away: a method in
+        // everything but how it is reached (D87).
+        if (owner.is_valid()) {
+          DeclareMethod(id, item, owner);
+        }
+        break;
+
       case ItemKind::kFunction: {
         if (owner.is_valid()) {
           DeclareMethod(id, item, owner);
@@ -190,6 +201,14 @@ class Lowerer {
         // Reading one used to lower to an undefined value, which is to say
         // a program that named a constant computed with nothing.
         if (!item.name.is_valid() || !item.init.is_valid()) {
+          break;
+        }
+        // A module-level `var` has storage: it can be written, so a
+        // function that recomputes the value is the wrong shape for it
+        // (D88). The initializer still becomes a function, which the
+        // file's init calls once.
+        if (HasFlag(item.flags, ItemFlags::kMutable)) {
+          DeclareGlobal(id, item);
           break;
         }
         const Binding* binding = resolution().Find(item.name);
@@ -857,6 +876,7 @@ class Lowerer {
     }
     const Item& item = ast().Get(id);
     switch (item.kind) {
+      case ItemKind::kDeinit:
       case ItemKind::kFunction:
         self_type_ = owner;
         LowerFunction(item, IndexOf(id));
@@ -1366,9 +1386,12 @@ class Lowerer {
         const InstId slot = builder.Add(Opcode::kAlloca, type);
         builder.Add(Opcode::kStore, TypeId{}, {slot, value});
         locals_.push_back(Local{param.name, slot, InstId{}, type});
+        RememberOwner(param.name, slot, type, /*live=*/true);
         continue;
       }
       locals_.push_back(Local{param.name, InstId{}, value, type});
+      RememberOwner(param.name, value, type, /*live=*/true,
+                    /*in_slot=*/false);
     }
 
     const TypeId signature = module_->functions[index].type;
@@ -1614,7 +1637,8 @@ class Lowerer {
 
       case StmtKind::kDefer:
         if (stmt.expr.is_valid()) {
-          deferred_.push_back(Deferred{scope_depth_, stmt.expr});
+          deferred_.push_back(Deferred{scope_depth_, stmt.expr, InstId{},
+                                       TypeId{}, InstId{}, true});
         }
         return;
 
@@ -1699,7 +1723,8 @@ class Lowerer {
     // one the machine has nowhere to keep. Making every binding a slot is
     // what makes that impossible rather than merely unlikely.
     if (!mutable_binding && !in_task_ &&
-        !HasFlag(pattern->flags, PatternFlags::kMutable)) {
+        !HasFlag(pattern->flags, PatternFlags::kMutable) &&
+        !Owns(Erase(type))) {
       locals_.push_back(Local{pattern->name, InstId{}, value, type});
       return;
     }
@@ -1711,6 +1736,7 @@ class Lowerer {
       builder_->Add(Opcode::kStore, TypeId{}, {slot, value});
     }
     locals_.push_back(Local{pattern->name, slot, InstId{}, type});
+    RememberOwner(pattern->name, slot, type, value.is_valid());
   }
 
   // Everything a scope has to run on the way out, innermost last. A `defer`
@@ -1720,7 +1746,15 @@ class Lowerer {
   // a `break` take.
   struct Deferred {
     size_t scope = 0;
+    // A `defer` statement: the expression to run on the way out.
     ExprId expr;
+    // Or a value to destroy on the way out, with the flag that says
+    // whether it is still there to destroy (D87).
+    InstId value;
+    TypeId type;
+    InstId flag;
+    // Whether |value| is the slot holding it or the value itself.
+    bool in_slot = true;
   };
 
   // Runs everything deferred at or below |scope|, innermost first, without
@@ -1734,8 +1768,110 @@ class Lowerer {
       if (builder_->Terminated()) {
         return;
       }
-      Value(deferred_[i - 1].expr);
+      const Deferred& entry = deferred_[i - 1];
+      if (entry.value.is_valid()) {
+        EmitDestroy(entry);
+        continue;
+      }
+      Value(entry.expr);
     }
+  }
+
+  // Says that |name| holds something that has to be destroyed when the
+  // scope ends, and gives it the flag that says whether it still does.
+  void RememberOwner(Symbol name,
+                     InstId held,
+                     TypeId type,
+                     bool live,
+                     bool in_slot = true) {
+    if (!Owns(Erase(type))) {
+      return;
+    }
+    const InstId flag =
+        builder_->Add(Opcode::kAlloca, types_->bool_type());
+    builder_->Add(Opcode::kStore, TypeId{},
+                  {flag, builder_->ConstBool(live)});
+    deferred_.push_back(
+        Deferred{scope_depth_, ExprId{}, held, type, flag, in_slot});
+    owners_.push_back(Owner{name, flag});
+  }
+
+  // Where the flag for |name| is, or an invalid id when the name owns
+  // nothing.
+  InstId FlagOf(Symbol name) const {
+    for (auto it = owners_.rbegin(); it != owners_.rend(); ++it) {
+      if (it->name == name) {
+        return it->flag;
+      }
+    }
+    return InstId{};
+  }
+
+  // What a scope exit does to a value that owns something.
+  //
+  // Guarded by the flag, because a value may have been handed away since
+  // it was declared: the flag is set where the binding is initialized and
+  // cleared where it is moved, so what runs here is what is still there.
+  void EmitDestroy(const Deferred& entry) {
+    const InstId live =
+        builder_->Add(Opcode::kLoad, types_->bool_type(), {entry.flag});
+    const BlockId destroy = builder_->AddBlock("drop.run");
+    const BlockId after = builder_->AddBlock("drop.skip");
+    builder_->Branch(live, destroy, after);
+
+    builder_->SetCurrent(destroy);
+    // A binding in a slot is read from it; a parameter is the value it
+    // was handed.
+    const InstId value =
+        entry.in_slot
+            ? builder_->Add(Opcode::kLoad, Erase(entry.type), {entry.value})
+            : entry.value;
+    Destroy(value, Erase(entry.type));
+    builder_->Jump(after, {});
+    builder_->SetCurrent(after);
+  }
+
+  // Runs the destructor of |type| on |value|, then frees what it was in.
+  void Destroy(InstId value, TypeId type) {
+    if (const Member* deinit = FindDestructor(type)) {
+      const uint32_t index = MethodIndex(type, *deinit);
+      if (index != 0xFFFFFFFFu) {
+        builder_->Call(index, types_->void_type(), {value});
+      }
+    }
+    if (types_->IsHandle(type)) {
+      // The object the handle was to. A class is a handle to a heap
+      // object (D61), and this is the other half of that sentence.
+      //
+      // The handle is cast to a word first: one declaration of the free
+      // serves every class, and a verifier that compares types exactly
+      // would otherwise want one per class.
+      const Symbol name = interner_->Intern("wolang_object_free");
+      const uint32_t free = DeclareExternal(
+          name, types_->Function({types_->u64()}, types_->void_type()));
+      module_->functions[free].foreign_symbol = name;
+      const InstId word =
+          builder_->Add(Opcode::kCast, types_->u64(), {value});
+      builder_->Call(free, types_->void_type(), {word});
+    }
+  }
+
+  // The destructor of |type| or of something it derives from.
+  const Member* FindDestructor(TypeId type) const {
+    for (TypeId current = type; current.is_valid();
+         current = resolution().BaseOf(current)) {
+      for (const Member& member : resolution().MembersOf(current)) {
+        if (member.kind == MemberKind::kDeinit) {
+          return &member;
+        }
+      }
+    }
+    return nullptr;
+  }
+
+  // Whether a value of |type| has to be destroyed when it goes away.
+  bool Owns(TypeId type) const {
+    return FindDestructor(type) != nullptr;
   }
 
   // Drops the entries a scope owned, after its exit has been emitted.
@@ -1785,7 +1921,7 @@ class Lowerer {
         return LowerString(expr, type);
 
       case ExprKind::kPath:
-        return LowerPath(expr, type);
+        return LowerPath(id, expr, type);
 
       case ExprKind::kCast: {
         // `as` is the only numeric conversion there is (D33), so it has to
@@ -2054,7 +2190,7 @@ class Lowerer {
     }
   }
 
-  InstId LowerPath(const Expr& expr, TypeId type) {
+  InstId LowerPath(ExprId id, const Expr& expr, TypeId type) {
     const Local* local = Find(expr.name);
     if (local == nullptr) {
       // A field of the receiver, read from it.
@@ -2066,6 +2202,12 @@ class Lowerer {
           function.is_valid()) {
         return function;
       }
+      // A module-level `var`, read from its storage.
+      if (const TypeId held = GlobalType(expr.name); held.is_valid()) {
+        const InstId address = GlobalAddress(expr.name);
+        return Coerce(builder_->Add(Opcode::kLoad, held, {address}), held,
+                      type);
+      }
       // A module-level constant, read through the function it became.
       if (const InstId constant = ConstantValue(expr.name, type);
           constant.is_valid()) {
@@ -2073,10 +2215,53 @@ class Lowerer {
       }
       return builder_->Undef(type);
     }
+    // Handing an owning value away is a move: the name no longer holds
+    // it, so the scope exit must not destroy it. The checker already
+    // decided which uses are borrows and which are not (D87), so this
+    // reads the same list rather than guessing again.
+    if (const InstId flag = FlagOf(expr.name);
+        flag.is_valid() && borrow_depth_ == 0 && !IsBorrow(id)) {
+      builder_->Add(Opcode::kStore, TypeId{},
+                    {flag, builder_->ConstBool(false)});
+    }
     if (local->slot.is_valid()) {
       return builder_->Add(Opcode::kLoad, local->type, {local->slot});
     }
     return local->value;
+  }
+
+  // While this is set, reading a name does not take what it holds: the
+  // base of a field access, an index or a method call is *read through*
+  // rather than handed away, which is the same rule the checker's own walk
+  // follows (D87).
+  class Borrowing {
+   public:
+    explicit Borrowing(Lowerer* lowerer) : lowerer_(lowerer) {
+      if (lowerer_ != nullptr) {
+        ++lowerer_->borrow_depth_;
+      }
+    }
+    ~Borrowing() {
+      if (lowerer_ != nullptr) {
+        --lowerer_->borrow_depth_;
+      }
+    }
+
+    Borrowing(const Borrowing&) = delete;
+    Borrowing& operator=(const Borrowing&) = delete;
+
+   private:
+    Lowerer* lowerer_;
+  };
+
+  // Whether the checker marked this use as a borrow rather than a move.
+  bool IsBorrow(ExprId id) const {
+    for (ExprId borrow : typed().borrows) {
+      if (borrow == id) {
+        return true;
+      }
+    }
+    return false;
   }
 
   InstId LowerUnary(const Expr& expr, TypeId type) {
@@ -2283,6 +2468,105 @@ class Lowerer {
     return 0;
   }
 
+  // The function that gives every module-level `var` of this file its
+  // first value.
+  //
+  // A global starts as its type's zero -- that is what the runtime hands
+  // back -- and this is where what the source wrote is stored into it.
+  // Called before anything else runs, by whoever is running it: a global
+  // initialized lazily would need a flag on every read.
+  void EmitFileInit() {
+    if (globals_.empty()) {
+      return;
+    }
+    std::string label("file$init$");
+    label.append(std::to_string(file_index()));
+    Function init;
+    init.name = interner_->Intern(label);
+    init.type = types_->Function({}, types_->void_type());
+    const auto index = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(init));
+    module_->initializer = index;
+
+    const uint32_t previous = current_function_;
+    current_function_ = index;
+    Builder builder(module_, FunctionId{index});
+    Builder* outer = builder_;
+    builder_ = &builder;
+    const BlockId entry = builder.AddBlock("entry");
+    builder.SetCurrent(entry);
+    for (const Global& global : globals_) {
+      const InstId address = builder.Add(
+          Opcode::kGlobalAddress,
+          types_->Pointer(global.type, /*is_mutable=*/true), {});
+      builder.Mutable(address).payload.integer = global.token;
+      const InstId value =
+          builder.Call(global.initializer, global.type, {});
+      builder.Add(Opcode::kStore, TypeId{}, {address, value});
+    }
+    builder.ReturnVoid();
+    builder_ = outer;
+    current_function_ = previous;
+  }
+
+  // A module-level `var`: storage the runtime owns, plus the function
+  // that works out its first value.
+  void DeclareGlobal(ItemId id, const Item& item) {
+    const Binding* binding = resolution().Find(item.name);
+    if (binding == nullptr) {
+      return;
+    }
+    // A `var` with no annotation takes the type of what it was given, and
+    // that is a checking-time answer rather than a signature one -- so the
+    // binding may have no type here and the initializer does.
+    TypeId type = Erase(binding->type);
+    if (!type.is_valid() || types_->IsError(type)) {
+      type = TypeOf(item.init);
+    }
+
+    Function initializer;
+    initializer.name = ConstantName(item.name);
+    initializer.type = types_->Function({}, type);
+    initializer.source_file = binding->file;
+    initializer.source_item = binding->item;
+    const auto index = static_cast<uint32_t>(module_->functions.size());
+    Remember(initializer.source_file, initializer.source_item, index);
+    indices_.push_back(
+        Declared{id, index, ast().Get(id).name, file_index()});
+    module_->functions.push_back(std::move(initializer));
+
+    globals_.push_back(Global{
+        item.name, (static_cast<uint64_t>(binding->file) << 32) |
+                       binding->item,
+        type, index});
+  }
+
+  // What |name| holds, or an invalid id when it is not a global.
+  TypeId GlobalType(Symbol name) const {
+    for (const Global& global : globals_) {
+      if (global.name == name) {
+        return global.type;
+      }
+    }
+    return TypeId{};
+  }
+
+  // Where |name|'s storage is, as a pointer, or an invalid id when the
+  // name is not a global.
+  InstId GlobalAddress(Symbol name) {
+    for (const Global& global : globals_) {
+      if (global.name != name) {
+        continue;
+      }
+      const InstId address = builder_->Add(
+          Opcode::kGlobalAddress,
+          types_->Pointer(global.type, /*is_mutable=*/true), {});
+      builder_->Mutable(address).payload.integer = global.token;
+      return address;
+    }
+    return InstId{};
+  }
+
   // A member of |owner|, its own or one it inherits.
   const Member* FindAnyMember(TypeId owner, Symbol name) const {
     if (const Member* own = resolution().FindMember(owner, name)) {
@@ -2334,6 +2618,7 @@ class Lowerer {
   }
 
   InstId LowerField(ExprId id, const Expr& expr, TypeId type) {
+    const Borrowing borrowing(this);
     // A derived field is computed rather than stored, and kept once it is.
     const TypeId base_type = Erase(TypeOf(expr.lhs));
     if (const Member* member =
@@ -2473,12 +2758,25 @@ class Lowerer {
       return place;
     }
     const Expr& expr = ast().Get(id);
+    // Everything but a bare name reads *through* something rather than
+    // taking it: assigning to `b.size` does not hand `b` away.
+    const bool through = expr.kind != ExprKind::kPath &&
+                         expr.kind != ExprKind::kSelf;
+    const Borrowing borrowing(through ? this : nullptr);
     switch (expr.kind) {
       case ExprKind::kPath: {
         if (const Local* local = Find(expr.name); local != nullptr) {
           place.slot = local->slot;
           place.value = local->value;
           place.root_type = local->type;
+          return place;
+        }
+        // A module-level `var`: a place at a known address, which is what
+        // lets it be assigned to.
+        if (const InstId address = GlobalAddress(expr.name);
+            address.is_valid()) {
+          place.pointer = address;
+          place.root_type = Erase(TypeOf(id));
           return place;
         }
         // Inside a method a bare name may be a field of the enclosing
@@ -3276,7 +3574,11 @@ class Lowerer {
     if (callee.kind == ExprKind::kField) {
       owner = Erase(TypeOf(callee.lhs));
       name = callee.name;
-      receiver = Value(callee.lhs);
+      {
+        // The receiver is read through, not handed away.
+        const Borrowing borrowing(this);
+        receiver = Value(callee.lhs);
+      }
     } else if (callee.kind == ExprKind::kPath && self_.is_valid()) {
       // A bare name inside a method: its own type's method, if it has one.
       owner = self_type_;
@@ -3951,6 +4253,25 @@ class Lowerer {
   std::vector<MachineMethod> machine_methods_;
   std::vector<Pending> pending_;
   std::vector<Deferred> deferred_;
+  // Which local owns something, and the flag that says whether it still
+  // does. Parallel to the deferred list rather than part of it, because a
+  // move looks the flag up by name and an exit walks the scopes.
+  struct Owner {
+    Symbol name;
+    InstId flag;
+  };
+  std::vector<Owner> owners_;
+  // How many enclosing reads are through a name rather than of it.
+  int borrow_depth_ = 0;
+  // The module-level `var`s this file declares.
+  struct Global {
+    Symbol name;
+    uint64_t token = 0;
+    TypeId type;
+    // The function that works out its first value.
+    uint32_t initializer = 0;
+  };
+  std::vector<Global> globals_;
   // Whether the function being lowered is a `task`.
   bool in_task_ = false;
   // How many blocks deep lowering is. A `defer` belongs to the block it was

@@ -30,6 +30,8 @@ std::string_view ItemKindName(ItemKind kind) {
       return "tag";
     case ItemKind::kSystem:
       return "system";
+    case ItemKind::kDeinit:
+      return "deinit";
     case ItemKind::kSignal:
       return "signal";
     case ItemKind::kOn:

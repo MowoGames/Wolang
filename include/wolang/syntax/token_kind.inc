@@ -153,6 +153,11 @@ WOLANG_KEYWORD(KwWhile, "while")
 // ------------------------------------------------------ contextual keywords --
 
 WOLANG_CONTEXTUAL(Always, "always")
+// What a type does when a value of it goes away: `deinit { ... }` inside a
+// declaration. Contextual because `deinit` is a perfectly good name for a
+// function elsewhere, and because the word is only a declaration where a
+// member can begin (D64).
+WOLANG_CONTEXTUAL(Deinit, "deinit")
 WOLANG_CONTEXTUAL(Derived, "derived")
 WOLANG_CONTEXTUAL(Dimension, "dimension")
 WOLANG_CONTEXTUAL(Effect, "effect")

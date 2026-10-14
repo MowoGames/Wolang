@@ -96,6 +96,10 @@ enum class ItemKind : uint8_t {
   kEffect,
   kErrorSet,  // `error NotFound, Corrupt`
   kMachine,
+  // `deinit { ... }`: what a type does when a value of it goes away. A
+  // declaration rather than a method with a special name, so that it
+  // cannot be called, overridden or named by mistake.
+  kDeinit,
 };
 
 enum class ItemFlags : uint16_t {

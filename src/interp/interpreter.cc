@@ -4,6 +4,7 @@
 
 #include "wolang/interp/marshal.h"
 
+#include "wolang/runtime/globals.h"
 #include "wolang/runtime/scheduler.h"
 
 #include "wolang/interp/intrinsics.h"
@@ -581,6 +582,20 @@ class Interpreter {
         return Value::Int(reinterpret_cast<uint64_t>(object), IntWidth::k64,
                           /*is_signed=*/false);
       }
+      case ir::Opcode::kGlobalAddress: {
+        // The runtime owns the storage, so the address is the same one
+        // compiled code would get (D88).
+        const TypeId held = types_.ElementOf(inst.type);
+        const uint64_t size =
+            layouts_ != nullptr && held.is_valid()
+                ? layouts_->SizeOf(held)
+                : 8;
+        void* storage = runtime::wolang_global_address(
+            inst.payload.integer, size == 0 ? 8 : size);
+        return Value::Int(reinterpret_cast<uint64_t>(storage),
+                          IntWidth::k64, /*is_signed=*/false);
+      }
+
       case ir::Opcode::kClassTable: {
         // Which declaration this class is. The same number in every tier,
         // which is what lets an object made here be dispatched in
@@ -1784,6 +1799,26 @@ Outcome RunNamed(const StringInterner& interner,
     outcome.message = "is not in the module";
     return outcome;
   }
+
+  // Module-level `var`s get their first values before anything else runs,
+  // and start from their type's zero every time something is run: the
+  // storage outlives one run, and a differential check that compared a
+  // second run against a mutated global would be comparing nothing (D88).
+  runtime::wolang_global_reset();
+  const auto initialize = [&](const ir::Module& home) {
+    if (home.initializer >= home.functions.size()) {
+      return;
+    }
+    Run(interner, types, home, home.functions[home.initializer], {}, limits,
+        output, foreign, layouts, linked);
+  };
+  for (const ir::Module* other : linked) {
+    if (other != nullptr && other != &module) {
+      initialize(*other);
+    }
+  }
+  initialize(module);
+
   return Run(interner, types, module, *function, std::move(arguments),
              limits, output, foreign, layouts, linked);
 }

@@ -300,6 +300,10 @@ struct Module {
   std::vector<std::string> strings;
   // Every class a function here creates an object of.
   std::vector<ClassInfo> classes;
+  // The function that gives this file's module-level `var`s their first
+  // values, or 0xFFFFFFFF when there are none. Run before anything else
+  // in the program (D88).
+  uint32_t initializer = 0xFFFFFFFFu;
 
   const Function* Find(Symbol name) const;
 };

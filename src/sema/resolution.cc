@@ -1157,6 +1157,10 @@ void ResolveSignatures(TypeStore* types,
     switch (entry.kind) {
       case ItemKind::kFunction:
       case ItemKind::kSystem:
+      // A destructor takes nothing and gives nothing back; it is a
+      // function type so that everything which lowers a method can lower
+      // it too, without a second shape to handle.
+      case ItemKind::kDeinit:
         resolution->item_types[index] = signature_of(item);
         break;
       case ItemKind::kSignal:
@@ -1267,6 +1271,9 @@ void ResolveSignatures(TypeStore* types,
         case ItemKind::kSignal:
         case ItemKind::kOn:
           member.kind = MemberKind::kSignal;
+          break;
+        case ItemKind::kDeinit:
+          member.kind = MemberKind::kDeinit;
           break;
         default:
           member.kind =

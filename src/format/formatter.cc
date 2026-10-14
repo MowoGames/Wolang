@@ -738,6 +738,11 @@ class Formatter {
         break;
       }
 
+      case ItemKind::kDeinit:
+        Put("deinit ");
+        EmitBlockBody(item.body);
+        break;
+
       case ItemKind::kError:
         Put("// <unparsable declaration>");
         break;

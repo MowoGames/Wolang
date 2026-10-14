@@ -37,6 +37,8 @@ constexpr std::string_view kSelfNotMutable = "E0125";
 // where no field takes a `T`, which would otherwise carry a type
 // parameter into a layout.
 constexpr std::string_view kCannotInfer = "E0126";
+// A module-level `const` or `var` with no type written.
+constexpr std::string_view kModuleBindingNeedsType = "E0130";
 constexpr std::string_view kWaitOutsideTask = "E0301";
 constexpr std::string_view kTaskNotWaited = "E0302";
 constexpr std::string_view kWaitNotWholeExpression = "E0303";
@@ -242,6 +244,8 @@ class Checker {
   // pushed.
   size_t PushGenerics(const Item& item, uint32_t owner);
   void CheckBinding(const Item& item);
+  // Whether the declaration being checked is one another file could name.
+  bool at_module_level_ = false;
 
   // ---------------------------------------------------------- statements --
 
@@ -2379,7 +2383,14 @@ void Checker::CheckStmt(StmtId id) {
       return;
 
     case StmtKind::kItem:
-      CheckItem(stmt.item);
+      {
+        // A declaration inside a body: its type may be inferred, because
+        // nothing outside the function can name it.
+        const bool outer = at_module_level_;
+        at_module_level_ = false;
+        CheckItem(stmt.item);
+        at_module_level_ = outer;
+      }
       return;
 
     case StmtKind::kError:
@@ -2589,6 +2600,24 @@ void Checker::CheckBinding(const Item& item) {
   const TypeId declared = item.type.is_valid()
                               ? resolver_.Resolve(ast_, item.type)
                               : TypeId{};
+
+  // A declaration at module level has to say its type.
+  //
+  // Not a style rule: what a name means to *another* file is worked out
+  // from signatures alone, and inferring this one from its initializer
+  // would make a signature depend on a body -- which is the thing the
+  // incremental design is built not to do (D88). Inside a function the
+  // same `const x = 5` is fine, because nothing outside the function can
+  // see it.
+  if (!self_type_.is_valid() && !item.type.is_valid() &&
+      item.init.is_valid() && at_module_level_) {
+    std::string message = "`";
+    message.append(interner_->Text(item.name));
+    message.append("` needs its type written");
+    Report(kModuleBindingNeedsType, std::move(message), item.name_span,
+           "a declaration other files can see is a signature, and a "
+           "signature cannot be read off a body");
+  }
 
   // References are second class: a parameter or a local may hold one, a
   // field may not. That is what gives memory safety without a borrow
@@ -2914,6 +2943,10 @@ void Checker::CheckItem(ItemId id) {
 
     case ItemKind::kSystem:
     case ItemKind::kOn:
+    // A destructor is a method in everything but how it is reached, so its
+    // body is checked the same way -- with `self` bound, which is what
+    // lets it read the fields it is tidying up (D87).
+    case ItemKind::kDeinit:
       CheckFunction(item, IndexOf(id));
       return;
 
@@ -2966,7 +2999,14 @@ void Checker::CheckItem(ItemId id) {
         CheckSized(item, self_type_);
       }
       for (ItemId member : ast_.Get(item.members)) {
-        CheckItem(member);
+        {
+          // A member of a type: its type comes from the declaration, and
+          // the member table already carries it.
+          const bool outer = at_module_level_;
+          at_module_level_ = false;
+          CheckItem(member);
+          at_module_level_ = outer;
+        }
       }
       self_type_ = previous_self;
       resolver_.PopTypeParameters(pushed);
@@ -2985,6 +3025,7 @@ void Checker::CheckItem(ItemId id) {
 TypedBody Checker::Run(ItemId item, uint32_t item_index) {
   result_.item_index = item_index;
   PushScope();
+  at_module_level_ = true;
   CheckItem(item);
   PopScope();
   result_.diagnostics = diagnostics_.diagnostics();
@@ -3007,7 +3048,7 @@ TypedBody TypeCheckItem(TypeStore* types,
   // both are about paths rather than about types, and keeping them apart is
   // what stops the type checker from growing a second analysis inside it.
   DiagnosticEngine flow;
-  CheckFlow(ast, *interner, *types, body, item, &flow);
+  CheckFlow(ast, *interner, *types, *resolution, body, item, &flow);
   for (const Diagnostic& diagnostic : flow.diagnostics()) {
     body.diagnostics.push_back(diagnostic);
   }

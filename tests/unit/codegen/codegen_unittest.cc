@@ -1484,6 +1484,70 @@ fun Both() -> int {
   WOLANG_EXPECT_EQ(f.Run("Both", {}), "12400");
 }
 
+WOLANG_TEST(CodegenTest, RunsADestructorWhenAValueGoesAway) {
+  // `deinit` is what a type does when a value of it goes away, and a
+  // module-level `var` is how the test sees that it happened (D87, D88).
+  //
+  // The second half is the part that needs the analysis: handing the
+  // value to something else *moves* it, so the scope that gave it away
+  // must not destroy it and the one that took it must.
+  Fixture f(R"(
+var destroyed: int = 0
+
+class Buffer {
+  var size: int = 0
+
+  deinit {
+    destroyed = destroyed + 1
+  }
+}
+
+fun Take(b: Buffer) -> int {
+  // Took ownership: this scope destroys it.
+  return b.size
+}
+
+fun Counted() -> int {
+  var round = 0
+  while round < 3 {
+    var b = Buffer(1)
+    // Read through the handle, which is a borrow and not a move: the
+    // loop body still owns it at the end of the iteration.
+    round = round + b.size
+  }
+  return destroyed
+}
+
+fun Moved() -> int {
+  var b = Buffer(7)
+  const size = Take(b)
+  // One: every run starts from the type's zero, so what this counts is
+  // the single destruction `Take` did (D88).
+  return size * 100 + destroyed
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Counted", {}), "3");
+  WOLANG_EXPECT_EQ(f.Run("Moved", {}), "701");
+}
+
+WOLANG_TEST(CodegenTest, WritesAModuleLevelVar) {
+  // A module-level `var` has storage the runtime owns, so that a program
+  // half interpreted and half compiled still has one counter (D88).
+  // Before this it lowered to a function that recomputed the initial
+  // value, and `counter = counter + 1` compiled to nothing at all.
+  Fixture f(R"(
+var counter: int = 0
+var label: int = 7
+
+fun Bump() -> int {
+  counter = counter + 1
+  counter = counter + 1
+  return counter * 10 + label
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Bump", {}), "27");
+}
+
 WOLANG_TEST(CodegenTest, BuildsAndComparesStrings) {
   // A string is a pointer and a length in every tier, and what is built
   // from one is built by the runtime both tiers call. Which is what makes

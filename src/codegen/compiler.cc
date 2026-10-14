@@ -3,6 +3,7 @@
 #include "wolang/codegen/compiler.h"
 
 #include "wolang/runtime/classes.h"
+#include "wolang/runtime/globals.h"
 
 #include "wolang/interp/marshal.h"
 
@@ -476,6 +477,24 @@ interp::Outcome CompiledModule::Impl::Run(
     outcome.where = "@" + std::string(interner_.Text(name));
     outcome.message = "was not compiled";
     return outcome;
+  }
+
+  // Module-level `var`s start from their type's zero and then take the
+  // values the source wrote, every time something is run: the storage
+  // outlives one run, and a differential check against a mutated global
+  // would be comparing nothing (D88).
+  runtime::wolang_global_reset();
+  for (const std::unique_ptr<FileState>& other : files_) {
+    if (other == nullptr ||
+        other->module.initializer >= other->module.functions.size()) {
+      continue;
+    }
+    const Symbol init = other->module.functions[other->module.initializer].name;
+    if (const Entry* found = Find(init); found != nullptr && found->compiled) {
+      const auto body = reinterpret_cast<void (*)()>(
+          const_cast<void*>(block_.AddressOf(found->body)));
+      body();
+    }
   }
 
   FileState& file = *files_[entry->file];

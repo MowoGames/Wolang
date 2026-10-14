@@ -49,11 +49,13 @@ class Checker {
   Checker(const Ast& ast,
           const StringInterner& interner,
           const TypeStore& types,
+          const FileResolution& resolution,
           const TypedBody& typed,
           DiagnosticEngine* diagnostics)
       : ast_(ast),
         interner_(interner),
         types_(types),
+        resolution_(resolution),
         typed_(typed),
         diagnostics_(diagnostics) {}
 
@@ -89,12 +91,21 @@ class Checker {
   // `String` is expected moves it; where a `str` is expected it is the
   // implicit borrow of D15b.
   bool IsOwning(TypeId type) const {
-    switch (types_.KindOf(type)) {
-      case TypeKind::kString:
-        return true;
-      default:
-        return false;
+    if (types_.KindOf(type) == TypeKind::kString) {
+      return true;
     }
+    // A type that says what to do when a value of it goes away owns
+    // something, and two names cannot hold it: that is the whole reason
+    // `deinit` and moves are one feature (D87).
+    for (TypeId current = types_.StripWrappers(type); current.is_valid();
+         current = resolution_.BaseOf(current)) {
+      for (const Member& member : resolution_.MembersOf(current)) {
+        if (member.kind == MemberKind::kDeinit) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   void Report(Symbol name, SourceSpan span) {
@@ -616,6 +627,7 @@ class Checker {
   const Ast& ast_;
   const StringInterner& interner_;
   const TypeStore& types_;
+  const FileResolution& resolution_;
   const TypedBody& typed_;
   DiagnosticEngine* diagnostics_;
   std::vector<Local> locals_;
@@ -627,10 +639,11 @@ class Checker {
 void CheckFlow(const Ast& ast,
                const StringInterner& interner,
                const TypeStore& types,
+               const FileResolution& resolution,
                const TypedBody& typed,
                ItemId item,
                DiagnosticEngine* diagnostics) {
-  Checker checker(ast, interner, types, typed, diagnostics);
+  Checker checker(ast, interner, types, resolution, typed, diagnostics);
   checker.Run(item);
 }
 

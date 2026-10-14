@@ -87,6 +87,10 @@ WOLANG_IR_OP(SoaAddress, "soa.addr",
              "the address of field |index| of element |rhs| in storage "
              "laid out one array per field. What makes `soa []T` a "
              "different *layout* rather than a different type")
+WOLANG_IR_OP(GlobalAddress, "global.addr",
+             "where a module-level `var` lives. The runtime owns the "
+             "storage, so a global written in one tier is the one read in "
+             "the other")
 WOLANG_IR_OP(ClassTable, "class.table",
              "the token that says which class an object is. Written into "
              "the object when it is created, and read by every virtual "

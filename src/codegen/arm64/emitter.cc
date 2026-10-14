@@ -8,6 +8,7 @@
 #include "wolang/base/check.h"
 #include "wolang/codegen/arm64/assembler.h"
 #include "wolang/runtime/classes.h"
+#include "wolang/runtime/globals.h"
 #include "wolang/codegen/reg_alloc.h"
 #include "wolang/codegen/runtime.h"
 #include "wolang/runtime/builtins.h"
@@ -1412,6 +1413,26 @@ class FunctionEmitter {
           return;
         }
         LoadScalar(inst.type, id, base, offset);
+        return;
+      }
+
+      case ir::Opcode::kGlobalAddress: {
+        // Asked for rather than baked in: the runtime owns the storage so
+        // that a global written here is the one the reference tier reads
+        // (D88). The call is pure, so the passes hoist it out of a loop.
+        const TypeId held = types_.ElementOf(inst.type);
+        assembler_.MovImmediate(IWidth::k64, kArgumentRegisters[0],
+                                inst.payload.integer);
+        assembler_.MovImmediate(
+            IWidth::k64, kArgumentRegisters[1],
+            held.is_valid() ? std::max(layouts_.SizeOf(held), 1u) : 8u);
+        assembler_.MovImmediate(
+            IWidth::k64, kCallScratch,
+            reinterpret_cast<uint64_t>(&runtime::wolang_global_address));
+        assembler_.Blr(kCallScratch);
+        const Register reg = DestInt(id, 0);
+        assembler_.Mov(IWidth::k64, reg, Register::kX0);
+        FinishInt(id, reg);
         return;
       }
 

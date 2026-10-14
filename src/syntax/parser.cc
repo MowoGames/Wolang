@@ -265,6 +265,7 @@ class Parser {
   ItemId ParseUnit(Item item, size_t start);
   ItemId ParseEffect(Item item, size_t start);
   ItemId ParseMachine(Item item, size_t start);
+  ItemId ParseDeinit(Item item, size_t start);
   StateId ParseState();
   bool ParseTransition(std::vector<TransitionId>* out);
 
@@ -758,6 +759,13 @@ ItemId Parser::ParseItem(bool allow_error_item) {
       break;
   }
 
+  // `deinit { ... }`: a block rather than a name after the keyword, which
+  // is what tells it from an ordinary identifier called `deinit`.
+  if (AtContextual(ContextualKeyword::kDeinit) &&
+      PeekKind(1) == TokenKind::kLeftBrace) {
+    return ParseDeinit(std::move(item), start);
+  }
+
   // Contextual declarations. Each requires a name after the keyword, which is
   // what keeps `state`, `unit` and friends usable as ordinary identifiers.
   if (PeekKind(1) == TokenKind::kIdentifier) {
@@ -1233,6 +1241,19 @@ ItemId Parser::ParseSystem(Item item, size_t start) {
     item.flags |= ItemFlags::kHasError;
   }
 
+  item.span = SpanFrom(start);
+  return ast_->Add(std::move(item));
+}
+
+ItemId Parser::ParseDeinit(Item item, size_t start) {
+  item.name_span = CurrentSpan();
+  Advance();  // `deinit`
+  item.kind = ItemKind::kDeinit;
+  // Named after the word that declared it, so that a member table has
+  // something to key it by and a dump has something to print. Nothing can
+  // call it: the name is not a value anywhere.
+  item.name = interner_->Intern("deinit");
+  item.body = ParseBlock();
   item.span = SpanFrom(start);
   return ast_->Add(std::move(item));
 }

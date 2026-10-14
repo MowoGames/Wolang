@@ -11,6 +11,7 @@
 #include "wolang/runtime/builtins.h"
 #include "wolang/codegen/x64/assembler.h"
 #include "wolang/runtime/classes.h"
+#include "wolang/runtime/globals.h"
 
 namespace wolang {
 namespace codegen {
@@ -1245,6 +1246,25 @@ class FunctionEmitter {
           return;
         }
         LoadScalar(inst.type, id, base, offset);
+        return;
+      }
+
+      case ir::Opcode::kGlobalAddress: {
+        // Asked for rather than baked in, for the reason above: one
+        // storage for both tiers (D88).
+        const TypeId held = types_.ElementOf(inst.type);
+        assembler_.MovImmediate(IWidth::k64, kArgumentRegisters[0],
+                                inst.payload.integer);
+        assembler_.MovImmediate(
+            IWidth::k64, kArgumentRegisters[1],
+            held.is_valid() ? std::max(layouts_.SizeOf(held), 1u) : 8u);
+        assembler_.MovImmediate(
+            IWidth::k64, kCallScratch,
+            reinterpret_cast<uint64_t>(&runtime::wolang_global_address));
+        assembler_.CallRegister(kCallScratch);
+        const Register reg = DestInt(id, 0);
+        assembler_.Mov(IWidth::k64, reg, Register::kRax);
+        FinishInt(id, reg);
         return;
       }
 

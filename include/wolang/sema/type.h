@@ -88,6 +88,9 @@ enum class MemberKind : uint8_t {
   // A state of a `machine`.
   kState,
   kSignal,
+  // `deinit { ... }`: what the type does when a value of it goes away.
+  // Not a method: nothing can call it, override it or name it.
+  kDeinit,
   // `derived var x: T => expr`: a field whose value is computed from other
   // fields and kept until one of them changes.
   kDerived,

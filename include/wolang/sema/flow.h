@@ -5,6 +5,7 @@
 
 #include "wolang/base/diagnostic.h"
 #include "wolang/base/string_interner.h"
+#include "wolang/sema/resolution.h"
 #include "wolang/sema/type.h"
 #include "wolang/sema/type_check.h"
 #include "wolang/syntax/ast.h"
@@ -27,9 +28,13 @@ namespace wolang {
 // `E0122` needs the types the checker recorded, and only those: whether a
 // use of a name is a move or a borrow is exactly the question "what type
 // did the context want" -- `String` moves, `str` borrows (D15b).
+// |resolution| is what says which types own something: a type with a
+// `deinit` is moved rather than copied, because two names holding one
+// resource is the bug destructors exist to make impossible (D87).
 void CheckFlow(const Ast& ast,
                const StringInterner& interner,
                const TypeStore& types,
+               const FileResolution& resolution,
                const TypedBody& typed,
                ItemId item,
                DiagnosticEngine* diagnostics);

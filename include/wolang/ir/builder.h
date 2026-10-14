@@ -29,6 +29,14 @@ class Builder {
   Builder(Module* module, FunctionId function)
       : module_(module), function_(function) {}
 
+  // The instruction, for the caller that has to set a payload the
+  // builder's own methods do not take. Asked through the builder rather
+  // than through the module, because only the builder knows which
+  // function is being built.
+  Inst& Mutable(InstId id) {
+    return module_->functions[function_.index].Get(id);
+  }
+
   BlockId AddBlock(std::string label);
 
   BlockId current() const { return current_; }

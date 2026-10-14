@@ -840,3 +840,49 @@ because both ask the same question: this object, this method declaration,
 which body? That is what made the selector worth having instead of a slot
 number -- a class's own virtuals and every trait it implements share one
 table without agreeing about an ordering.
+
+**D87. `deinit` is what a type does when a value of it goes away, and that
+makes the type move rather than copy.** The two halves are one feature: a
+type that frees something cannot be in two places, so handing it to
+something else is a *move* and the name it was in no longer holds it. A
+type without a `deinit` is unaffected -- it copies, exactly as before --
+which is what keeps the rule opt-in rather than a tax on every class.
+
+A scope exit runs the destructor and then frees the object, through the
+same machinery `defer` uses, which is why `defer` was built first (D61).
+Whether it runs is a **flag**: set where the binding is initialized,
+cleared where it is moved, tested on the way out. The flag rather than the
+analysis, because lowering would otherwise need to know what the checker
+worked out about every path -- and the flag folds away wherever the passes
+can see both ends.
+
+What counts as a move is the question the checker already answers for
+`String`: a use is a borrow when it is read *through* -- `b.size`,
+`b.Method()`, assigning to `b.field` -- and a move when the value itself is
+handed over. Lowering follows the same rule, so the two cannot drift.
+
+A parameter that was handed ownership destroys it on the way out. That is
+what makes a move a transfer rather than a leak, and it is why a function
+taking an owning type is written as taking the type: a borrow is written
+`&T`.
+
+**D88. A module-level `var` has storage, and a module-level declaration
+says its type.** A `const` becomes a function the inliner folds, which is
+right for something immutable; a `var` can be written, and a function that
+recomputes the initial value is not storage. Before this, `counter =
+counter + 1` compiled to nothing at all and nothing said so.
+
+The storage belongs to the *runtime*, not to either tier, for the reason
+the class tables do: a program may be half interpreted and half compiled,
+and a counter written by one half has to be the counter read by the other.
+The token is the declaration, so both tiers ask for the same storage
+without anything handing out addresses. A global starts as its type's zero
+and takes the source's value in the file's init function, which runs
+before anything else -- and the storage is reset at the start of every
+run, so that running a program twice is running it twice rather than
+continuing it.
+
+The type has to be written (`E0130`). Not a style rule: what a name means
+to another file is worked out from signatures alone, and inferring this one
+from its initializer would make a signature depend on a body -- which is
+the thing the incremental design is built not to do.

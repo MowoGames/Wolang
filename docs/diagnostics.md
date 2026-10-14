@@ -22,6 +22,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0117`–`E0119` | sizes, cyclic declarations, parameters | implemented (wave 5) |
 | `E0120`–`E0126` | memory, references, conversions, receivers, generics | `E0120` (wave 5), `E0123`–`E0124` (waves 8–9), `E0125` (wave 10), `E0126` (wave 11) |
 | `E0127`–`E0129` | systems and the access graph | all wave 11 |
+| `E0130` | a module-level declaration with no type written | wave 12 |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E0301`–`E0305` | suspension and tasks | implemented (wave 10) |
 | `E0401`–`E0403` | inheritance, traits, bounds | implemented (waves 4–5) |
@@ -222,6 +223,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0127` | two systems use the same component, one writes it, and nothing says which runs first | two `system`s over `Query<mut Velocity>` |
 | `E0128` | `@After` or `@Before` names something that is not a system | `@After(Grabity)` |
 | `E0129` | the orderings between systems form a cycle | `@After(B)` on A and `@After(A)` on B |
+| `E0130` | a module-level `const` or `var` with no type written | `const five = 5` at file scope |
 | `E0070` | `@allow` is missing a code or a reason | `@allow(W0101)` |
 
 An error type propagates silently: one unknown name produces one message, not
