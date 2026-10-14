@@ -29,6 +29,8 @@ constexpr std::string_view kMissingTraitMethod = "E0402";
 constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadConversion = "E0124";
+constexpr std::string_view kNotForeignType = "E0802";
+constexpr std::string_view kForeignWithBody = "E0803";
 constexpr std::string_view kBadAllow = "E0070";
 constexpr std::string_view kUnusedName = "W0101";
 constexpr std::string_view kUnreachableCode = "W0102";
@@ -276,6 +278,8 @@ class Checker {
   // True when |type| reaches |target| through fields stored inline.
   bool ReachesByValue(TypeId type, TypeId target, int depth) const;
   void CheckOverride(const Item& item);
+  bool HasForeignRepresentation(TypeId type) const;
+  void CheckForeignType(TypeId type, SourceSpan span, bool is_result);
   void RecordInstantiation(ExprId id,
                            const TypeStore::Substitution& substitution);
   void CheckBounds(const TypeStore::Substitution& substitution,
@@ -983,6 +987,14 @@ void Checker::RecordCallEffects(ExprId callee) {
   const Binding* binding = Lookup(name);
   if (binding == nullptr || binding->item == Binding::kNoItem) {
     return;
+  }
+  if (binding->is_foreign) {
+    // Calling out of the language is the `unsafe` effect, which is how the
+    // rules already in place apply to the FFI: a caller has to state it,
+    // and a package that forbids `unsafe` cannot reach C at all. There is
+    // no separate diagnostic to write and no second rule to keep in step.
+    result_.direct_effects.Add(
+        types_->BuiltinEffectId(BuiltinEffect::kUnsafe));
   }
   if (const EffectRow* declared =
           resolution_->DeclaredRow(binding->file, binding->item);
@@ -1810,16 +1822,64 @@ void Checker::CheckBlock(ExprId id, TypeId expected) {
 
 // ---------------------------------------------------------- declarations ----
 
+// Whether a value of |type| has a C representation. The boundary is narrow
+// on purpose: everything that crosses it has to mean the same thing on both
+// sides, and a type whose layout this compiler decides unilaterally -- a
+// slice, a string, an optional -- does not.
+bool Checker::HasForeignRepresentation(TypeId type) const {
+  switch (types_->KindOf(type)) {
+    case TypeKind::kBool:
+    case TypeKind::kChar:
+    case TypeKind::kInt:
+    case TypeKind::kFloat:
+    case TypeKind::kVoid:
+    case TypeKind::kPointer:
+    // An error type has already been reported; saying so twice is noise.
+    case TypeKind::kError:
+      return true;
+    case TypeKind::kQuantity:
+      // A dimension is erased before code generation, so `Length` crosses
+      // as the `f32` it is.
+      return HasForeignRepresentation(types_->ElementOf(type));
+    default:
+      return false;
+  }
+}
+
+void Checker::CheckForeignType(TypeId type, SourceSpan span, bool is_result) {
+  if (HasForeignRepresentation(type)) {
+    return;
+  }
+  std::string message = "`";
+  message.append(Describe(type));
+  message.append(is_result ? "` cannot be returned from an `extern` function"
+                           : "` cannot be passed to an `extern` function");
+  Report(kNotForeignType, std::move(message), span,
+         "the C boundary takes numbers, `bool` and pointers; pass anything "
+         "else as a pointer");
+}
+
 void Checker::CheckFunction(const Item& item, uint32_t owner) {
   PushScope();
 
   const size_t pushed = PushGenerics(item, owner);
+  const bool is_foreign = HasFlag(item.flags, ItemFlags::kExtern);
+
+  if (is_foreign && item.body.is_valid()) {
+    Report(kForeignWithBody,
+           "an `extern` function is implemented outside the language, so it "
+           "has no body here",
+           item.name_span, "remove the body, or remove `extern`");
+  }
 
   for (ParamId param_id : ast_.Get(item.params)) {
     const Param& param = ast_.Get(param_id);
     const TypeId type = param.type.is_valid()
                             ? resolver_.Resolve(ast_, param.type)
                             : types_->error();
+    if (is_foreign) {
+      CheckForeignType(type, param.span, /*is_result=*/false);
+    }
     if (param.default_value.is_valid()) {
       const TypeId found = Check(param.default_value, type);
       if (!Accepts(type, found)) {
@@ -1836,6 +1896,12 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   const TypeId previous_return = return_type_;
   return_type_ = item.type.is_valid() ? resolver_.Resolve(ast_, item.type)
                                       : types_->void_type();
+  if (is_foreign) {
+    CheckForeignType(return_type_,
+                     item.type.is_valid() ? ast_.Get(item.type).span
+                                          : item.name_span,
+                     /*is_result=*/true);
+  }
 
   if (item.body.is_valid()) {
     if (HasFlag(item.flags, ItemFlags::kExpressionBody)) {

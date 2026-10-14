@@ -607,6 +607,7 @@ FileResolution ResolveFile(TypeStore* types,
     binding.file = file_index;
     binding.is_mutable = HasFlag(entry.flags, ItemFlags::kMutable);
     binding.is_public = HasFlag(entry.flags, ItemFlags::kOffer);
+    binding.is_foreign = HasFlag(entry.flags, ItemFlags::kExtern);
     resolution.scope.push_back(binding);
   }
 

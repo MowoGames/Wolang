@@ -19,6 +19,10 @@ ValueClass LayoutStore::ClassOf(TypeId type) const {
     case TypeKind::kBool:
     case TypeKind::kChar:
     case TypeKind::kInt:
+    // A pointer is an integer that happens to be an address. Nothing in
+    // this tier dereferences one -- only the foreign side does -- so it
+    // needs no more than that.
+    case TypeKind::kPointer:
       return ValueClass::kInteger;
     case TypeKind::kFloat:
       return ValueClass::kFloat;
@@ -238,6 +242,8 @@ uint32_t LayoutStore::BitsOf(TypeId type) const {
       return 8;
     case TypeKind::kChar:
       return 32;
+    case TypeKind::kPointer:
+      return 64;
     case TypeKind::kInt:
       switch (types_.Get(type).int_width) {
         case IntWidth::k8:

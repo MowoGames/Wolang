@@ -143,6 +143,11 @@ struct Function {
   // from another file, or a specialization lowered before its row existed,
   // is unknown rather than pure.
   bool effects_known = false;
+  // Implemented outside the language and reached through the C ABI: the
+  // symbol to look up. Invalid for a function written in Wolang. A foreign
+  // call is the `unsafe` effect, so the checker has already decided whether
+  // it is allowed to be here at all.
+  Symbol foreign_symbol;
   // Block 0 is the entry, and its parameters are the function's.
   std::vector<Block> blocks;
   std::vector<Inst> instructions;
@@ -178,6 +183,8 @@ struct Function {
     return std::span<const uint64_t>(cases.data() + inst.cases_begin,
                                      inst.cases_count);
   }
+
+  bool is_foreign() const { return foreign_symbol.is_valid(); }
 
   // A declaration with no body -- a trait method, an `extern`, a host
   // function -- has a signature and no blocks. Everything that walks blocks

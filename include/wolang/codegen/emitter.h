@@ -57,12 +57,17 @@ struct CompiledFunction {
 //
 // |trap_site_base| is where this function's trap sites start in the
 // module's table, so that a site index means one thing across the module.
+//
+// |foreign| holds the address of each foreign function of the module, by
+// index, or zero for one that is not foreign or whose symbol was not found.
+// Resolving a symbol is the host's business, not the emitter's.
 CompiledFunction EmitFunction(const StringInterner& interner,
                               const TypeStore& types,
                               LayoutStore* layouts,
                               const ir::Module& module,
                               const ir::Function& function,
                               const std::vector<bool>& compilable,
+                              const std::vector<uint64_t>& foreign,
                               uint32_t trap_site_base);
 
 }  // namespace codegen

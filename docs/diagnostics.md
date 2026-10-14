@@ -148,6 +148,8 @@ unused.
 | `E0703` | the package was not granted the capability | `uses net` under `capabilities = "io"` |
 | `E0704` | an offered signature does not state its effects | `offer fun f()` whose body does `io` |
 | `E0801` | `unsafe` where the package forbids it | `unsafe { }` under `unsafe = "deny"` |
+| `E0802` | a type with no C representation crosses the `extern` boundary | `extern "C" fun f(s: str)` |
+| `E0803` | an `extern` function has a body | `extern "C" fun f() { }` |
 
 A row is inferred inside a module and stated on offered signatures. A
 declaration that states nothing is not contradicted, but its inferred row
@@ -219,6 +221,16 @@ incomplete — the uncovered enum variants, or `true`/`false`, or `null`/`x?`.
 Only bool, optionals and enums have a value set the compiler can enumerate;
 every other type needs a catch-all arm. An arm with a guard covers nothing,
 because the guard may be false.
+
+Calling an `extern` function is the **`unsafe` effect**, which is how every
+rule already in place applies to the FFI with nothing new to write: a
+declaration that calls out has to state `uses unsafe` when it is `offer`ed,
+a `@Deterministic` context cannot reach C, and a package with
+`unsafe = "deny"` cannot call out at all (`E0801`). The one thing the FFI
+adds is `E0802`: the C boundary takes numbers, `bool` and pointers, because
+everything crossing it has to mean the same on both sides, and a type whose
+layout this compiler decides unilaterally — a slice, a string, an optional —
+does not.
 
 `E0123` is definite assignment: a variable is reported when *any* path to a
 use fails to write it, which is why a loop body does not count -- it may not

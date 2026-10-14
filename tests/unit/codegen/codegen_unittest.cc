@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "harness/test.h"
+#include "wolang/codegen/foreign.h"
 #include "wolang/compiler/database.h"
 
 namespace wolang {
@@ -44,12 +45,15 @@ class Fixture {
     const FileResolution* resolution = &checked->resolution;
 
     const Symbol symbol = db_.interner().Intern(name);
+    if (foreign_ == nullptr) {
+      foreign_ = codegen::MakeForeignCaller();
+    }
     const interp::Outcome reference =
         interp::RunNamed(db_.interner(), db_.types(), lowered->unoptimized,
-                         symbol, arguments);
+                         symbol, arguments, {}, nullptr, foreign_.get());
     const interp::Outcome optimized =
         interp::RunNamed(db_.interner(), db_.types(), lowered->module,
-                         symbol, arguments);
+                         symbol, arguments, {}, nullptr, foreign_.get());
     if (Describe(reference) != Describe(optimized)) {
       return "<the passes changed the meaning: " + Describe(reference) +
              " then " + Describe(optimized) + ">";
@@ -140,6 +144,7 @@ class Fixture {
   Database db_;
   FileId file_;
   std::unique_ptr<CompiledModule> compiled_;
+  std::unique_ptr<interp::ForeignCaller> foreign_;
 };
 
 WOLANG_TEST(CodegenTest, RunsArithmetic) {
@@ -422,6 +427,37 @@ fun PickFloat(a: float, b: float) -> float => Larger(a, b)
                    "2.5");
   WOLANG_EXPECT_EQ(f.Skipped("Larger<i32>"), "");
   WOLANG_EXPECT_EQ(f.Skipped("Larger<f32>"), "");
+}
+
+WOLANG_TEST(CodegenTest, CallsOutOfTheLanguage) {
+  // Both tiers reach C: compiled code calls the address the loader gave,
+  // and the interpreter calls through a thunk the code generator made. If
+  // only one of them could, every program using the FFI would fall out of
+  // the differential check.
+  Fixture f(R"(
+extern "C" fun abs(n: i32) -> i32
+
+extern "C" fun fabs(x: f64) -> f64
+
+fun Magnitude(n: int) -> int => abs(n)
+
+fun Distance(x: f64) -> f64 => fabs(x)
+)");
+  WOLANG_EXPECT_EQ(f.Run("Magnitude", {Fixture::Int(-7)}), "7");
+  WOLANG_EXPECT_EQ(f.Run("Magnitude", {Fixture::Int(7)}), "7");
+  WOLANG_EXPECT_EQ(f.Run("Distance", {Fixture::Double(-2.5)}), "2.5");
+}
+
+WOLANG_TEST(CodegenTest, SaysWhenAForeignSymbolIsMissing) {
+  Fixture f(R"(
+extern "C" fun NotInAnyLibrary(n: i32) -> i32
+
+fun Try(n: int) -> int => NotInAnyLibrary(n)
+)");
+  WOLANG_EXPECT_EQ(f.Skipped("Try"),
+                   "calls something this tier cannot compile");
+  WOLANG_EXPECT_EQ(f.Skipped("NotInAnyLibrary"),
+                   "is `extern` and its symbol was not found");
 }
 
 }  // namespace

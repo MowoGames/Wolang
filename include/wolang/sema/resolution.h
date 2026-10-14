@@ -52,13 +52,18 @@ struct Binding {
   bool is_mutable = false;
   // Whether other modules may refer to this name.
   bool is_public = false;
+  // Whether the declaration is `extern`: implemented outside the language,
+  // reached through the C ABI. Carried here so a call site knows without
+  // reading the declaring file -- calling one is the `unsafe` effect.
+  bool is_foreign = false;
 
   friend bool operator==(const Binding& lhs, const Binding& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
            lhs.type == rhs.type && lhs.item == rhs.item &&
            lhs.file == rhs.file && lhs.dimension == rhs.dimension &&
            lhs.factor == rhs.factor && lhs.is_mutable == rhs.is_mutable &&
-           lhs.is_public == rhs.is_public;
+           lhs.is_public == rhs.is_public &&
+           lhs.is_foreign == rhs.is_foreign;
   }
 };
 

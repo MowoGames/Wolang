@@ -95,12 +95,14 @@ class FunctionEmitter {
                   const ir::Module& module,
                   const ir::Function& function,
                   const std::vector<bool>& compilable,
+                  const std::vector<uint64_t>& foreign,
                   uint32_t trap_site_base)
       : interner_(interner),
         types_(types),
         layouts_(*layouts),
         function_(function),
         compilable_(compilable),
+        foreign_(foreign),
         trap_site_base_(trap_site_base) {}
 
   CompiledFunction Run() {
@@ -175,12 +177,17 @@ class FunctionEmitter {
           return "builds a string";
         case ir::Opcode::kCallIndirect:
           return "calls through a value";
-        case ir::Opcode::kCall:
-          if (inst.payload.callee >= compilable_.size() ||
-              !compilable_[inst.payload.callee]) {
+        case ir::Opcode::kCall: {
+          const uint32_t callee = inst.payload.callee;
+          if (callee < foreign_.size() && foreign_[callee] != 0) {
+            // A foreign call needs no body of its own, only an address.
+            break;
+          }
+          if (callee >= compilable_.size() || !compilable_[callee]) {
             return "calls something this tier cannot compile";
           }
           break;
+        }
         case ir::Opcode::kEq:
         case ir::Opcode::kNe: {
           // The interpreter compares two aggregates structurally. Doing
@@ -1054,11 +1061,23 @@ class FunctionEmitter {
       }
     }
 
-    calls_.push_back(
-        CallFixup{static_cast<uint32_t>(assembler_.words().size()),
-                  inst.payload.callee});
-    // The displacement is filled in once every function has been placed.
-    assembler_.BlPlaceholder();
+    const uint64_t address = inst.payload.callee < foreign_.size()
+                                 ? foreign_[inst.payload.callee]
+                                 : 0;
+    if (address != 0) {
+      // Out of the language: the address came from the host's loader, and
+      // it is too far away for a `bl`. The arguments are already where the
+      // platform ABI wants them -- which is the one thing this tier gets
+      // for free from having followed it.
+      assembler_.MovImmediate(IWidth::k64, kCallScratch, address);
+      assembler_.Blr(kCallScratch);
+    } else {
+      calls_.push_back(
+          CallFixup{static_cast<uint32_t>(assembler_.words().size()),
+                    inst.payload.callee});
+      // The displacement is filled in once every function has been placed.
+      assembler_.BlPlaceholder();
+    }
 
     if (indirect || !returned.is_valid()) {
       return;
@@ -1842,6 +1861,7 @@ class FunctionEmitter {
   LayoutStore& layouts_;
   const ir::Function& function_;
   const std::vector<bool>& compilable_;
+  const std::vector<uint64_t>& foreign_;
   uint32_t trap_site_base_ = 0;
 
   Assembler assembler_;
@@ -1878,9 +1898,10 @@ CompiledFunction EmitFunction(const StringInterner& interner,
                               const ir::Module& module,
                               const ir::Function& function,
                               const std::vector<bool>& compilable,
+                              const std::vector<uint64_t>& foreign,
                               uint32_t trap_site_base) {
   FunctionEmitter emitter(interner, types, layouts, module, function,
-                          compilable, trap_site_base);
+                          compilable, foreign, trap_site_base);
   return emitter.Run();
 }
 

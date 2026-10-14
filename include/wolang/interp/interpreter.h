@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "wolang/base/string_interner.h"
+#include "wolang/interp/foreign.h"
 #include "wolang/interp/intrinsics.h"
 #include "wolang/interp/value.h"
 #include "wolang/ir/ir.h"
@@ -45,13 +46,17 @@ struct Limits {
 // Runs on whatever module it is given. The reference semantics are the
 // unoptimized IR; running the optimized one too and comparing is what turns
 // "the passes preserve meaning" into something testable rather than assumed.
+// |foreign| is how a call to an `extern` declaration leaves the language.
+// Without one such a call traps, which is what a `comptime` evaluation
+// wants: compile time is not the time to call into the outside.
 Outcome Run(const StringInterner& interner,
             const TypeStore& types,
             const ir::Module& module,
             const ir::Function& function,
             std::vector<Value> arguments,
             const Limits& limits = {},
-            Output* output = nullptr);
+            Output* output = nullptr,
+            ForeignCaller* foreign = nullptr);
 
 // Convenience: finds |name| in |module| and runs it.
 Outcome RunNamed(const StringInterner& interner,
@@ -60,7 +65,8 @@ Outcome RunNamed(const StringInterner& interner,
                  Symbol name,
                  std::vector<Value> arguments = {},
                  const Limits& limits = {},
-                 Output* output = nullptr);
+                 Output* output = nullptr,
+                 ForeignCaller* foreign = nullptr);
 
 }  // namespace interp
 }  // namespace wolang

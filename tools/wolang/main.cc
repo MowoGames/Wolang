@@ -26,6 +26,7 @@
 #include "wolang/compiler/cache.h"
 #include "wolang/compiler/database.h"
 #include "wolang/codegen/compiler.h"
+#include "wolang/codegen/foreign.h"
 #include "wolang/compiler/workspace.h"
 #include "wolang/format/formatter.h"
 #include "wolang/interp/interpreter.h"
@@ -443,12 +444,16 @@ int RunProgram(const Options& options) {
   const Symbol main = database.interner().Intern("main");
   interp::Output reference_output;
   interp::Output optimized_output;
+  // The interpreter can leave the language too, through a thunk the code
+  // generator makes: both tiers reach C the same way or neither does.
+  const std::unique_ptr<interp::ForeignCaller> foreign =
+      codegen::MakeForeignCaller();
   const interp::Outcome reference = interp::RunNamed(
       database.interner(), database.types(), program->unoptimized, main, {},
-      {}, &reference_output);
+      {}, &reference_output, foreign.get());
   const interp::Outcome optimized = interp::RunNamed(
       database.interner(), database.types(), program->module, main, {}, {},
-      &optimized_output);
+      &optimized_output, foreign.get());
 
   // What the program printed is part of what it does, so the two tiers have
   // to agree about that too.
@@ -514,6 +519,8 @@ int RunTests(const Options& options) {
     // Tests are the one place a program is known to terminate, which is
     // what makes running it twice safe.
     std::unique_ptr<codegen::CompiledModule> compiled;
+    const std::unique_ptr<interp::ForeignCaller> foreign =
+        codegen::MakeForeignCaller();
     const CheckedFile* checked = database.Checked(file);
     if (checked != nullptr && codegen::IsSupportedTarget()) {
       compiled = codegen::Compile(database.interner(), database.types(),
@@ -525,7 +532,8 @@ int RunTests(const Options& options) {
       // Run through the unoptimized IR: the reference semantics are what a
       // test is testing.
       const interp::Outcome outcome = interp::RunNamed(
-          database.interner(), database.types(), lowered->unoptimized, name);
+          database.interner(), database.types(), lowered->unoptimized, name,
+          {}, {}, nullptr, foreign.get());
       const bool returned_false =
           outcome.ok() &&
           outcome.value.kind() == interp::Value::Kind::kBool &&

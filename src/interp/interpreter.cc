@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <utility>
 
 namespace wolang {
@@ -28,12 +29,14 @@ class Interpreter {
               const TypeStore& types,
               const ir::Module& module,
               const Limits& limits,
-              Output* output)
+              Output* output,
+              ForeignCaller* foreign)
       : interner_(interner),
         types_(types),
         module_(module),
         limits_(limits),
-        output_(output) {}
+        output_(output),
+        foreign_(foreign) {}
 
   Outcome Run(const ir::Function& function, std::vector<Value> arguments) {
     Outcome outcome;
@@ -68,6 +71,9 @@ class Interpreter {
   Value Call(const ir::Function& function,
              std::vector<Value> arguments,
              Outcome* outcome) {
+    if (function.is_foreign()) {
+      return CallForeign(function, arguments, outcome);
+    }
     if (function.is_declaration()) {
       // A declaration whose name is an intrinsic is implemented by the host.
       // That is the platform floor: everything the language can say about
@@ -108,6 +114,87 @@ class Interpreter {
     const Value result = Execute(&frame, outcome);
     --depth_;
     return result;
+  }
+
+  // Out of the language, through the thunk the host handed over. The
+  // arguments are reduced to bits and a register file, which is all the C
+  // ABI needs; the checker already made sure every type at the boundary has
+  // a representation on both sides (`E0802`).
+  Value CallForeign(const ir::Function& function,
+                    const std::vector<Value>& arguments,
+                    Outcome* outcome) {
+    const std::string symbol(interner_.Text(function.foreign_symbol));
+    if (foreign_ == nullptr) {
+      return Trap(outcome, TrapKind::kNoBody, "@" + symbol,
+                  "is `extern`, and this run cannot call out of the "
+                  "language");
+    }
+
+    std::vector<ForeignArgument> raw;
+    raw.reserve(arguments.size());
+    for (const Value& argument : arguments) {
+      ForeignArgument entry;
+      if (argument.kind() == Value::Kind::kFloat) {
+        entry.is_float = true;
+        if (argument.float_width() == FloatWidth::k64) {
+          const double number = argument.floating();
+          std::memcpy(&entry.bits, &number, sizeof(number));
+        } else {
+          // An f32 is passed in the low half of its register.
+          const auto number = static_cast<float>(argument.floating());
+          uint32_t pattern = 0;
+          std::memcpy(&pattern, &number, sizeof(number));
+          entry.bits = pattern;
+        }
+      } else if (argument.kind() == Value::Kind::kBool) {
+        entry.bits = argument.boolean() ? 1 : 0;
+      } else if (argument.kind() == Value::Kind::kInt) {
+        // Sign extended, because that is how a register holds a narrow
+        // integer on this ABI.
+        entry.bits = argument.is_signed()
+                         ? static_cast<uint64_t>(argument.signed_integer())
+                         : argument.integer();
+      } else {
+        return Trap(outcome, TrapKind::kUndefinedValue, "@" + symbol,
+                    "was given " + argument.Describe() +
+                        ", which has no representation in C");
+      }
+      raw.push_back(entry);
+    }
+
+    const TypeId returned = types_.ElementOf(function.type);
+    const Type& described = types_.Get(returned);
+    const bool returns_float = described.kind == TypeKind::kFloat;
+    uint64_t result = 0;
+    if (!foreign_->Call(symbol, raw, returns_float, &result)) {
+      return Trap(outcome, TrapKind::kNoBody, "@" + symbol,
+                  "is `extern`, and its symbol was not found");
+    }
+
+    switch (described.kind) {
+      case TypeKind::kVoid:
+        return Value::Void();
+      case TypeKind::kBool:
+        return Value::Bool((result & 1) != 0);
+      case TypeKind::kFloat: {
+        if (described.float_width == FloatWidth::k64) {
+          double number = 0;
+          std::memcpy(&number, &result, sizeof(number));
+          return Value::Float(number, FloatWidth::k64);
+        }
+        const auto pattern = static_cast<uint32_t>(result);
+        float number = 0;
+        std::memcpy(&number, &pattern, sizeof(number));
+        return Value::Float(static_cast<double>(number), FloatWidth::k32);
+      }
+      case TypeKind::kInt:
+        return Value::Int(result, described.int_width, described.is_signed);
+      case TypeKind::kPointer:
+        return Value::Int(result, IntWidth::k64, /*is_signed=*/false);
+      default:
+        return Trap(outcome, TrapKind::kUndefinedValue, "@" + symbol,
+                    "returns something with no representation in C");
+    }
   }
 
   // Walks blocks until a `ret`. Block parameters are filled by the jump that
@@ -732,6 +819,7 @@ class Interpreter {
   const ir::Module& module_;
   Limits limits_;
   Output* output_ = nullptr;
+  ForeignCaller* foreign_ = nullptr;
   uint64_t steps_ = 0;
   uint32_t depth_ = 0;
 };
@@ -744,8 +832,9 @@ Outcome Run(const StringInterner& interner,
             const ir::Function& function,
             std::vector<Value> arguments,
             const Limits& limits,
-            Output* output) {
-  Interpreter interpreter(interner, types, module, limits, output);
+            Output* output,
+            ForeignCaller* foreign) {
+  Interpreter interpreter(interner, types, module, limits, output, foreign);
   return interpreter.Run(function, std::move(arguments));
 }
 
@@ -755,7 +844,8 @@ Outcome RunNamed(const StringInterner& interner,
                  Symbol name,
                  std::vector<Value> arguments,
                  const Limits& limits,
-                 Output* output) {
+                 Output* output,
+                 ForeignCaller* foreign) {
   const ir::Function* function = module.Find(name);
   if (function == nullptr) {
     Outcome outcome;
@@ -765,7 +855,7 @@ Outcome RunNamed(const StringInterner& interner,
     return outcome;
   }
   return Run(interner, types, module, *function, std::move(arguments),
-             limits, output);
+             limits, output, foreign);
 }
 
 }  // namespace interp

@@ -2,6 +2,7 @@
 
 #include "wolang/codegen/compiler.h"
 
+#include <dlfcn.h>
 #include <setjmp.h>
 
 #include <cstdio>
@@ -112,6 +113,8 @@ class CompiledModule::Impl {
 
   std::vector<uint32_t> words_;
   std::vector<Entry> entries_;
+  // The address of each foreign function, by module index.
+  std::vector<uint64_t> foreign_;
   std::vector<TrapSite> traps_;
   std::unordered_map<uint32_t, uint32_t> by_name_;
   CodeBlock block_;
@@ -138,6 +141,21 @@ class CompiledModule::Impl {
 void CompiledModule::Impl::Compile() {
   const size_t count = module_.functions.size();
   entries_.assign(count, Entry{});
+
+  // Foreign symbols, resolved through the host's loader. A symbol that is
+  // not there leaves a zero, and a function calling it is left to the
+  // interpreter with a reason -- which is better than a module that refuses
+  // to compile because one declaration named something missing.
+  foreign_.assign(count, 0);
+  for (size_t i = 0; i < count; ++i) {
+    const ir::Function& function = module_.functions[i];
+    if (!function.is_foreign()) {
+      continue;
+    }
+    const std::string symbol(interner_.Text(function.foreign_symbol));
+    foreign_[i] = reinterpret_cast<uint64_t>(
+        ::dlsym(RTLD_DEFAULT, symbol.c_str()));
+  }
   for (size_t i = 0; i < count; ++i) {
     by_name_[module_.functions[i].name.index] = static_cast<uint32_t>(i);
   }
@@ -148,12 +166,21 @@ void CompiledModule::Impl::Compile() {
   std::vector<bool> compilable(count, true);
   std::vector<std::string> reasons(count);
   for (size_t i = 0; i < count; ++i) {
+    if (module_.functions[i].is_foreign() && foreign_[i] == 0) {
+      reasons[i] = "is `extern` and its symbol was not found";
+    }
+  }
+  for (size_t i = 0; i < count; ++i) {
     const CompiledFunction attempt =
         EmitFunction(interner_, types_, &layouts_, module_,
-                     module_.functions[i], compilable, 0);
+                     module_.functions[i], compilable, foreign_, 0);
     if (!attempt.compiled) {
       compilable[i] = false;
-      reasons[i] = attempt.reason;
+      // A reason already recorded is the more specific one: "its symbol was
+      // not found" says more than "has no body".
+      if (reasons[i].empty()) {
+        reasons[i] = attempt.reason;
+      }
     }
   }
 
@@ -170,8 +197,11 @@ void CompiledModule::Impl::Compile() {
         if (inst.opcode != ir::Opcode::kCall) {
           continue;
         }
-        if (inst.payload.callee >= count ||
-            !compilable[inst.payload.callee]) {
+        const uint32_t callee = inst.payload.callee;
+        if (callee < foreign_.size() && foreign_[callee] != 0) {
+          continue;
+        }
+        if (callee >= count || !compilable[callee]) {
           compilable[i] = false;
           reasons[i] = "calls something this tier cannot compile";
           changed = true;
@@ -193,7 +223,7 @@ void CompiledModule::Impl::Compile() {
     const uint32_t base = static_cast<uint32_t>(words_.size());
     CompiledFunction compiled =
         EmitFunction(interner_, types_, &layouts_, module_,
-                     module_.functions[i], compilable,
+                     module_.functions[i], compilable, foreign_,
                      static_cast<uint32_t>(traps_.size()));
     WOLANG_CHECK(compiled.compiled);
 

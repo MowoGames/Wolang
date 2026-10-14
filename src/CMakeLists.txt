@@ -16,6 +16,7 @@ add_library(wolang_core STATIC
     codegen/layout.cc
     codegen/reg_alloc.cc
     codegen/compiler.cc
+    codegen/foreign.cc
     codegen/arm64/emitter.cc
     format/formatter.cc
     query/query_engine.cc
@@ -64,10 +65,12 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/codegen/reg_alloc.h
         ${PROJECT_SOURCE_DIR}/include/wolang/codegen/compiler.h
         ${PROJECT_SOURCE_DIR}/include/wolang/codegen/emitter.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/codegen/foreign.h
         ${PROJECT_SOURCE_DIR}/include/wolang/codegen/runtime.h
         ${PROJECT_SOURCE_DIR}/include/wolang/format/formatter.h
         ${PROJECT_SOURCE_DIR}/include/wolang/query/query_engine.h
         ${PROJECT_SOURCE_DIR}/include/wolang/interp/interpreter.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/interp/foreign.h
         ${PROJECT_SOURCE_DIR}/include/wolang/interp/intrinsics.h
         ${PROJECT_SOURCE_DIR}/include/wolang/interp/value.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/builder.h

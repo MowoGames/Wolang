@@ -102,6 +102,12 @@ class Lowerer {
         function.name = item.name;
         function.type = Erase(signature);
         function.effects = EffectsOf(id, &function.effects_known);
+        if (HasFlag(item.flags, ItemFlags::kExtern)) {
+          // `extern "C" fun puts(...) = "puts"` names the symbol; without
+          // the clause the symbol is the declaration's own name.
+          function.foreign_symbol =
+              item.link_name.is_valid() ? item.link_name : item.name;
+        }
         indices_.emplace_back(id, module_->functions.size());
         module_->functions.push_back(std::move(function));
         break;
