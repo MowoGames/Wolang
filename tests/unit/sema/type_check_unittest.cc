@@ -914,6 +914,72 @@ fun use(xs: []int, ys: []float) {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheck, TakesTheTypeArgumentsACallWrites) {
+  // Inference reads the arguments, so a signature that mentions its
+  // parameter only in its result has nothing to be inferred from --
+  // `SoaNew<Particle>(4)` is the whole reason the turbofish exists. Before
+  // this, the call's type stayed `soa []T` and every field of the storage
+  // was laid out against a type parameter.
+  Fixture f(R"(
+fun Empty<T>() -> []T {
+  return []
+}
+
+fun Zero<T>(count: int) -> soa []T uses unsafe
+
+fun use() uses unsafe {
+  const a = Empty<int>()
+  const b = Empty<float>()
+  const c = Zero<float>(4)
+}
+)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "[]s32");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("b"), "[]f32");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("c"), "soa []f32");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, ConstructorsBindTheirTypeArguments) {
+  Fixture f(R"(
+struct Box<T> {
+  var item: T
+}
+
+class Holder<T> {
+  var item: T
+  var count: int = 0
+}
+
+fun use() {
+  const written = Box<int>(1)
+  const inferred = Box(2.5)
+  const handle = Holder<int>(3, 0)
+  const field = inferred.item
+}
+)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("written"), "Box<s32>");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("inferred"), "Box<f32>");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("handle"), "Holder<s32>");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("field"), "f32");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AGenericTypeWithNothingToBindItIsAnError) {
+  // No field takes a `T` and the call wrote no argument, so there is
+  // nothing to go on -- and a type parameter that reaches a layout is a
+  // field of size zero rather than a diagnostic.
+  Fixture f(R"(
+struct Marker<T> {
+  var tag: int = 0
+}
+
+fun use() {
+  const m = Marker(1)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0126");
+}
+
 WOLANG_TEST(TypeCheck, InferenceAcrossSeveralParameters) {
   Fixture f(R"(
 fun Pair<A, B>(a: A, b: B) -> (A, B) {

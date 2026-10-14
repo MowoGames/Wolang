@@ -38,6 +38,10 @@ ValueClass LayoutStore::ClassOf(TypeId type) const {
     case TypeKind::kStr:
     case TypeKind::kSlice:
       return ValueClass::kAggregate;
+    // An instance of a generic type is laid out like the declaration it
+    // came from, with its members' types bound -- which the member table
+    // of an instance already does.
+    case TypeKind::kInstance:
     case TypeKind::kNamed:
       // A struct, a component or an enum stores its members inline. A
       // class is a handle to a heap object, so a value of one is an
@@ -62,7 +66,8 @@ bool LayoutStore::IsScalar(TypeId type) const {
 }
 
 bool LayoutStore::IsTagOnly(TypeId type) const {
-  if (types_.KindOf(type) != TypeKind::kNamed) {
+  const TypeKind kind = types_.KindOf(type);
+  if (kind != TypeKind::kNamed && kind != TypeKind::kInstance) {
     return false;
   }
   bool has_variant = false;
@@ -128,6 +133,7 @@ uint32_t LayoutStore::FieldCount(TypeId type) const {
     case TypeKind::kSlice:
       // The elements and how many there are.
       return 2;
+    case TypeKind::kInstance:
     case TypeKind::kNamed: {
       if (IsTagOnly(type)) {
         return 1;
@@ -155,6 +161,7 @@ TypeId LayoutStore::FieldType(TypeId type, uint32_t index) const {
       const std::vector<TypeId> elements = types_.ArgumentsOf(type);
       return index < elements.size() ? elements[index] : TypeId{};
     }
+    case TypeKind::kInstance:
     case TypeKind::kNamed: {
       uint32_t seen = 0;
       for (const Member& member : resolution_.MembersOf(type)) {
@@ -171,6 +178,31 @@ TypeId LayoutStore::FieldType(TypeId type, uint32_t index) const {
     default:
       return TypeId{};
   }
+}
+
+uint64_t LayoutStore::SoaPrefixOf(TypeId record, uint32_t field) {
+  uint64_t prefix = 0;
+  const uint32_t fields = FieldCount(record);
+  for (uint32_t i = 0; i < field && i < fields; ++i) {
+    const TypeId type = FieldType(record, i);
+    if (type.is_valid()) {
+      prefix += Of(type).size;
+    }
+  }
+  return prefix;
+}
+
+uint64_t LayoutStore::SoaOffsetOf(TypeId record,
+                                  uint32_t field,
+                                  uint64_t index,
+                                  uint64_t count) {
+  const TypeId type = FieldType(record, field);
+  const uint64_t size = type.is_valid() ? Of(type).size : 0;
+  return SoaPrefixOf(record, field) * SoaRoundCount(count) + index * size;
+}
+
+uint64_t LayoutStore::SoaSizeOf(TypeId record, uint64_t count) {
+  return SoaPrefixOf(record, FieldCount(record)) * SoaRoundCount(count);
 }
 
 uint32_t LayoutStore::StrideOf(TypeId array) {
@@ -304,6 +336,7 @@ uint32_t LayoutStore::BitsOf(TypeId type) const {
       return 32;
     case TypeKind::kPointer:
       return 64;
+    case TypeKind::kInstance:
     case TypeKind::kNamed:
     case TypeKind::kFunction:
       // A class and a function are both addresses; a value type never

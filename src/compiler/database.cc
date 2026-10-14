@@ -357,6 +357,7 @@ void Database::RegisterQueries() {
         }
 
         FileResolution result = resolved->first;
+        result.types = &types_;
         // Reports nothing: the type checker is the one reporter of an
         // annotation that does not resolve.
         DiagnosticEngine ignored;
@@ -388,6 +389,11 @@ void Database::RegisterQueries() {
         // so the member tables of those files are merged in here rather than
         // in Resolution, which is what keeps module siblings acyclic.
         FileResolution resolution = *own;
+        resolution.types = &types_;
+        // Nothing merged in: the tables cached for `Box<int>` belong to
+        // whichever resolution answered for `Box`, and after a merge there
+        // may be more members to substitute.
+        resolution.instances.clear();
         const auto merge = [&resolution](const FileResolution& other,
                                         uint32_t other_file) {
           for (const TypeMembers& table : other.type_members) {
@@ -1021,7 +1027,7 @@ void Database::RegisterQueries() {
         }
 
         result.unoptimized = result.module;
-        ir::Optimize(&types_, &result.module);
+        ir::Optimize(&types_, &result.module, &layouts);
 
         const ir::VerificationResult optimized =
             ir::Verify(interner_, types_, result.module);

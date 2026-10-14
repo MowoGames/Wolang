@@ -3,6 +3,7 @@
 #include "wolang/ir/lower.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <utility>
 
 #include "wolang/base/diagnostic.h"
@@ -76,9 +77,11 @@ class Lowerer {
       const Pending work = pending_.back();
       pending_.pop_back();
       substitution_ = work.substitution;
+      self_type_ = work.owner;
       if (ast_.Contains(work.item)) {
         LowerFunction(ast_.Get(work.item), work.index);
       }
+      self_type_ = TypeId{};
       substitution_.clear();
     }
   }
@@ -321,7 +324,71 @@ class Lowerer {
     const auto index = static_cast<uint32_t>(module_->functions.size());
     module_->functions.push_back(std::move(function));
     specializations_.emplace_back(name, index);
-    pending_.push_back(Pending{item, substitution, index});
+    pending_.push_back(Pending{item, substitution, index, TypeId{}});
+    return index;
+  }
+
+  // One copy of a generic type's method per instantiation.
+  //
+  // `Box<int>.Get` and `Box<float>.Get` are two functions over one body.
+  // The substitution comes from the receiver rather than from inference,
+  // which is what makes this simpler than a generic function: by the time
+  // a method is called, what its type stands for is already decided.
+  uint32_t InstantiateMethod(TypeId owner, Symbol name, const Member& member) {
+    const TypeId base = types_->Get(owner).base;
+    const std::span<const TypeId> parameters = resolution_.ParametersOf(base);
+    const std::vector<TypeId> arguments = types_->ArgumentsOf(owner);
+    if (parameters.empty() || parameters.size() != arguments.size()) {
+      return 0xFFFFFFFFu;
+    }
+
+    TypeStore::Substitution substitution;
+    for (size_t i = 0; i < parameters.size(); ++i) {
+      const TypeId concrete = Erase(Apply(arguments[i]));
+      if (!concrete.is_valid() || types_->MentionsParameter(concrete)) {
+        return 0xFFFFFFFFu;
+      }
+      substitution.emplace_back(parameters[i], concrete);
+    }
+
+    ItemId body;
+    for (const Recipe& recipe : recipes_) {
+      if (recipe.owner == base && recipe.name == name) {
+        body = recipe.item;
+        break;
+      }
+    }
+    if (!ast_.Contains(body)) {
+      return 0xFFFFFFFFu;
+    }
+
+    const Symbol mangled = MethodName(owner, name);
+    for (const auto& [existing, index] : specializations_) {
+      if (existing == mangled) {
+        return index;
+      }
+    }
+
+    // The receiver first, the way every method takes it (D60).
+    std::vector<TypeId> params;
+    params.push_back(owner);
+    for (TypeId param : types_->ArgumentsOf(member.type)) {
+      params.push_back(Erase(types_->Substitute(param, substitution)));
+    }
+
+    Function function;
+    function.name = mangled;
+    function.type = types_->Function(
+        params,
+        Erase(types_->Substitute(types_->ElementOf(member.type),
+                                 substitution)));
+    function.source_file = member.file;
+    function.source_item = member.item;
+    function.source_slot = member.slot;
+    const auto index = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(function));
+    specializations_.emplace_back(mangled, index);
+    pending_.push_back(Pending{body, substitution, index, owner});
     return index;
   }
 
@@ -407,11 +474,17 @@ class Lowerer {
         types_->KindOf(declared) != TypeKind::kFunction) {
       return;
     }
+    // A parameter in the signature, or a type that *has* parameters: a
+    // method of `Storage<T>` is a recipe even when it takes and returns
+    // nothing but integers, because its `self` is not one type.
     if (types_->MentionsParameter(declared) ||
-        types_->MentionsParameter(owner)) {
-      // A generic type's method is a recipe, the same way a generic
-      // function is. Instantiation is wave 8's machinery and this is not
-      // wired into it yet, so the interpreter keeps them.
+        types_->MentionsParameter(owner) ||
+        !resolution_.ParametersOf(owner).empty()) {
+      // A generic type's method is a recipe: there is nothing to declare
+      // until something asks for `Box<int>.Get`. Remembered by the type it
+      // is written in and its name, which is what a call on an instance
+      // has to go on.
+      recipes_.push_back(Recipe{owner, item.name, id});
       return;
     }
 
@@ -1995,6 +2068,11 @@ class Lowerer {
     InstId value;
     std::vector<Step> path;
     TypeId root_type;
+    // For storage laid out one array per field: which record it holds.
+    // The last step of such a place carries both the element index and
+    // the field, because where a field of an element sits depends on how
+    // many elements there are.
+    TypeId soa_record;
 
     bool readable() const {
       return slot.is_valid() || pointer.is_valid() || value.is_valid();
@@ -2035,6 +2113,19 @@ class Lowerer {
       }
       case ExprKind::kField: {
         const TypeId owner = Erase(TypeOf(expr.lhs));
+        // A field of an element of `soa` storage: the arrays are per
+        // field, so where it is depends on how many records there are.
+        if (const Place element = SoaElement(expr.lhs);
+            element.pointer.is_valid()) {
+          Place field = element;
+          // The step already says which element; this adds which field.
+          // `soa_record` stays what `SoaElement` set it to -- the record
+          // -- because that is what the offsets are computed from.
+          field.path.back().field =
+              FieldIndex(element.soa_record, expr.name);
+          field.path.back().type = Erase(TypeOf(id));
+          return field;
+        }
         if (types_->IsHandle(owner)) {
           // The base is a class, so it is already an address: the field is
           // read and written through it rather than through a copy.
@@ -2081,6 +2172,36 @@ class Lowerer {
       default:
         return place;
     }
+  }
+
+  // An element of storage laid out one array per field, as a place with
+  // room for the field the caller is about to ask for.
+  Place SoaElement(ExprId id) {
+    Place place;
+    if (!ast_.Contains(id)) {
+      return place;
+    }
+    const Expr& expr = ast_.Get(id);
+    if (expr.kind != ExprKind::kIndex) {
+      return place;
+    }
+    const TypeId storage = Erase(TypeOf(expr.lhs));
+    if (types_->KindOf(storage) != TypeKind::kSlice ||
+        !types_->Get(storage).is_soa) {
+      return place;
+    }
+    const TypeId record = Erase(types_->ElementOf(storage));
+    // Typed as a pointer to the record rather than to bytes: that is how
+    // the tiers know *which* record's fields they are spacing out, and
+    // there is nothing else in the instruction that could tell them.
+    const InstId view = Value(expr.lhs);
+    place.pointer = builder_->Extract(
+        types_->Pointer(record, /*is_mutable=*/true), view, 0);
+    place.root_type = record;
+    place.soa_record = record;
+    place.path.push_back(Step{0, Value(expr.rhs),
+                              LengthOf(expr.lhs, storage), record});
+    return place;
   }
 
   // The receiver, or the field of it that a bare name stands for. An
@@ -2137,6 +2258,17 @@ class Lowerer {
   // a place with an address to begin with.
   InstId AddressOfPlace(const Place& place) {
     InstId address = place.slot.is_valid() ? place.slot : place.pointer;
+    if (place.soa_record.is_valid() && !place.path.empty()) {
+      // One step, two coordinates: which element and which field. The
+      // tiers work out where that is, because only they know how big a
+      // field is.
+      const Step& step = place.path.back();
+      const InstId result = builder_->Add(
+          Opcode::kSoaAddress, types_->Pointer(Erase(step.type), true),
+          {address, step.index, step.length});
+      module_->functions[current_function_].Get(result).field = step.field;
+      return result;
+    }
     for (const Step& step : place.path) {
       const TypeId pointer = types_->Pointer(Erase(step.type), true);
       address = step.index.is_valid()
@@ -2306,6 +2438,19 @@ class Lowerer {
       return done;
     }
 
+    // `SoaNew<T>(count)` is not a call either: how big that storage is, is
+    // a question only a tier can answer.
+    if (ast_.Contains(expr.lhs) &&
+        ast_.Get(expr.lhs).kind == ExprKind::kPath &&
+        (interner_->Text(ast_.Get(expr.lhs).name) == "SoaNew" ||
+         interner_->Text(ast_.Get(expr.lhs).name) == "ArrayNew") &&
+        arguments.size() == 1 &&
+        types_->KindOf(Erase(type)) == TypeKind::kSlice) {
+      const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
+      const InstId count = Widen(arguments[0], word);
+      return builder_->Add(Opcode::kSoaNew, Erase(type), {count});
+    }
+
     // `BytesFromRaw(data, length)` is not a call: a slice *is* a pointer
     // and a length, so saying so is the whole of it. The one unsafe way
     // to make a view of memory that came from outside the language --
@@ -2349,7 +2494,14 @@ class Lowerer {
         // The checker records the type the context wanted, so `type` may
         // already be `Pawn?` for a `Pawn(...)`. What the instruction builds
         // is the object, and the wrap is what bridges the two.
-        const TypeId built = Erase(binding->type);
+        //
+        // Read from what the checker recorded for the callee rather than
+        // from the declaration: `Box<int>(7)` builds a `Box<s32>`, and the
+        // declaration is still `Box` with a parameter in its field.
+        const TypeId recorded = TypeOf(expr.lhs);
+        const TypeId built = types_->IsError(recorded)
+                                 ? Erase(binding->type)
+                                 : recorded;
         if (types_->IsHandle(built)) {
           return Coerce(NewObject(built, arguments), built, type);
         }
@@ -2740,10 +2892,16 @@ class Lowerer {
 
     uint32_t index =
         IndexOfSource(member->file, member->item, member->slot);
+    if (index == 0xFFFFFFFFu && types_->KindOf(owner) == TypeKind::kInstance) {
+      // A method of a generic type gets one copy per instantiation, the
+      // same way a generic function does -- and from the same place: the
+      // receiver's own arguments say what its parameters stand for, so
+      // there is nothing to infer.
+      index = InstantiateMethod(owner, name, *member);
+    }
     if (index == 0xFFFFFFFFu) {
       if (member->file == file_index_) {
-        // Declared here and not lowered: a generic, or a method of a
-        // generic type. The interpreter keeps those for now.
+        // Declared here and not lowered: a generic the interpreter keeps.
         return InstId{};
       }
       // Declared in another file. Lowering is per file, so it gets a
@@ -3293,10 +3451,19 @@ class Lowerer {
   }
 
 
+  // A method of a generic type, waiting for something to ask for a copy.
+  struct Recipe {
+    TypeId owner;
+    Symbol name;
+    ItemId item;
+  };
+
   struct Pending {
     ItemId item;
     TypeStore::Substitution substitution;
     uint32_t index = 0;
+    // The type the body's `self` is, for a method of a generic type.
+    TypeId owner;
   };
 
   StringInterner* interner_;
@@ -3321,6 +3488,7 @@ class Lowerer {
   std::vector<MachineBlock> machine_blocks_;
   std::vector<MachineMethod> machine_methods_;
   std::vector<Pending> pending_;
+  std::vector<Recipe> recipes_;
   std::vector<Deferred> deferred_;
   // Whether the function being lowered is a `task`.
   bool in_task_ = false;

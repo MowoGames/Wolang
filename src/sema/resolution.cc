@@ -138,7 +138,48 @@ std::span<const Member> FileResolution::MembersOf(TypeId type) const {
       return table.members;
     }
   }
-  return {};
+
+  // `Box<int>` keeps its members on `Box`, with the instance's arguments
+  // standing in for the declaration's parameters. Built here rather than
+  // at every reader, because there are a dozen of them -- a layout, a
+  // lowering, an interpreter -- and each one getting it right separately
+  // is a dozen chances to get it wrong.
+  if (types == nullptr || types->KindOf(type) != TypeKind::kInstance) {
+    return {};
+  }
+  for (const TypeMembers& table : instances) {
+    if (table.type == type) {
+      return table.members;
+    }
+  }
+  const TypeId base = types->Get(type).base;
+  const TypeMembers* declared = nullptr;
+  for (const TypeMembers& table : type_members) {
+    if (table.type == base) {
+      declared = &table;
+      break;
+    }
+  }
+  if (declared == nullptr) {
+    return {};
+  }
+  const std::vector<TypeId> arguments = types->ArgumentsOf(type);
+  TypeStore::Substitution substitution;
+  for (size_t i = 0; i < declared->parameters.size() && i < arguments.size();
+       ++i) {
+    substitution.emplace_back(declared->parameters[i], arguments[i]);
+  }
+
+  TypeMembers built;
+  built.type = type;
+  built.is_value = declared->is_value;
+  built.parameters = declared->parameters;
+  built.members = declared->members;
+  for (Member& member : built.members) {
+    member.type = types->Substitute(member.type, substitution);
+  }
+  instances.push_back(std::move(built));
+  return instances.back().members;
 }
 
 const Member* FileResolution::FindMember(TypeId type, Symbol name) const {
@@ -718,6 +759,7 @@ FileResolution ResolveFile(TypeStore* types,
                            uint32_t file_index,
                            DiagnosticEngine* diagnostics) {
   FileResolution resolution;
+  resolution.types = types;
   const ItemTree tree = BuildItemTree(*interner, ast);
   resolution.item_types.assign(tree.entries.size(), TypeId{});
 

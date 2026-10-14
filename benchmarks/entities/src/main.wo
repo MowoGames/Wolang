@@ -1,0 +1,180 @@
+// One million entities, integrated two ways.
+//
+// The same record and the same arithmetic; the only difference is the
+// layout. `soa` puts one array per field, so a pass that touches two of
+// six fields reads two cache lines' worth of useful bytes instead of
+// one-third of six -- which is the whole argument for the layout being a
+// property of the storage rather than of the type (D-SoA).
+
+need std.mem.{ArrayNew, SoaNew}
+
+struct Body {
+  var x: float = 0.0
+  var y: float = 0.0
+  var z: float = 0.0
+  var vx: float = 0.0
+  var vy: float = 0.0
+  var vz: float = 0.0
+}
+
+const kCount: int = 1000000
+
+fun FillSoa(bodies: soa []Body) {
+  var i = 0
+  while i < bodies.len {
+    bodies[i].x = 0.0
+    bodies[i].vx = 1.0
+    bodies[i].vy = 2.0
+    i = i + 1
+  }
+}
+
+@Bench
+fun BenchIntegrateSoa() -> int uses unsafe {
+  const bodies = SoaNew<Body>(kCount)
+  FillSoa(bodies)
+  var round = 0
+  while round < 8 {
+    var i = 0
+    while i < kCount {
+      bodies[i].x = bodies[i].x + bodies[i].vx
+      bodies[i].y = bodies[i].y + bodies[i].vy
+      i = i + 1
+    }
+    round = round + 1
+  }
+  var total = 0.0
+  var i = 0
+  while i < kCount {
+    total = total + bodies[i].x
+    i = i + 1
+  }
+  return total as int
+}
+
+fun FillAos(bodies: []Body) {
+  var i = 0
+  while i < bodies.len {
+    bodies[i].x = 0.0
+    bodies[i].vx = 1.0
+    bodies[i].vy = 2.0
+    i = i + 1
+  }
+}
+
+@Bench
+fun BenchIntegrateAos() -> int uses unsafe {
+  const bodies = ArrayNew<Body>(kCount)
+  FillAos(bodies)
+  var round = 0
+  while round < 8 {
+    var i = 0
+    while i < kCount {
+      bodies[i].x = bodies[i].x + bodies[i].vx
+      bodies[i].y = bodies[i].y + bodies[i].vy
+      i = i + 1
+    }
+    round = round + 1
+  }
+  var total = 0.0
+  var i = 0
+  while i < kCount {
+    total = total + bodies[i].x
+    i = i + 1
+  }
+  return total as int
+}
+
+// The pass the layout exists for: one field of a wide record. `soa` reads
+// four megabytes; the record laid out whole reads twenty-four, because
+// every cache line it touches carries five fields it does not want.
+@Bench
+fun BenchSumOneFieldSoa() -> int uses unsafe {
+  const bodies = SoaNew<Body>(kCount)
+  FillSoa(bodies)
+  var total = 0.0
+  var round = 0
+  while round < 8 {
+    var i = 0
+    while i < kCount {
+      total = total + bodies[i].vy
+      i = i + 1
+    }
+    round = round + 1
+  }
+  return total as int
+}
+
+@Bench
+fun BenchSumOneFieldAos() -> int uses unsafe {
+  const bodies = ArrayNew<Body>(kCount)
+  FillAos(bodies)
+  var total = 0.0
+  var round = 0
+  while round < 8 {
+    var i = 0
+    while i < kCount {
+      total = total + bodies[i].vy
+      i = i + 1
+    }
+    round = round + 1
+  }
+  return total as int
+}
+
+// What the layout is worth, in bytes moved.
+//
+// A record wide enough that a cache line holds one of it: the pass below
+// reads a single field, so laid out whole it pulls sixty-four megabytes
+// through memory and laid out one array per field it pulls four. The pass
+// is the same pass; the difference is all traffic.
+struct Wide {
+  var a: float = 0.0
+  var b: float = 0.0
+  var c: float = 0.0
+  var d: float = 0.0
+  var e: float = 0.0
+  var f: float = 0.0
+  var g: float = 0.0
+  var h: float = 0.0
+  var i: float = 0.0
+  var j: float = 0.0
+  var k: float = 0.0
+  var l: float = 0.0
+  var m: float = 0.0
+  var n: float = 0.0
+  var o: float = 0.0
+  var p: float = 0.0
+}
+
+@Bench
+fun BenchWideFieldSoa() -> int uses unsafe {
+  const wide = SoaNew<Wide>(kCount)
+  var round = 0
+  var total = 0.0
+  while round < 8 {
+    var i = 0
+    while i < kCount {
+      total = total + wide[i].h
+      i = i + 1
+    }
+    round = round + 1
+  }
+  return total as int
+}
+
+@Bench
+fun BenchWideFieldAos() -> int uses unsafe {
+  const wide = ArrayNew<Wide>(kCount)
+  var round = 0
+  var total = 0.0
+  while round < 8 {
+    var i = 0
+    while i < kCount {
+      total = total + wide[i].h
+      i = i + 1
+    }
+    round = round + 1
+  }
+  return total as int
+}

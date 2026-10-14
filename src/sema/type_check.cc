@@ -33,6 +33,10 @@ constexpr std::string_view kBadConversion = "E0124";
 // reference. A method is passed its object by value today, so the write
 // would land on a copy -- and losing it silently is worse than saying so.
 constexpr std::string_view kSelfNotMutable = "E0125";
+// A generic type built with nothing to bind its parameter: `Box(...)`
+// where no field takes a `T`, which would otherwise carry a type
+// parameter into a layout.
+constexpr std::string_view kCannotInfer = "E0126";
 constexpr std::string_view kWaitOutsideTask = "E0301";
 constexpr std::string_view kTaskNotWaited = "E0302";
 constexpr std::string_view kWaitNotWholeExpression = "E0303";
@@ -274,6 +278,7 @@ class Checker {
   TypeId CheckCall(ExprId id, const Expr& expr);
   TypeId CheckIndex(const Expr& expr);
   TypeId CheckField(const Expr& expr);
+  TypeId Instantiate(ExprId id, const Expr& expr, TypeId declared);
   void CheckConstructor(const Expr& expr, TypeId type);
 
   // Notes what calling |callee| does: its declared row if it has one, and
@@ -1132,9 +1137,10 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
     if (callee_expr.kind == ExprKind::kPath) {
       const Binding* binding = Lookup(callee_expr.name);
       if (binding != nullptr && binding->kind == BindingKind::kType) {
-        CheckConstructor(expr, binding->type);
-        Record(expr.lhs, binding->type);
-        return binding->type;
+        const TypeId type = Instantiate(id, expr, binding->type);
+        CheckConstructor(expr, type);
+        Record(expr.lhs, type);
+        return type;
       }
     }
   }
@@ -1169,6 +1175,21 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
   bool generic = types_->MentionsParameter(callee);
   if (generic) {
     TypeStore::Substitution substitution;
+    // What the call wrote itself: `SoaNew<Particle>(1000)`. Needed as
+    // well as inference, because a signature can mention a parameter only
+    // in its *result* -- and then there is nothing to infer from.
+    if (HasFlag(expr.flags, ExprFlags::kHasGenericArgs)) {
+      std::vector<TypeId> parameters;
+      types_->CollectParameters(callee, &parameters);
+      size_t position = 0;
+      for (TypeRefId written : ast_.Get(expr.generic_args)) {
+        if (position >= parameters.size()) {
+          break;
+        }
+        substitution.emplace_back(parameters[position++],
+                                  resolver_.Resolve(ast_, written));
+      }
+    }
     std::vector<TypeId> found;
     found.reserve(args.size());
     for (size_t i = 0; i < args.size(); ++i) {
@@ -1328,13 +1349,90 @@ void Checker::RecordCallEffects(ExprId callee, ExprId call) {
 // `Vec3(x, y, z)` fills the type's fields in declaration order. A type with
 // no fields known -- declared in a file this one cannot see -- still has its
 // arguments checked, just without expectations.
+// `Box<int>(7)` and `Box(7)`: which type a constructor is building.
+//
+// A generic type is its parameters until something binds them, and a
+// constructor is where that happens -- from what the call wrote, or from
+// the arguments when it wrote nothing. The result is the instance, so a
+// field of it reads as `int` rather than as `T` and a layout can be taken
+// of it at all.
+TypeId Checker::Instantiate(ExprId id, const Expr& expr, TypeId declared) {
+  const std::span<const TypeId> parameters =
+      resolution_->ParametersOf(declared);
+  if (parameters.empty()) {
+    return declared;
+  }
+
+  TypeStore::Substitution substitution;
+  if (HasFlag(expr.flags, ExprFlags::kHasGenericArgs)) {
+    size_t position = 0;
+    for (TypeRefId written : ast_.Get(expr.generic_args)) {
+      if (position >= parameters.size()) {
+        break;
+      }
+      substitution.emplace_back(parameters[position++],
+                                resolver_.Resolve(ast_, written));
+    }
+  } else {
+    // Inferred the same way a call's parameters are: the field a value is
+    // being given to is the pattern, and the value is what matches it.
+    const std::span<const ExprId> args = ast_.Get(expr.args);
+    std::vector<TypeId> fields;
+    for (const Member& member : resolution_->MembersOf(declared)) {
+      if (member.kind == MemberKind::kField) {
+        fields.push_back(member.type);
+      }
+    }
+    for (size_t i = 0; i < args.size() && i < fields.size(); ++i) {
+      types_->Unify(fields[i], Check(args[i], TypeId{}), &substitution);
+    }
+  }
+
+  std::vector<TypeId> arguments;
+  arguments.reserve(parameters.size());
+  for (TypeId parameter : parameters) {
+    TypeId bound = types_->Substitute(parameter, substitution);
+    if (bound == parameter) {
+      // Nothing bound it: say so where it was written, rather than
+      // letting a type parameter travel into a layout.
+      std::string message = "`";
+      message.append(Describe(declared));
+      message.append("` needs its type argument written: `");
+      message.append(Describe(declared));
+      message.append("<...>`");
+      Report(kCannotInfer, std::move(message), expr.span);
+      bound = types_->error();
+    }
+    arguments.push_back(bound);
+  }
+  CheckBounds(substitution, expr.span);
+  RecordInstantiation(id, substitution);
+  return types_->Instance(declared, arguments);
+}
+
 void Checker::CheckConstructor(const Expr& expr, TypeId type) {
   const std::span<const ExprId> args = ast_.Get(expr.args);
 
+  // A generic type keeps its members on the declaration, with the
+  // instance's arguments standing in for its parameters.
+  TypeStore::Substitution substitution;
+  TypeId named = type;
+  if (types_->KindOf(named) == TypeKind::kInstance) {
+    const TypeId base = types_->Get(named).base;
+    const std::span<const TypeId> parameters = resolution_->ParametersOf(base);
+    const std::vector<TypeId> arguments = types_->ArgumentsOf(named);
+    for (size_t i = 0; i < parameters.size() && i < arguments.size(); ++i) {
+      substitution.emplace_back(parameters[i], arguments[i]);
+    }
+    named = base;
+  }
+
   std::vector<TypeId> fields;
-  for (const Member& member : resolution_->MembersOf(type)) {
+  for (const Member& member : resolution_->MembersOf(named)) {
     if (member.kind == MemberKind::kField) {
-      fields.push_back(member.type);
+      fields.push_back(substitution.empty()
+                           ? member.type
+                           : types_->Substitute(member.type, substitution));
     }
   }
 

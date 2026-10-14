@@ -1,0 +1,6 @@
+[package]
+name = "entities"
+source = "src"
+
+[dependencies]
+std = { path = "../../lib/std" }

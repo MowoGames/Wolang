@@ -15,3 +15,20 @@
 /// `unsafe` because nothing here can check that there are that many, or
 /// that they stay there. The caller promises both.
 offer fun BytesFromRaw(data: *u8, length: int) -> []u8 uses unsafe
+
+/// Storage for `count` records, laid out as one array per field.
+///
+/// `soa []T` is the same record with a different layout: a walk over one
+/// field touches every value in a cache line instead of every seventh.
+/// Which is the whole point, and why this is a layout rather than a type.
+///
+/// Like `BytesFromRaw`, it has no body: how big the storage is, is a
+/// question only a tier can answer, so the compiler answers it at the call.
+offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
+
+/// Storage for `count` records, one after another.
+///
+/// The same records as `SoaNew` and a different layout: this is the one
+/// that reads well when a pass touches most of a record, and the other is
+/// the one that reads well when it touches one field of it.
+offer fun ArrayNew<T>(count: int) -> []T uses unsafe

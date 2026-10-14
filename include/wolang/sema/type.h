@@ -335,6 +335,11 @@ class TypeStore {
   // True when |id| is a type parameter, or contains one anywhere inside it.
   // A signature that does not is already concrete and needs no inference.
   bool MentionsParameter(TypeId id) const;
+  // The type parameters |id| mentions, in the order they appear. What a
+  // call with explicit type arguments matches them against: a signature
+  // may mention a parameter only in its result, and then there is nothing
+  // to infer from.
+  void CollectParameters(TypeId id, std::vector<TypeId>* out) const;
 
   // One type parameter and what it was inferred to stand for.
   using Substitution = std::vector<std::pair<TypeId, TypeId>>;

@@ -1,0 +1,6 @@
+[package]
+name = "game"
+source = "src"
+
+[dependencies]
+std = { path = "../std" }

@@ -2,6 +2,8 @@
 
 #include "wolang/ir/passes.h"
 
+#include "wolang/ir/analysis.h"
+
 #include <algorithm>
 
 #include "wolang/base/check.h"
@@ -77,6 +79,7 @@ bool IsPure(Opcode opcode) {
     case Opcode::kLoad:
     case Opcode::kUndef:
     // Does something, or is something.
+    case Opcode::kIndexCheck:
     case Opcode::kStore:
     case Opcode::kCall:
     case Opcode::kWaitCall:
@@ -87,6 +90,69 @@ bool IsPure(Opcode opcode) {
     default:
       return !IsTerminator(opcode);
   }
+}
+
+// Whether two of these with the same operands must give the same answer.
+//
+// Wider than `IsPure`, and deliberately: arithmetic that can trap is not
+// pure -- removing it could remove a trap -- but *replacing* one with an
+// identical earlier one is safe, because if the earlier one trapped the
+// later one was never reached. What is excluded is everything that reads
+// or writes the world: a load, a store, a call, an allocation.
+bool IsRepeatable(Opcode opcode) {
+  switch (opcode) {
+    case Opcode::kLoad:
+    case Opcode::kStore:
+    case Opcode::kCall:
+    case Opcode::kWaitCall:
+    case Opcode::kSpawnCall:
+    case Opcode::kCallIndirect:
+    case Opcode::kAlloca:
+    case Opcode::kNew:
+    case Opcode::kSoaNew:
+    case Opcode::kUndef:
+    case Opcode::kParam:
+      return false;
+    default:
+      return !IsTerminator(opcode);
+  }
+}
+
+// The record an `soa.addr` walks: the element of the storage its base
+// points at, which is the one thing the instruction itself cannot say --
+// its own type is the field's.
+TypeId SoaRecordOf(const TypeStore& types,
+                   const Function& function,
+                   const Inst& inst) {
+  const std::span<const InstId> operands = function.OperandsOf(inst);
+  if (operands.empty() || !function.Contains(operands[0])) {
+    return TypeId{};
+  }
+  const TypeId base = function.Get(operands[0]).type;
+  return types.KindOf(base) == TypeKind::kPointer ? types.ElementOf(base)
+                                                  : base;
+}
+
+// Whether two instructions compute the same thing.
+bool SameComputation(const Function& function,
+                     const Inst& left,
+                     const Inst& right) {
+  if (left.opcode != right.opcode || left.type != right.type ||
+      left.field != right.field ||
+      left.payload.integer != right.payload.integer) {
+    return false;
+  }
+  const std::span<const InstId> a = function.OperandsOf(left);
+  const std::span<const InstId> b = function.OperandsOf(right);
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace
@@ -1010,10 +1076,449 @@ bool SimplifyControlFlow(TypeStore* types, Function* function) {
 
 // ------------------------------------------------------------- the driver ---
 
-void Optimize(TypeStore* types, const Module& module, Function* function) {
+// ------------------------------------------- common subexpressions ---
+
+// One copy of each computation per block.
+//
+// A loop body that reads `bodies[i].x`, adds to it and writes it back
+// works out that address twice; so does every pair of a read and a write
+// to the same place. The saving is small per instruction and the loops
+// this language is for run it a million times.
+bool EliminateCommonSubexpressions(TypeStore* types, Function* function) {
+  (void)types;
+  bool changed = false;
+  for (Block& block : function->blocks) {
+    // Earlier instructions of this block that something later may reuse.
+    std::vector<InstId> available;
+    std::vector<InstId> dead;
+    for (size_t position = block.param_count;
+         position < block.instructions.size(); ++position) {
+      const InstId id = block.instructions[position];
+      if (!function->Contains(id)) {
+        continue;
+      }
+      const Inst& inst = function->Get(id);
+      if (!IsRepeatable(inst.opcode)) {
+        continue;
+      }
+      bool replaced = false;
+      for (InstId earlier : available) {
+        if (!function->Contains(earlier) ||
+            !SameComputation(*function, function->Get(earlier), inst)) {
+          continue;
+        }
+        ReplaceAllUses(function, id, earlier);
+        dead.push_back(id);
+        replaced = true;
+        changed = true;
+        break;
+      }
+      if (!replaced) {
+        available.push_back(id);
+      }
+    }
+    for (InstId id : dead) {
+      Discard(function, id);
+      EraseFromBlock(function, id);
+    }
+  }
+  return changed;
+}
+
+// ------------------------------------------------ loop invariants ---
+
+// Moves what does not change out of the loop that computes it.
+//
+// The pass that matters most for the loops this language is for. An
+// address inside `bodies[i].x` is the base of a field's array -- the same
+// pointer every time round -- plus this element; expanding the address
+// (above) made those pieces visible, and this is what moves the fixed ones
+// out so the loop does a multiply and an add.
+//
+// Only what cannot trap is moved: hoisting a division out of a loop that
+// never runs would trap where the program would not have. Arithmetic the
+// compiler wrote for itself is not checked, so it qualifies -- which is
+// the other half of why addresses are expanded into it.
+bool HoistLoopInvariants(TypeStore* types, Function* function) {
+  (void)types;
+  const LinearOrder order = Linearize(*function);
+  if (order.blocks.size() < 2) {
+    return false;
+  }
+  const size_t count = function->blocks.size();
+
+  // Where each block sits in the order, so that a jump backwards in it can
+  // be recognised: in reverse postorder a block comes after everything
+  // that reaches it except through a back edge, which is what a loop is.
+  std::vector<uint32_t> position(count, 0);
+  for (size_t i = 0; i < order.blocks.size(); ++i) {
+    position[order.blocks[i].index] = static_cast<uint32_t>(i) + 1;
+  }
+
+  const auto terminator = [&](BlockId block) -> const Inst* {
+    const Block& body = function->blocks[block.index];
+    if (body.instructions.empty()) {
+      return nullptr;
+    }
+    const InstId last = body.instructions.back();
+    return function->Contains(last) ? &function->Get(last) : nullptr;
+  };
+
+  std::vector<std::vector<BlockId>> predecessors(count);
+  for (BlockId block : order.blocks) {
+    const Inst* jump = terminator(block);
+    if (jump == nullptr) {
+      continue;
+    }
+    for (BlockId successor : function->SuccessorsOf(*jump)) {
+      if (successor.is_valid() && position[successor.index] != 0) {
+        predecessors[successor.index].push_back(block);
+      }
+    }
+  }
+
+  // Immediate dominators, by the usual iteration over reverse postorder:
+  // a block's is the one every way in has in common, found by walking two
+  // chains until they meet. Kept as a chain rather than as a matrix of who
+  // dominates whom -- the matrix is what made this pass cost minutes on a
+  // function with a few hundred blocks.
+  std::vector<uint32_t> idom(count, 0);
+  const BlockId entry = order.blocks.front();
+  idom[entry.index] = position[entry.index];
+  // Where two chains come together. Zero when one of them does not reach
+  // the entry yet, which happens on the first round for a block whose
+  // only other way in is a back edge -- and walking a chain that is not
+  // there yet is how this looped forever on one of the two back ends.
+  const auto meet = [&](uint32_t left, uint32_t right) -> uint32_t {
+    while (left != right) {
+      while (left > right) {
+        const uint32_t next = idom[order.blocks[left - 1].index];
+        if (next == 0 || next == left) {
+          return 0;
+        }
+        left = next;
+      }
+      while (right > left) {
+        const uint32_t next = idom[order.blocks[right - 1].index];
+        if (next == 0 || next == right) {
+          return 0;
+        }
+        right = next;
+      }
+    }
+    return left;
+  };
+  bool settled = false;
+  while (!settled) {
+    settled = true;
+    for (size_t i = 1; i < order.blocks.size(); ++i) {
+      const BlockId block = order.blocks[i];
+      uint32_t candidate = 0;
+      for (BlockId predecessor : predecessors[block.index]) {
+        if (idom[predecessor.index] == 0) {
+          continue;
+        }
+        const uint32_t merged =
+            candidate == 0 ? position[predecessor.index]
+                           : meet(candidate, position[predecessor.index]);
+        if (merged == 0) {
+          // Nothing certain this round; the next one will have more.
+          candidate = 0;
+          break;
+        }
+        candidate = merged;
+      }
+      if (candidate != 0 && candidate != idom[block.index]) {
+        idom[block.index] = candidate;
+        settled = false;
+      }
+    }
+  }
+  const auto dominates = [&](BlockId above, BlockId below) {
+    uint32_t walk = position[below.index];
+    while (walk != 0) {
+      if (walk == position[above.index]) {
+        return true;
+      }
+      const uint32_t next = idom[order.blocks[walk - 1].index];
+      if (next == walk) {
+        return false;
+      }
+      walk = next;
+    }
+    return false;
+  };
+
+  bool changed = false;
+  for (size_t i = 0; i < order.blocks.size(); ++i) {
+    const BlockId tail = order.blocks[i];
+    const Inst* jump = terminator(tail);
+    if (jump == nullptr) {
+      continue;
+    }
+    for (BlockId header : function->SuccessorsOf(*jump)) {
+      if (!header.is_valid() || position[header.index] == 0 ||
+          position[header.index] > position[tail.index] ||
+          !dominates(header, tail)) {
+        continue;
+      }
+
+      // The loop: the header, and everything that reaches the tail
+      // without going back through the header. Walked backwards over the
+      // predecessors, so it costs one visit per edge.
+      std::vector<bool> inside(count, false);
+      inside[header.index] = true;
+      std::vector<BlockId> pending;
+      if (tail != header) {
+        inside[tail.index] = true;
+        pending.push_back(tail);
+      }
+      while (!pending.empty()) {
+        const BlockId block = pending.back();
+        pending.pop_back();
+        for (BlockId predecessor : predecessors[block.index]) {
+          // Only blocks the header runs before: anything else is entered
+          // some other way, and what is hoisted would not have run.
+          if (inside[predecessor.index] ||
+              !dominates(header, predecessor)) {
+            continue;
+          }
+          inside[predecessor.index] = true;
+          pending.push_back(predecessor);
+        }
+      }
+
+      // Somewhere to put what is hoisted: the one way into the loop from
+      // outside, which also has to run before it. A resumed task is
+      // entered by a jump table that lands in the middle of its loops, so
+      // "the only way in" and "always runs before" are two questions.
+      BlockId preheader;
+      bool ambiguous = false;
+      for (BlockId candidate : predecessors[header.index]) {
+        if (inside[candidate.index]) {
+          continue;
+        }
+        if (preheader.is_valid() && preheader != candidate) {
+          ambiguous = true;
+        }
+        preheader = candidate;
+      }
+      if (!preheader.is_valid() || ambiguous ||
+          !dominates(preheader, header)) {
+        continue;
+      }
+
+      for (BlockId block : order.blocks) {
+        if (!inside[block.index]) {
+          continue;
+        }
+        Block& body = function->blocks[block.index];
+        const std::vector<InstId> instructions = body.instructions;
+        for (size_t at = body.param_count; at < instructions.size(); ++at) {
+          const InstId id = instructions[at];
+          if (!function->Contains(id)) {
+            continue;
+          }
+          const Inst& inst = function->Get(id);
+          if (IsTerminator(inst.opcode) || !IsRepeatable(inst.opcode) ||
+              !(inst.is_unchecked || IsPure(inst.opcode))) {
+            continue;
+          }
+          bool invariant = true;
+          for (InstId operand : function->OperandsOf(inst)) {
+            if (!function->Contains(operand)) {
+              continue;
+            }
+            const BlockId owner = function->owners[operand.index];
+            if (owner.is_valid() && inside[owner.index]) {
+              invariant = false;
+              break;
+            }
+          }
+          if (!invariant) {
+            continue;
+          }
+
+          // Before the jump that ends the preheader, which is the last
+          // point that runs once on the way in.
+          Block& landing = function->blocks[preheader.index];
+          if (landing.instructions.empty()) {
+            continue;
+          }
+          EraseFromBlock(function, id);
+          landing.instructions.insert(landing.instructions.end() - 1, id);
+          function->owners[id.index] = preheader;
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
+// --------------------------------------------- element addresses ---
+
+// Turns an element address into the arithmetic it is.
+//
+// `index.addr` and `soa.addr` are instructions so that lowering does not
+// need a layout. Once the layout *is* known, keeping them opaque costs
+// more than it saves: the pieces of an address -- the base, the length,
+// the stride of a field's array -- are the same every time round a loop,
+// and nothing can hoist what it cannot see inside.
+//
+// So they are expanded here, into arithmetic marked as the compiler's own
+// so that it is neither checked nor pinned in place. What is left is what
+// a loop actually has to do per element: one multiply and one add, with
+// everything else hoisted out by the passes that follow.
+bool ExpandElementAddresses(TypeStore* types,
+                            abi::LayoutStore* layouts,
+                            Function* function) {
+  if (layouts == nullptr) {
+    return false;
+  }
+  const TypeId word = types->Int(IntWidth::k64, /*is_signed=*/false);
+  bool changed = false;
+
+  for (Block& block : function->blocks) {
+    std::vector<InstId> instructions = block.instructions;
+    for (InstId id : instructions) {
+      if (!function->Contains(id)) {
+        continue;
+      }
+      // Only the one array per field. `index.addr` stays as it is: the
+      // reference tier reads an array inside a slot as a path rather than
+      // an address, so arithmetic is not something it could stand in for.
+      const Opcode opcode = function->Get(id).opcode;
+      if (opcode != Opcode::kSoaAddress) {
+        continue;
+      }
+
+      // Everything is appended to this block and then moved into place
+      // just before the address it replaces, so that the pieces come
+      // before the use even when the block is walked again.
+      std::vector<InstId> built;
+      const auto emit = [&](Opcode op, bool unchecked,
+                            std::initializer_list<InstId> operands) {
+        Inst inst;
+        inst.opcode = op;
+        inst.type = word;
+        inst.is_unchecked = unchecked;
+        inst.operands_begin =
+            static_cast<uint32_t>(function->operands.size());
+        inst.operands_count = static_cast<uint32_t>(operands.size());
+        for (InstId operand : operands) {
+          function->operands.push_back(operand);
+        }
+        const InstId made =
+            InstId{static_cast<uint32_t>(function->instructions.size())};
+        function->instructions.push_back(inst);
+        function->owners.push_back(BlockId{});
+        built.push_back(made);
+        return made;
+      };
+      const auto constant = [&](uint64_t value) {
+        Inst inst;
+        inst.opcode = Opcode::kConstInt;
+        inst.type = word;
+        inst.payload.integer = value;
+        const InstId made =
+            InstId{static_cast<uint32_t>(function->instructions.size())};
+        function->instructions.push_back(inst);
+        function->owners.push_back(BlockId{});
+        built.push_back(made);
+        return made;
+      };
+
+      // Copied, not a span into the function: everything below appends
+      // operands, and the first append moves the storage the span points
+      // at. The x86-64 build read the freed copy and looped forever; the
+      // arm64 one happened to read the right bytes, which is what a
+      // dangling read does.
+      const std::span<const InstId> raw =
+          function->OperandsOf(function->Get(id));
+      const std::vector<InstId> operands(raw.begin(), raw.end());
+      const InstId base = operands[0];
+      const InstId index = operands[1];
+
+      // The check stays: what is expanded here is the arithmetic around
+      // it, not the question of whether the element exists.
+      {
+        Inst check;
+        check.opcode = Opcode::kIndexCheck;
+        check.operands_begin =
+            static_cast<uint32_t>(function->operands.size());
+        check.operands_count = 2;
+        function->operands.push_back(index);
+        function->operands.push_back(operands[2]);
+        const InstId made =
+            InstId{static_cast<uint32_t>(function->instructions.size())};
+        function->instructions.push_back(check);
+        function->owners.push_back(BlockId{});
+        built.push_back(made);
+      }
+
+      InstId offset;
+      {
+        // One array per field: the fields before this one, times the
+        // padded count, plus this element.
+        const InstId count = operands[2];
+        const TypeId record =
+            SoaRecordOf(*types, *function, function->Get(id));
+        const uint32_t field = function->Get(id).field;
+        const TypeId element = layouts->FieldType(record, field);
+        const uint64_t size =
+            element.is_valid() ? layouts->SizeOf(element) : 0;
+        const InstId padded = emit(
+            Opcode::kBitAnd, true,
+            {emit(Opcode::kAdd, true, {count, constant(15)}),
+             constant(~uint64_t{15})});
+        const InstId blocks = emit(
+            Opcode::kMul, true,
+            {padded, constant(layouts->SoaPrefixOf(record, field))});
+        // Grouped so that everything about the *field* is on one side and
+        // everything about the *element* on the other: `(base + array) +
+        // index * size` leaves a loop with one add per field, because the
+        // start of the field's array does not change and is hoisted out.
+        // Grouped the other way -- which is how this read first -- the
+        // base is added inside the loop four times for four fields.
+        offset = emit(Opcode::kAdd, true, {base, blocks});
+        offset = emit(Opcode::kAdd, true,
+                      {offset, emit(Opcode::kMul, true,
+                                    {index, constant(size)})});
+      }
+      const InstId address = offset;
+      function->instructions[address.index].type = function->Get(id).type;
+
+      // In place, in order, where the address used to be.
+      const auto at = std::find(block.instructions.begin(),
+                                block.instructions.end(), id);
+      const size_t position =
+          static_cast<size_t>(at - block.instructions.begin());
+      for (InstId made : built) {
+        function->owners[made.index] = BlockId{
+            static_cast<uint32_t>(&block - function->blocks.data())};
+      }
+      block.instructions.insert(block.instructions.begin() + position,
+                                built.begin(), built.end());
+      ReplaceAllUses(function, id, address);
+      Discard(function, id);
+      EraseFromBlock(function, id);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+void Optimize(TypeStore* types,
+              const Module& module,
+              Function* function,
+              abi::LayoutStore* layouts) {
   if (function->is_declaration()) {
     return;
   }
+  // Before the rest: an address the passes can see inside is an address
+  // they can hoist out of a loop.
+  ExpandElementAddresses(types, layouts, function);
   // To a fixpoint, bounded so that a pass that keeps reporting a change
   // cannot hang the compiler.
   for (int round = 0; round < 8; ++round) {
@@ -1022,6 +1527,8 @@ void Optimize(TypeStore* types, const Module& module, Function* function) {
     changed |= FoldConstants(types, function);
     changed |= SimplifyControlFlow(types, function);
     changed |= PromoteSlots(types, function);
+    changed |= EliminateCommonSubexpressions(types, function);
+    changed |= HoistLoopInvariants(types, function);
     changed |= EliminateDeadCode(types, module, function);
     if (!changed) {
       return;
@@ -1029,9 +1536,9 @@ void Optimize(TypeStore* types, const Module& module, Function* function) {
   }
 }
 
-void Optimize(TypeStore* types, Module* module) {
+void Optimize(TypeStore* types, Module* module, abi::LayoutStore* layouts) {
   for (Function& function : module->functions) {
-    Optimize(types, *module, &function);
+    Optimize(types, *module, &function, layouts);
   }
 }
 

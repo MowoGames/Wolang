@@ -689,20 +689,20 @@ in every file that needs it.
 Dimensions participate in type checking and are erased before code generation,
 so unit-safe code costs nothing at runtime.
 
-## 7. Data layout — draft
+## 7. Data layout
 
 ```wolang
 struct Particle {
-  var position: Vec3
-  var velocity: Vec3
+  var x: float
+  var y: float
   var life: float
 }
 
-var burst: soa []Particle // seven parallel arrays
-var prototype: Particle   // one value, laid out as written
+const burst = SoaNew<Particle>(1000) // three parallel arrays
+var prototype: Particle              // one value, laid out as written
 
-foreach p in burst {      // the same code either way
-  p.position += p.velocity * dt
+for i in 0..burst.len {              // the same code either way
+  burst[i].x = burst[i].x + dt
 }
 ```
 
@@ -711,9 +711,18 @@ lets the same `Particle` be a single value in one place and a struct-of-arrays
 in another, and it means the choice can be flipped where it is measured rather
 than decided when the type is first written.
 
-`foreach` maps the loop body onto SIMD lanes when the body allows it, and
-reports why when it cannot (`P0107`). The code that reads and writes fields is
-identical either way, so the layout is a measurement, not a rewrite.
+Each field of a `soa []T` gets an array of its own, laid out in declaration
+order. Reading or writing a field looks the same as on any other storage;
+what differs is the traffic. A pass over one field of a sixteen-field record
+moves four megabytes per million elements where the record laid out whole
+moves sixty-four, and the benchmark in `benchmarks/entities` measures both
+directions: one field of a wide record is 1.4x faster as `soa`, and a pass
+that touches most of a record is faster laid out whole. The layout is a
+measurement, not a rewrite.
+
+Still draft: `foreach` over SIMD lanes, and a function that works on both
+layouts. The layout is in the type, so `fun Sum(bodies: soa []Body)` takes the
+one it was written for.
 
 ## 8. Concurrency — draft
 

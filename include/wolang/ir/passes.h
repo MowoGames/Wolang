@@ -3,6 +3,7 @@
 #ifndef WOLANG_IR_PASSES_H_
 #define WOLANG_IR_PASSES_H_
 
+#include "wolang/abi/layout.h"
 #include "wolang/ir/ir.h"
 
 namespace wolang {
@@ -44,8 +45,32 @@ bool InlineCalls(TypeStore* types, const Module& module, Function* function);
 bool SimplifyControlFlow(TypeStore* types, Function* function);
 
 // Runs every pass to a fixpoint.
-void Optimize(TypeStore* types, const Module& module, Function* function);
-void Optimize(TypeStore* types, Module* module);
+// One copy of each computation per block: a read and a write to the same
+// place work the address out once.
+bool EliminateCommonSubexpressions(TypeStore* types, Function* function);
+
+// Moves what does not change out of the loop that computes it. Only what
+// cannot trap: a check hoisted out of a loop that never runs would trap
+// where the program would not have.
+bool HoistLoopInvariants(TypeStore* types, Function* function);
+
+// Turns an element address into the arithmetic it is, now that the layout
+// is known: what a loop does per element becomes a multiply and an add,
+// and everything else is hoisted out by the passes that follow.
+bool ExpandElementAddresses(TypeStore* types,
+                            abi::LayoutStore* layouts,
+                            Function* function);
+
+// |layouts| may be null, and then addresses stay as they are: a caller
+// that has no layout -- a test over hand-written IR -- still gets the rest
+// of the passes.
+void Optimize(TypeStore* types,
+              const Module& module,
+              Function* function,
+              abi::LayoutStore* layouts = nullptr);
+void Optimize(TypeStore* types,
+              Module* module,
+              abi::LayoutStore* layouts = nullptr);
 
 }  // namespace ir
 }  // namespace wolang

@@ -80,6 +80,18 @@ WOLANG_IR_OP(Index, "index", "reads element |rhs| of an array or slice")
 WOLANG_IR_OP(FieldAddress, "field.addr",
              "the address of field |index| of the aggregate at an address. "
              "What a frame that outlives its function is read through")
+WOLANG_IR_OP(SoaNew, "soa.new",
+             "storage for |rhs| elements of a record, one array per field. "
+             "The size is the tier's own answer, the way `new`'s is")
+WOLANG_IR_OP(SoaAddress, "soa.addr",
+             "the address of field |index| of element |rhs| in storage "
+             "laid out one array per field. What makes `soa []T` a "
+             "different *layout* rather than a different type")
+WOLANG_IR_OP(IndexCheck, "index.check",
+             "traps unless |lhs| is below the length |rhs|. What is left "
+             "of an element address once the arithmetic around it has been "
+             "expanded into ordinary instructions: the part that has to "
+             "stay where it is, because it is about this element")
 WOLANG_IR_OP(IndexAddress, "index.addr",
              "the address of element |rhs| of the array at an address. The "
              "dynamic counterpart of a field address, and what writing one "

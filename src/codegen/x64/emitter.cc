@@ -485,6 +485,76 @@ class FunctionEmitter {
     return types_.ElementOf(type);
   }
 
+  // The record `soa.addr` walks: the element of the storage its base came
+  // from, which the instruction's own type cannot say -- that is the
+  // field's type.
+  TypeId SoaRecordOf(ir::InstId base) const {
+    const TypeId type = TypeOf(base);
+    return types_.KindOf(type) == TypeKind::kPointer
+               ? types_.ElementOf(type)
+               : type;
+  }
+
+  // How many bytes |count| records take one after another.
+  void AosBytes(TypeId storage, Register count, Register target) {
+    const Register scratch = Scratch(3);
+    assembler_.MovImmediate(IWidth::k64, scratch,
+                            layouts_.StrideOf(storage));
+    assembler_.Mov(IWidth::k64, kAccumulator, count);
+    assembler_.Imul(IWidth::k64, kAccumulator, scratch);
+    assembler_.Mov(IWidth::k64, target, kAccumulator);
+  }
+
+  // How many bytes |count| records take, one array per field, into
+  // |target|. Every field's array holds the same padded number of slots,
+  // so the whole thing is the sum of the field sizes times that -- one
+  // multiply, not one per field.
+  void SoaBytes(TypeId record, Register count, Register target) {
+    const Register padded = Scratch(3);
+    PaddedCount(count, padded);
+    assembler_.MovImmediate(
+        IWidth::k64, kAccumulator,
+        layouts_.SoaPrefixOf(record, layouts_.FieldCount(record)));
+    assembler_.Imul(IWidth::k64, kAccumulator, padded);
+    assembler_.Mov(IWidth::k64, target, kAccumulator);
+  }
+
+  // `count` rounded up to a multiple of sixteen: what every field's array
+  // really holds, so that each one starts 16-byte aligned.
+  void PaddedCount(Register count, Register target) {
+    assembler_.Mov(IWidth::k64, target, count);
+    assembler_.AddImmediate(IWidth::k64, target, 15);
+    const Register mask = Scratch(6);
+    assembler_.MovImmediate(IWidth::k64, mask, ~uint64_t{15});
+    assembler_.And(IWidth::k64, target, mask);
+  }
+
+  // The address of field |field| of element |index| in storage holding
+  // |count| records.
+  void SoaFieldAddress(TypeId record,
+                       uint32_t field,
+                       Register base,
+                       Register index,
+                       Register count,
+                       Register target) {
+    const TypeId type = layouts_.FieldType(record, field);
+    const uint32_t size = type.is_valid() ? layouts_.SizeOf(type) : 0;
+    const Register padded = Scratch(4);
+    PaddedCount(count, padded);
+    const Register scratch = Scratch(5);
+    assembler_.MovImmediate(IWidth::k64, scratch,
+                            layouts_.SoaPrefixOf(record, field));
+    assembler_.Mov(IWidth::k64, kAccumulator, padded);
+    assembler_.Imul(IWidth::k64, kAccumulator, scratch);
+    assembler_.Mov(IWidth::k64, padded, kAccumulator);
+    assembler_.MovImmediate(IWidth::k64, scratch, size);
+    assembler_.Mov(IWidth::k64, kAccumulator, index);
+    assembler_.Imul(IWidth::k64, kAccumulator, scratch);
+    assembler_.Add(IWidth::k64, padded, kAccumulator);
+    assembler_.Mov(IWidth::k64, target, base);
+    assembler_.Add(IWidth::k64, target, padded);
+  }
+
   Register AddressOf(ir::InstId id, unsigned scratch) {
     return Info(id).holding == Holding::kArea ? UseArea(id, scratch)
                                               : UseInt(id, scratch);
@@ -1032,6 +1102,64 @@ class FunctionEmitter {
         const Register reg = DestInt(id, 0);
         assembler_.Lea(reg, Address{address, static_cast<int32_t>(offset)});
         FinishInt(id, reg);
+        return;
+      }
+
+      case ir::Opcode::kSoaNew: {
+        const std::span<const ir::InstId> operands =
+            function_.OperandsOf(inst);
+        const TypeId record = types_.ElementOf(inst.type);
+        const Register count = UseInt(operands[0], 1);
+        if (types_.Get(inst.type).is_soa) {
+          SoaBytes(record, count, kArgumentRegisters[0]);
+        } else {
+          // One record after another: the stride times the count.
+          AosBytes(inst.type, count, kArgumentRegisters[0]);
+        }
+        const uint64_t allocator = reinterpret_cast<uint64_t>(
+            runtime::LookupSymbol("wolang_object_alloc"));
+        assembler_.MovImmediate(IWidth::k64, kCallScratch, allocator);
+        assembler_.CallRegister(kCallScratch);
+        const Label trap = TrapLabel(ir::TrapKind::kOutOfMemory, id,
+                                     "out of memory");
+        assembler_.Test(IWidth::k64, Register::kRax, Register::kRax);
+        assembler_.Jcc(Condition::kEqual, trap);
+        const Register area = UseArea(id, 1);
+        assembler_.Store(IWidth::k64, Address{area, 0}, Register::kRax);
+        assembler_.Store(IWidth::k64, Address{area, 8},
+                         UseInt(operands[0], 2));
+        return;
+      }
+
+      case ir::Opcode::kSoaAddress: {
+        const std::span<const ir::InstId> operands =
+            function_.OperandsOf(inst);
+        const TypeId record = SoaRecordOf(operands[0]);
+        const Register index = UseInt(operands[1], 1);
+        const Register count = UseInt(operands[2], 2);
+        const Label trap = TrapLabel(ir::TrapKind::kOutOfBounds, id,
+                                     "index is outside the length");
+        assembler_.Cmp(IWidth::k64, index, count);
+        assembler_.Jcc(Condition::kAboveEqual, trap);
+
+        const Register base = UseInt(operands[0], 3);
+        const Register reg = DestInt(id, 0);
+        SoaFieldAddress(record, inst.field, base, index, count, reg);
+        FinishInt(id, reg);
+        return;
+      }
+
+      case ir::Opcode::kIndexCheck: {
+        // All that is left where an element address was expanded into
+        // arithmetic: a compare and a branch, which stays with the
+        // element it is about.
+        const std::span<const ir::InstId> operands =
+            function_.OperandsOf(inst);
+        const Register index = UseInt(operands[0], 1);
+        const Label trap = TrapLabel(ir::TrapKind::kOutOfBounds, id,
+                                     "index is outside the length");
+        assembler_.Cmp(IWidth::k64, index, UseInt(operands[1], 2));
+        assembler_.Jcc(Condition::kAboveEqual, trap);
         return;
       }
 
@@ -1804,6 +1932,36 @@ class FunctionEmitter {
     const Register left = UseInt(operands[0], 1);
     const Register right =
         operands.size() > 1 ? UseInt(operands[1], 2) : left;
+
+    // Arithmetic the compiler wrote for itself is not checked: a trap in
+    // an address computation would name a line the program never wrote.
+    if (inst.is_unchecked) {
+      const Register reg = DestInt(id, 0);
+      assembler_.Mov(IWidth::k64, kAccumulator, left);
+      switch (inst.opcode) {
+        case ir::Opcode::kAdd:
+          assembler_.Add(width, kAccumulator, right);
+          break;
+        case ir::Opcode::kSub:
+          assembler_.Sub(width, kAccumulator, right);
+          break;
+        case ir::Opcode::kMul:
+          assembler_.Imul(IWidth::k64, kAccumulator, right);
+          break;
+        case ir::Opcode::kBitAnd:
+          assembler_.And(width, kAccumulator, right);
+          break;
+        case ir::Opcode::kShl:
+          assembler_.Mov(IWidth::k64, kShiftCount, right);
+          assembler_.ShlCl(width, kAccumulator);
+          break;
+        default:
+          break;
+      }
+      assembler_.Mov(IWidth::k64, reg, kAccumulator);
+      FinishInt(id, reg);
+      return;
+    }
 
     switch (inst.opcode) {
       case ir::Opcode::kAdd:

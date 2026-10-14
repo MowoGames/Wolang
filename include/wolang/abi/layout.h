@@ -66,6 +66,33 @@ class LayoutStore {
   const Layout& ObjectOf(TypeId type);
   // True when a value of |type| is a handle to a heap object.
   bool IsHandle(TypeId type) const;
+
+  // Where field |field| of element |index| sits in storage holding |count|
+  // records as one array per field.
+  //
+  // The whole of what `soa` means: the same record, the same fields, and a
+  // walk over one of them touching every byte of every cache line it
+  // reads instead of one field's worth.
+  //
+  // Each field's array holds `SoaRoundCount(count)` slots rather than
+  // `count`, which is what keeps the arithmetic cheap: the start of a
+  // field's array is then a constant -- the sizes of the fields before it
+  // -- times that one number, so an address costs one multiply instead of
+  // one per field. The padding also leaves every array 16-byte aligned,
+  // which is what a vector load wants.
+  uint64_t SoaOffsetOf(TypeId record,
+                       uint32_t field,
+                       uint64_t index,
+                       uint64_t count);
+  // How many bytes |count| records take in that layout.
+  uint64_t SoaSizeOf(TypeId record, uint64_t count);
+  // The sizes of the fields before |field|, which is the multiplier of the
+  // padded count in an offset.
+  uint64_t SoaPrefixOf(TypeId record, uint32_t field);
+  // How many slots each field's array really holds.
+  static uint64_t SoaRoundCount(uint64_t count) {
+    return (count + 15) / 16 * 16;
+  }
   uint32_t SizeOf(TypeId type) { return Of(type).size; }
   uint32_t AlignOf(TypeId type) { return Of(type).align; }
   // The type of field |index| of an aggregate, or an invalid id -- which

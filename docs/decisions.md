@@ -574,3 +574,102 @@ apart -- and a call that cannot tell two methods apart calls whichever came
 first, which is what happened. Members and IR functions carry a `slot`
 beside the item now, and the linker matches on all three.
 
+
+**D73. `soa []T` is a layout, not a type.** The same record, the same
+fields and the same code reading them; what changes is where the storage
+puts them. A pass that touches one field of a wide record reads every
+byte of every cache line it pulls in instead of one field's worth of each,
+and a game spends most of its frame in exactly that kind of pass.
+
+Each field gets an array of its own. Their sizes are summed in declaration
+order, which makes the start of a field's array the sizes before it times
+the number of elements -- and *that* is what keeps an address cheap: one
+multiply, not one per field. The count each array really holds is rounded
+up to sixteen, which is what makes the multiplier a compile-time constant
+and leaves every array sixteen-byte aligned for a vector load later.
+
+What this does not do is make a function work on both layouts: the layout
+is in the type, so `fun Sum(bodies: soa []Body)` takes the one it was
+written for. Polymorphism over layout needs a generic parameter that
+ranges over storage, which is not here yet.
+
+**D74. A call takes the type arguments it writes.** Inference reads the
+arguments, so a signature that mentions its parameter only in its *result*
+-- `SoaNew<Particle>(count)`, whose only argument is a number -- has
+nothing to be inferred from. The explicit arguments are matched against
+the parameters the signature mentions, in the order they appear, and
+inference fills in the rest.
+
+Found by what it broke rather than by thinking: before this, the call's
+type stayed `soa []T` and every field offset was computed against a type
+parameter, so every field of every element landed on top of the others and
+a sum of four elements came out as the last value written four times.
+
+**D75. Arithmetic the compiler writes for itself is not checked.** An
+address is a multiply and two adds, and a trap in one of them would name a
+line the program never wrote. The instruction carries `is_unchecked`, and
+a tier emits it without the overflow check and the reference tier wraps
+rather than traps.
+
+The second reason is the one that mattered more: an instruction that
+cannot trap can be moved out of a loop. Hoisting a *checked* multiply out
+of a loop that never runs would trap where the program would not have, so
+the flag is what makes the arithmetic below hoistable at all.
+
+**D76. An element address is expanded into the arithmetic it is.**
+`index.addr` and `soa.addr` exist so that lowering needs no layout. Once
+the layout is known, keeping them opaque costs more than it saves: the
+base of a field's array and the length it is checked against are the same
+every time round the loop, and nothing can hoist what it cannot see
+inside. A pass with the layout in hand expands `soa.addr` into unchecked
+arithmetic, grouped as `(base + array) + index * size` so that the half
+about the field hoists out and the half about the element stays.
+
+What stays behind is `index.check`, which is the part that is about *this*
+element. It produces no value, so the pass that removes dead code deleted
+it until it was marked as doing something -- a bounds check that
+disappears is the kind of bug a benchmark reports as an improvement.
+
+`index.addr` is left alone: the reference tier reads an array inside a
+slot as a path rather than an address, so arithmetic is not something it
+could stand in for.
+
+**D77. Two passes for the loops this language is for.** Common
+subexpressions, one copy per block: reading a field, adding to it and
+writing it back asks for the same address twice. And loop invariants,
+hoisted into the one block that runs before the loop: the base of a
+slice's storage, its length, the start of a field's array.
+
+Together they took a million-entity integration from 107 ms to 29, which
+is more than every other pass has been worth put together -- the passes
+that were there folded constants and promoted slots, and neither does
+anything for a loop over a buffer.
+
+A loop is found by a jump backwards in reverse postorder *and* dominance,
+not by the jump alone. A resumed task is entered by a jump table that
+lands in the middle of its loops, so "the only way in from outside" is not
+the same question as "always runs before" -- which the task tests said in
+the form of a value used where it was not defined.
+
+**D78. A generic type is instantiated where it is built.** `Box<int>(7)`
+binds the declaration's parameters from what the call wrote, or from the
+arguments when it wrote nothing, and the result is the instance rather
+than the declaration. A field of it then reads as `int`, a layout can be
+taken of it, and two instantiations are two layouts.
+
+Members live on the declaration, so an instance's member table is the
+declaration's with its parameters bound. That is built once, in the
+resolution that answers `MembersOf`, rather than at each of the dozen
+readers -- a layout, a lowering, an interpreter, a checker -- because each
+one getting it right separately is a dozen chances to get it wrong. The
+one that was wrong was the layout: an instance was not a named type to it,
+so every field of a `Box<int>` sat at offset zero and reading one gave
+another.
+
+A method of a generic type is a recipe, like a generic function: one copy
+per instantiation, keyed by the mangled name `Box<s32>.Get`. The
+substitution comes from the receiver rather than from inference, which
+makes it the simpler half -- by the time a method is called, what its
+type stands for is already decided. And whether a method writes through
+its receiver follows the declaration: an instance of a class is a handle
+exactly when the class is.

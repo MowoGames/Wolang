@@ -164,6 +164,14 @@ struct FileResolution {
   // Effects declared in this file, so that `uses Telemetry` resolves.
   std::vector<std::pair<Symbol, EffectId>> effect_names;
 
+  // The store the types in this resolution came from, so that the members
+  // of `Box<int>` can be worked out from those of `Box`. Not owned, not
+  // compared: it is the one store the whole compilation shares.
+  TypeStore* types = nullptr;
+  // Member tables built for instances of generic types, cached because a
+  // span has to point at something that outlives the call.
+  mutable std::vector<TypeMembers> instances;
+
   const Binding* Find(Symbol name) const;
 
   // True when |type| stores its members inline. False for a class, a type

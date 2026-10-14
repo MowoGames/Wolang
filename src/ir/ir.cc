@@ -37,7 +37,8 @@ bool IsTerminator(Opcode opcode) {
 }
 
 bool ProducesValue(Opcode opcode) {
-  return !IsTerminator(opcode) && opcode != Opcode::kStore;
+  return !IsTerminator(opcode) && opcode != Opcode::kStore &&
+         opcode != Opcode::kIndexCheck;
 }
 
 namespace {

@@ -60,7 +60,7 @@ class Fixture {
         interp::RunNamed(db_.interner(), db_.types(), lowered->module,
                          symbol, arguments, {}, nullptr, foreign_.get(),
                          &layouts);
-    if (Describe(reference) != Describe(optimized)) {
+    if (!Agree(reference, optimized)) {
       return "<the passes changed the meaning: " + Describe(reference) +
              " then " + Describe(optimized) + ">";
     }
@@ -78,7 +78,7 @@ class Fixture {
              ">";
     }
     const interp::Outcome machine = compiled_->Run(symbol, arguments);
-    if (Describe(machine) != Describe(reference)) {
+    if (!Agree(reference, machine)) {
       return "<the code generator disagrees: interpreter said " +
              Describe(reference) + ", machine code said " +
              Describe(machine) + ">";
@@ -155,6 +155,21 @@ class Fixture {
     host_.compiled = false;
     runtime::ResetScheduler();
     runtime::InstallResume(&Resume, &host_);
+  }
+
+  // Whether two runs of the same program did the same thing.
+  //
+  // A trap is compared by its kind rather than by where it was reported: a
+  // pass that turns one instruction into five -- which is what expanding
+  // an element address does -- moves the trap onto a different one without
+  // changing which element was out of bounds. What it must not do is trap
+  // where the program would not have, or not trap where it would.
+  static bool Agree(const interp::Outcome& left,
+                    const interp::Outcome& right) {
+    if (!left.ok() || !right.ok()) {
+      return left.ok() == right.ok() && left.trap == right.trap;
+    }
+    return Describe(left) == Describe(right);
   }
 
   static std::string Describe(const interp::Outcome& outcome) {
@@ -1086,6 +1101,131 @@ fun OnceIntoABuffer() -> int {
 )");
   WOLANG_EXPECT_EQ(f.Run("Once", {}), "201");
   WOLANG_EXPECT_EQ(f.Run("OnceIntoABuffer", {}), "71");
+}
+
+WOLANG_TEST(CodegenTest, LaysOutARecordAsOneArrayPerField) {
+  // `soa []T` is a layout, not a type: the same fields, written and read
+  // the same way, with the storage turned inside out underneath. Which
+  // means every tier has to agree about where a field of an element is --
+  // and the reference tier has no addresses at all, so it computes the
+  // same offsets by arithmetic on a block it allocated.
+  //
+  // The offsets are what this is really checking. A field's array starts
+  // at the sizes of the fields before it times the padded count, so
+  // writing one element's `life` must not land on another element's `x`:
+  // the first version of this got 36 where it should have had 10 because
+  // every field shared one array.
+  Fixture f(R"(
+offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
+
+struct Particle {
+  var x: float = 0.0
+  var y: float = 0.0
+  var life: float = 0.0
+}
+
+fun Spread() -> int uses unsafe {
+  const ps = SoaNew<Particle>(4)
+  var i = 0
+  while i < 4 {
+    ps[i].x = (i + 1) as float
+    ps[i].life = ((i + 1) * 10) as float
+    i = i + 1
+  }
+  var total = 0.0
+  var j = 0
+  while j < 4 {
+    total = total + ps[j].x + ps[j].life
+    j = j + 1
+  }
+  // 1+2+3+4 and 10+20+30+40: nothing overlapped.
+  return total as int
+}
+
+fun ReadsPastTheEnd() -> float uses unsafe {
+  const ps = SoaNew<Particle>(2)
+  return ps[2].y
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Spread", {}), "110");
+  WOLANG_EXPECT(f.Run("ReadsPastTheEnd", {}).find("trap: out of bounds") ==
+                size_t{0});
+}
+
+WOLANG_TEST(CodegenTest, TakesTheTypeArgumentACallWrites) {
+  // `SoaNew<Particle>(4)` has nothing to infer from: the only parameter is
+  // a count. Before the turbofish was read, the call's type stayed `soa
+  // []T` and the field offsets were computed against a type parameter,
+  // which laid every field of every element on top of the others.
+  Fixture f(R"(
+offer fun Empty<T>() -> []T uses unsafe
+
+struct Pair {
+  var a: int = 0
+  var b: int = 0
+}
+
+fun Length() -> int uses unsafe {
+  const xs = Empty<Pair>()
+  return xs.len
+}
+)");
+  // The declaration has no body, so this tier cannot run it -- what is
+  // being checked is that the call is typed by what it wrote, which the
+  // checker test below reads directly. Here it is enough that the whole
+  // pipeline accepts it rather than lowering an address against `T`.
+  WOLANG_EXPECT(f.Run("Length", {}).find("<verifier") == std::string::npos);
+}
+
+WOLANG_TEST(CodegenTest, BuildsAGenericTypeAndCallsItsMethods) {
+  // A generic type is a recipe: `Box<int>` and `Box<float>` are two
+  // layouts and two copies of every method, instantiated where they are
+  // asked for the way a generic function is. Without that, a field of a
+  // `Box<int>` was laid out against `T` -- so both fields of a two-field
+  // instance landed at offset zero and reading one gave the other.
+  Fixture f(R"(
+struct Box<T> {
+  var item: T
+  var tag: int = 0
+
+  fun Item() -> T {
+    return item
+  }
+}
+
+class Counter<T> {
+  var item: T
+  var count: int = 0
+
+  fun Add() -> int {
+    count = count + 1
+    return count
+  }
+}
+
+fun Written() -> int {
+  const b = Box<int>(7, 3)
+  return b.Item() * 10 + b.tag
+}
+
+fun Inferred() -> float {
+  // No turbofish: the field a value is given to says what `T` is.
+  const b = Box(2.5, 1)
+  return b.Item()
+}
+
+fun ThroughAHandle() -> int {
+  // A class is a handle, and an instance of one is too: the method
+  // changes the object it was called on rather than a copy.
+  var c = Counter<int>(5, 0)
+  const first = c.Add()
+  const second = c.Add()
+  return first * 100 + second * 10 + c.item
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Written", {}), "73");
+  WOLANG_EXPECT_EQ(f.Run("Inferred", {}), "2.5");
+  WOLANG_EXPECT_EQ(f.Run("ThroughAHandle", {}), "125");
 }
 
 WOLANG_TEST(CodegenTest, BuildsAndComparesStrings) {

@@ -631,6 +631,68 @@ class Interpreter {
         return array.elements()[index.integer()];
       }
 
+      case ir::Opcode::kSoaNew: {
+        // Storage for a record, one array per field. The size is this
+        // tier's answer, the way `new`'s is.
+        if (layouts_ == nullptr) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "storage needs a layout to be allocated");
+        }
+        const TypeId record = types_.ElementOf(inst.type);
+        const uint64_t count = Operand(frame, inst, 0).integer();
+        // One array per field, or one record after another: the layout the
+        // result type asks for.
+        const uint64_t bytes =
+            types_.Get(inst.type).is_soa
+                ? layouts_->SoaSizeOf(record, count)
+                : count * layouts_->StrideOf(inst.type);
+        void* block = runtime::wolang_object_alloc(bytes);
+        if (block == nullptr) {
+          return Trap(outcome, TrapKind::kOutOfMemory, At(function, id),
+                      "out of memory");
+        }
+        std::vector<Value> pair;
+        pair.push_back(Value::Int(reinterpret_cast<uint64_t>(block),
+                                  IntWidth::k64, /*is_signed=*/false));
+        pair.push_back(Value::Int(count, IntWidth::k64,
+                                  /*is_signed=*/false));
+        return Value::Aggregate(std::move(pair));
+      }
+
+      case ir::Opcode::kIndexCheck: {
+        // All that is left where an element address was expanded into
+        // arithmetic: the element still has to exist.
+        const uint64_t index = Operand(frame, inst, 0).integer();
+        const uint64_t length = Operand(frame, inst, 1).integer();
+        if (index >= length) {
+          return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
+                      "index is outside a length of " +
+                          std::to_string(length));
+        }
+        return Value();
+      }
+
+      case ir::Opcode::kSoaAddress: {
+        const Value& base = Operand(frame, inst, 0);
+        const Value& index = Operand(frame, inst, 1);
+        const Value& count = Operand(frame, inst, 2);
+        if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "took a field address inside storage that is not at "
+                      "an address");
+        }
+        if (index.integer() >= count.integer()) {
+          return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
+                      "index is outside the length");
+        }
+        const TypeId record = SoaRecordOf(function, inst);
+        return Value::Int(
+            base.integer() + layouts_->SoaOffsetOf(record, inst.field,
+                                                   index.integer(),
+                                                   count.integer()),
+            IntWidth::k64, /*is_signed=*/false);
+      }
+
       case ir::Opcode::kIndexAddress: {
         // The element of an array at an address. Inside a slot it is a
         // place -- a path -- because the interpreter's values carry their
@@ -791,6 +853,9 @@ class Interpreter {
       }
 
       default:
+        if (inst.is_unchecked) {
+          return Unchecked(frame, inst);
+        }
         return Arithmetic(frame, id, inst, outcome);
     }
   }
@@ -1024,6 +1089,18 @@ class Interpreter {
                                                      : root_type);
   }
 
+  // The record an `soa.addr` walks: the element type of the storage its
+  // base came from, which the instruction's own type cannot say because
+  // that is the field's type.
+  TypeId SoaRecordOf(const ir::Function& function,
+                     const ir::Inst& inst) const {
+    const TypeId base = TypeOf(function, inst, 0);
+    if (types_.KindOf(base) == TypeKind::kPointer) {
+      return types_.ElementOf(base);
+    }
+    return base;
+  }
+
   // What an address instruction is taken inside of: a pointer's target, a
   // class's own storage, or -- for a slot -- the slot's type.
   TypeId AddressedType(const ir::Function& function,
@@ -1108,6 +1185,38 @@ class Interpreter {
     // A cast the IR does not distinguish -- a quantity to its own numeric
     // type, or a type to itself.
     return source;
+  }
+
+  // Arithmetic the compiler wrote for itself: the same answer, and no
+  // check. Wrapping rather than trapping, which is what an address
+  // computation wants and what the compiled tiers do.
+  Value Unchecked(Frame* frame, const ir::Inst& inst) {
+    const Value& left = Operand(frame, inst, 0);
+    const Value& right = Operand(frame, inst, 1);
+    const uint64_t a = left.integer();
+    const uint64_t b = right.integer();
+    uint64_t result = 0;
+    switch (inst.opcode) {
+      case ir::Opcode::kAdd:
+        result = a + b;
+        break;
+      case ir::Opcode::kSub:
+        result = a - b;
+        break;
+      case ir::Opcode::kMul:
+        result = a * b;
+        break;
+      case ir::Opcode::kBitAnd:
+        result = a & b;
+        break;
+      case ir::Opcode::kShl:
+        result = b < 64 ? a << b : 0;
+        break;
+      default:
+        result = a;
+        break;
+    }
+    return Value::Int(result, IntWidth::k64, /*is_signed=*/false);
   }
 
   Value Arithmetic(Frame* frame,

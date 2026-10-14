@@ -1,0 +1,115 @@
+// A dense store of one component type.
+//
+// Written in Wolang rather than in the compiler, which is the point of
+// `soa []T` being in the language: the storage a game wants is a library
+// here, not a built-in.
+
+need std.mem.{ArrayNew, SoaNew}
+
+/// The components of one type, packed.
+///
+/// Rows are dense: the component in row `i` belongs to entity `owners[i]`,
+/// and a pass over the rows reads them in order with no holes to skip.
+/// `slots[e]` is the row entity `e` occupies plus one, or zero when it has
+/// none of this component -- plus one so that an unused slot is the zero a
+/// fresh array already holds.
+///
+/// Removing a component moves the last row into the hole rather than
+/// shifting the rest. That is what keeps the pass sequential, and it is
+/// why nothing may hold a row index across a removal.
+offer class Store<T> {
+  var rows: soa []T
+  var owners: []int
+  var slots: []int
+  var count: int = 0
+
+  /// The row entity `e` occupies, or -1 when it has no component here.
+  fun Row(e: int) -> int {
+    if e < 0 || e >= slots.len {
+      return -1
+    }
+    return slots[e] - 1
+  }
+
+  fun Has(e: int) -> bool {
+    return Row(e) >= 0
+  }
+
+  /// The row for `e`, adding one if it has none. -1 when the store is
+  /// full or the entity is outside the range it was built for.
+  fun Add(e: int) -> int {
+    if e < 0 || e >= slots.len {
+      return -1
+    }
+    const existing = slots[e] - 1
+    if existing >= 0 {
+      return existing
+    }
+    if count >= owners.len {
+      return -1
+    }
+    const row = count
+    owners[row] = e
+    slots[e] = row + 1
+    count = count + 1
+    return row
+  }
+
+  /// Drops `e`'s component by moving the last row into its place.
+  fun Remove(e: int) {
+    const row = Row(e)
+    if row < 0 {
+      return
+    }
+    const last = count - 1
+    if row != last {
+      // The moved row keeps its owner, which is what has to be fixed up:
+      // the component data itself is the caller's to move, because only
+      // the caller knows what a `T` is made of.
+      const moved = owners[last]
+      owners[row] = moved
+      slots[moved] = row + 1
+    }
+    slots[e] = 0
+    count = count - 1
+  }
+}
+
+/// A store for `capacity` components of up to `entities` entities.
+///
+/// Fixed size: there is no growth yet, so `Add` reports -1 rather than
+/// reallocating. A game that knows its budget is the case this serves,
+/// and growth is a copy loop away.
+offer fun StoreNew<T>(capacity: int, entities: int) -> Store<T> uses unsafe {
+  return Store<T>(SoaNew<T>(capacity), ArrayNew<int>(capacity),
+                  ArrayNew<int>(entities), 0)
+}
+
+/// Hands out entity numbers.
+///
+/// Numbers are not reused yet. Reuse needs a generation counter beside the
+/// index -- otherwise a handle to a dead entity reads the one that took
+/// its place -- and that is a change to what an entity *is*, so it waits
+/// until there is something to free.
+offer class Entities {
+  var next: int = 0
+  var limit: int = 0
+
+  /// A fresh entity, or -1 when there are no more.
+  fun Spawn() -> int {
+    if next >= limit {
+      return -1
+    }
+    const e = next
+    next = next + 1
+    return e
+  }
+
+  fun Len() -> int {
+    return next
+  }
+}
+
+offer fun EntitiesNew(limit: int) -> Entities {
+  return Entities(0, limit)
+}

@@ -2,6 +2,8 @@
 
 #include "wolang/sema/type.h"
 
+#include <algorithm>
+
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -193,7 +195,14 @@ TypeId TypeStore::Named(Symbol name,
 }
 
 bool TypeStore::IsHandle(TypeId type) const {
-  const TypeId settled = StripWrappers(type);
+  TypeId settled = StripWrappers(type);
+  // `List<int>` is a handle exactly when `List` is: an instance is the
+  // declaration with its parameters bound, and whether a value of it is an
+  // object somewhere or the object itself is not something binding a
+  // parameter changes.
+  if (KindOf(settled) == TypeKind::kInstance) {
+    settled = Get(settled).base;
+  }
   return KindOf(settled) == TypeKind::kNamed && Get(settled).is_handle;
 }
 
@@ -556,6 +565,31 @@ bool TypeStore::MentionsParameter(TypeId id) const {
     }
   }
   return false;
+}
+
+void TypeStore::CollectParameters(TypeId id,
+                                  std::vector<TypeId>* out) const {
+  if (!id.is_valid()) {
+    return;
+  }
+  const Type& type = Get(id);
+  if (type.kind == TypeKind::kParameter) {
+    if (std::find(out->begin(), out->end(), id) == out->end()) {
+      out->push_back(id);
+    }
+    return;
+  }
+  // Arguments before the element, so that a function's parameters come in
+  // the order they were written and its result last.
+  for (TypeId argument : ArgumentsOf(id)) {
+    CollectParameters(argument, out);
+  }
+  if (CarriesBase(type.kind)) {
+    CollectParameters(type.base, out);
+  }
+  if (CarriesElement(type.kind)) {
+    CollectParameters(type.element, out);
+  }
 }
 
 bool TypeStore::Unify(TypeId pattern,

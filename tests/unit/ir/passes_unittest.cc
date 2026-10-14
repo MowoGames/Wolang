@@ -276,6 +276,94 @@ fun Use() -> int => Double(21)
   WOLANG_EXPECT(body.find("42") != std::string::npos);
 }
 
+WOLANG_TEST(PassTest, ComputesARepeatedAddressOnce) {
+  // Reading a field, adding to it and writing it back asks for the same
+  // address twice. One of the two is enough.
+  Fixture f(R"(
+struct Point {
+  var x: int = 0
+  var y: int = 0
+}
+
+fun Bump(points: []Point) {
+  var i = 0
+  while i < points.len {
+    points[i].x = points[i].x + 1
+    i = i + 1
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string lowered = f.Lowered("Bump");
+  const std::string optimized = f.Optimized("Bump");
+  const auto count = [](const std::string& body, std::string_view what) {
+    size_t total = 0;
+    for (size_t at = body.find(what); at != std::string::npos;
+         at = body.find(what, at + 1)) {
+      ++total;
+    }
+    return total;
+  };
+  WOLANG_EXPECT(count(lowered, "index.addr") >= 2);
+  WOLANG_EXPECT_EQ(count(optimized, "index.addr"), size_t{1});
+}
+
+WOLANG_TEST(PassTest, MovesWhatDoesNotChangeOutOfTheLoop) {
+  // The length of the slice and the base of its storage are the same every
+  // iteration, and reading them is what the loop would otherwise spend a
+  // third of itself on.
+  Fixture f(R"(
+fun Total(values: []int) -> int {
+  var sum = 0
+  var i = 0
+  while i < values.len {
+    sum = sum + values[i]
+    i = i + 1
+  }
+  return sum
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string optimized = f.Optimized("Total");
+  // The extracts that take the slice apart happen before the loop: the
+  // block they end up in is the one with no label of its own.
+  const size_t loop = optimized.find("// loop.header");
+  WOLANG_EXPECT(loop != std::string::npos);
+  WOLANG_EXPECT(optimized.find("extract") < loop);
+  WOLANG_EXPECT(optimized.find("extract", loop) == std::string::npos);
+}
+
+WOLANG_TEST(PassTest, KeepsTheBoundsCheckInsideTheLoop) {
+  // The one part of an element address that is about *this* element. It
+  // produces no value, so a pass that treats it as pure deletes it, and a
+  // pass that treats it as loop invariant moves it somewhere it checks
+  // nothing -- both of which this noticed.
+  Fixture f(R"(
+struct Body {
+  var x: float = 0.0
+  var y: float = 0.0
+}
+
+fun Sum(bodies: soa []Body) -> float {
+  var total = 0.0
+  var i = 0
+  while i < bodies.len {
+    total = total + bodies[i].x
+    i = i + 1
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string optimized = f.Optimized("Sum");
+  const size_t loop = optimized.find("// loop.header");
+  WOLANG_EXPECT(loop != std::string::npos);
+  WOLANG_EXPECT(optimized.find("index.check", loop) != std::string::npos);
+  // And the arithmetic around it is gone from the loop: what is left is a
+  // multiply and two adds, with the field's array found before it.
+  WOLANG_EXPECT(optimized.find("soa.addr") == std::string::npos);
+}
+
 WOLANG_TEST(PassTest, EveryPassLeavesTheFunctionVerifiable) {
   // The exit criterion of the wave, as a test rather than a promise.
   Fixture f(R"(

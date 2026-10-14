@@ -274,7 +274,9 @@ class Verifier {
       case Opcode::kBitXor:
       case Opcode::kShl:
       case Opcode::kShr:
-        if (arity(2) && type_of(0) != type_of(1)) {
+        // Arithmetic the compiler wrote for itself is how an address is
+        // built, and that adds an offset to a pointer by its nature.
+        if (!inst.is_unchecked && arity(2) && type_of(0) != type_of(1)) {
           Fail(At(id) + " combines two different types");
         }
         break;

@@ -20,7 +20,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0070` | diagnostic suppression | implemented (wave 5) |
 | `E0101`–`E0119` | types and name resolution | implemented (wave 4) |
 | `E0117`–`E0119` | sizes, cyclic declarations, parameters | implemented (wave 5) |
-| `E0120`–`E0125` | memory, references, conversions, receivers | `E0120` (wave 5), `E0123`–`E0124` (waves 8–9), `E0125` (wave 10) |
+| `E0120`–`E0126` | memory, references, conversions, receivers, generics | `E0120` (wave 5), `E0123`–`E0124` (waves 8–9), `E0125` (wave 10), `E0126` (wave 11) |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E0301`–`E0305` | suspension and tasks | implemented (wave 10) |
 | `E0401`–`E0403` | inheritance, traits, bounds | implemented (waves 4–5) |
@@ -217,6 +217,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0123` | a variable is used before anything is written to it | `var x: int` then `return x` |
 | `E0124` | the conversion is not between numbers | `s as int` where `s: text` |
 | `E0125` | a method of a value type assigns to a field of `self` | `struct P { fun F() { x = 1 } }` |
+| `E0126` | a generic type built with nothing to bind its parameter | `struct M<T> { var tag: int }` then `M(1)` |
 | `E0070` | `@allow` is missing a code or a reason | `@allow(W0101)` |
 
 An error type propagates silently: one unknown name produces one message, not

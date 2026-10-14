@@ -88,6 +88,14 @@ struct Inst {
 
   // Extract, Insert: which field. Index: unused, the index is an operand.
   uint32_t field = 0;
+  // Arithmetic the compiler wrote for itself -- an address, a stride, a
+  // length -- which is not checked for overflow.
+  //
+  // Two reasons, and both matter. A trap in it would name a line the
+  // program never wrote; and an instruction that cannot trap can be moved
+  // out of a loop, which is what makes an address computed once instead of
+  // a million times.
+  bool is_unchecked = false;
 
   union {
     // ConstInt: the value, already truncated to its type.
