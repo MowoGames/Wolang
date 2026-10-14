@@ -1225,6 +1225,50 @@ fun AllocatesManyInOne(n: int) -> int uses unsafe {
                    "4950");
 }
 
+WOLANG_TEST(CodegenTest, HandsABufferToC) {
+  // `&buf[2]` is an address into the buffer, not into a copy of it: a
+  // `read` into a buffer is the whole shape of doing input, and it only
+  // works if what C writes lands in the caller's bytes.
+  //
+  // The interpreter has no addresses for its values, so it copies the slot
+  // out to real memory for the call and copies it back afterwards. That it
+  // agrees with machine code here is the point of saying so.
+  Fixture f(R"(
+extern "C" fun memset(target: *mut u8, byte: s32, count: u64) -> *mut u8
+extern "C" fun memcpy(target: *mut u8, source: *u8, count: u64) -> *mut u8
+
+fun FillsPartOfABuffer() -> int uses unsafe {
+  var buf: [8]u8
+  const _r = memset(&buf[2], 65, 3)
+  var total = 0
+  for i in 0..8 {
+    total = total + buf[i] as int
+  }
+  // Three bytes of 65 and five of zero, and the first two untouched.
+  return total * 10 + buf[0] as int
+}
+
+fun CopiesBetweenBuffers() -> int uses unsafe {
+  var source: [4]u8
+  source[0] = 7
+  source[1] = 9
+  var target: [4]u8
+  const _r = memcpy(&target[0], &source[0], 2)
+  return target[0] as int * 100 + target[1] as int
+}
+
+fun WritesThroughAPointer() -> int uses unsafe {
+  var buf: [4]int
+  const p = &buf[1]
+  *p = 42
+  return buf[1]
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("FillsPartOfABuffer", {}), "1950");
+  WOLANG_EXPECT_EQ(f.Run("CopiesBetweenBuffers", {}), "709");
+  WOLANG_EXPECT_EQ(f.Run("WritesThroughAPointer", {}), "42");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

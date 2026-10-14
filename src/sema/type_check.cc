@@ -262,6 +262,7 @@ class Checker {
   TypeId CheckBinary(const Expr& expr);
   TypeId CheckAssign(const Expr& expr);
   ExprId RootOfPlace(ExprId id) const;
+  bool IsBytesAndText(TypeId from, TypeId to) const;
   TypeId CheckCall(ExprId id, const Expr& expr);
   TypeId CheckIndex(const Expr& expr);
   TypeId CheckField(const Expr& expr);
@@ -417,6 +418,18 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
   if (types_->IsOptional(expected)) {
     return Accepts(types_->ElementOf(expected), found);
   }
+  // A reference fits where a raw pointer is wanted. Both are an address;
+  // the difference is what the language promises about it, and a raw
+  // pointer promises nothing -- so `&buf[0]` is how a buffer is handed to
+  // something outside the language, which is `unsafe` either way.
+  if (types_->KindOf(expected) == TypeKind::kPointer &&
+      types_->KindOf(found) == TypeKind::kReference) {
+    const TypeId target = types_->ElementOf(expected);
+    const TypeId source = types_->ElementOf(found);
+    return target == source ||
+           types_->KindOf(target) == TypeKind::kVoid;
+  }
+
   // An owned `String` fits wherever a borrowed `str` is wanted. This is an
   // implicit borrow, and it is safe for the reason references are second
   // class (D8): a `str` cannot be stored in a field, so the view can never
@@ -854,6 +867,25 @@ TypeId Checker::CheckBinary(const Expr& expr) {
 // The expression an assignment's target is rooted in: the name, the `self`
 // or the dereference at the bottom of `a.b.c`. What may be written to is a
 // property of the root, not of the field at the end.
+// Whether this conversion is between a byte view and a string: `[]u8 as
+// text`, or the other way.
+bool Checker::IsBytesAndText(TypeId from, TypeId to) const {
+  const auto is_bytes = [this](TypeId type) {
+    if (types_->KindOf(type) != TypeKind::kSlice) {
+      return false;
+    }
+    const TypeId element = types_->ElementOf(type);
+    return types_->KindOf(element) == TypeKind::kInt &&
+           types_->Get(element).int_width == IntWidth::k8 &&
+           !types_->Get(element).is_signed;
+  };
+  const auto is_text = [this](TypeId type) {
+    return types_->KindOf(type) == TypeKind::kStr ||
+           types_->KindOf(type) == TypeKind::kString;
+  };
+  return (is_bytes(from) && is_text(to)) || (is_text(from) && is_bytes(to));
+}
+
 ExprId Checker::RootOfPlace(ExprId id) const {
   ExprId current = id;
   while (ast_.Contains(current)) {
@@ -1667,10 +1699,20 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
     case ExprKind::kCast: {
       const TypeId source = Check(expr.lhs, TypeId{});
       type = resolver_.Resolve(ast_, expr.type);
+      // Bytes as text, and back. Both are a pointer and a length, so the
+      // conversion costs nothing at run time -- but a `text` is valid
+      // UTF-8 and a `[]u8` is not, so going that way is a promise the
+      // caller makes, and `unsafe` is how this language records a promise.
+      // `std` will offer the checked version; this is the floor it needs.
+      const bool views = IsBytesAndText(source, type);
+      if (views) {
+        result_.direct_effects.Add(
+            types_->BuiltinEffectId(BuiltinEffect::kUnsafe));
+      }
       // `as` is a numeric conversion and nothing else. It is the escape
       // hatch D33 left open by removing implicit widening, not a
       // reinterpretation of arbitrary bits -- that is what `unsafe` is for.
-      if (type.is_valid() && source.is_valid() &&
+      if (!views && type.is_valid() && source.is_valid() &&
           !types_->IsError(source) && !types_->IsError(type) &&
           types_->KindOf(source) != TypeKind::kNever && source != type &&
           !(types_->IsNumeric(source) && types_->IsNumeric(type))) {

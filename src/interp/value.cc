@@ -93,9 +93,10 @@ Value Value::Absent() {
   return value;
 }
 
-Value Value::Slot(uint32_t index) {
+Value Value::Slot(uint32_t index, TypeId type) {
   Value value;
   value.kind_ = Kind::kSlot;
+  value.place_type_ = type;
   // Offset by one so that a zeroed value is not a valid slot.
   value.integer_ = uint64_t{index} + 1;
   return value;
@@ -111,11 +112,13 @@ Value Value::Function(uint32_t index, const void* module) {
 
 Value Value::Place(const void* frame,
                    uint32_t slot,
-                   std::vector<PlaceStep> path) {
+                   std::vector<PlaceStep> path,
+                   TypeId type) {
   Value value;
   value.kind_ = Kind::kPlace;
   value.integer_ = slot;
   value.module_ = frame;
+  value.place_type_ = type;
   value.path_ =
       std::make_shared<const std::vector<PlaceStep>>(std::move(path));
   return value;

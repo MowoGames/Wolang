@@ -390,7 +390,7 @@ class Verifier {
           break;
         }
         for (size_t i = 0; i < params.size(); ++i) {
-          if (type_of(i) != params[i]) {
+          if (!FitsParameter(type_of(i), params[i])) {
             Fail(At(id) + " passes " + At(operands[i]) +
                  " as argument " + std::to_string(i) + " of @" +
                  std::string(interner_.Text(target.name)) +
@@ -479,6 +479,22 @@ class Verifier {
       return {};
     }
     return function_.SuccessorsOf(function_.Get(terminator));
+  }
+
+  // Whether an argument of |found| may be passed where |wanted| is
+  // declared. Equal types, or a mutable pointer where a read-only one is
+  // wanted -- which is the one direction that is always safe, and the one
+  // the C boundary asks for constantly.
+  bool FitsParameter(TypeId found, TypeId wanted) const {
+    if (found == wanted) {
+      return true;
+    }
+    if (types_.KindOf(found) != TypeKind::kPointer ||
+        types_.KindOf(wanted) != TypeKind::kPointer) {
+      return false;
+    }
+    return types_.ElementOf(found) == types_.ElementOf(wanted) &&
+           types_.Get(found).is_mutable && !types_.Get(wanted).is_mutable;
   }
 
   // Whether |value| is something an address can be taken inside of: a

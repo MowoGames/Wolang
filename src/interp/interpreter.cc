@@ -2,6 +2,8 @@
 
 #include "wolang/interp/interpreter.h"
 
+#include "wolang/interp/marshal.h"
+
 #include "wolang/runtime/scheduler.h"
 
 #include "wolang/interp/intrinsics.h"
@@ -78,10 +80,14 @@ class Interpreter {
     return result;
   }
 
+  // |caller| is the frame the arguments came from, when there is one. Only
+  // a foreign call needs it: a buffer in the caller's slot has to be
+  // copied out to real memory, and copied back when the call returns.
   Value Call(const ir::Function& function,
              const ir::Module* home,
              std::vector<Value> arguments,
-             Outcome* outcome) {
+             Outcome* outcome,
+             Frame* caller = nullptr) {
     if (function.is_foreign()) {
       // The runtime's own functions are called directly rather than
       // through the C boundary: building a string must not depend on
@@ -95,7 +101,7 @@ class Interpreter {
           return result;
         }
       }
-      return CallForeign(function, arguments, outcome);
+      return CallForeign(function, arguments, outcome, caller);
     }
     if (function.is_declaration()) {
       // A declaration whose name is an intrinsic is implemented by the host.
@@ -245,7 +251,8 @@ class Interpreter {
   // a representation on both sides (`E0802`).
   Value CallForeign(const ir::Function& function,
                     const std::vector<Value>& arguments,
-                    Outcome* outcome) {
+                    Outcome* outcome,
+                    Frame* caller) {
     const std::string symbol(interner_.Text(function.foreign_symbol));
     if (foreign_ == nullptr) {
       return Trap(outcome, TrapKind::kNoBody, "@" + symbol,
@@ -253,6 +260,10 @@ class Interpreter {
                   "language");
     }
 
+    // What was copied out to real memory for the call, so that it can be
+    // copied back when the call is over: a `read` into a buffer is the
+    // whole reason this exists.
+    std::vector<Bounced> bounced;
     std::vector<ForeignArgument> raw;
     raw.reserve(arguments.size());
     for (const Value& argument : arguments) {
@@ -277,6 +288,23 @@ class Interpreter {
         entry.bits = argument.is_signed()
                          ? static_cast<uint64_t>(argument.signed_integer())
                          : argument.integer();
+      } else if (argument.kind() == Value::Kind::kSlot ||
+                 argument.kind() == Value::Kind::kPlace) {
+        // A buffer in a frame slot, handed to something outside the
+        // language. The interpreter's values carry their shape rather
+        // than living in memory, so there is no address to pass -- the
+        // bytes are copied out to one, and copied back afterwards.
+        //
+        // That is the honest thing a tier of this shape can do, and it is
+        // what lets a program that reads into a buffer run interpreted as
+        // well as compiled.
+        if (caller == nullptr || !Bounce(caller, argument, &bounced)) {
+          return Trap(outcome, TrapKind::kUndefinedValue, "@" + symbol,
+                      "was given " + argument.Describe() +
+                          ", which has no representation in C");
+        }
+        entry.bits = reinterpret_cast<uint64_t>(
+            bounced.back().bytes.data() + bounced.back().offset);
       } else {
         return Trap(outcome, TrapKind::kUndefinedValue, "@" + symbol,
                     "was given " + argument.Describe() +
@@ -292,6 +320,14 @@ class Interpreter {
     if (!foreign_->Call(symbol, raw, returns_float, &result)) {
       return Trap(outcome, TrapKind::kNoBody, "@" + symbol,
                   "is `extern`, and its symbol was not found");
+    }
+    // Whatever the call wrote into a bounced buffer belongs back where it
+    // came from.
+    for (Bounced& entry : bounced) {
+      Value* at = entry.slot == nullptr ? nullptr : entry.slot;
+      if (at != nullptr) {
+        *at = Decode(types_, layouts_, entry.bytes.data(), entry.type);
+      }
     }
 
     switch (described.kind) {
@@ -428,7 +464,8 @@ class Interpreter {
         // of a buffer, one field of a struct -- and `E0123` is what
         // catches reading one that was never written at all.
         frame->slots.push_back(ZeroOf(inst.type));
-        return Value::Slot(static_cast<uint32_t>(frame->slots.size() - 1));
+        return Value::Slot(
+            static_cast<uint32_t>(frame->slots.size() - 1), inst.type);
       }
       case ir::Opcode::kFuncAddress:
         // Which function, and which module it belongs to: an index alone
@@ -590,7 +627,8 @@ class Interpreter {
             base.kind() == Value::Kind::kPlace) {
           return Extend(frame, base,
                         static_cast<uint32_t>(index.integer()),
-                        /*is_element=*/true);
+                        /*is_element=*/true,
+                        AddressedType(function, inst, 0));
         }
         if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
           return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
@@ -612,7 +650,8 @@ class Interpreter {
         const Value& base = Operand(frame, inst, 0);
         if (base.kind() == Value::Kind::kSlot ||
             base.kind() == Value::Kind::kPlace) {
-          return Extend(frame, base, inst.field, /*is_element=*/false);
+          return Extend(frame, base, inst.field, /*is_element=*/false,
+                        AddressedType(function, inst, 0));
         }
         if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
           return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
@@ -671,7 +710,7 @@ class Interpreter {
                                   : Value());
         }
         return Call(home->functions[target.function()], home,
-                    std::move(arguments), outcome);
+                    std::move(arguments), outcome, frame);
       }
 
       case ir::Opcode::kCall: {
@@ -712,7 +751,7 @@ class Interpreter {
             }
           }
         }
-        return Call(*callee, home, std::move(arguments), outcome);
+        return Call(*callee, home, std::move(arguments), outcome, frame);
       }
 
       case ir::Opcode::kCast:
@@ -726,6 +765,72 @@ class Interpreter {
       default:
         return Arithmetic(frame, id, inst, outcome);
     }
+  }
+
+  // A buffer copied out to real memory for a foreign call, and where it
+  // came from.
+  struct Bounced {
+    Value* slot = nullptr;
+    TypeId type;
+    uint32_t offset = 0;
+    std::vector<uint8_t> bytes;
+  };
+
+  // Copies what a place holds into real memory, and remembers where to
+  // put it back. False when the place cannot be found or its type is not
+  // known: without a layout there is nothing to copy.
+  bool Bounce(Frame* frame, const Value& place, std::vector<Bounced>* out) {
+    if (layouts_ == nullptr || !place.place_type().is_valid()) {
+      return false;
+    }
+    // The root of the place, not the leaf: the whole slot travels.
+    auto* home = const_cast<Frame*>(static_cast<const Frame*>(
+        place.frame() != nullptr ? place.frame() : frame));
+    const uint32_t index = place.kind() == Value::Kind::kPlace
+                               ? static_cast<uint32_t>(place.integer())
+                               : place.slot();
+    Value* at = index < home->slots.size() ? &home->slots[index] : nullptr;
+    if (at == nullptr) {
+      return false;
+    }
+    Bounced entry;
+    entry.slot = at;
+    entry.type = place.place_type();
+    const uint32_t size = layouts_->SizeOf(entry.type);
+    if (size == 0) {
+      return false;
+    }
+    entry.bytes.assign(size, 0);
+    Encode(types_, layouts_, *at, entry.type, entry.bytes.data());
+    entry.offset = OffsetOfPlace(place);
+    if (entry.offset >= size) {
+      return false;
+    }
+    out->push_back(std::move(entry));
+    return true;
+  }
+
+  // Where in the slot's bytes a place points. The whole slot is copied out,
+  // so the address handed to C is this far into it.
+  uint32_t OffsetOfPlace(const Value& place) {
+    if (place.kind() != Value::Kind::kPlace || layouts_ == nullptr) {
+      return 0;
+    }
+    TypeId at = place.place_type();
+    uint32_t offset = 0;
+    for (const PlaceStep& step : place.path()) {
+      if (step.is_element) {
+        offset += step.index * layouts_->StrideOf(at);
+        at = types_.ElementOf(at);
+        continue;
+      }
+      const abi::Layout& layout = layouts_->ObjectOf(at);
+      offset += step.index < layout.offsets.size()
+                    ? layout.offsets[step.index]
+                    : 0;
+      at = layouts_->FieldType(at, step.index);
+    }
+    return offset;
   }
 
   // A value of |type| with every part zero. What a slot starts as.
@@ -810,7 +915,8 @@ class Interpreter {
   static Value Extend(Frame* frame,
                       const Value& base,
                       uint32_t step,
-                      bool is_element) {
+                      bool is_element,
+                      TypeId root_type) {
     std::vector<PlaceStep> path;
     if (base.kind() == Value::Kind::kPlace) {
       path = base.path();
@@ -824,10 +930,12 @@ class Interpreter {
       }
       return Value::Place(base.frame(),
                           static_cast<uint32_t>(base.integer()),
-                          std::move(path));
+                          std::move(path), base.place_type());
     }
     path.push_back(PlaceStep{step, is_element});
-    return Value::Place(frame, base.slot(), std::move(path));
+    return Value::Place(frame, base.slot(), std::move(path),
+                        base.place_type().is_valid() ? base.place_type()
+                                                     : root_type);
   }
 
   // What an address instruction is taken inside of: a pointer's target, a

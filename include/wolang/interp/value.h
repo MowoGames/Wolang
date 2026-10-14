@@ -80,11 +80,18 @@ class Value {
   static Value Aggregate(std::vector<Value> elements);
   static Value Present(Value inside);
   static Value Absent();
-  static Value Slot(uint32_t index);
+  // |type| is what is in the slot, carried along because a value does not
+  // otherwise know its own type and the one place that needs it -- handing
+  // a buffer to a C function -- has nothing else to ask. A place keeps the
+  // *slot's* type rather than the leaf's: a C function given `&buf[2]`
+  // writes wherever in `buf` it likes, so the whole slot is what has to be
+  // copied out and back.
+  static Value Slot(uint32_t index, TypeId type = TypeId{});
   static Value Function(uint32_t index, const void* module);
   static Value Place(const void* frame,
                      uint32_t slot,
-                     std::vector<PlaceStep> path);
+                     std::vector<PlaceStep> path,
+                     TypeId type = TypeId{});
 
   Kind kind() const { return kind_; }
   bool is_undefined() const { return kind_ == Kind::kUndefined; }
@@ -100,6 +107,8 @@ class Value {
   uint32_t slot() const { return integer_ == 0 ? 0 : integer_ - 1; }
   uint32_t function() const { return static_cast<uint32_t>(integer_); }
   const std::vector<PlaceStep>& path() const { return *path_; }
+  // What the slot at the root of this place holds.
+  TypeId place_type() const { return place_type_; }
 
   // Element |index|, ready to be written to. The elements are shared so
   // that copying a value is cheap, so writing into one needs a copy of its
@@ -143,6 +152,7 @@ class Value {
   const void* module_ = nullptr;
   // The steps of a place, shared so that extending one is cheap.
   std::shared_ptr<const std::vector<PlaceStep>> path_;
+  TypeId place_type_;
 };
 
 // Masks |bits| to |width|, which is where wrapping happens and the only

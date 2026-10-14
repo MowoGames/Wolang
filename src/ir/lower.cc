@@ -878,6 +878,12 @@ class Lowerer {
         // operand's type and the result's differ, and that difference is
         // the whole instruction.
         const InstId operand = Value(expr.lhs);
+        // Bytes as text and back: both are a pointer and a length, so the
+        // value carries across unchanged and the conversion is a fact
+        // about types rather than an operation.
+        if (IsView(TypeOf(expr.lhs)) && IsView(type)) {
+          return operand;
+        }
         const TypeId built = Unwrapped(type);
         return Coerce(builder_->Add(Opcode::kCast, built, {operand}), built,
                       type);
@@ -1402,16 +1408,15 @@ class Lowerer {
     return result;
   }
 
-  // The address of a place, for `&x`. A `var` already has one -- its slot;
-  // anything else is copied into a fresh one, which is what makes taking a
-  // reference to a temporary mean something. References are second class
-  // (`E0120`), so the slot cannot outlive the frame it is in.
+  // The address of a place, for `&x`. Whatever has an address gives its
+  // own -- a local's slot, a field of one, an element of a buffer --
+  // because `&buf[0]` has to point *into* the buffer and not at a copy of
+  // it. Anything else is copied into a fresh slot, which is what makes
+  // taking a reference to a temporary mean something. References are
+  // second class (`E0120`), so the slot cannot outlive its frame.
   InstId Address(ExprId place, InstId value) {
-    if (ast_.Contains(place) && ast_.Get(place).kind == ExprKind::kPath) {
-      const Local* local = Find(ast_.Get(place).name);
-      if (local != nullptr && local->slot.is_valid()) {
-        return local->slot;
-      }
+    if (const Place at = PlaceOf(place); at.addressable()) {
+      return AddressOfPlace(at);
     }
     if (!value.is_valid()) {
       return value;
