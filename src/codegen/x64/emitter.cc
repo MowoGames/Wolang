@@ -1017,7 +1017,12 @@ class FunctionEmitter {
         const uint64_t allocator = reinterpret_cast<uint64_t>(
             runtime::LookupSymbol("wolang_object_alloc"));
         assembler_.MovImmediate(IWidth::k64, kArgumentRegisters[0],
-                                layouts_.ObjectOf(inst.type).size);
+                                layouts_.ObjectOf(
+                                    types_.KindOf(inst.type) ==
+                                            TypeKind::kPointer
+                                        ? types_.ElementOf(inst.type)
+                                        : inst.type)
+                                    .size);
         assembler_.MovImmediate(IWidth::k64, kCallScratch, allocator);
         assembler_.CallRegister(kCallScratch);
         const Label trap = TrapLabel(ir::TrapKind::kOutOfMemory, id,
@@ -1365,7 +1370,8 @@ class FunctionEmitter {
     assembler_.Mov(IWidth::k64, kAccumulator, receiver);
     assembler_.Load(IWidth::k64, kArgumentRegisters[0],
                        Address{kAccumulator, 0});
-    assembler_.MovImmediate(IWidth::k64, kArgumentRegisters[1], inst.field);
+    assembler_.MovImmediate(IWidth::k64, kArgumentRegisters[1],
+                            inst.payload.integer);
     assembler_.MovImmediate(
         IWidth::k64, kCallScratch,
         reinterpret_cast<uint64_t>(&runtime::wolang_class_lookup));
@@ -1374,7 +1380,8 @@ class FunctionEmitter {
     {
       const Label missing =
           TrapLabel(ir::TrapKind::kNoBody, id,
-                    "a virtual call found no compiled body for its slot");
+                    "a virtual call found no compiled body for this "
+                    "method");
       assembler_.CmpImmediate(IWidth::k64, kVirtualTarget, 0);
       assembler_.Jcc(Condition::kEqual, missing);
     }
@@ -1388,7 +1395,7 @@ class FunctionEmitter {
     if (indirect) {
       assembler_.Lea(kArgumentRegisters[integers++], Slot(Info(id).area));
     }
-    for (size_t index = 0; index < all.size(); ++index) {
+    for (size_t index = 1; index < all.size(); ++index) {
       const ir::InstId operand = all[index];
       const TypeId type = TypeOf(operand);
       switch (layouts_.ClassOf(type)) {

@@ -567,8 +567,13 @@ class Interpreter {
           return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
                       "an object needs a layout to be allocated");
         }
+        // A class's object, or the value a box holds.
+        const TypeId allocated =
+            types_.KindOf(inst.type) == TypeKind::kPointer
+                ? types_.ElementOf(inst.type)
+                : inst.type;
         void* object = runtime::wolang_object_alloc(
-            layouts_->ObjectOf(inst.type).size);
+            layouts_->ObjectOf(allocated).size);
         if (object == nullptr) {
           return Trap(outcome, TrapKind::kOutOfMemory, At(function, id),
                       "out of memory");
@@ -589,30 +594,40 @@ class Interpreter {
       }
 
       case ir::Opcode::kVirtualCall: {
-        const Value& receiver = Operand(frame, inst, 0);
-        if (layouts_ == nullptr || receiver.kind() != Value::Kind::kInt) {
+        // The token, then the receiver, then the arguments: one shape
+        // whether the receiver came from a class handle or out of a trait
+        // value's pair.
+        const Value& token_value = Operand(frame, inst, 0);
+        if (token_value.kind() != Value::Kind::kInt) {
           return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "a virtual call needs an object at an address");
+                      "a virtual call needs a class token");
         }
-        // The token is the first thing in the object.
-        uint64_t token = 0;
-        std::memcpy(&token, reinterpret_cast<const void*>(
-                                receiver.integer()),
-                    sizeof(token));
+        const uint64_t token = token_value.integer();
         const ir::Module* home = nullptr;
         const ir::ClassInfo* klass = FindClass(frame->module, token, &home);
-        if (klass == nullptr || inst.field >= klass->methods.size()) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "a virtual call found no body for its slot");
+        uint32_t callee = 0xFFFFFFFFu;
+        if (klass != nullptr) {
+          for (const ir::ClassInfo::Method& method : klass->methods) {
+            if (method.selector == inst.payload.integer) {
+              callee = method.function;
+              break;
+            }
+          }
         }
-        const uint32_t callee = klass->methods[inst.field];
+        if (callee == 0xFFFFFFFFu) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "a virtual call found no body for its method");
+        }
         if (callee >= home->functions.size()) {
           return Trap(outcome, TrapKind::kNoBody, At(function, id),
                       "a virtual call names a function the module does not "
                       "have");
         }
         std::vector<Value> arguments;
-        for (ir::InstId operand : function.OperandsOf(inst)) {
+        const std::span<const ir::InstId> operands =
+            function.OperandsOf(inst);
+        for (size_t i = 1; i < operands.size(); ++i) {
+          const ir::InstId operand = operands[i];
           arguments.push_back(operand.index < frame->values.size()
                                   ? frame->values[operand.index]
                                   : Value());

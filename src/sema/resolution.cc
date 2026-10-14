@@ -173,6 +173,7 @@ std::span<const Member> FileResolution::MembersOf(TypeId type) const {
   TypeMembers built;
   built.type = type;
   built.is_value = declared->is_value;
+  built.is_trait = declared->is_trait;
   built.parameters = declared->parameters;
   built.members = declared->members;
   for (Member& member : built.members) {
@@ -215,6 +216,24 @@ EffectId FileResolution::FindEffect(Symbol name,
     return EffectId{static_cast<uint32_t>(builtin)};
   }
   return EffectId{};
+}
+
+std::span<const TypeId> FileResolution::TraitsOf(TypeId type) const {
+  for (const TypeRelations& entry : relations) {
+    if (entry.type == type) {
+      return entry.traits;
+    }
+  }
+  return {};
+}
+
+bool FileResolution::IsTrait(TypeId type) const {
+  for (const TypeMembers& table : type_members) {
+    if (table.type == type) {
+      return table.is_trait;
+    }
+  }
+  return false;
 }
 
 TypeId FileResolution::BaseOf(TypeId type) const {
@@ -1343,6 +1362,7 @@ void ResolveSignatures(TypeStore* types,
     // its members inline.
     table.is_value = entry.kind != ItemKind::kClass &&
                      entry.kind != ItemKind::kTrait;
+    table.is_trait = entry.kind == ItemKind::kTrait;
     // The declaration's own parameters, interned against it, so that a field
     // of `Holder<int>` can be worked out by substitution.
     const ItemId owner_id = ResolveItem(ast, index);

@@ -10,7 +10,7 @@ namespace {
 
 struct Entry {
   uint64_t token = 0;
-  uint32_t slot = 0;
+  uint64_t selector = 0;
   void* code = nullptr;
 };
 
@@ -26,20 +26,20 @@ std::vector<Entry>& Entries() {
 
 }  // namespace
 
-extern "C" void wolang_class_register(uint64_t token, uint32_t slot,
+extern "C" void wolang_class_register(uint64_t token, uint64_t selector,
                                       void* code) {
   for (Entry& entry : Entries()) {
-    if (entry.token == token && entry.slot == slot) {
+    if (entry.token == token && entry.selector == selector) {
       entry.code = code;
       return;
     }
   }
-  Entries().push_back(Entry{token, slot, code});
+  Entries().push_back(Entry{token, selector, code});
 }
 
-extern "C" void* wolang_class_lookup(uint64_t token, uint32_t slot) {
+extern "C" void* wolang_class_lookup(uint64_t token, uint64_t selector) {
   for (const Entry& entry : Entries()) {
-    if (entry.token == token && entry.slot == slot) {
+    if (entry.token == token && entry.selector == selector) {
       return entry.code;
     }
   }

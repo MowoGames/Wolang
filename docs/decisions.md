@@ -815,3 +815,28 @@ array rather than a hash map.
 
 A class gets the header only when something in its chain is virtual, so a
 `class` with no virtual methods costs exactly what it did before.
+
+**D86. A trait value is a pair: what it points at, and which class that
+is.** Two words, like a slice, and for the same reason -- neither half is
+a member anyone declared, and a call on it needs both. The method is named
+by the *trait's* declaration, so the body is found without the call site
+knowing anything about what implements it.
+
+A class hands over its handle, because that is already an address. A
+value type is **copied onto the heap**: a trait value is the one thing in
+this language that outlives the expression that made it -- a list of
+shapes is the point of having it -- and the reference tier's locals have
+no address that survives a call, so a borrow of a local could not work in
+every tier. Nothing frees the copy yet; that waits for destructors, and it
+is the next thing this needs.
+
+A method of a value type takes `self` as a value, and a trait call has
+only an address, so the table gets a one-line function that loads the
+value and calls the method. Every vtable over value types needs that
+thunk; a class needs none.
+
+The same `wolang_class_lookup` answers both this and a `virtual` call,
+because both ask the same question: this object, this method declaration,
+which body? That is what made the selector worth having instead of a slot
+number -- a class's own virtuals and every trait it implements share one
+table without agreeing about an ordering.

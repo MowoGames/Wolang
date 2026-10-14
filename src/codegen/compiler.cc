@@ -448,17 +448,17 @@ void CompiledModule::Impl::RegisterClasses() {
       continue;
     }
     for (const ir::ClassInfo& klass : file->module.classes) {
-      for (uint32_t slot = 0; slot < klass.methods.size(); ++slot) {
-        const uint32_t local = klass.methods[slot];
-        if (local >= file->global.size()) {
+      for (const ir::ClassInfo::Method& method : klass.methods) {
+        if (method.function >= file->global.size()) {
           continue;
         }
-        const Entry& entry = entries_[entries_[file->global[local]].link];
+        const Entry& entry =
+            entries_[entries_[file->global[method.function]].link];
         if (!entry.compiled) {
           continue;
         }
         runtime::wolang_class_register(
-            klass.token, slot,
+            klass.token, method.selector,
             const_cast<void*>(block_.AddressOf(entry.body)));
       }
     }

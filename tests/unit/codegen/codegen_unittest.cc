@@ -1436,6 +1436,54 @@ fun Both() -> int {
   WOLANG_EXPECT_EQ(f.Run("Both", {}), "1209");
 }
 
+WOLANG_TEST(CodegenTest, CallsThroughATraitValue) {
+  // Dynamic dispatch without inheritance: a trait value is a pair -- what
+  // it points at and which class that is -- and the call finds the body
+  // from the pair alone (D86). A class hands over its handle; a struct is
+  // copied onto the heap, because a trait value outlives the expression
+  // that made it.
+  //
+  // The two implementations have nothing in common, which is the point:
+  // one is a value type and the other a handle, and `Measure` was
+  // compiled knowing neither.
+  Fixture f(R"(
+trait Shape {
+  fun Area() -> int
+}
+
+struct Circle {
+  var r: int = 1
+}
+
+class Barrel {
+  var hp: int = 3
+}
+
+extend Circle as Shape {
+  fun Area() -> int {
+    return r * r * 3
+  }
+}
+
+extend Barrel as Shape {
+  fun Area() -> int {
+    return hp * 100
+  }
+}
+
+fun Measure(s: Shape) -> int {
+  return s.Area()
+}
+
+fun Both() -> int {
+  const c = Circle(2)
+  var b = Barrel(4)
+  return Measure(c) * 1000 + Measure(b)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Both", {}), "12400");
+}
+
 WOLANG_TEST(CodegenTest, BuildsAndComparesStrings) {
   // A string is a pointer and a length in every tier, and what is built
   // from one is built by the runtime both tiers call. Which is what makes

@@ -365,9 +365,11 @@ class Verifier {
       }
 
       case Opcode::kNew:
-        // The type is what the handle points at, and a handle is what it
-        // produces.
-        if (arity(0) && !types_.IsHandle(inst.type)) {
+        // A class, whose handle is what it produces -- or a pointer, which
+        // is what boxing a value looks like: a trait value over a struct
+        // needs the struct to be somewhere that outlives the frame (D86).
+        if (arity(0) && !types_.IsHandle(inst.type) &&
+            types_.KindOf(inst.type) != TypeKind::kPointer) {
           Fail(At(id) + " allocates something that is not a class");
         }
         break;

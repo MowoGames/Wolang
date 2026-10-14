@@ -1160,7 +1160,12 @@ class FunctionEmitter {
         const uint64_t allocator = reinterpret_cast<uint64_t>(
             runtime::LookupSymbol("wolang_object_alloc"));
         assembler_.MovImmediate(IWidth::k64, kArgumentRegisters[0],
-                                layouts_.ObjectOf(inst.type).size);
+                                layouts_.ObjectOf(
+                                    types_.KindOf(inst.type) ==
+                                            TypeKind::kPointer
+                                        ? types_.ElementOf(inst.type)
+                                        : inst.type)
+                                    .size);
         assembler_.MovImmediate(IWidth::k64, kCallScratch, allocator);
         assembler_.Blr(kCallScratch);
         const Label trap = TrapLabel(ir::TrapKind::kOutOfMemory, id,
@@ -1524,10 +1529,12 @@ class FunctionEmitter {
       return;
     }
 
-    // The token, then the lookup, before any argument register is written.
-    const Register receiver = UseInt(all[0], 0);
-    assembler_.Ldr(IWidth::k64, kArgumentRegisters[0], receiver, 0);
-    assembler_.MovImmediate(IWidth::k64, kArgumentRegisters[1], inst.field);
+    // The lookup first, before any argument register is written: operand
+    // zero is the token and the rest are the call's own arguments.
+    const Register token = UseInt(all[0], 0);
+    assembler_.Mov(IWidth::k64, kArgumentRegisters[0], token);
+    assembler_.MovImmediate(IWidth::k64, kArgumentRegisters[1],
+                            inst.payload.integer);
     assembler_.MovImmediate(
         IWidth::k64, kCallScratch,
         reinterpret_cast<uint64_t>(&runtime::wolang_class_lookup));
@@ -1540,7 +1547,8 @@ class FunctionEmitter {
     {
       const Label missing =
           TrapLabel(ir::TrapKind::kNoBody, id,
-                    "a virtual call found no compiled body for its slot");
+                    "a virtual call found no compiled body for this "
+                    "method");
       assembler_.CmpImm(IWidth::k64, kVirtualTarget, 0);
       assembler_.BCond(Condition::kEq, missing);
     }
@@ -1555,7 +1563,7 @@ class FunctionEmitter {
 
     uint32_t integers = 0;
     uint32_t floats = 0;
-    for (size_t index = 0; index < all.size(); ++index) {
+    for (size_t index = 1; index < all.size(); ++index) {
       const ir::InstId operand = all[index];
       const TypeId type = TypeOf(operand);
       switch (layouts_.ClassOf(type)) {

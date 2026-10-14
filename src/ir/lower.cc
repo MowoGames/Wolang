@@ -589,7 +589,8 @@ class Lowerer {
       info.type = type;
       info.token = ClassTokenOf(*types_, type);
       for (const VirtualSlot& slot : SlotsOf(type)) {
-        info.methods.push_back(slot.function);
+        info.methods.push_back(
+            ClassInfo::Method{slot.selector, slot.function});
       }
       index = static_cast<uint32_t>(module_->classes.size());
       module_->classes.push_back(std::move(info));
@@ -600,11 +601,15 @@ class Lowerer {
     return token;
   }
 
-  // One slot per virtual method visible on |type|, root first. An
-  // `override` takes the slot of what it overrides, matched by name, so
-  // one number means one method everywhere the class is visible.
+  // What |type| implements, and under which declaration.
+  //
+  // One entry per virtual method visible on the class, named by the
+  // declaration that introduced it -- so an `override` implements the
+  // base's selector and a module that only sees the base can still call
+  // it (D85).
   struct VirtualSlot {
     Symbol name;
+    uint64_t selector = 0;
     uint32_t function = 0xFFFFFFFFu;
   };
 
@@ -617,6 +622,24 @@ class Lowerer {
     std::reverse(chain.begin(), chain.end());
 
     std::vector<VirtualSlot> slots;
+
+    // What the traits this type implements asked for. The selector is the
+    // *trait's* declaration, so a call through a trait value finds the
+    // body without knowing what implements it (D86).
+    for (TypeId trait : resolution().TraitsOf(type)) {
+      for (const Member& wanted : resolution().MembersOf(trait)) {
+        if (wanted.kind != MemberKind::kMethod) {
+          continue;
+        }
+        const Member* body = FindAnyMember(type, wanted.name);
+        if (body == nullptr || body->kind != MemberKind::kMethod) {
+          continue;
+        }
+        slots.push_back(VirtualSlot{wanted.name, MemberSelector(wanted),
+                                    ThunkFor(type, *body)});
+      }
+    }
+
     for (TypeId current : chain) {
       for (const Member& member : resolution().MembersOf(current)) {
         if (member.kind != MemberKind::kMethod ||
@@ -627,28 +650,96 @@ class Lowerer {
         bool replaced = false;
         for (VirtualSlot& slot : slots) {
           if (slot.name == member.name) {
+            // The selector stays the base's: this is the body for it.
             slot.function = body;
             replaced = true;
             break;
           }
         }
         if (!replaced) {
-          slots.push_back(VirtualSlot{member.name, body});
+          slots.push_back(VirtualSlot{
+              member.name, MemberSelector(member), body});
         }
       }
     }
     return slots;
   }
 
-  // Which slot |name| occupies on |type|, or -1 when it is not virtual.
-  int SlotOf(TypeId type, Symbol name) {
-    const std::vector<VirtualSlot> slots = SlotsOf(type);
-    for (size_t i = 0; i < slots.size(); ++i) {
-      if (slots[i].name == name) {
-        return static_cast<int>(i);
+  // The declaration a call on |type| should name, or zero when the method
+  // is not virtual at all.
+  uint64_t SelectorOf(TypeId type, Symbol name) {
+    for (const VirtualSlot& slot : SlotsOf(type)) {
+      if (slot.name == name) {
+        return slot.selector;
       }
     }
-    return -1;
+    return 0;
+  }
+
+  // Which declaration a member is: the same packing an object's class
+  // token uses, so one scheme names both.
+  static uint64_t MemberSelector(const Member& member) {
+    return (static_cast<uint64_t>(member.file) << 32) | member.item;
+  }
+
+  // What a trait call can actually call.
+  //
+  // A method of a value type takes `self` as a value; a call through a
+  // trait has only an address, because it does not know what is there.
+  // So the table gets a one-line function that loads the value and calls
+  // the method -- the thunk every vtable over value types needs.
+  //
+  // A class needs none: its handle *is* the address.
+  uint32_t ThunkFor(TypeId owner, const Member& member) {
+    const uint32_t body = MethodIndex(owner, member);
+    if (types_->IsHandle(owner)) {
+      return body;
+    }
+
+    std::string mangled(interner_->Text(MethodName(owner, member.name)));
+    mangled.append("$thunk");
+    const Symbol name = interner_->Intern(mangled);
+    for (const auto& [existing, index] : specializations_) {
+      if (existing == name) {
+        return index;
+      }
+    }
+
+    const TypeId pointer =
+        types_->Pointer(Erase(owner), /*is_mutable=*/true);
+    std::vector<TypeId> params;
+    params.push_back(pointer);
+    for (TypeId param : types_->ArgumentsOf(member.type)) {
+      params.push_back(Erase(param));
+    }
+    const TypeId result = Erase(types_->ElementOf(member.type));
+
+    Function thunk;
+    thunk.name = name;
+    thunk.type = types_->Function(params, result);
+    const auto index = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(thunk));
+    specializations_.emplace_back(name, index);
+
+    // Written here rather than queued: it has no source to lower, and
+    // the builder is the same one every other function is built with.
+    Builder builder(module_, FunctionId{index});
+    const BlockId entry = builder.AddBlock("entry");
+    builder.SetCurrent(entry);
+    const InstId self = builder.AddParam(entry, pointer);
+    std::vector<InstId> arguments;
+    arguments.push_back(
+        builder.Add(Opcode::kLoad, Erase(owner), {self}));
+    for (TypeId param : types_->ArgumentsOf(member.type)) {
+      arguments.push_back(builder.AddParam(entry, Erase(param)));
+    }
+    const InstId call = builder.Call(body, result, std::move(arguments));
+    if (result.is_valid() && types_->KindOf(result) != TypeKind::kVoid) {
+      builder.Return(call);
+    } else {
+      builder.ReturnVoid();
+    }
+    return index;
   }
 
   // The function implementing |member| of |owner|, declaring it if this
@@ -1361,12 +1452,41 @@ class Lowerer {
         types_->KindOf(Erase(from)) == TypeKind::kArray) {
       return SliceOf(value, from, to, source);
     }
+    const TypeId source_type = Erase(from);
+
+    // A value where a trait is wanted: the pair that says what it is and
+    // which class that is (D86). A class hands over its handle; a value
+    // type has to be somewhere first, so it is put in a slot and the
+    // address of that is what travels -- which is safe for the reason a
+    // `str` is: a trait value cannot be stored in a field, so it cannot
+    // outlive the frame it points into.
+    if (source_type.is_valid() && source_type != target &&
+        resolution().IsTrait(target) && !resolution().IsTrait(source_type)) {
+      InstId address = value;
+      if (!types_->IsHandle(source_type)) {
+        // Copied onto the heap rather than pointed at where it is. A
+        // trait value is the one thing in this language that outlives the
+        // expression it was made in -- a list of shapes is the point of
+        // having it -- and the reference tier's locals have no addresses
+        // that survive a call, so a borrow could not work in every tier.
+        //
+        // Nothing frees it yet. That waits for destructors, which is the
+        // next thing this needs.
+        const TypeId boxed =
+            types_->Pointer(source_type, /*is_mutable=*/true);
+        const InstId object = builder_->Add(Opcode::kNew, boxed);
+        builder_->Add(Opcode::kStore, TypeId{}, {object, value});
+        address = object;
+      }
+      const InstId token = ClassToken(source_type);
+      return builder_->Add(Opcode::kMakeStruct, target, {address, token});
+    }
+
     // A derived handle where its base is wanted. Nothing happens at run
     // time -- a base's fields are the first fields of what derives from it
     // (D84), so the address is the same address -- but the IR says so,
     // because every type in it is exact and a verifier that guessed at
     // subtyping would be guessing at layout too.
-    const TypeId source_type = Erase(from);
     if (source_type.is_valid() && source_type != target &&
         types_->IsHandle(source_type) && types_->IsHandle(target) &&
         resolution().Satisfies(source_type, target)) {
@@ -3178,6 +3298,31 @@ class Lowerer {
       return InstId{};
     }
 
+    // A call on a trait value: the pair says what to call it on and which
+    // class that is, and the method's own declaration says which method
+    // (D86). Nothing about the implementing type is known here, which is
+    // the point.
+    if (resolution().IsTrait(owner)) {
+      const InstId pointer =
+          builder_->Add(Opcode::kExtract, types_->u64(), {receiver});
+      module_->functions[current_function_].Get(pointer).field = 0;
+      const InstId token =
+          builder_->Add(Opcode::kExtract, types_->u64(), {receiver});
+      module_->functions[current_function_].Get(token).field = 1;
+
+      std::vector<InstId> operands;
+      operands.push_back(token);
+      operands.push_back(pointer);
+      for (InstId argument : *arguments) {
+        operands.push_back(argument);
+      }
+      const InstId call =
+          builder_->Add(Opcode::kVirtualCall, type, operands);
+      module_->functions[current_function_].Get(call).payload.integer =
+          MemberSelector(*member);
+      return call;
+    }
+
     uint32_t index =
         IndexOfSource(member->file, member->item, member->slot);
     if (index == 0xFFFFFFFFu && types_->KindOf(owner) == TypeKind::kInstance) {
@@ -3220,16 +3365,25 @@ class Lowerer {
     // the object carries says which body is in it. Which is the whole
     // difference between `virtual` and not.
     if (member->is_virtual || member->is_override) {
-      const int slot = SlotOf(owner, name);
-      if (slot >= 0) {
-        const InstId call = builder_->Add(Opcode::kVirtualCall, type,
-                                          with_receiver);
-        module_->functions[current_function_].Get(call).field =
-            static_cast<uint32_t>(slot);
-        // The signature to call through, which every tier needs in order
-        // to pass the arguments: taken from the statically known body.
-        module_->functions[current_function_].Get(call).payload.callee =
-            index;
+      const uint64_t selector = SelectorOf(owner, name);
+      if (selector != 0) {
+        // The token is the first word of the object, read here rather
+        // than inside the call so that every tier sees one shape: the
+        // token, the receiver, then the arguments.
+        const InstId address = builder_->FieldAddress(
+            types_->Pointer(types_->u64(), /*is_mutable=*/false), receiver,
+            0);
+        const InstId token =
+            builder_->Add(Opcode::kLoad, types_->u64(), {address});
+        std::vector<InstId> operands;
+        operands.push_back(token);
+        for (InstId operand : with_receiver) {
+          operands.push_back(operand);
+        }
+        const InstId call =
+            builder_->Add(Opcode::kVirtualCall, type, operands);
+        module_->functions[current_function_].Get(call).payload.integer =
+            selector;
         return call;
       }
     }

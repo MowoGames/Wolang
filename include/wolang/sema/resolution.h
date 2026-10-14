@@ -90,13 +90,17 @@ struct TypeMembers {
   // so one of them being the type itself would have no size. A class holds a
   // reference, so it may contain itself.
   bool is_value = false;
+  // A trait: a type nothing is an instance of directly. A value of one is
+  // a pair -- what it points at and which class that is -- so that a call
+  // on it can find the body (D86).
+  bool is_trait = false;
   // The declaration's own type parameters, in order. Needed to work out what
   // a field of `Holder<int>` is: zip these with the instance's arguments.
   std::vector<TypeId> parameters;
 
   friend bool operator==(const TypeMembers& lhs, const TypeMembers& rhs) {
     return lhs.type == rhs.type && lhs.members == rhs.members &&
-           lhs.is_value == rhs.is_value &&
+           lhs.is_value == rhs.is_value && lhs.is_trait == rhs.is_trait &&
            lhs.parameters == rhs.parameters;
   }
 };
@@ -177,6 +181,13 @@ struct FileResolution {
   // True when |type| stores its members inline. False for a class, a type
   // from a file this one cannot see, or anything that is not a named type.
   bool IsValueType(TypeId type) const;
+
+  // True when |type| is a `trait`.
+  bool IsTrait(TypeId type) const;
+
+  // The traits |type| implements, from every `extend T as Trait` the
+  // merge saw.
+  std::span<const TypeId> TraitsOf(TypeId type) const;
 
   // The members of |type|, or an empty span when none are known -- which is
   // the case for a type declared in a file this one cannot see.

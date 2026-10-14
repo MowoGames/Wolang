@@ -259,19 +259,27 @@ struct Function {
 // created in one module keeps working when it is passed to another --
 // because the token travels with the object rather than with the module.
 //
-// Slots are numbered from the root of the chain: the root's virtual
-// methods in declaration order, then each derived class's new ones. An
-// `override` reuses the slot of what it overrides, which is what makes
-// one number mean one method everywhere the class is visible.
+// Which method is being called is named by the *declaration* it was
+// written as -- a trait's `fun Area()`, or the `virtual fun Describe()` of
+// whichever class first declared it -- rather than by a slot number. An
+// override implements the selector of what it overrides, so one number
+// means one method in every module that can see the declaration, and
+// nothing has to agree about an ordering.
 struct ClassInfo {
   TypeId type;
-  // Which declaration this is: the file it was written in and its index in
-  // that file. Packed into one number, it *is* the token an object
-  // carries -- globally unique without anything having to hand out ids,
-  // and computable by every tier from the type alone.
+  // Which declaration this class is: the file it was written in and its
+  // index in that file, packed. It *is* the token an object carries --
+  // globally unique without anything handing out ids, and computable by
+  // every tier from the type alone.
   uint64_t token = 0;
-  // The function implementing each slot, as an index into |functions|.
-  std::vector<uint32_t> methods;
+
+  struct Method {
+    // The declaration being implemented, packed the same way.
+    uint64_t selector = 0;
+    // What implements it, as an index into |functions|.
+    uint32_t function = 0;
+  };
+  std::vector<Method> methods;
 };
 
 // The number an object of |type| carries: its declaration, packed. Every

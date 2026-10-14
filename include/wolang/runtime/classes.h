@@ -11,10 +11,11 @@ namespace runtime {
 // Where a virtual call finds its body, for the tier that runs real code.
 //
 // An object carries a token saying which class it is -- its declaration,
-// packed (see `ir::ClassTokenOf`). The reference tier can turn that into a
-// function by looking through the modules it holds; compiled code cannot,
-// so the compiler registers the addresses it produced here and the call
-// asks for one.
+// packed (see `ir::ClassTokenOf`) -- and a call names the method by its
+// declaration too. The reference tier can turn that pair into a function
+// by looking through the modules it holds; compiled code cannot, so the
+// compiler registers the addresses it produced here and the call asks for
+// one.
 //
 // Registered rather than baked into the code because a class may be
 // created in one module and dispatched in another, and because the two
@@ -25,12 +26,12 @@ namespace runtime {
 // one array and not a hash map.
 extern "C" {
 
-// Says that slot |slot| of the class |token| is at |code|.
-void wolang_class_register(uint64_t token, uint32_t slot, void* code);
+// Says that the class |token| implements the method |selector| at |code|.
+void wolang_class_register(uint64_t token, uint64_t selector, void* code);
 
-// The code address for a slot, or null when nothing registered one --
-// which is a program whose class was only ever interpreted.
-void* wolang_class_lookup(uint64_t token, uint32_t slot);
+// The code address implementing a method, or null when nothing registered
+// one -- which is a program whose class was only ever interpreted.
+void* wolang_class_lookup(uint64_t token, uint64_t selector);
 
 // Forgets everything. Called when a compiled module is thrown away, so
 // that a second compilation in the same process does not see the first
