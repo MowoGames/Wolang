@@ -70,8 +70,19 @@ constexpr Register kIndirectResult = Register::kX8;
 // What a call goes through, and what the trap stub loads the host function
 // into. Both are the architecture's scratch registers for exactly this.
 constexpr Register kCallScratch = Register::kX16;
+// Where an offset too large for an instruction's immediate is folded. The
+// architecture's other scratch register, and kept out of the allocator's
+// pool and the emitter's own scratch list so that folding an address can
+// never disturb a value in flight.
+constexpr Register kAddressScratch = Register::kX17;
 
-constexpr uint32_t kMaxFrameBytes = 4000;
+// How big a frame this tier will lay out. The limit is not an instruction
+// range any more -- an offset too large for one is folded into a register
+// -- but a frame is still the stack, and something has to say how much of
+// it one function may take. Four kilobytes is a request buffer, so the
+// limit has to be well past that or a server's whole request path goes to
+// the interpreter.
+constexpr uint32_t kMaxFrameBytes = 64 * 1024;
 
 // Where a value of one of these lives.
 enum class Holding : uint8_t {
@@ -409,8 +420,24 @@ class FunctionEmitter {
   // The address of |id|'s frame area, in |scratch|.
   Register UseArea(ir::InstId id, unsigned scratch) {
     const Register target = Scratch(scratch);
-    assembler_.AddImm(IWidth::k64, target, Register::kSp, Info(id).area);
+    AreaAddress(target, Info(id).area);
     return target;
+  }
+
+  // The address of a frame area in |target|. A frame can be larger than an
+  // `add` immediate reaches, so the offset may have to go through a
+  // register of its own.
+  void AreaAddress(Register target, uint32_t area) {
+    if (area < 4096) {
+      assembler_.AddImm(IWidth::k64, target, Register::kSp, area);
+      return;
+    }
+    // The stack pointer first, then the offset: an `add` whose source is
+    // the stack pointer can only be the immediate form here, so the
+    // register form never sees it.
+    assembler_.AddImm(IWidth::k64, target, Register::kSp, 0);
+    assembler_.MovImmediate(IWidth::k64, kAddressScratch, area);
+    assembler_.Add(IWidth::k64, target, target, kAddressScratch);
   }
 
   static constexpr uint64_t kNotConstant = ~uint64_t{0};
@@ -450,6 +477,42 @@ class FunctionEmitter {
       return type;
     }
     return types_.ElementOf(type);
+  }
+
+  // A base and an offset that the instruction can actually encode.
+  //
+  // A scaled load reaches 4095 times its own width, so a byte access
+  // reaches 4095 and an eight-byte one reaches 32760. A frame may be
+  // bigger than that -- a request buffer is four kilobytes on its own --
+  // so anything out of range is folded into a scratch register first.
+  // Without this the tier declined such a function, and a server's whole
+  // request path went to the interpreter.
+  struct Reached {
+    Register base;
+    int32_t offset = 0;
+  };
+
+  Reached Reach(Register base, int32_t offset, unsigned size_log2) {
+    const int32_t scale = 1 << size_log2;
+    const bool fits = offset >= 0 && offset % scale == 0 &&
+                      (offset / scale) < 4096;
+    if (fits || (offset >= -256 && offset <= 255)) {
+      return Reached{base, offset};
+    }
+    const Register folded = kAddressScratch;
+    if (offset >= 0 && offset < 4096) {
+      assembler_.AddImm(IWidth::k64, folded, base,
+                        static_cast<uint32_t>(offset));
+      return Reached{folded, 0};
+    }
+    // The base first, through the immediate form, because the register
+    // form of `add` cannot name the stack pointer.
+    assembler_.AddImm(IWidth::k64, folded, base, 0);
+    const Register amount = Scratch(5);
+    assembler_.MovImmediate(IWidth::k64, amount,
+                            static_cast<uint64_t>(offset));
+    assembler_.Add(IWidth::k64, folded, folded, amount);
+    return Reached{folded, 0};
   }
 
   // The address a load or a store works through. A slot's address is a
@@ -645,8 +708,20 @@ class FunctionEmitter {
                            -16);
     assembler_.AddImm(IWidth::k64, Register::kX29, Register::kSp, 0);
     if (frame_bytes_ > 0) {
-      assembler_.SubImm(IWidth::k64, Register::kSp, Register::kSp,
-                        frame_bytes_);
+      // Two immediates rather than a register: `sub sp, sp, x9` needs the
+      // extended-register form, and the shifted-register form this
+      // assembler emits would write to `xzr` instead -- leaving the stack
+      // pointer where it was, which is a fault the moment anything is
+      // written to the frame.
+      const uint32_t high = frame_bytes_ / 4096;
+      const uint32_t low = frame_bytes_ % 4096;
+      if (high != 0) {
+        assembler_.SubImmShifted(IWidth::k64, Register::kSp, Register::kSp,
+                                 high);
+      }
+      if (low != 0) {
+        assembler_.SubImm(IWidth::k64, Register::kSp, Register::kSp, low);
+      }
     }
     for (uint32_t i = 0; i < saved_integers_; ++i) {
       assembler_.Str(IWidth::k64, kIntegerPool[i], Register::kSp,
@@ -658,11 +733,16 @@ class FunctionEmitter {
                               saved_base_ + (saved_integers_ + i) * 8));
     }
 
-    // A slot starts as zeroes. The interpreter traps on reading one before
-    // anything was written, which needs a shadow bit per slot to reproduce;
-    // zeroing at least makes the difference deterministic, and `E0123` --
-    // the use of an uninitialized variable -- is what removes it.
+    // A slot starts as zeroes, in every tier: the two have to agree about
+    // one that was only partly written, and `E0123` is what catches
+    // reading one that was never written at all.
     for (const std::pair<uint32_t, uint32_t>& slot : slots_) {
+      // A big one is zeroed by a loop. A request buffer is four kilobytes,
+      // and five hundred stores in a prologue is not a prologue.
+      if (slot.second >= 128) {
+        ZeroByLoop(slot.first, slot.second);
+        continue;
+      }
       for (uint32_t written = 0; written < slot.second; written += 8) {
         if (slot.second - written >= 8) {
           assembler_.Str(IWidth::k64, Register::kZr, Register::kSp,
@@ -710,8 +790,7 @@ class FunctionEmitter {
         // frame's area, so that every aggregate value is addressed the
         // same way wherever it came from.
         const Register area = Scratch(1);
-        assembler_.AddImm(IWidth::k64, area, Register::kSp,
-                          Info(param).area);
+        AreaAddress(area, Info(param).area);
         CopyBytes(area, 0, source, 0, layouts_.SizeOf(type), 2);
         continue;
       }
@@ -721,6 +800,31 @@ class FunctionEmitter {
       } else {
         FinishInt(param, source);
       }
+    }
+  }
+
+  // Zeroes |size| bytes at |offset| with a loop: eight bytes a turn, and
+  // the tail by hand. Emitted in the prologue, where nothing is live yet.
+  void ZeroByLoop(uint32_t offset, uint32_t size) {
+    const Register cursor = Scratch(0);
+    const Register limit = Scratch(1);
+    AreaAddress(cursor, offset);
+    const uint32_t whole = size - size % 8;
+    assembler_.MovImmediate(IWidth::k64, limit, whole);
+    assembler_.Add(IWidth::k64, limit, limit, cursor);
+    const Label again = assembler_.CreateLabel();
+    const Label done = assembler_.CreateLabel();
+    assembler_.Bind(again);
+    assembler_.Cmp(IWidth::k64, cursor, limit);
+    assembler_.BCond(Condition::kHs, done);
+    assembler_.Str(IWidth::k64, Register::kZr, cursor, 0);
+    assembler_.AddImm(IWidth::k64, cursor, cursor, 8);
+    assembler_.B(again);
+    assembler_.Bind(done);
+    for (uint32_t written = whole; written < size; ++written) {
+      const Reached at = Reach(Register::kSp,
+                               static_cast<int32_t>(offset + written), 0);
+      assembler_.Strb(Register::kZr, at.base, at.offset);
     }
   }
 
@@ -755,63 +859,92 @@ class FunctionEmitter {
     uint32_t done = 0;
     while (done < size) {
       const uint32_t left = size - done;
-      if (left >= 8) {
-        assembler_.Ldr(IWidth::k64, temp, source, source_offset + done);
-        assembler_.Str(IWidth::k64, temp, destination,
-                       destination_offset + done);
-        done += 8;
-      } else if (left >= 4) {
-        assembler_.Ldr(IWidth::k32, temp, source, source_offset + done);
-        assembler_.Str(IWidth::k32, temp, destination,
-                       destination_offset + done);
-        done += 4;
-      } else if (left >= 2) {
-        assembler_.Ldrh(temp, source, source_offset + done);
-        assembler_.Strh(temp, destination, destination_offset + done);
-        done += 2;
-      } else {
-        assembler_.Ldrb(temp, source, source_offset + done);
-        assembler_.Strb(temp, destination, destination_offset + done);
-        done += 1;
+      const unsigned step_log2 = left >= 8 ? 3u
+                                           : left >= 4 ? 2u
+                                                       : left >= 2 ? 1u : 0u;
+      const int32_t from = source_offset + static_cast<int32_t>(done);
+      const int32_t to = destination_offset + static_cast<int32_t>(done);
+      const Reached in = Reach(source, from, step_log2);
+      switch (step_log2) {
+        case 3:
+          assembler_.Ldr(IWidth::k64, temp, in.base, in.offset);
+          break;
+        case 2:
+          assembler_.Ldr(IWidth::k32, temp, in.base, in.offset);
+          break;
+        case 1:
+          assembler_.Ldrh(temp, in.base, in.offset);
+          break;
+        default:
+          assembler_.Ldrb(temp, in.base, in.offset);
+          break;
       }
+      const Reached out = Reach(destination, to, step_log2);
+      switch (step_log2) {
+        case 3:
+          assembler_.Str(IWidth::k64, temp, out.base, out.offset);
+          break;
+        case 2:
+          assembler_.Str(IWidth::k32, temp, out.base, out.offset);
+          break;
+        case 1:
+          assembler_.Strh(temp, out.base, out.offset);
+          break;
+        default:
+          assembler_.Strb(temp, out.base, out.offset);
+          break;
+      }
+      done += 1u << step_log2;
     }
   }
 
   // ---------------------------------------------------- scalar memory ops --
 
+  // Which power of two an access of |bits| is wide.
+  static unsigned WidthLog2(uint32_t bits) {
+    if (bits <= 8) {
+      return 0;
+    }
+    if (bits <= 16) {
+      return 1;
+    }
+    return bits <= 32 ? 2u : 3u;
+  }
+
   void LoadScalar(TypeId type,
                   ir::InstId destination,
                   Register base,
                   int32_t offset) {
+    const uint32_t bits = layouts_.BitsOf(type);
+    const Reached at = Reach(base, offset, WidthLog2(bits));
     if (layouts_.ClassOf(type) == abi::ValueClass::kFloat) {
       const FloatRegister reg = DestFloat(destination, 0);
-      assembler_.LdrFloat(FloatWidthOf(type), reg, base, offset);
+      assembler_.LdrFloat(FloatWidthOf(type), reg, at.base, at.offset);
       FinishFloat(destination, reg);
       return;
     }
     const Register reg = DestInt(destination, 0);
-    const uint32_t bits = layouts_.BitsOf(type);
     const bool is_signed = layouts_.IsSignedInteger(type);
     switch (bits) {
       case 8:
         if (is_signed) {
-          assembler_.Ldrsb(IWidth::k32, reg, base, offset);
+          assembler_.Ldrsb(IWidth::k32, reg, at.base, at.offset);
         } else {
-          assembler_.Ldrb(reg, base, offset);
+          assembler_.Ldrb(reg, at.base, at.offset);
         }
         break;
       case 16:
         if (is_signed) {
-          assembler_.Ldrsh(IWidth::k32, reg, base, offset);
+          assembler_.Ldrsh(IWidth::k32, reg, at.base, at.offset);
         } else {
-          assembler_.Ldrh(reg, base, offset);
+          assembler_.Ldrh(reg, at.base, at.offset);
         }
         break;
       case 64:
-        assembler_.Ldr(IWidth::k64, reg, base, offset);
+        assembler_.Ldr(IWidth::k64, reg, at.base, at.offset);
         break;
       default:
-        assembler_.Ldr(IWidth::k32, reg, base, offset);
+        assembler_.Ldr(IWidth::k32, reg, at.base, at.offset);
         break;
     }
     FinishInt(destination, reg);
@@ -821,18 +954,20 @@ class FunctionEmitter {
                    Register value,
                    Register base,
                    int32_t offset) {
-    switch (layouts_.BitsOf(type)) {
+    const uint32_t bits = layouts_.BitsOf(type);
+    const Reached at = Reach(base, offset, WidthLog2(bits));
+    switch (bits) {
       case 8:
-        assembler_.Strb(value, base, offset);
+        assembler_.Strb(value, at.base, at.offset);
         break;
       case 16:
-        assembler_.Strh(value, base, offset);
+        assembler_.Strh(value, at.base, at.offset);
         break;
       case 64:
-        assembler_.Str(IWidth::k64, value, base, offset);
+        assembler_.Str(IWidth::k64, value, at.base, at.offset);
         break;
       default:
-        assembler_.Str(IWidth::k32, value, base, offset);
+        assembler_.Str(IWidth::k32, value, at.base, at.offset);
         break;
     }
   }
@@ -1234,8 +1369,7 @@ class FunctionEmitter {
                           layouts_.ClassOf(returned) ==
                               abi::ValueClass::kAggregate;
     if (indirect) {
-      assembler_.AddImm(IWidth::k64, kIndirectResult, Register::kSp,
-                        Info(id).area);
+      AreaAddress(kIndirectResult, Info(id).area);
     }
 
     uint32_t integers = 0;
@@ -1252,8 +1386,7 @@ class FunctionEmitter {
           break;
         }
         case abi::ValueClass::kAggregate:
-          assembler_.AddImm(IWidth::k64, kArgumentRegisters[integers++],
-                            Register::kSp, Info(operand).area);
+          AreaAddress(kArgumentRegisters[integers++], Info(operand).area);
           break;
         case abi::ValueClass::kVoid:
           break;

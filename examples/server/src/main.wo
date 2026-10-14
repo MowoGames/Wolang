@@ -1,0 +1,28 @@
+// A server, in Wolang.
+//
+// Three handlers and a router, over `wolang-http` -- which is itself
+// Wolang over the eight socket calls in `http.socket`. Nothing in this
+// file is unsafe: the responsibility stops at the floor, which is what
+// `uses unsafe` on a declaration means.
+
+need std.io.{Print}
+need http.{NotFound, Ok, Request, Response, Run}
+
+fun Route(request: Request) -> Response {
+  if request.path == "/" {
+    return Ok("wolang\n")
+  }
+  if request.path == "/health" {
+    return Ok("ok\n")
+  }
+  if request.path == "/echo" {
+    return Ok(
+        "you said {request.method} {request.path}, {request.length} bytes\n")
+  }
+  return NotFound()
+}
+
+fun main() uses io, unsafe {
+  Print("server: http://127.0.0.1:8080")
+  const _code = Run(8080, Route)
+}

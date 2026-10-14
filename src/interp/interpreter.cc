@@ -89,18 +89,6 @@ class Interpreter {
              Outcome* outcome,
              Frame* caller = nullptr) {
     if (function.is_foreign()) {
-      // The runtime's own functions are called directly rather than
-      // through the C boundary: building a string must not depend on
-      // there being a thunk, because the reference tier has to work on a
-      // machine with no backend at all.
-      const Intrinsic builtin =
-          LookupIntrinsic(interner_.Text(function.foreign_symbol));
-      if (builtin != Intrinsic::kNone) {
-        Value result = CallIntrinsic(builtin, arguments, output_);
-        if (!result.is_undefined()) {
-          return result;
-        }
-      }
       return CallForeign(function, arguments, outcome, caller);
     }
     if (function.is_declaration()) {
@@ -254,11 +242,6 @@ class Interpreter {
                     Outcome* outcome,
                     Frame* caller) {
     const std::string symbol(interner_.Text(function.foreign_symbol));
-    if (foreign_ == nullptr) {
-      return Trap(outcome, TrapKind::kNoBody, "@" + symbol,
-                  "is `extern`, and this run cannot call out of the "
-                  "language");
-    }
 
     // What was copied out to real memory for the call, so that it can be
     // copied back when the call is over: a `read` into a buffer is the
@@ -316,19 +299,46 @@ class Interpreter {
     const TypeId returned = types_.ElementOf(function.type);
     const Type& described = types_.Get(returned);
     const bool returns_float = described.kind == TypeKind::kFloat;
+
+    // The runtime's own functions are called directly rather than through
+    // the C boundary: building a string must not depend on there being a
+    // thunk, because the reference tier has to work on a machine with no
+    // backend at all. They get the same arguments the boundary would --
+    // addresses, with a buffer already copied out to real memory.
+    const Intrinsic builtin = LookupIntrinsic(symbol);
+    if (builtin != Intrinsic::kNone) {
+      std::vector<Value> direct;
+      direct.reserve(raw.size());
+      for (size_t i = 0; i < raw.size(); ++i) {
+        if (i < arguments.size() &&
+            arguments[i].kind() != Value::Kind::kSlot &&
+            arguments[i].kind() != Value::Kind::kPlace) {
+          direct.push_back(arguments[i]);
+          continue;
+        }
+        direct.push_back(Value::Int(raw[i].bits, IntWidth::k64,
+                                    /*is_signed=*/false));
+      }
+      Value result = CallIntrinsic(builtin, direct, output_);
+      if (!result.is_undefined()) {
+        CopyBack(&bounced);
+        return result;
+      }
+    }
+
+    if (foreign_ == nullptr) {
+      // The runtime's own functions were handled above; anything else
+      // needs a way out of the language, and this run has none.
+      return Trap(outcome, TrapKind::kNoBody, "@" + symbol,
+                  "is `extern`, and this run cannot call out of the "
+                  "language");
+    }
     uint64_t result = 0;
     if (!foreign_->Call(symbol, raw, returns_float, &result)) {
       return Trap(outcome, TrapKind::kNoBody, "@" + symbol,
                   "is `extern`, and its symbol was not found");
     }
-    // Whatever the call wrote into a bounced buffer belongs back where it
-    // came from.
-    for (Bounced& entry : bounced) {
-      Value* at = entry.slot == nullptr ? nullptr : entry.slot;
-      if (at != nullptr) {
-        *at = Decode(types_, layouts_, entry.bytes.data(), entry.type);
-      }
-    }
+    CopyBack(&bounced);
 
     switch (described.kind) {
       case TypeKind::kVoid:
@@ -494,7 +504,7 @@ class Interpreter {
       case ir::Opcode::kLoad: {
         const Value& slot = Operand(frame, inst, 0);
         if (slot.kind() == Value::Kind::kPlace) {
-          const Value* at = Walk(frame, slot);
+          const Value* at = Read(frame, slot);
           if (at == nullptr || at->is_undefined()) {
             return Trap(outcome, TrapKind::kUndefinedValue,
                         At(function, id),
@@ -776,6 +786,18 @@ class Interpreter {
     std::vector<uint8_t> bytes;
   };
 
+  // Whatever a call wrote into a bounced buffer belongs back where it
+  // came from.
+  void CopyBack(std::vector<Bounced>* bounced) {
+    for (Bounced& entry : *bounced) {
+      if (entry.slot != nullptr) {
+        *entry.slot =
+            Decode(types_, layouts_, entry.bytes.data(), entry.type);
+      }
+    }
+    bounced->clear();
+  }
+
   // Copies what a place holds into real memory, and remembers where to
   // put it back. False when the place cannot be found or its type is not
   // known: without a layout there is nothing to copy.
@@ -886,6 +908,29 @@ class Interpreter {
   // Where a place points, inside the frame it belongs to. Null when the
   // path does not fit the value -- which the verifier makes impossible and
   // a trap reports rather than a crash.
+  // Reading a place: no copies. The elements of an aggregate are shared
+  // so that copying a value is cheap, and writing into one needs a copy of
+  // its own -- but *reading* must not take that copy, or walking a buffer
+  // costs a copy of the buffer per element, which is a hang rather than a
+  // slowdown on anything the size of a request.
+  static const Value* Read(Frame* frame, const Value& place) {
+    const auto* home = static_cast<const Frame*>(
+        place.frame() != nullptr ? place.frame() : frame);
+    const uint32_t slot = static_cast<uint32_t>(place.integer());
+    if (slot >= home->slots.size()) {
+      return nullptr;
+    }
+    const Value* at = &home->slots[slot];
+    for (const PlaceStep& step : place.path()) {
+      if (at->kind() != Value::Kind::kAggregate ||
+          step.index >= at->elements().size()) {
+        return nullptr;
+      }
+      at = &at->elements()[step.index];
+    }
+    return at;
+  }
+
   static Value* Walk(Frame* frame, const Value& place) {
     // A place names the frame it is in: a slice of a local array is a
     // place, and it is read by the callee it was passed to.

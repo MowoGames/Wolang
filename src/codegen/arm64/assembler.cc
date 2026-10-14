@@ -2,6 +2,8 @@
 
 #include "wolang/codegen/arm64/assembler.h"
 
+#include <cstdio>
+
 #include "wolang/base/check.h"
 
 namespace wolang {
@@ -189,10 +191,21 @@ uint32_t ShiftedRegister(uint32_t base,
 
 }  // namespace
 
+// In the shifted-register form of an add or a subtract, register 31 is the
+// *zero* register where the stack pointer would be: `add x9, sp, x10`
+// assembled this way reads zero instead of the stack, and
+// `sub sp, sp, x9` writes nowhere at all. Naming the stack pointer needs
+// the extended-register form, which this assembler does not emit -- so
+// asking for it here is a mistake, and saying so is how an afternoon is
+// not spent on a crash inside generated code. (In `orr`, which is how a
+// register move is made, 31 really is the zero register; that is why this
+// check is here and not in the shared helper.)
 void Assembler::Add(Width width, Register rd, Register rn, Register rm) {
+  WOLANG_CHECK(rd != Register::kSp && rn != Register::kSp);
   Emit(ShiftedRegister(0x0B000000u, width, rd, rn, rm));
 }
 void Assembler::Sub(Width width, Register rd, Register rn, Register rm) {
+  WOLANG_CHECK(rd != Register::kSp && rn != Register::kSp);
   Emit(ShiftedRegister(0x4B000000u, width, rd, rn, rm));
 }
 void Assembler::Adds(Width width, Register rd, Register rn, Register rm) {
@@ -216,6 +229,21 @@ void Assembler::SubImm(Width width,
   WOLANG_CHECK(value < 4096);
   Emit(0x51000000u | Sf(width) | (value << 10) | (Num(rn) << 5) | Num(rd));
 }
+void Assembler::SubImmShifted(Width width,
+                              Register rd,
+                              Register rn,
+                              uint32_t value) {
+  WOLANG_CHECK(value < 4096);
+  Emit(0x51400000u | Sf(width) | (value << 10) | (Num(rn) << 5) | Num(rd));
+}
+void Assembler::AddImmShifted(Width width,
+                              Register rd,
+                              Register rn,
+                              uint32_t value) {
+  WOLANG_CHECK(value < 4096);
+  Emit(0x11400000u | Sf(width) | (value << 10) | (Num(rn) << 5) | Num(rd));
+}
+
 void Assembler::SubsImm(Width width,
                         Register rd,
                         Register rn,

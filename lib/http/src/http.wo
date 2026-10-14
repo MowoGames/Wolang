@@ -1,0 +1,152 @@
+// HTTP/1.1, enough of it to serve an API.
+//
+// The parser works on the bytes the socket gave us and makes no copies: a
+// method and a path are views into the request buffer, which is the whole
+// reason they cost nothing. What a handler returns is a string, and a
+// string that was built comes from the arena the connection opened -- so a
+// request pays for its allocations once and gives them all back.
+
+need std.io.{Print}
+need std.mem.{BytesFromRaw}
+
+// `socket.wo` is the same module -- a package's files link into one -- so
+// the floor it declares needs no import here.
+
+/// A request, as views into the buffer it was read from.
+offer struct Request {
+  var method: text
+  var path: text
+  var length: int
+}
+
+/// What a handler answers with.
+offer struct Response {
+  var status: int
+  var body: text
+}
+
+offer fun Ok(body: text) -> Response => Response(200, body)
+offer fun NotFound() -> Response => Response(404, "not found")
+
+/// Finds the end of the request line's first word, starting at `from`.
+fun SpanTo(bytes: []u8, from: int, stop: u8) -> int {
+  var at = from
+  while at < bytes.len {
+    if bytes[at] == stop {
+      return at
+    }
+    at = at + 1
+  }
+  return bytes.len
+}
+
+/// Splits `GET /path HTTP/1.1` into its first two words.
+///
+/// Returns a request whose `length` is zero when the line is not one: a
+/// parser that cannot say "this is not a request" is not a parser.
+offer fun ParseRequest(bytes: []u8, received: int) -> Request uses unsafe {
+  if received <= 0 {
+    return Request("", "", 0)
+  }
+  const line = SpanTo(bytes, 0, 13)
+  const method_end = SpanTo(bytes, 0, 32)
+  if method_end >= line {
+    return Request("", "", 0)
+  }
+  const path_end = SpanTo(bytes, method_end + 1, 32)
+  const method = Slice(bytes, 0, method_end) as text
+  const path = Slice(bytes, method_end + 1, path_end) as text
+  return Request(method, path, received)
+}
+
+/// A view of `bytes` from `from` up to `to`. The one place that needs to
+/// make a view out of part of a buffer, so the one place that is unsafe.
+fun Slice(bytes: []u8, from: int, to: int) -> []u8 uses unsafe {
+  if from >= to || from < 0 || to > bytes.len {
+    return BytesFromRaw(bytes.data, 0)
+  }
+  return BytesFromRaw(&bytes[from], to - from)
+}
+
+/// Serves a connection until the client stops asking.
+///
+/// One request per turn, each inside an arena of its own: everything a
+/// request allocates -- its response, the strings it interpolated -- comes
+/// from there and goes back at the end of the turn. Keep-alive is what
+/// makes that worth doing, because the connection outlives the arena.
+offer fun Serve(connection: s32, handle: fun(Request) -> Response) -> int uses io, unsafe {
+  var buffer: [4096]u8
+  var served = 0
+  loop {
+    const received = Read(connection, &buffer[0], 4096)
+    if received <= 0 {
+      // The client closed, or asked for something that did not arrive.
+      const _closed = Close(connection)
+      return served
+    }
+    var ok = false
+    arena {
+      ok = Answer(connection, buffer, received, handle)
+    }
+    if !ok {
+      const _closed = Close(connection)
+      return served
+    }
+    served = served + 1
+  }
+}
+
+/// One request: parse it, hand it to the handler, write the answer.
+fun Answer(
+    connection: s32,
+    buffer: []u8,
+    received: int,
+    handle: fun(Request) -> Response) -> bool uses io, unsafe {
+  const request = ParseRequest(buffer, received)
+  if request.length == 0 {
+    const _bad = WriteAll(
+        connection,
+        "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+    return false
+  }
+  const answer = handle(request)
+  // Header and body in one string, and so in one write. Two writes of a
+  // small response wait for each other on a socket -- the second one is
+  // held back until the first is acknowledged -- which costs more than
+  // building the string does.
+  const message = "HTTP/1.1 {answer.status} {Reason(answer.status)}\r\nContent-Length: {answer.body.len}\r\nContent-Type: text/plain\r\nConnection: keep-alive\r\n\r\n{answer.body}"
+  return WriteAll(connection, message)
+}
+
+fun Reason(status: int) -> text {
+  if status == 200 {
+    return "OK"
+  }
+  if status == 404 {
+    return "Not Found"
+  }
+  if status == 400 {
+    return "Bad Request"
+  }
+  return "Error"
+}
+
+/// Listens on `port` and serves one connection after another, each inside
+/// an arena of its own.
+offer fun Run(port: int, handle: fun(Request) -> Response) -> s32 uses io, unsafe {
+  const listener = Listen(port, 128)
+  if listener < 0 {
+    Print("http: cannot listen")
+    return listener
+  }
+  Print("http: listening")
+  loop {
+    const connection = Accept(listener)
+    if connection < 0 {
+      continue
+    }
+    // The connection is served until the client stops asking; each
+    // request inside it gets an arena of its own.
+    const _served = Serve(connection, handle)
+  }
+}

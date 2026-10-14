@@ -1269,6 +1269,63 @@ fun WritesThroughAPointer() -> int uses unsafe {
   WOLANG_EXPECT_EQ(f.Run("WritesThroughAPointer", {}), "42");
 }
 
+WOLANG_TEST(CodegenTest, FillsABufferThroughASlice) {
+  // A buffer handed to a callee that writes it. Three things had to be
+  // true at once for this to work, and each was wrong on its own:
+  //
+  //   * a slot read before anything wrote it holds zeroes, so slot
+  //     promotion must leave it alone rather than call it undefined --
+  //     which turned the buffer into an undefined value before the callee
+  //     ever saw it;
+  //   * writing an element through a slice changes the storage the slice
+  //     views, so it is not an assignment to the binding;
+  //   * a frame bigger than an instruction's immediate reach is still a
+  //     frame, and a request buffer is four kilobytes on its own.
+  Fixture f(R"(
+fun Fill(bytes: []u8, value: u8) -> int {
+  var written = 0
+  while written < bytes.len {
+    bytes[written] = value
+    written = written + 1
+  }
+  return written
+}
+
+fun SumOf(bytes: []u8) -> int {
+  var total = 0
+  for b in bytes {
+    total = total + b as int
+  }
+  return total
+}
+
+fun Small() -> int {
+  var buffer: [4]u8
+  const written = Fill(buffer, 3)
+  return written * 100 + SumOf(buffer)
+}
+
+fun Large() -> int {
+  var buffer: [4096]u8
+  buffer[4095] = 9
+  var total = 0
+  for i in 0..4096 {
+    total = total + buffer[i] as int
+  }
+  return total
+}
+
+fun ReadBeforeWriting() -> int {
+  var buffer: [8]u8
+  // Nothing wrote it, so every byte is zero -- in every tier.
+  return SumOf(buffer) + buffer.len
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Small", {}), "412");
+  WOLANG_EXPECT_EQ(f.Run("Large", {}), "9");
+  WOLANG_EXPECT_EQ(f.Run("ReadBeforeWriting", {}), "8");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

@@ -1,0 +1,17 @@
+// The one unsafe way to make a view of memory.
+//
+// Everything else in the language produces a slice from something whose
+// extent it already knows: an array converts to one, and a slice of a
+// slice keeps the bound. This is for the other case -- bytes that came
+// from outside, from a `read` or from an allocator -- where how many there
+// are is something the caller knows and the compiler cannot.
+//
+// It has no body on purpose. A slice is a pointer and a length, so there
+// is nothing to do but say so, and the compiler does that at the call: no
+// call is emitted and nothing is copied.
+
+/// A view of `length` bytes at `data`.
+///
+/// `unsafe` because nothing here can check that there are that many, or
+/// that they stay there. The caller promises both.
+offer fun BytesFromRaw(data: *u8, length: int) -> []u8 uses unsafe

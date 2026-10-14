@@ -135,6 +135,36 @@ class Lowerer {
         module_->functions.push_back(std::move(function));
         break;
       }
+      case ItemKind::kBinding: {
+        // A module-level `const` becomes a function that returns it, and a
+        // use becomes a call the inliner removes. Two reasons for that
+        // shape: the value may be in another file, where only a function
+        // can be reached; and a constant is a compile-time value, so
+        // there is nothing to initialize at startup.
+        //
+        // Reading one used to lower to an undefined value, which is to say
+        // a program that named a constant computed with nothing.
+        if (owner.is_valid() || !item.name.is_valid() ||
+            !item.init.is_valid()) {
+          break;
+        }
+        const Binding* binding = resolution_.Find(item.name);
+        Function function;
+        function.name = ConstantName(item.name);
+        function.type = types_->Function(
+            {}, Erase(binding != nullptr ? binding->type : TypeId{}));
+        if (binding != nullptr) {
+          function.source_file = binding->file;
+          function.source_item = binding->item;
+        }
+        Remember(function.source_file, function.source_item,
+                 module_->functions.size());
+        constants_.emplace_back(item.name, module_->functions.size());
+        indices_.emplace_back(id, module_->functions.size());
+        module_->functions.push_back(std::move(function));
+        break;
+      }
+
       case ItemKind::kClass:
       case ItemKind::kStruct:
       case ItemKind::kComponent:
@@ -443,6 +473,11 @@ class Lowerer {
         LowerFunction(item, IndexOf(id));
         self_type_ = TypeId{};
         break;
+      case ItemKind::kBinding:
+        if (!owner.is_valid()) {
+          LowerConstant(item, IndexOf(id));
+        }
+        break;
       case ItemKind::kClass:
       case ItemKind::kStruct:
       case ItemKind::kComponent:
@@ -455,6 +490,44 @@ class Lowerer {
       default:
         break;
     }
+  }
+
+  // `K$name`, so that a constant and a function of the same name cannot
+  // collide in the module.
+  Symbol ConstantName(Symbol name) {
+    std::string text = "K$";
+    text.append(interner_->Text(name));
+    return interner_->Intern(text);
+  }
+
+  // The body of a module-level constant: return what it was written as.
+  void LowerConstant(const Item& item, uint32_t index) {
+    if (index >= module_->functions.size() || !item.init.is_valid()) {
+      return;
+    }
+    Builder builder(module_, FunctionId{index});
+    builder.types = types_;
+    current_function_ = index;
+    builder_ = &builder;
+    locals_.clear();
+    loops_.clear();
+    deferred_.clear();
+    arenas_.clear();
+    scope_depth_ = 0;
+    self_type_ = TypeId{};
+    self_ = InstId{};
+    in_task_ = false;
+
+    const BlockId entry = builder.AddBlock("entry");
+    builder.SetCurrent(entry);
+    return_type_ = types_->ElementOf(module_->functions[index].type);
+    const InstId value = Value(item.init);
+    if (types_->KindOf(return_type_) == TypeKind::kVoid) {
+      builder.ReturnVoid();
+    } else {
+      builder.Return(Coerce(value, TypeOf(item.init), return_type_));
+    }
+    builder_ = nullptr;
   }
 
   void LowerFunction(const Item& item, uint32_t index) {
@@ -544,15 +617,19 @@ class Lowerer {
   // An array where a slice is wanted: the pair that views it. The spec
   // says an array converts to a slice, and this is what that costs --
   // the address of the first element and the length the type knows.
-  InstId SliceOf(InstId array, TypeId from, TypeId to) {
+  InstId SliceOf(InstId array, TypeId from, TypeId to, ExprId source) {
     const TypeId element = Erase(types_->ElementOf(to));
-    // The elements have to be somewhere for a view to point at them. A
-    // slot already is somewhere; anything else is a value, and a copy of
-    // it in this frame is what the view then looks at.
-    InstId storage = array;
-    const Function& function = module_->functions[current_function_];
-    if (!function.Contains(array) ||
-        function.Get(array).opcode != Opcode::kAlloca) {
+    // The elements have to be somewhere for a view to point at them, and
+    // *which* somewhere is the whole question: a view of a copy is a view
+    // nobody else can see, so a callee that fills it fills nothing.
+    //
+    // So: the array's own storage when the expression has any -- a local,
+    // a field, an element -- and a copy only for a value that lives
+    // nowhere, like the result of a call.
+    InstId storage;
+    if (const Place place = PlaceOf(source); place.addressable()) {
+      storage = AddressOfPlace(place);
+    } else {
       storage = builder_->Add(Opcode::kAlloca, Erase(from));
       builder_->Add(Opcode::kStore, TypeId{}, {storage, array});
     }
@@ -569,14 +646,20 @@ class Lowerer {
     return builder_->Add(Opcode::kMakeStruct, Erase(to), {first, raw});
   }
 
-  InstId Coerce(InstId value, TypeId from, TypeId to) {
+  // |source| is the expression the value came from, when there is one.
+  // Only the array-to-slice conversion needs it, and it needs it badly:
+  // a view has to point at the array itself and not at a copy.
+  InstId Coerce(InstId value,
+                TypeId from,
+                TypeId to,
+                ExprId source = ExprId{}) {
     if (!value.is_valid() || !to.is_valid()) {
       return value;
     }
     const TypeId target = Erase(to);
     if (types_->KindOf(target) == TypeKind::kSlice &&
         types_->KindOf(Erase(from)) == TypeKind::kArray) {
-      return SliceOf(value, from, to);
+      return SliceOf(value, from, to, source);
     }
     if (types_->KindOf(target) != TypeKind::kOptional) {
       return value;
@@ -710,7 +793,8 @@ class Lowerer {
         // answer.
         const InstId value =
             stmt.expr.is_valid()
-                ? Coerce(Value(stmt.expr), TypeOf(stmt.expr), return_type_)
+                ? Coerce(Value(stmt.expr), TypeOf(stmt.expr), return_type_,
+                         stmt.expr)
                 : InstId{};
         RunDeferred(0);
         // Every arena this return is leaving goes with it.
@@ -1151,6 +1235,11 @@ class Lowerer {
           function.is_valid()) {
         return function;
       }
+      // A module-level constant, read through the function it became.
+      if (const InstId constant = ConstantValue(expr.name, type);
+          constant.is_valid()) {
+        return constant;
+      }
       return builder_->Undef(type);
     }
     if (local->slot.is_valid()) {
@@ -1209,6 +1298,20 @@ class Lowerer {
                  ? equal
                  : builder_->Add(Opcode::kLogicalNot, types_->bool_type(),
                                  {equal});
+    }
+    // `p + n` on a raw pointer: the address of the nth element from there.
+    // An element address rather than an add, because only the tiers know
+    // how big an element is -- and the length a bounds check would use is
+    // exactly what a raw pointer does not have, so it is unbounded.
+    if ((opcode == Opcode::kAdd || opcode == Opcode::kSub) &&
+        types_->KindOf(Erase(TypeOf(expr.lhs))) == TypeKind::kPointer) {
+      const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
+      InstId offset = right;
+      if (opcode == Opcode::kSub) {
+        offset = builder_->Add(Opcode::kNeg, TypeOf(expr.rhs), {right});
+      }
+      return builder_->IndexAddress(Erase(type), left, offset,
+                                    builder_->ConstInt(word, ~uint64_t{0}));
     }
     const bool compare = opcode >= Opcode::kEq && opcode <= Opcode::kGe;
     return builder_->Add(opcode, compare ? types_->bool_type() : type,
@@ -1357,6 +1460,11 @@ class Lowerer {
   }
 
   InstId LowerField(ExprId id, const Expr& expr, TypeId type) {
+    // The two halves of a view, which are its two fields.
+    if (interner_->Text(expr.name) == "data" &&
+        IsView(TypeOf(expr.lhs))) {
+      return builder_->Extract(Erase(type), Value(expr.lhs), 0);
+    }
     if (interner_->Text(expr.name) == "len") {
       const TypeId owner = Erase(TypeOf(expr.lhs));
       if (types_->KindOf(owner) == TypeKind::kArray || IsView(owner)) {
@@ -1675,8 +1783,18 @@ class Lowerer {
     for (size_t i = 0; i < written.size(); ++i) {
       const InstId value = Value(written[i]);
       arguments.push_back(i < params.size()
-                              ? Coerce(value, TypeOf(written[i]), params[i])
+                              ? Coerce(value, TypeOf(written[i]), params[i],
+                                       written[i])
                               : value);
+    }
+
+    // `BytesFromRaw(data, length)` is not a call: a slice *is* a pointer
+    // and a length, so saying so is the whole of it. The one unsafe way
+    // to make a view of memory that came from outside the language --
+    // `std.mem` declares it with no body and this is where it is kept.
+    if (const InstId view = LowerBytesFromRaw(expr, type, arguments);
+        view.is_valid()) {
+      return view;
     }
 
     // `receiver.Method(args)`, and `Method(args)` inside a method -- which
@@ -1769,6 +1887,63 @@ class Lowerer {
     const InstId value = builder_->Add(Opcode::kFuncAddress, type);
     module_->functions[current_function_].Get(value).payload.callee = callee;
     return value;
+  }
+
+  // A module-level constant: a call to the function it became, which the
+  // inliner turns back into the value.
+  InstId ConstantValue(Symbol name, TypeId type) {
+    for (const auto& [constant, index] : constants_) {
+      if (constant == name) {
+        return Coerce(builder_->Call(static_cast<uint32_t>(index),
+                                     module_->functions[index].type.is_valid()
+                                         ? types_->ElementOf(
+                                               module_->functions[index].type)
+                                         : type,
+                                     {}),
+                      types_->ElementOf(module_->functions[index].type),
+                      type);
+      }
+    }
+    const Binding* binding = resolution_.Find(name);
+    if (binding == nullptr || binding->kind != BindingKind::kValue ||
+        !binding->type.is_valid()) {
+      return InstId{};
+    }
+    // Declared in another file: the same call, resolved by the linker.
+    const TypeId signature = types_->Function({}, Erase(binding->type));
+    const uint32_t callee =
+        DeclareExternal(ConstantName(name), signature, binding->file,
+                        binding->item);
+    return Coerce(builder_->Call(callee, Erase(binding->type), {}),
+                  Erase(binding->type), type);
+  }
+
+  // The view `std.mem.BytesFromRaw` stands for, when that is what is
+  // being called: a declaration with no body, of that name, taking an
+  // address and a count and giving back a slice.
+  InstId LowerBytesFromRaw(const Expr& expr,
+                           TypeId type,
+                           const std::vector<InstId>& arguments) {
+    if (arguments.size() != 2 || !ast_.Contains(expr.lhs) ||
+        ast_.Get(expr.lhs).kind != ExprKind::kPath) {
+      return InstId{};
+    }
+    if (interner_->Text(ast_.Get(expr.lhs).name) != "BytesFromRaw") {
+      return InstId{};
+    }
+    const TypeId slice = Erase(type);
+    if (types_->KindOf(slice) != TypeKind::kSlice) {
+      return InstId{};
+    }
+    const Binding* binding = resolution_.Find(ast_.Get(expr.lhs).name);
+    if (binding != nullptr && binding->has_body) {
+      // Somebody wrote their own function of that name, and theirs wins.
+      return InstId{};
+    }
+    const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
+    return builder_->Add(
+        Opcode::kMakeStruct, slice,
+        {arguments[0], Widen(arguments[1], word)});
   }
 
   // A call to a method, when that is what this is. |arguments| holds the
@@ -2380,6 +2555,8 @@ class Lowerer {
   // Generic declarations by name: a recipe, not a function.
   std::vector<std::pair<Symbol, ItemId>> generics_;
   std::vector<std::pair<Symbol, uint32_t>> specializations_;
+  // Module-level constants, by the name they were written with.
+  std::vector<std::pair<Symbol, size_t>> constants_;
   std::vector<Pending> pending_;
   std::vector<Deferred> deferred_;
   // Whether the function being lowered is a `task`.

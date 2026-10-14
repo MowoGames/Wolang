@@ -1,0 +1,107 @@
+// The platform floor for a server: the handful of calls a socket needs.
+//
+// Everything above this file is Wolang. These are the only lines in
+// `wolang-http` that leave the language, which is the same arrangement
+// `std.io` has with `write` -- and the reason both declare `uses unsafe`
+// and take responsibility for it rather than passing it upwards.
+
+extern "C" fun socket(domain: s32, kind: s32, protocol: s32) -> s32
+extern "C" fun bind(fd: s32, address: *u8, length: u32) -> s32
+extern "C" fun listen(fd: s32, backlog: s32) -> s32
+extern "C" fun accept(fd: s32, address: *mut u8, length: *mut u32) -> s32
+extern "C" fun read(fd: s32, buffer: *mut u8, count: u64) -> s64
+extern "C" fun write(fd: s32, buffer: *u8, count: u64) -> s64
+extern "C" fun close(fd: s32) -> s32
+extern "C" fun setsockopt(
+    fd: s32,
+    level: s32,
+    name: s32,
+    value: *u8,
+    length: u32) -> s32
+
+/// The address family and socket kind a TCP listener needs.
+offer const kFamilyInet: s32 = 2
+offer const kStream: s32 = 1
+
+/// Opens a listening socket on `port`, or a negative number on failure.
+///
+/// The address is built byte by byte because a `sockaddr_in` is a C struct
+/// and this language has no way to say that yet: sixteen bytes, of which
+/// the first four are the ones that matter. The layout is the BSD one that
+/// macOS uses -- a length byte, then the family -- and a port in network
+/// order, which is to say most significant byte first.
+offer fun Listen(port: int, backlog: int) -> s32 uses unsafe {
+  const fd = socket(kFamilyInet, kStream, 0)
+  if fd < 0 {
+    return fd
+  }
+
+  // Let the port be reused, or a restarted server waits for the kernel to
+  // let go of the last one.
+  var yes: [4]u8
+  yes[0] = 1
+  const _option = setsockopt(fd, 65535, 4, &yes[0], 4)
+
+  var address: [16]u8
+  address[0] = 16
+  address[1] = kFamilyInet as u8
+  address[2] = (port / 256 % 256) as u8
+  address[3] = (port % 256) as u8
+  if bind(fd, &address[0], 16) < 0 {
+    const _closed = close(fd)
+    return -1
+  }
+  if listen(fd, backlog as s32) < 0 {
+    const _closed = close(fd)
+    return -2
+  }
+  return fd
+}
+
+/// Waits for the next connection. Blocking: readiness notification is what
+/// wave 13 brings, and until then a connection is served before the next
+/// one is taken.
+offer fun Accept(listener: s32) -> s32 uses unsafe {
+  var address: [16]u8
+  var length: [1]u32
+  length[0] = 16
+  const fd = accept(listener, &address[0], &length[0])
+  if fd >= 0 {
+    // Send what we write when we write it. Without this a small response
+    // waits for the previous one to be acknowledged, which on a local
+    // connection is most of the time a request takes.
+    var yes: [4]u8
+    yes[0] = 1
+    const _option = setsockopt(fd, 6, 1, &yes[0], 4)
+  }
+  return fd
+}
+
+offer fun Close(fd: s32) -> s32 uses unsafe {
+  return close(fd)
+}
+
+/// Reads into `buffer` and returns how many bytes arrived, or a negative
+/// number. The buffer is the caller's, which is what makes this allocate
+/// nothing per request.
+offer fun Read(fd: s32, buffer: *mut u8, capacity: int) -> int uses unsafe {
+  return read(fd, buffer, capacity as u64) as int
+}
+
+/// Writes all of `message`, which may take more than one call: a socket is
+/// allowed to accept part of what it was given.
+offer fun WriteAll(fd: s32, message: text) -> bool uses unsafe {
+  var sent = 0
+  const total = message.len
+  while sent < total {
+    // From where the last call stopped: a socket is allowed to take part
+    // of what it was given, and starting over would send the beginning
+    // twice.
+    const written = write(fd, message.data + sent, (total - sent) as u64) as int
+    if written <= 0 {
+      return false
+    }
+    sent = sent + written
+  }
+  return true
+}

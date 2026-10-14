@@ -176,6 +176,28 @@ class Checker {
   }
 
   // Marks |name| moved when the use at |id| hands the value away.
+  // Walks |id| as something read rather than taken: the name is used, so
+  // `E0123` still applies, but nothing moves out of it.
+  Flow Borrowed(ExprId id) {
+    if (!ast_.Contains(id)) {
+      return Flow::kFalls;
+    }
+    const Expr& expr = ast_.Get(id);
+    if (expr.kind == ExprKind::kPath) {
+      Report(expr.name, expr.span);
+      return Flow::kFalls;
+    }
+    if (expr.kind == ExprKind::kField ||
+        expr.kind == ExprKind::kOptionalField) {
+      return Borrowed(expr.lhs);
+    }
+    if (expr.kind == ExprKind::kIndex) {
+      Expression(expr.rhs);
+      return Borrowed(expr.lhs);
+    }
+    return Expression(id);
+  }
+
   void MaybeMove(Symbol name, ExprId id) {
     Local* local = Find(name);
     if (local == nullptr || local->state != State::kLive) {
@@ -459,7 +481,10 @@ class Checker {
 
       case ExprKind::kField:
       case ExprKind::kOptionalField:
-        return Expression(expr.lhs);
+        // Reading a field borrows what it is in: `message.len` does not
+        // consume the string, and treating it as a move reported the next
+        // use of the name as a use after move.
+        return Borrowed(expr.lhs);
 
       case ExprKind::kBinary:
       case ExprKind::kRange:

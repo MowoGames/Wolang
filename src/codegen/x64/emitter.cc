@@ -83,7 +83,10 @@ constexpr Register kDivisorHigh = Register::kRdx;
 // function into.
 constexpr Register kCallScratch = Register::kR11;
 
-constexpr uint32_t kMaxFrameBytes = 4000;
+// A displacement is thirty-two bits on this machine, so the limit is only
+// about how much stack one function may take. Four kilobytes is a request
+// buffer; the limit has to be well past that.
+constexpr uint32_t kMaxFrameBytes = 64 * 1024;
 
 // Where a value of one of these lives.
 enum class Holding : uint8_t {

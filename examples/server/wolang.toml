@@ -1,0 +1,7 @@
+[package]
+name = "server"
+source = "src"
+
+[dependencies]
+std = { path = "../../lib/std" }
+http = { path = "../../lib/http" }

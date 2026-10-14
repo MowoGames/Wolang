@@ -111,6 +111,13 @@ class Assembler {
   void Subs(Width width, Register rd, Register rn, Register rm);
   void AddImm(Width width, Register rd, Register rn, uint32_t value);
   void SubImm(Width width, Register rd, Register rn, uint32_t value);
+  // The same, with the immediate shifted left by twelve: together the two
+  // forms reach any multiple of 4096 up to sixteen megabytes, which is how
+  // a frame bigger than an immediate is made without a register. A
+  // register would not do here anyway -- `sub sp, sp, x9` needs the
+  // extended-register form, and the shifted one means `xzr`.
+  void SubImmShifted(Width width, Register rd, Register rn, uint32_t value);
+  void AddImmShifted(Width width, Register rd, Register rn, uint32_t value);
   void SubsImm(Width width, Register rd, Register rn, uint32_t value);
 
   void Mul(Width width, Register rd, Register rn, Register rm);

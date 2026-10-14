@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include "wolang/base/check.h"
+
 namespace wolang {
 namespace ir {
 namespace {
@@ -691,9 +693,22 @@ bool PromoteOne(Function* function,
     }
   }
 
+  // A load the entry can reach with no store before it reads what the slot
+  // started as, which is zeroes -- in the interpreter and in the compiled
+  // tiers alike. There is nothing to promote such a slot to, so it stays a
+  // slot and the load stays a load.
+  //
+  // Substituting an undefined value here was right while "read before
+  // written" meant nothing in particular. It is wrong now, and what it did
+  // was turn a buffer that a callee fills into an undefined value before
+  // the callee ever saw it -- which is how a server came to answer
+  // nothing at all.
+  if (needs_in[function->entry().index]) {
+    return false;
+  }
+
   // A block that needs a value and cannot simply take its one
-  // predecessor's gets a parameter. The entry takes `undef` instead: a
-  // load before any store is exactly what an undefined value is.
+  // predecessor's gets a parameter.
   std::vector<bool> wants_param(count, false);
   for (BlockId block : order) {
     if (!needs_in[block.index] || block == function->entry()) {
@@ -745,7 +760,6 @@ bool PromoteOne(Function* function,
   // block it is the parameter, the one predecessor's last value, or an
   // `undef` for a load that precedes every store.
   std::vector<InstId> leaving(count, InstId{});
-  InstId undefined;
   for (BlockId block : order) {
     InstId current;
     if (parameter[block.index].is_valid()) {
@@ -773,21 +787,9 @@ bool PromoteOne(Function* function,
       if (inst.opcode != Opcode::kLoad) {
         continue;
       }
-      if (!current.is_valid()) {
-        if (!undefined.is_valid()) {
-          Inst undef;
-          undef.opcode = Opcode::kUndef;
-          undef.type = type;
-          undefined =
-              InstId{static_cast<uint32_t>(function->instructions.size())};
-          function->instructions.push_back(undef);
-          function->owners.push_back(function->entry());
-          Block& entry = function->Get(function->entry());
-          entry.instructions.insert(
-              entry.instructions.begin() + entry.param_count, undefined);
-        }
-        current = undefined;
-      }
+      // Every load is dominated by a store: the bail-out above is what
+      // makes that true, so there is always a value to use here.
+      WOLANG_CHECK(current.is_valid());
       ReplaceAllUses(function, id, current);
       dead.push_back(id);
     }
@@ -806,24 +808,10 @@ bool PromoteOne(Function* function,
     }
     for (BlockId pred : predecessors[block.index]) {
       const InstId terminator = function->TerminatorOf(pred);
-      InstId value = leaving[pred.index];
-      if (!value.is_valid()) {
-        // Nothing on this path ever wrote the slot.
-        value = undefined.is_valid() ? undefined : InstId{};
-        if (!value.is_valid()) {
-          Inst undef;
-          undef.opcode = Opcode::kUndef;
-          undef.type = type;
-          undefined =
-              InstId{static_cast<uint32_t>(function->instructions.size())};
-          function->instructions.push_back(undef);
-          function->owners.push_back(function->entry());
-          Block& entry = function->Get(function->entry());
-          entry.instructions.insert(
-              entry.instructions.begin() + entry.param_count, undefined);
-          value = undefined;
-        }
-      }
+      const InstId value = leaving[pred.index];
+      // Same reason: a path that never wrote the slot would have stopped
+      // this promotion before it started.
+      WOLANG_CHECK(value.is_valid());
       AppendOperand(function, terminator, value);
     }
   }

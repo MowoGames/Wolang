@@ -263,6 +263,7 @@ class Checker {
   TypeId CheckAssign(const Expr& expr);
   ExprId RootOfPlace(ExprId id) const;
   bool IsBytesAndText(TypeId from, TypeId to) const;
+  bool IsPointerArithmetic(TokenKind op, TypeId left, TypeId right);
   TypeId CheckCall(ExprId id, const Expr& expr);
   TypeId CheckIndex(const Expr& expr);
   TypeId CheckField(const Expr& expr);
@@ -418,6 +419,16 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
   if (types_->IsOptional(expected)) {
     return Accepts(types_->ElementOf(expected), found);
   }
+  // A pointer that may be written fits where one that may not is wanted.
+  // The other direction does not: that would hand out permission nobody
+  // gave.
+  if (types_->KindOf(expected) == TypeKind::kPointer &&
+      types_->KindOf(found) == TypeKind::kPointer &&
+      types_->ElementOf(expected) == types_->ElementOf(found)) {
+    return types_->Get(found).is_mutable &&
+           !types_->Get(expected).is_mutable;
+  }
+
   // A reference fits where a raw pointer is wanted. Both are an address;
   // the difference is what the language promises about it, and a raw
   // pointer promises nothing -- so `&buf[0]` is how a buffer is handed to
@@ -712,7 +723,10 @@ TypeId Checker::CheckBinary(const Expr& expr) {
   //   * `??`, whose right side matches what is *inside* the optional;
   //   * the boolean operators, which want `bool` on both sides.
   TypeId right_expectation = left;
-  if (types_->KindOf(left) == TypeKind::kQuantity) {
+  if (types_->KindOf(left) == TypeKind::kQuantity ||
+      types_->KindOf(left) == TypeKind::kPointer) {
+    // A pointer says nothing about what may be added to it: `p + n` takes
+    // a count, not another address.
     right_expectation = TypeId{};
   } else if (expr.op == TokenKind::kQuestionQuestion) {
     right_expectation = types_->IsOptional(left) ? types_->ElementOf(left)
@@ -825,6 +839,14 @@ TypeId Checker::CheckBinary(const Expr& expr) {
     case TokenKind::kPlus:
     case TokenKind::kMinus:
     case TokenKind::kPercent: {
+      // `p + n` on a raw pointer is the address of the nth element from
+      // there, which is how bytes are walked where there is no slice to
+      // walk instead.
+      if (IsPointerArithmetic(expr.op, left, right)) {
+        result_.direct_effects.Add(
+            types_->BuiltinEffectId(BuiltinEffect::kUnsafe));
+        return left;
+      }
       if (!types_->IsNumeric(left) || !types_->IsNumeric(right)) {
         if (!types_->IsError(left) && !types_->IsError(right)) {
           std::string message = "`";
@@ -862,6 +884,18 @@ TypeId Checker::CheckBinary(const Expr& expr) {
     default:
       return types_->IsLiteral(left) ? right : left;
   }
+}
+
+// `p + n` and `p - n` on a raw pointer: the address of the nth element
+// from there. Scaled by the element, the way C scales it, and `unsafe`
+// because nothing says how many elements are actually there.
+bool Checker::IsPointerArithmetic(TokenKind op, TypeId left, TypeId right) {
+  if (op != TokenKind::kPlus && op != TokenKind::kMinus) {
+    return false;
+  }
+  return types_->KindOf(left) == TypeKind::kPointer &&
+         (types_->IsNumeric(right) ||
+          types_->KindOf(right) == TypeKind::kIntLiteral);
 }
 
 // The expression an assignment's target is rooted in: the name, the `self`
@@ -922,7 +956,18 @@ TypeId Checker::CheckAssign(const Expr& expr) {
       // class changes the object, which is why `const h` does not freeze
       // it and why a method of one may write to `self` -- the receiver is
       // the address, not a copy.
-      const bool through_handle = types_->IsHandle(root_type);
+      // A handle is not what it points at, and neither is a view: writing
+      // an element of a slice changes the storage it views, not the
+      // binding that holds the view. So `const` on either freezes the
+      // handle and not the thing.
+      //
+      // Which elements may be written is a question this language does
+      // not ask yet -- there is no `[]mut T` -- and when it does, this is
+      // where the answer goes.
+      const bool through_handle =
+          types_->IsHandle(root_type) ||
+          types_->KindOf(root_type) == TypeKind::kSlice ||
+          types_->KindOf(root_type) == TypeKind::kPointer;
       if (is_self && !through_handle &&
           (through_field || root.kind == ExprKind::kPath)) {
         Report(kSelfNotMutable,
@@ -1265,6 +1310,13 @@ TypeId Checker::CheckField(const Expr& expr) {
     if (field == "length") {
       return types_->Int(IntWidth::k64, /*is_signed=*/false);
     }
+  }
+
+  // The elements a view points at. The low-level half of a slice, for the
+  // code that hands a buffer to something outside the language.
+  if (interner_->Text(expr.name) == "data" &&
+      types_->KindOf(named) == TypeKind::kSlice) {
+    return types_->Pointer(types_->ElementOf(named), /*is_mutable=*/true);
   }
 
   // How many elements there are. An `int` rather than an unsigned word,
