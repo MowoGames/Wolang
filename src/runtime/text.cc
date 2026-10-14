@@ -2,6 +2,8 @@
 
 #include "wolang/runtime/text.h"
 
+#include "wolang/runtime/arena.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -13,7 +15,10 @@ namespace {
 // One allocation for the pair and its bytes together, so that a string is
 // one thing to free when there is something to free it.
 Text* Allocate(const char* bytes, size_t length) {
-  auto* text = static_cast<Text*>(std::malloc(sizeof(Text) + length + 1));
+  // From the innermost `arena` block when there is one: a string built
+  // inside a block goes when the block does.
+  auto* text = static_cast<Text*>(
+      wolang_arena_alloc(sizeof(Text) + length + 1));
   if (text == nullptr) {
     return nullptr;
   }

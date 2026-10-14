@@ -713,6 +713,8 @@ class Lowerer {
                 ? Coerce(Value(stmt.expr), TypeOf(stmt.expr), return_type_)
                 : InstId{};
         RunDeferred(0);
+        // Every arena this return is leaving goes with it.
+        ReleaseArenas(0);
         if (stmt.expr.is_valid()) {
           builder_->Return(value);
         } else {
@@ -730,6 +732,7 @@ class Lowerer {
           return;
         }
         RunDeferred(target->scope);
+        ReleaseArenas(target->scope);
         if (stmt.kind == StmtKind::kContinue) {
           builder_->Jump(target->continue_to);
           return;
@@ -951,9 +954,11 @@ class Lowerer {
         return InstId{};
 
       case ExprKind::kUnsafe:
-      case ExprKind::kRegion:
-        // Neither changes the value; both are checked, not lowered.
+        // `unsafe` does not change the value; it is checked, not lowered.
         return Value(expr.lhs);
+
+      case ExprKind::kRegion:
+        return LowerArena(expr, type);
 
       default:
         // Anything the lowering does not cover yet still has to produce a
@@ -2270,6 +2275,41 @@ class Lowerer {
     builder_->SetCurrent(exit);
   }
 
+  // `arena { ... }`: everything allocated inside comes from one arena, and
+  // the whole arena goes at the end. Which is the point of the block --
+  // a handler allocates as it likes and pays once.
+  //
+  // The release has to happen on every way out, including a `return` from
+  // inside the block, so it is a deferred statement in all but name. What
+  // keeps a value from outliving the arena is `E0121`, which the checker
+  // already enforces.
+  InstId LowerArena(const Expr& expr, TypeId type) {
+    RuntimeCall("wolang_arena_push", types_->void_type(), {});
+    arenas_.push_back(scope_depth_ + 1);
+    ++scope_depth_;
+    const InstId value = Value(expr.lhs);
+    --scope_depth_;
+    arenas_.pop_back();
+    if (!builder_->Terminated()) {
+      RuntimeCall("wolang_arena_pop", types_->void_type(), {});
+    }
+    (void)type;
+    return value;
+  }
+
+  // The arenas an early exit from |scope| leaves behind, innermost first.
+  void ReleaseArenas(size_t scope) {
+    for (size_t i = arenas_.size(); i > 0; --i) {
+      if (arenas_[i - 1] < scope) {
+        break;
+      }
+      if (builder_->Terminated()) {
+        return;
+      }
+      RuntimeCall("wolang_arena_pop", types_->void_type(), {});
+    }
+  }
+
   void LowerLoop(const Expr& expr) {
     const BlockId header = builder_->AddBlock("loop.header");
     const BlockId body = builder_->AddBlock("loop.body");
@@ -2344,6 +2384,9 @@ class Lowerer {
   // block that declares nothing does not change it.
   size_t scope_depth_ = 0;
   TypeStore::Substitution substitution_;
+  // The scope depth of each open `arena` block, so that an exit from
+  // inside one releases it.
+  std::vector<size_t> arenas_;
 
   Builder* builder_ = nullptr;
   uint32_t current_function_ = 0;

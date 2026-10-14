@@ -2,6 +2,7 @@
 
 #include "wolang/runtime/builtins.h"
 
+#include "wolang/runtime/arena.h"
 #include "wolang/runtime/text.h"
 
 #include "wolang/runtime/scheduler.h"
@@ -60,6 +61,14 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_text_concat)},
       {"wolang_text_equal",
        reinterpret_cast<void*>(&wolang_text_equal)},
+      {"wolang_arena_push",
+       reinterpret_cast<void*>(&wolang_arena_push)},
+      {"wolang_arena_pop", reinterpret_cast<void*>(&wolang_arena_pop)},
+      {"wolang_arena_alloc",
+       reinterpret_cast<void*>(&wolang_arena_alloc)},
+      {"wolang_arena_depth",
+       reinterpret_cast<void*>(&wolang_arena_depth)},
+      {"wolang_arena_used", reinterpret_cast<void*>(&wolang_arena_used)},
       {"wolang_sched_pending",
        reinterpret_cast<void*>(&wolang_sched_pending)},
   };

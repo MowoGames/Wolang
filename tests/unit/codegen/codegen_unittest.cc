@@ -1150,6 +1150,81 @@ fun Nested(n: int) -> Pair {
   WOLANG_EXPECT_EQ(f.Run("Nested", {Fixture::Int(3)}), "(8, 6)");
 }
 
+WOLANG_TEST(CodegenTest, AnArenaPaysForItsAllocationsOnce) {
+  // Everything allocated inside the block comes from one arena and the
+  // whole arena goes at the end -- including when the way out is a
+  // `return` or a `break`, which is why this is a deferred release in all
+  // but name. What keeps a value from outliving it is `E0121`.
+  Fixture f(R"(
+extern "C" fun wolang_arena_depth() -> u64
+
+class Node {
+  var value: int = 0
+}
+
+fun Depth() -> int uses unsafe => wolang_arena_depth() as int
+
+fun Nested() -> int uses unsafe {
+  arena {
+    arena {
+      return Depth()
+    }
+  }
+}
+
+fun ReleasedAfterTheBlock() -> int uses unsafe {
+  arena {
+    const _node = Node(1)
+  }
+  return Depth()
+}
+
+fun ReleasedOnReturn() -> int uses unsafe {
+  arena {
+    const _node = Node(1)
+    return 7
+  }
+}
+
+fun ReleasedOnBreak() -> int uses unsafe {
+  var total = 0
+  var i = 0
+  while i < 3 {
+    arena {
+      const node = Node(i)
+      total = total + node.value
+      if i == 1 {
+        break
+      }
+    }
+    i = i + 1
+  }
+  // The arena of the turn that broke out was released too.
+  return total * 10 + Depth()
+}
+
+fun AllocatesManyInOne(n: int) -> int uses unsafe {
+  var total = 0
+  arena {
+    var i = 0
+    while i < n {
+      const node = Node(i)
+      total = total + node.value
+      i = i + 1
+    }
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Depth", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Nested", {}), "2");
+  WOLANG_EXPECT_EQ(f.Run("ReleasedAfterTheBlock", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("ReleasedOnReturn", {}), "7");
+  WOLANG_EXPECT_EQ(f.Run("ReleasedOnBreak", {}), "10");
+  WOLANG_EXPECT_EQ(f.Run("AllocatesManyInOne", {Fixture::Int(100)}),
+                   "4950");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang
