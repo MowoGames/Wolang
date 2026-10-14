@@ -31,6 +31,10 @@ ValueClass LayoutStore::ClassOf(TypeId type) const {
     case TypeKind::kOptional:
     case TypeKind::kTuple:
     case TypeKind::kArray:
+    // A borrowed string is a pointer and a length, which is an aggregate
+    // like any other. An owned `String` is not here: owning it means
+    // allocating it, and that needs a heap this tier does not have.
+    case TypeKind::kStr:
       return ValueClass::kAggregate;
     case TypeKind::kNamed:
       // A class is a handle to a heap object and there is no heap yet; a
@@ -77,6 +81,9 @@ bool LayoutStore::IsSupported(TypeId type) const {
       break;
   }
   const TypeKind kind = types_.KindOf(type);
+  if (kind == TypeKind::kStr) {
+    return true;
+  }
   if (kind == TypeKind::kArray || kind == TypeKind::kOptional) {
     const TypeId element = types_.ElementOf(type);
     return element.is_valid() && IsSupported(element);
@@ -107,6 +114,8 @@ uint32_t LayoutStore::FieldCount(TypeId type) const {
       return static_cast<uint32_t>(types_.Get(type).length);
     case TypeKind::kTuple:
       return static_cast<uint32_t>(types_.ArgumentsOf(type).size());
+    case TypeKind::kStr:
+      return 2;
     case TypeKind::kNamed: {
       if (IsTagOnly(type)) {
         return 1;
@@ -192,6 +201,17 @@ Layout LayoutStore::Compute(TypeId type) {
 
     case ValueClass::kAggregate:
       break;
+  }
+
+  // A borrowed string: the bytes and how many there are. Written out here
+  // rather than through the field walk, because neither field is a member
+  // anyone declared -- `str` is built in.
+  if (types_.KindOf(type) == TypeKind::kStr) {
+    layout.size = 16;
+    layout.align = 8;
+    layout.offsets.push_back(0);
+    layout.offsets.push_back(8);
+    return layout;
   }
 
   // An enum is the tag lowering reads as field zero.

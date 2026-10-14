@@ -46,7 +46,15 @@ WOLANG_TEST(TokenKind, LookupKeywordRecognizesEveryKeyword) {
   WOLANG_EXPECT_EQ(LookupKeyword("offer"), TokenKind::kKwOffer);
   WOLANG_EXPECT_EQ(LookupKeyword("foreach"), TokenKind::kKwForeach);
   WOLANG_EXPECT_EQ(LookupKeyword("uses"), TokenKind::kKwUses);
-  WOLANG_EXPECT_EQ(LookupKeyword("region"), TokenKind::kKwRegion);
+  WOLANG_EXPECT_EQ(LookupKeyword("arena"), TokenKind::kKwArena);
+  WOLANG_EXPECT_EQ(LookupKeyword("const"), TokenKind::kKwConst);
+  WOLANG_EXPECT_EQ(LookupKeyword("task"), TokenKind::kKwTask);
+  WOLANG_EXPECT_EQ(LookupKeyword("wait"), TokenKind::kKwWait);
+  // The words these replaced are ordinary identifiers again.
+  WOLANG_EXPECT_EQ(LookupKeyword("let"), TokenKind::kIdentifier);
+  WOLANG_EXPECT_EQ(LookupKeyword("async"), TokenKind::kIdentifier);
+  WOLANG_EXPECT_EQ(LookupKeyword("await"), TokenKind::kIdentifier);
+  WOLANG_EXPECT_EQ(LookupKeyword("region"), TokenKind::kIdentifier);
   // Keywords are case sensitive and not matched as prefixes.
   WOLANG_EXPECT_EQ(LookupKeyword("Fun"), TokenKind::kIdentifier);
   WOLANG_EXPECT_EQ(LookupKeyword("funny"), TokenKind::kIdentifier);

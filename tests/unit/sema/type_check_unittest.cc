@@ -185,101 +185,101 @@ class Fixture {
 WOLANG_TEST(TypeCheck, IntegerLiteralsTakeTheirContextsType) {
   Fixture fixture(
       "fun f() {\n"
-      "  let a = 1\n"
-      "  let b: u8 = 200\n"
-      "  let c: i64 = 1\n"
-      "  let d: f64 = 2\n"
-      "  let e = 0xFFFFFFFFFFFF\n"
+      "  const a = 1\n"
+      "  const b: u8 = 200\n"
+      "  const c: s64 = 1\n"
+      "  const d: f64 = 2\n"
+      "  const e = 0xFFFFFFFFFFFF\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   // Without an expectation a literal settles on `int`.
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "i32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s32");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "u8");
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "i64");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "s64");
   // An integer literal in a float context is fine.
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("d"), "f64");
   // Arbitrary precision until used, so no suffix is needed.
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("e"), "i32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("e"), "s32");
 }
 
 WOLANG_TEST(TypeCheck, ReportsALiteralThatDoesNotFit) {
-  WOLANG_EXPECT(Fixture("fun f() { let x: u8 = 300 }").HasCode("E0109"));
-  WOLANG_EXPECT(Fixture("fun f() { let x: i8 = 200 }").HasCode("E0109"));
+  WOLANG_EXPECT(Fixture("fun f() { const x: u8 = 300 }").HasCode("E0109"));
+  WOLANG_EXPECT(Fixture("fun f() { const x: s8 = 200 }").HasCode("E0109"));
   // The boundary values fit.
-  WOLANG_EXPECT(Fixture("fun f() { let x: u8 = 255 }").Codes().empty());
-  WOLANG_EXPECT(Fixture("fun f() { let x: i8 = 127 }").Codes().empty());
+  WOLANG_EXPECT(Fixture("fun f() { const x: u8 = 255 }").Codes().empty());
+  WOLANG_EXPECT(Fixture("fun f() { const x: s8 = 127 }").Codes().empty());
 }
 
 WOLANG_TEST(TypeCheck, SuffixesFixTheTypeRegardlessOfContext) {
   Fixture fixture(
       "fun f() {\n"
-      "  let a = 1u8\n"
-      "  let b = 2.0f64\n"
-      "  let c = 3i64\n"
+      "  const a = 1u8\n"
+      "  const b = 2.0f64\n"
+      "  const c = 3i64\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "u8");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "f64");
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "i64");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "s64");
 }
 
 WOLANG_TEST(TypeCheck, InfersLiteralKinds) {
   Fixture fixture(
       "fun f() {\n"
-      "  let a = true\n"
-      "  let b = \"text\"\n"
-      "  let c = 'x'\n"
-      "  let d = 1.5\n"
-      "  let e = \"a {a}\"\n"
+      "  const a = true\n"
+      "  const b = \"text\"\n"
+      "  const c = 'x'\n"
+      "  const d = 1.5\n"
+      "  const e = \"a {a}\"\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "bool");
   // Static data, so a borrowed `str` rather than an allocation.
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "str");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "text");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "char");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("d"), "f32");
   // Interpolation builds a new string at runtime, which is what makes it
   // owned.
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("e"), "String");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("e"), "Text");
 }
 
 WOLANG_TEST(TypeCheck, ReportsMismatchedTypes) {
   WOLANG_EXPECT(
-      Fixture("fun f() { let x: bool = 1 }").HasCode("E0101"));
+      Fixture("fun f() { const x: bool = 1 }").HasCode("E0101"));
   WOLANG_EXPECT(
-      Fixture("fun f() { let x: int = true }").HasCode("E0101"));
+      Fixture("fun f() { const x: int = true }").HasCode("E0101"));
   WOLANG_EXPECT(
       Fixture("fun f() -> int { return true }").HasCode("E0101"));
   // A float literal does not silently become an integer.
-  WOLANG_EXPECT(Fixture("fun f() { let x: int = 1.5 }").HasCode("E0101"));
+  WOLANG_EXPECT(Fixture("fun f() { const x: int = 1.5 }").HasCode("E0101"));
 }
 
 WOLANG_TEST(TypeCheck, ChecksOperators) {
   Fixture fixture(
       "fun f(flag: bool, n: int) {\n"
-      "  let a = n + 1\n"
-      "  let b = n < 2\n"
-      "  let c = flag && true\n"
-      "  let d = -n\n"
-      "  let e = !flag\n"
+      "  const a = n + 1\n"
+      "  const b = n < 2\n"
+      "  const c = flag && true\n"
+      "  const d = -n\n"
+      "  const e = !flag\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "i32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s32");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "bool");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "bool");
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("d"), "i32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("d"), "s32");
 
-  WOLANG_EXPECT(Fixture("fun f(s: str) { let a = s + 1 }").HasCode("E0108"));
-  WOLANG_EXPECT(Fixture("fun f(s: str) { let a = -s }").HasCode("E0108"));
-  WOLANG_EXPECT(Fixture("fun f(n: int) { let a = n && true }")
+  WOLANG_EXPECT(Fixture("fun f(s: text) { const a = s + 1 }").HasCode("E0108"));
+  WOLANG_EXPECT(Fixture("fun f(s: text) { const a = -s }").HasCode("E0108"));
+  WOLANG_EXPECT(Fixture("fun f(n: int) { const a = n && true }")
                     .HasCode("E0101"));
 }
 
 WOLANG_TEST(TypeCheck, LiteralsOnEitherSideTakeTheOthersType) {
   Fixture fixture(
       "fun f(small: u8) {\n"
-      "  let a = small + 1\n"
-      "  let b = 1 + small\n"
+      "  const a = small + 1\n"
+      "  const b = 1 + small\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "u8");
@@ -289,7 +289,7 @@ WOLANG_TEST(TypeCheck, LiteralsOnEitherSideTakeTheOthersType) {
 // -------------------------------------------------------------- scopes -----
 
 WOLANG_TEST(TypeCheck, ReportsAnUnknownName) {
-  Fixture fixture("fun f() { let x = nothing_here }");
+  Fixture fixture("fun f() { const x = nothing_here }");
   WOLANG_EXPECT(fixture.HasCode("E0103"));
   WOLANG_EXPECT(fixture.Messages().find("no value named `nothing_here`") !=
                 std::string::npos);
@@ -298,27 +298,27 @@ WOLANG_TEST(TypeCheck, ReportsAnUnknownName) {
 WOLANG_TEST(TypeCheck, ParametersAndLocalsAreInScope) {
   Fixture fixture(
       "fun f(a: int) {\n"
-      "  let b = a\n"
-      "  let c = b\n"
+      "  const b = a\n"
+      "  const c = b\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "i32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "s32");
 }
 
 WOLANG_TEST(TypeCheck, ALocalDoesNotEscapeItsBlock) {
   Fixture fixture(
       "fun f() {\n"
       "  if true {\n"
-      "    let inner = 1\n"
+      "    const inner = 1\n"
       "  }\n"
-      "  let x = inner\n"
+      "  const x = inner\n"
       "}\n");
   WOLANG_EXPECT(fixture.HasCode("E0103"));
 }
 
 WOLANG_TEST(TypeCheck, ReportsAssignmentToALetBinding) {
   WOLANG_EXPECT(
-      Fixture("fun f() {\n  let a = 1\n  a = 2\n}\n").HasCode("E0105"));
+      Fixture("fun f() {\n  const a = 1\n  a = 2\n}\n").HasCode("E0105"));
   // A `var` may be reassigned.
   WOLANG_EXPECT(
       Fixture("fun f() {\n  var a = 1\n  a = 2\n}\n").Codes().empty());
@@ -335,8 +335,8 @@ WOLANG_TEST(TypeCheck, OptionalsAcceptTheirElement) {
   Fixture fixture(
       "struct Pawn {}\n"
       "fun f(p: Pawn) {\n"
-      "  let a: Pawn? = p\n"
-      "  let b: Pawn? = null\n"
+      "  const a: Pawn? = p\n"
+      "  const b: Pawn? = null\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "Pawn?");
@@ -347,7 +347,7 @@ WOLANG_TEST(TypeCheck, ReportsAFieldAccessThroughAnOptional) {
   Fixture fixture(
       "struct Pawn {}\n"
       "fun f(p: Pawn?) {\n"
-      "  let a = p.field\n"
+      "  const a = p.field\n"
       "}\n");
   WOLANG_EXPECT(fixture.HasCode("E0104"));
   WOLANG_EXPECT(fixture.Messages().find("may be absent") !=
@@ -358,8 +358,8 @@ WOLANG_TEST(TypeCheck, IfLetNarrowsAnOptional) {
   Fixture fixture(
       "struct Pawn {}\n"
       "fun f(p: Pawn?) {\n"
-      "  if let inner = p {\n"
-      "    let a = inner\n"
+      "  if const inner = p {\n"
+      "    const a = inner\n"
       "  }\n"
       "}\n");
   // The narrowed binding is no longer optional, so using it is fine.
@@ -381,15 +381,15 @@ WOLANG_TEST(TypeCheck, PresentPatternNarrowsAnOptional) {
 WOLANG_TEST(TypeCheck, NullCoalescingRemovesOneLayer) {
   Fixture fixture(
       "fun f(count: int?) {\n"
-      "  let a = count ?? 0\n"
+      "  const a = count ?? 0\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "i32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s32");
 
   WOLANG_EXPECT(
-      Fixture("fun f(n: int) { let a = n ?? 0 }").HasCode("E0108"));
+      Fixture("fun f(n: int) { const a = n ?? 0 }").HasCode("E0108"));
   WOLANG_EXPECT(
-      Fixture("fun f(n: int?) { let a = n ?? true }").HasCode("E0101"));
+      Fixture("fun f(n: int?) { const a = n ?? true }").HasCode("E0101"));
 }
 
 // ---------------------------------------------------------------- units -----
@@ -401,8 +401,8 @@ WOLANG_TEST(TypeCheck, UnitLiteralsCarryTheirDimension) {
       "unit m: Length\n"
       "unit s: Time\n"
       "fun f() {\n"
-      "  let distance = 10m\n"
-      "  let duration = 2s\n"
+      "  const distance = 10m\n"
+      "  const duration = 2s\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("distance"), "Length");
@@ -416,9 +416,9 @@ WOLANG_TEST(TypeCheck, DividingQuantitiesCombinesDimensions) {
       "unit m: Length\n"
       "unit s: Time\n"
       "fun f() {\n"
-      "  let speed = 10m / 2s\n"
-      "  let area = 3m * 4m\n"
-      "  let ratio = 10m / 2m\n"
+      "  const speed = 10m / 2s\n"
+      "  const area = 3m * 4m\n"
+      "  const ratio = 10m / 2m\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   // The type nobody declared.
@@ -435,7 +435,7 @@ WOLANG_TEST(TypeCheck, AddingDifferentDimensionsIsAnError) {
       "unit m: Length\n"
       "unit s: Time\n"
       "fun f() {\n"
-      "  let bad = 10m + 2s\n"
+      "  const bad = 10m + 2s\n"
       "}\n");
   WOLANG_EXPECT(fixture.HasCode("E1001"));
   WOLANG_EXPECT(fixture.Messages().find("cannot combine `Length` with "
@@ -448,7 +448,7 @@ WOLANG_TEST(TypeCheck, ComparingDifferentDimensionsIsAnError) {
       "dimension Time\n"
       "unit m: Length\n"
       "unit s: Time\n"
-      "fun f() { let bad = 10m < 2s }\n");
+      "fun f() { const bad = 10m < 2s }\n");
   WOLANG_EXPECT(fixture.HasCode("E1001"));
 }
 
@@ -458,7 +458,7 @@ WOLANG_TEST(TypeCheck, SameDimensionAddsFine) {
       "unit m: Length\n"
       "unit cm = 0.01m\n"
       "fun f() {\n"
-      "  let total = 10m + 50cm\n"
+      "  const total = 10m + 50cm\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   // A derived unit shares its base unit's dimension.
@@ -466,7 +466,7 @@ WOLANG_TEST(TypeCheck, SameDimensionAddsFine) {
 }
 
 WOLANG_TEST(TypeCheck, ReportsAnUnknownUnit) {
-  Fixture fixture("fun f() { let x = 10parsecs }");
+  Fixture fixture("fun f() { const x = 10parsecs }");
   WOLANG_EXPECT(fixture.HasCode("E1002"));
   WOLANG_EXPECT(fixture.Messages().find("no unit named `parsecs`") !=
                 std::string::npos);
@@ -488,15 +488,15 @@ WOLANG_TEST(TypeCheck, ResolvesDeclaredTypes) {
   Fixture fixture(
       "struct Vec3 {}\n"
       "class Turret {}\n"
-      "fun f(a: Vec3, b: Turret?, c: [Vec3], d: [Vec3; 3]) {\n"
-      "  let x = a\n"
-      "  let y = c\n"
-      "  let z = d\n"
+      "fun f(a: Vec3, b: Turret?, c: []Vec3, d: [3]Vec3) {\n"
+      "  const x = a\n"
+      "  const y = c\n"
+      "  const z = d\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("x"), "Vec3");
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("y"), "[Vec3]");
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("z"), "[Vec3; 3]");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("y"), "[]Vec3");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("z"), "[3]Vec3");
 }
 
 WOLANG_TEST(TypeCheck, ReportsAnUnknownType) {
@@ -515,7 +515,7 @@ WOLANG_TEST(TypeCheck, GenericParametersShadowTypes) {
   Fixture fixture(
       "struct T {}\n"
       "fun f<T>(a: T) {\n"
-      "  let x = a\n"
+      "  const x = a\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   // The parameter shadows the struct, as the innermost scope.
@@ -525,38 +525,38 @@ WOLANG_TEST(TypeCheck, GenericParametersShadowTypes) {
 WOLANG_TEST(TypeCheck, ArrayLiteralsTakeTheirElementType) {
   Fixture fixture(
       "fun f() {\n"
-      "  let a = [1, 2, 3]\n"
-      "  let b: [u8; 2] = [1, 2]\n"
-      "  let c = [1.5, 2.5]\n"
+      "  const a = [1, 2, 3]\n"
+      "  const b: [2]u8 = [1, 2]\n"
+      "  const c = [1.5, 2.5]\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "[i32; 3]");
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "[u8; 2]");
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "[f32; 2]");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "[3]s32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "[2]u8");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "[2]f32");
 
   WOLANG_EXPECT(
-      Fixture("fun f() { let a = [1, true] }").HasCode("E0101"));
+      Fixture("fun f() { const a = [1, true] }").HasCode("E0101"));
 }
 
 WOLANG_TEST(TypeCheck, IndexingYieldsTheElementType) {
   Fixture fixture(
-      "fun f(xs: [float]) {\n"
-      "  let a = xs[0]\n"
-      "  let b = xs[1..]\n"
+      "fun f(xs: []float) {\n"
+      "  const a = xs[0]\n"
+      "  const b = xs[1..]\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "f32");
   // Indexing with a range produces a slice.
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "[f32]");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "[]f32");
 
-  WOLANG_EXPECT(Fixture("fun f(n: int) { let a = n[0] }").HasCode("E0107"));
+  WOLANG_EXPECT(Fixture("fun f(n: int) { const a = n[0] }").HasCode("E0107"));
 }
 
 WOLANG_TEST(TypeCheck, ForBindsTheElementType) {
   Fixture fixture(
-      "fun f(xs: [float]) {\n"
+      "fun f(xs: []float) {\n"
       "  for item in xs {\n"
-      "    let a = item\n"
+      "    const a = item\n"
       "  }\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
@@ -566,11 +566,11 @@ WOLANG_TEST(TypeCheck, ForBindsTheElementType) {
 WOLANG_TEST(TypeCheck, TuplesCheckElementwise) {
   Fixture fixture(
       "fun f() {\n"
-      "  let a = (1, true)\n"
-      "  let b: (u8, bool) = (2, false)\n"
+      "  const a = (1, true)\n"
+      "  const b: (u8, bool) = (2, false)\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "(i32, bool)");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "(s32, bool)");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "(u8, bool)");
 }
 
@@ -589,24 +589,24 @@ WOLANG_TEST(TypeCheck, ExpressionBodiedFunctionsCheckAgainstTheirReturn) {
 WOLANG_TEST(TypeCheck, IfElseChainsAgree) {
   Fixture fixture(
       "fun f(flag: bool) {\n"
-      "  let a = if flag { 1 } else { 2 }\n"
+      "  const a = if flag { 1 } else { 2 }\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "i32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s32");
 
   WOLANG_EXPECT(
-      Fixture("fun f(flag: bool) { let a = if flag { 1 } else { true } }")
+      Fixture("fun f(flag: bool) { const a = if flag { 1 } else { true } }")
           .HasCode("E0101"));
 }
 
 WOLANG_TEST(TypeCheck, CastsTakeTheTargetType) {
   Fixture fixture(
       "fun f(n: int) {\n"
-      "  let a = n as i64\n"
-      "  let b = n as f64\n"
+      "  const a = n as s64\n"
+      "  const b = n as f64\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "i64");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s64");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "f64");
 }
 
@@ -614,10 +614,10 @@ WOLANG_TEST(TypeCheck, ErrorTypesDoNotCascade) {
   // One unknown name produces exactly one message, not one per use.
   Fixture fixture(
       "fun f() {\n"
-      "  let a = unknown\n"
-      "  let b = a + 1\n"
-      "  let c = b * 2\n"
-      "  let d: bool = c\n"
+      "  const a = unknown\n"
+      "  const b = a + 1\n"
+      "  const c = b * 2\n"
+      "  const d: bool = c\n"
       "}\n");
   WOLANG_EXPECT_EQ(fixture.Codes(), "E0103");
 }
@@ -668,7 +668,7 @@ struct Vec3 {
 }
 
 fun take(v: Vec3) {
-  let a = v.x
+  const a = v.x
 }
 )");
   WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "f32");
@@ -682,7 +682,7 @@ struct Vec3 {
 }
 
 fun take(v: Vec3) {
-  let a = v.z
+  const a = v.z
 }
 )");
   WOLANG_EXPECT(f.HasCode("E0112"));
@@ -697,7 +697,7 @@ class Pawn {
 
   fun Hurt(amount: float) {
     health = health - amount
-    let left = self.health
+    const left = self.health
   }
 }
 )");
@@ -708,7 +708,7 @@ class Pawn {
 WOLANG_TEST(TypeCheck, AssigningAnImmutableFieldIsReported) {
   Fixture f(R"(
 class Pawn {
-  let health: float = 100.0
+  const health: float = 100.0
 
   fun Hurt() {
     health = 1.0
@@ -738,8 +738,8 @@ struct Vec3 {
 }
 
 fun take(v: Vec3?) {
-  let bad = v.x
-  let good = v?.x
+  const bad = v.x
+  const good = v?.x
 }
 )");
   WOLANG_EXPECT(f.HasCode("E0104"));
@@ -754,9 +754,9 @@ WOLANG_TEST(TypeCheck, CallsCheckAgainstTheDeclaredSignature) {
 fun Damage(base: float, mult: float) -> float => base
 
 fun use() {
-  let a = Damage(1.0, 2.0)
-  let b = Damage(1.0)
-  let c = Damage(1.0, true)
+  const a = Damage(1.0, 2.0)
+  const b = Damage(1.0)
+  const c = Damage(1.0, true)
 }
 )");
   WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "f32");
@@ -772,10 +772,10 @@ struct Vec3 {
 }
 
 fun use() {
-  let a = Vec3(1.0, 2.0)
-  let b = Vec3()
-  let c = Vec3(1.0)
-  let d = Vec3(1.0, true)
+  const a = Vec3(1.0, 2.0)
+  const b = Vec3()
+  const c = Vec3(1.0)
+  const d = Vec3(1.0, true)
 }
 )");
   WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "Vec3");
@@ -799,8 +799,8 @@ fun Travel(distance: Length, speed: Velocity) -> Time {
 }
 
 fun use() {
-  let eta = Travel(3m, 2m / 1s)
-  let bad = Travel(3s, 2m / 1s)
+  const eta = Travel(3m, 2m / 1s)
+  const bad = Travel(3s, 2m / 1s)
 }
 )");
   WOLANG_EXPECT_EQ(f.TypeOfInit("eta"), "Time");
@@ -900,16 +900,16 @@ WOLANG_TEST(TypeCheck, AGuardedArmCoversNothing) {
 
 WOLANG_TEST(TypeCheck, GenericCallsInferTheirParameters) {
   Fixture f(R"(
-fun First<T>(items: [T]) -> T {
+fun First<T>(items: []T) -> T {
   return items[0]
 }
 
-fun use(xs: [int], ys: [float]) {
-  let a = First(xs)
-  let b = First(ys)
+fun use(xs: []int, ys: []float) {
+  const a = First(xs)
+  const b = First(ys)
 }
 )");
-  WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "i32");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "s32");
   WOLANG_EXPECT_EQ(f.TypeOfInit("b"), "f32");
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
@@ -921,21 +921,21 @@ fun Pair<A, B>(a: A, b: B) -> (A, B) {
 }
 
 fun use() {
-  let p = Pair(1, true)
+  const p = Pair(1, true)
 }
 )");
-  WOLANG_EXPECT_EQ(f.TypeOfInit("p"), "(i32, bool)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("p"), "(s32, bool)");
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
 WOLANG_TEST(TypeCheck, AnArgumentThatCannotMatchIsReported) {
   Fixture f(R"(
-fun First<T>(items: [T]) -> T {
+fun First<T>(items: []T) -> T {
   return items[0]
 }
 
 fun use() {
-  let a = First(1)
+  const a = First(1)
 }
 )");
   WOLANG_EXPECT(f.HasCode("E0101"));
@@ -943,16 +943,16 @@ fun use() {
 
 WOLANG_TEST(TypeCheck, InferredResultStillMeetsItsExpectation) {
   Fixture f(R"(
-fun First<T>(items: [T]) -> T {
+fun First<T>(items: []T) -> T {
   return items[0]
 }
 
-fun use(xs: [int]) {
-  let a: bool = First(xs)
+fun use(xs: []int) {
+  const a: bool = First(xs)
 }
 )");
   WOLANG_EXPECT(f.HasCode("E0101"));
-  WOLANG_EXPECT(f.Messages().find("expected `bool`, found `i32`") !=
+  WOLANG_EXPECT(f.Messages().find("expected `bool`, found `s32`") !=
                 std::string::npos);
 }
 
@@ -1098,11 +1098,11 @@ class Pawn : Actor {
 WOLANG_TEST(TypeCheck, OverridingANonVirtualMethodIsReported) {
   Fixture f(R"(
 class Actor {
-  fun Name() -> str => "actor"
+  fun Name() -> text => "actor"
 }
 
 class Pawn : Actor {
-  override fun Name() -> str => "pawn"
+  override fun Name() -> text => "pawn"
 }
 )");
   WOLANG_EXPECT(f.HasCode("E0401"));
@@ -1189,8 +1189,8 @@ fun use(p: Pawn) {
 WOLANG_TEST(TypeCheck, ReportsAnUnusedLocal) {
   Fixture f(R"(
 fun f() -> int {
-  let a = 1
-  let b = 2
+  const a = 1
+  const b = 2
   return a
 }
 )");
@@ -1201,7 +1201,7 @@ fun f() -> int {
 WOLANG_TEST(TypeCheck, AnUnderscorePrefixOptsOut) {
   Fixture f(R"(
 fun f(_unused: int, used: int) -> int {
-  let _ignored = 1
+  const _ignored = 1
   return used
 }
 )");
@@ -1222,8 +1222,8 @@ WOLANG_TEST(TypeCheck, ReportsUnreachableCode) {
   Fixture f(R"(
 fun f() -> int {
   return 1
-  let a = 2
-  let b = 3
+  const a = 2
+  const b = 3
 }
 )");
   // One message for the block, not one per statement after the return.
@@ -1237,7 +1237,7 @@ WOLANG_TEST(TypeCheck, CodeAfterABreakIsUnreachable) {
 fun f() {
   loop {
     break
-    let _a = 1
+    const _a = 1
   }
 }
 )");
@@ -1264,7 +1264,7 @@ struct Holder {
 WOLANG_TEST(TypeCheck, AParameterAndALocalMayHoldAReference) {
   Fixture f(R"(
 fun f(a: &int) -> int {
-  let b: &int = a
+  const b: &int = a
   return 0
 }
 )");
@@ -1278,11 +1278,11 @@ WOLANG_TEST(TypeCheck, AllowSilencesOneCodeForOneDeclaration) {
   Fixture f(R"(
 @allow(W0101, reason = "kept for the ABI")
 fun a() {
-  let unused = 1
+  const unused = 1
 }
 
 fun b() {
-  let unused = 1
+  const unused = 1
 }
 )");
   // Suppressed in `a`, still reported in `b`.
@@ -1294,7 +1294,7 @@ WOLANG_TEST(TypeCheck, AllowNeedsAReason) {
   Fixture f(R"(
 @allow(W0101)
 fun a() {
-  let unused = 1
+  const unused = 1
 }
 )");
   WOLANG_EXPECT(f.HasCode("E0070"));
@@ -1315,9 +1315,9 @@ WOLANG_TEST(TypeCheck, AllowTakesSeveralCodes) {
   Fixture f(R"(
 @allow(W0101, W0102, reason = "generated code")
 fun a() -> int {
-  let unused = 1
+  const unused = 1
   return 1
-  let dead = 2
+  const dead = 2
 }
 )");
   WOLANG_EXPECT_EQ(f.Warnings(), "");
@@ -1328,7 +1328,7 @@ WOLANG_TEST(TypeCheck, AllowSilencesAnErrorToo) {
   Fixture f(R"(
 @allow(E0112, reason = "the host adds this member at load time")
 fun a(v: Vec3) {
-  let x = v.whatever
+  const x = v.whatever
 }
 
 struct Vec3 { var x: float }
@@ -1343,11 +1343,11 @@ WOLANG_TEST(TypeCheck, AnArrayFitsWhereASliceIsWanted) {
   // A slice is a view of an array. Without this a slice has nothing to be a
   // view of.
   Fixture f(R"(
-fun take(xs: [int]) -> int => xs[0]
+fun take(xs: []int) -> int => xs[0]
 
 fun use() -> int {
-  let arr: [int; 3] = [1, 2, 3]
-  let view: [int] = arr
+  const arr: [3]int = [1, 2, 3]
+  const view: []int = arr
   return take(arr) + view[0]
 }
 )");
@@ -1358,10 +1358,10 @@ WOLANG_TEST(TypeCheck, LayoutHasToAgreeForAView) {
   // A struct-of-arrays view of an array of structs is a different memory
   // shape, not a view of it.
   Fixture f(R"(
-fun take(xs: soa [int]) {}
+fun take(xs: soa []int) {}
 
 fun use() {
-  let arr: [int; 2] = [1, 2]
+  const arr: [2]int = [1, 2]
   take(arr)
 }
 )");
@@ -1384,7 +1384,7 @@ WOLANG_TEST(TypeCheck, ContainingItselfThroughAWrapperStillHasNoSize) {
   // An optional of a value type is that value plus a tag, and an array of it
   // is N of them: both are still stored inline.
   WOLANG_EXPECT(Fixture("struct S { var next: S? }").HasCode("E0117"));
-  WOLANG_EXPECT(Fixture("struct S { var all: [S; 4] }").HasCode("E0117"));
+  WOLANG_EXPECT(Fixture("struct S { var all: [4]S }").HasCode("E0117"));
   WOLANG_EXPECT(Fixture("struct S { var pair: (int, S) }").HasCode("E0117"));
 }
 
@@ -1396,7 +1396,7 @@ WOLANG_TEST(TypeCheck, AMutualCycleHasNoSizeEither) {
 WOLANG_TEST(TypeCheck, OneIndirectionIsEnoughToHaveASize) {
   // A slice is a pointer and a length; a class is a reference to a heap
   // object. Neither stores the type inline.
-  WOLANG_EXPECT_EQ(Fixture("struct S { var all: [S] }").Codes(), "");
+  WOLANG_EXPECT_EQ(Fixture("struct S { var all: []S }").Codes(), "");
   WOLANG_EXPECT_EQ(Fixture("class C { var next: C }").Codes(), "");
 }
 
@@ -1443,12 +1443,12 @@ struct Holder<T> {
 }
 
 fun use(h: Holder<int>) {
-  let good = h.value
-  let bad: bool = h.value
-  let missing = h.nothing
+  const good = h.value
+  const bad: bool = h.value
+  const missing = h.nothing
 }
 )");
-  WOLANG_EXPECT_EQ(f.TypeOfInit("good"), "i32");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("good"), "s32");
   WOLANG_EXPECT(f.HasCode("E0101"));
   WOLANG_EXPECT(f.HasCode("E0112"));
 }
@@ -1479,8 +1479,8 @@ type Count = int
 fun f(n: Count) -> int => n
 
 fun g() {
-  let c: Count = 5
-  let i: int = c
+  const c: Count = 5
+  const i: int = c
 }
 )");
   WOLANG_EXPECT_EQ(f.Codes(), "");
@@ -1528,10 +1528,10 @@ fun take<A: Show, B: A>(a: A, b: B) {}
 
 WOLANG_TEST(TypeCheckTest, AcceptsANumericConversion) {
   Fixture f(R"(
-fun F(n: i32, x: f64) {
-  let _a = n as i64
-  let _b = n as f32
-  let _c = x as u8
+fun F(n: s32, x: f64) {
+  const _a = n as s64
+  const _b = n as f32
+  const _c = x as u8
 }
 )");
   WOLANG_EXPECT_EQ(f.Codes(), "");
@@ -1543,10 +1543,10 @@ WOLANG_TEST(TypeCheckTest, RejectsAConversionThatIsNotNumeric) {
   Fixture f(R"(
 struct Vec2 { var x: float }
 
-fun F(s: str, v: Vec2, b: bool) {
-  let _a = s as int
-  let _b = v as float
-  let _c = b as int
+fun F(s: text, v: Vec2, b: bool) {
+  const _a = s as int
+  const _b = v as float
+  const _c = b as int
 }
 )");
   WOLANG_EXPECT_EQ(f.Codes(), "E0124,E0124,E0124");
@@ -1667,13 +1667,13 @@ WOLANG_TEST(TypeCheckTest, ADereferenceDoesNotTakeTheContextsType) {
   // the type. Passing it through `*p` checked the pointer against what the
   // pointee has to be, and reported two errors for a correct program.
   Fixture f(R"(
-extern "C" fun malloc(size: u64) -> *i32
+extern "C" fun malloc(size: u64) -> *s32
 
-fun Read(p: *i32) -> i32 {
+fun Read(p: *s32) -> s32 {
   return *p
 }
 
-fun Write(p: *i32, n: i32) {
+fun Write(p: *s32, n: s32) {
   *p = n
 }
 )");
@@ -1685,11 +1685,11 @@ WOLANG_TEST(TypeCheckTest, RejectsUseAfterMove) {
   // moves and which borrows is the question "what did the context want":
   // `String` moves, `str` borrows (D15b).
   Fixture f(R"(
-offer fun Print(text: str) uses io
+offer fun Print(message: text) uses io
 
 fun Moved(n: int) uses io {
-  let a = "value {n}"
-  let b = a
+  const a = "value {n}"
+  const b = a
   Print(b)
   Print(a)
 }
@@ -1699,10 +1699,10 @@ fun Moved(n: int) uses io {
 
 WOLANG_TEST(TypeCheckTest, ABorrowDoesNotMove) {
   Fixture f(R"(
-offer fun Print(text: str) uses io
+offer fun Print(message: text) uses io
 
 fun Borrowed(n: int) uses io {
-  let a = "value {n}"
+  const a = "value {n}"
   Print(a)
   Print(a)
   Print(a)
@@ -1710,7 +1710,7 @@ fun Borrowed(n: int) uses io {
 
 fun Rewritten(n: int) uses io {
   var a = "value {n}"
-  let b = a
+  const b = a
   a = "other {n}"
   Print(a)
   Print(b)
@@ -1723,10 +1723,10 @@ WOLANG_TEST(TypeCheckTest, AMoveOnOnePathIsAMove) {
   // A value moved on one branch is gone at the join: the other branch
   // cannot know which way control came.
   Fixture f(R"(
-offer fun Take(text: String) uses io
+offer fun Take(text: Text) uses io
 
 fun Maybe(c: bool, n: int) uses io {
-  let a = "value {n}"
+  const a = "value {n}"
   if c {
     Take(a)
   }
@@ -1739,8 +1739,8 @@ fun Maybe(c: bool, n: int) uses io {
 WOLANG_TEST(TypeCheckTest, CopyingANumberIsNotAMove) {
   Fixture f(R"(
 fun Twice(n: int) -> int {
-  let a = n
-  let b = a
+  const a = n
+  const b = a
   return a + b
 }
 )");
@@ -1752,10 +1752,10 @@ WOLANG_TEST(TypeCheckTest, AMoveInALoopBodyIsAMoveTwice) {
   // the mistake worth reporting -- and the reason a loop body is walked
   // twice.
   Fixture f(R"(
-offer fun Take(text: String) uses io
+offer fun Take(text: Text) uses io
 
 fun InALoop(n: int) uses io {
-  let a = "value {n}"
+  const a = "value {n}"
   var i = 0
   while i < n {
     Take(a)
@@ -1778,14 +1778,14 @@ fun Returned() -> &int {
 
 fun OutOfRegion() {
   var outer = &0
-  region {
+  arena {
     var inner = 2
     outer = &inner
   }
 }
 
 fun AsTheRegionsValue() -> int {
-  let kept = region {
+  const kept = arena {
     var inner = 2
     &inner
   }
@@ -1798,9 +1798,9 @@ fun AsTheRegionsValue() -> int {
 WOLANG_TEST(TypeCheckTest, AReferenceInsideItsOwnScopeIsFine) {
   Fixture f(R"(
 fun Local() -> int {
-  region {
+  arena {
     var inner = 2
-    let kept = &inner
+    const kept = &inner
     return *kept
   }
 }

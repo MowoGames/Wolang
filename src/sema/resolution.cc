@@ -33,16 +33,21 @@ struct BuiltinType {
 constexpr BuiltinType kBuiltins[] = {
     {"bool", TypeKind::kBool, IntWidth::k32, true, FloatWidth::k32},
     {"char", TypeKind::kChar, IntWidth::k32, true, FloatWidth::k32},
-    {"String", TypeKind::kString, IntWidth::k32, true, FloatWidth::k32},
-    {"str", TypeKind::kStr, IntWidth::k32, true, FloatWidth::k32},
+    // `text` is a view of bytes and `Text` owns them. Lowercase for what
+    // the machine has built in, PascalCase for a type that owns something,
+    // which is the same rule every declared type follows.
+    {"Text", TypeKind::kString, IntWidth::k32, true, FloatWidth::k32},
+    {"text", TypeKind::kStr, IntWidth::k32, true, FloatWidth::k32},
     {"never", TypeKind::kNever, IntWidth::k32, true, FloatWidth::k32},
     // `int` and `float` are the widths gameplay code should reach for when it
     // does not care, so they are aliases rather than separate types.
     {"int", TypeKind::kInt, IntWidth::k32, true, FloatWidth::k32},
-    {"i8", TypeKind::kInt, IntWidth::k8, true, FloatWidth::k32},
-    {"i16", TypeKind::kInt, IntWidth::k16, true, FloatWidth::k32},
-    {"i32", TypeKind::kInt, IntWidth::k32, true, FloatWidth::k32},
-    {"i64", TypeKind::kInt, IntWidth::k64, true, FloatWidth::k32},
+    // `s` for signed, not `i` for integer: both halves of the table are
+    // integers, and only one of them is signed.
+    {"s8", TypeKind::kInt, IntWidth::k8, true, FloatWidth::k32},
+    {"s16", TypeKind::kInt, IntWidth::k16, true, FloatWidth::k32},
+    {"s32", TypeKind::kInt, IntWidth::k32, true, FloatWidth::k32},
+    {"s64", TypeKind::kInt, IntWidth::k64, true, FloatWidth::k32},
     {"u8", TypeKind::kInt, IntWidth::k8, false, FloatWidth::k32},
     {"u16", TypeKind::kInt, IntWidth::k16, false, FloatWidth::k32},
     {"u32", TypeKind::kInt, IntWidth::k32, false, FloatWidth::k32},

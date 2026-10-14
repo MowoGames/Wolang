@@ -55,7 +55,7 @@ class SignatureWriter {
       std::string_view name;
     } kNames[] = {
         {ItemFlags::kOffer, "offer"},         {ItemFlags::kPriv, "priv"},
-        {ItemFlags::kAsync, "async"},     {ItemFlags::kVirtual, "virtual"},
+        {ItemFlags::kAsync, "task"},     {ItemFlags::kVirtual, "virtual"},
         {ItemFlags::kOverride, "override"}, {ItemFlags::kComptime, "comptime"},
         {ItemFlags::kDerived, "derived"}, {ItemFlags::kMutable, "mut"},
         {ItemFlags::kExtern, "extern"},   {ItemFlags::kTraitImpl, "for"},

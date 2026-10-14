@@ -7,6 +7,9 @@
 
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <memory>
+#include <span>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -71,12 +74,16 @@ class CompiledModule::Impl {
  public:
   Impl(const StringInterner& interner,
        const TypeStore& types,
-       const FileResolution& resolution,
-       const ir::Module& module)
-      : interner_(interner),
-        types_(types),
-        module_(module),
-        layouts_(types, resolution) {}
+       std::span<const FileCode> files)
+      : interner_(interner), types_(types) {
+    for (const FileCode& file : files) {
+      if (file.resolution == nullptr || file.module == nullptr) {
+        continue;
+      }
+      files_.push_back(std::make_unique<FileState>(types, *file.resolution,
+                                                   *file.module));
+    }
+  }
 
   void Compile();
 
@@ -89,7 +96,32 @@ class CompiledModule::Impl {
   // label a sample.
   std::string Symbolize(uint64_t offset) const;
 
+  // One file's IR and everything derived from it. A layout store belongs to
+  // a file because a struct's fields do: they are part of the resolution
+  // that declared them.
+  struct FileState {
+    FileState(const TypeStore& types,
+              const FileResolution& resolution,
+              const ir::Module& module)
+        : module(module), layouts(types, resolution) {}
+
+    const ir::Module& module;
+    LayoutStore layouts;
+    // Where each string literal's bytes are.
+    std::vector<std::pair<uint64_t, uint64_t>> strings;
+    // This file's local function index to the global one.
+    std::vector<uint32_t> global;
+    // Per local function index, for the emitter.
+    std::vector<bool> compilable;
+    std::vector<uint64_t> foreign;
+  };
+
   struct Entry {
+    uint32_t file = 0;
+    uint32_t local = 0;
+    // The global function this one resolves to: itself for a definition,
+    // and the definition for a declaration that names one.
+    uint32_t link = 0;
     bool compiled = false;
     std::string reason;
     // Where the entry trampoline is, in bytes from the start of the block.
@@ -103,19 +135,26 @@ class CompiledModule::Impl {
 
   const Entry* Find(Symbol name) const {
     const auto found = by_name_.find(name.index);
-    return found == by_name_.end() ? nullptr : &entries_[found->second];
+    if (found == by_name_.end()) {
+      return nullptr;
+    }
+    const Entry& entry = entries_[found->second];
+    return entry.compiled ? &entry : &entries_[entry.link];
+  }
+
+  const ir::Function& FunctionOf(const Entry& entry) const {
+    return files_[entry.file]->module.functions[entry.local];
   }
 
   const StringInterner& interner_;
   const TypeStore& types_;
-  const ir::Module& module_;
-  LayoutStore layouts_;
+  std::vector<std::unique_ptr<FileState>> files_;
 
   std::vector<uint32_t> words_;
   std::vector<Entry> entries_;
-  // The address of each foreign function, by module index.
-  std::vector<uint64_t> foreign_;
   std::vector<TrapSite> traps_;
+  // By name, for the driver and the tests. A definition wins over a
+  // declaration of the same name.
   std::unordered_map<uint32_t, uint32_t> by_name_;
   CodeBlock block_;
   // See Run: both have to outlive a `longjmp` through generated frames.
@@ -129,82 +168,173 @@ class CompiledModule::Impl {
   // carries its own shape and machine memory does not, so this boundary is
   // where one becomes the other -- and the only place either tier has to
   // know about the other's representation.
-  void Encode(const interp::Value& value, TypeId type, uint8_t* destination);
-  interp::Value Decode(const uint8_t* source, TypeId type);
+  void Encode(LayoutStore* layouts,
+              const interp::Value& value,
+              TypeId type,
+              uint8_t* destination);
+  interp::Value Decode(LayoutStore* layouts,
+                       const uint8_t* source,
+                       TypeId type);
   // The canonical register form of an integer: extended to 64 bits, which
   // is how compiled code holds one.
-  uint64_t CanonicalBits(const interp::Value& value, TypeId type);
+  uint64_t CanonicalBits(LayoutStore* layouts,
+                         const interp::Value& value,
+                         TypeId type);
 };
 
 // ---------------------------------------------------------- compiling ---
 
 void CompiledModule::Impl::Compile() {
-  const size_t count = module_.functions.size();
-  entries_.assign(count, Entry{});
+  // Every function of every file, in one list. A call that crosses a file
+  // is a declaration here and a definition there, and linking the two is
+  // what makes the tier compile a program rather than a file.
+  for (uint32_t f = 0; f < files_.size(); ++f) {
+    FileState& file = *files_[f];
+    for (const std::string& text : file.module.strings) {
+      file.strings.emplace_back(reinterpret_cast<uint64_t>(text.data()),
+                                static_cast<uint64_t>(text.size()));
+    }
+    for (uint32_t i = 0; i < file.module.functions.size(); ++i) {
+      const auto global = static_cast<uint32_t>(entries_.size());
+      file.global.push_back(global);
+      Entry entry;
+      entry.file = f;
+      entry.local = i;
+      entry.link = global;
+      entries_.push_back(std::move(entry));
+    }
+  }
+
+  // A declaration resolves to the definition it names. By the declaration
+  // it came from, not by name: two files may each define a `Helper`, and
+  // only the item it points at says which one this is.
+  for (uint32_t i = 0; i < entries_.size(); ++i) {
+    const ir::Function& function = FunctionOf(entries_[i]);
+    if (!function.is_declaration() || function.is_foreign() ||
+        !function.has_source()) {
+      continue;
+    }
+    for (uint32_t j = 0; j < entries_.size(); ++j) {
+      if (i == j) {
+        continue;
+      }
+      const ir::Function& candidate = FunctionOf(entries_[j]);
+      if (candidate.is_declaration() || !candidate.has_source()) {
+        continue;
+      }
+      if (candidate.source_file == function.source_file &&
+          candidate.source_item == function.source_item) {
+        entries_[i].link = j;
+        break;
+      }
+    }
+  }
+
+  // By name, with a definition winning: `wolang asm` and the tests look
+  // functions up this way.
+  for (uint32_t i = 0; i < entries_.size(); ++i) {
+    const ir::Function& function = FunctionOf(entries_[i]);
+    const auto existing = by_name_.find(function.name.index);
+    if (existing == by_name_.end()) {
+      by_name_[function.name.index] = i;
+      continue;
+    }
+    if (FunctionOf(entries_[existing->second]).is_declaration() &&
+        !function.is_declaration()) {
+      existing->second = i;
+    }
+  }
 
   // Foreign symbols, resolved through the host's loader. A symbol that is
   // not there leaves a zero, and a function calling it is left to the
   // interpreter with a reason -- which is better than a module that refuses
   // to compile because one declaration named something missing.
-  foreign_.assign(count, 0);
-  for (size_t i = 0; i < count; ++i) {
-    const ir::Function& function = module_.functions[i];
+  std::vector<uint64_t> foreign(entries_.size(), 0);
+  std::vector<bool> compilable(entries_.size(), true);
+  std::vector<std::string> reasons(entries_.size());
+  for (uint32_t i = 0; i < entries_.size(); ++i) {
+    const ir::Function& function = FunctionOf(entries_[i]);
     if (!function.is_foreign()) {
       continue;
     }
     const std::string symbol(interner_.Text(function.foreign_symbol));
-    foreign_[i] = reinterpret_cast<uint64_t>(
+    foreign[i] = reinterpret_cast<uint64_t>(
         ::dlsym(RTLD_DEFAULT, symbol.c_str()));
-  }
-  for (size_t i = 0; i < count; ++i) {
-    by_name_[module_.functions[i].name.index] = static_cast<uint32_t>(i);
-  }
-
-  // Ask the emitter once per function what it thinks, with every callee
-  // assumed fine. Emitting is the only honest answer to "can this be
-  // compiled", so there is no second opinion to keep in step.
-  std::vector<bool> compilable(count, true);
-  std::vector<std::string> reasons(count);
-  for (size_t i = 0; i < count; ++i) {
-    if (!module_.functions[i].is_foreign()) {
-      continue;
-    }
-    reasons[i] = foreign_[i] == 0
+    reasons[i] = foreign[i] == 0
                      ? "is `extern` and its symbol was not found"
                      : "is `extern`, called at the address the loader gave";
   }
-  for (size_t i = 0; i < count; ++i) {
+
+  // What is callable: a definition the emitter accepts, a foreign symbol
+  // that resolved, or a declaration whose definition is callable.
+  const auto callable = [&](uint32_t global) {
+    const Entry& entry = entries_[global];
+    if (foreign[global] != 0) {
+      return true;
+    }
+    const uint32_t target = entry.link;
+    return compilable[target] &&
+           !FunctionOf(entries_[target]).is_declaration();
+  };
+
+  const auto refresh = [&] {
+    for (uint32_t f = 0; f < files_.size(); ++f) {
+      FileState& file = *files_[f];
+      file.compilable.assign(file.global.size(), false);
+      file.foreign.assign(file.global.size(), 0);
+      for (uint32_t i = 0; i < file.global.size(); ++i) {
+        const uint32_t global = file.global[i];
+        file.compilable[i] = callable(global);
+        // A call resolved through a declaration still goes through a `bl`,
+        // so only a genuinely foreign target gets an address.
+        file.foreign[i] = foreign[entries_[global].link] != 0
+                              ? foreign[entries_[global].link]
+                              : foreign[global];
+      }
+    }
+  };
+
+  // Ask the emitter once per definition, with every callee assumed fine.
+  refresh();
+  for (uint32_t i = 0; i < entries_.size(); ++i) {
+    const Entry& entry = entries_[i];
+    const ir::Function& function = FunctionOf(entry);
+    if (function.is_declaration()) {
+      if (reasons[i].empty()) {
+        reasons[i] = entries_[i].link != i
+                         ? "is defined in another file"
+                         : "has no body";
+      }
+      compilable[i] = false;
+      continue;
+    }
+    FileState& file = *files_[entry.file];
     const CompiledFunction attempt =
-        EmitFunction(interner_, types_, &layouts_, module_,
-                     module_.functions[i], compilable, foreign_, 0);
+        EmitFunction(interner_, types_, &file.layouts, file.module, function,
+                     file.compilable, file.foreign, file.strings, 0);
     if (!attempt.compiled) {
       compilable[i] = false;
-      // A reason already recorded is the more specific one: "its symbol was
-      // not found" says more than "has no body".
-      if (reasons[i].empty()) {
-        reasons[i] = attempt.reason;
-      }
+      reasons[i] = attempt.reason;
     }
   }
 
-  // A call into something this tier cannot take makes the caller
-  // untakeable too: there is no way back into the interpreter mid-frame.
+  // A call into something this tier cannot take makes the caller untakeable
+  // too: there is no way back into the interpreter mid-frame.
   bool changed = true;
   while (changed) {
     changed = false;
-    for (size_t i = 0; i < count; ++i) {
-      if (!compilable[i]) {
+    refresh();
+    for (uint32_t i = 0; i < entries_.size(); ++i) {
+      if (!compilable[i] || FunctionOf(entries_[i]).is_declaration()) {
         continue;
       }
-      for (const ir::Inst& inst : module_.functions[i].instructions) {
-        if (inst.opcode != ir::Opcode::kCall) {
+      const FileState& file = *files_[entries_[i].file];
+      for (const ir::Inst& inst : FunctionOf(entries_[i]).instructions) {
+        if (inst.opcode != ir::Opcode::kCall ||
+            inst.payload.callee >= file.global.size()) {
           continue;
         }
-        const uint32_t callee = inst.payload.callee;
-        if (callee < foreign_.size() && foreign_[callee] != 0) {
-          continue;
-        }
-        if (callee >= count || !compilable[callee]) {
+        if (!file.compilable[inst.payload.callee]) {
           compilable[i] = false;
           reasons[i] = "calls something this tier cannot compile";
           changed = true;
@@ -213,20 +343,23 @@ void CompiledModule::Impl::Compile() {
       }
     }
   }
+  refresh();
 
-  std::vector<CallFixup> fixups;
-  for (size_t i = 0; i < count; ++i) {
+  std::vector<std::pair<uint32_t, CallFixup>> fixups;
+  for (uint32_t i = 0; i < entries_.size(); ++i) {
     Entry& entry = entries_[i];
-    if (!compilable[i]) {
+    const ir::Function& function = FunctionOf(entry);
+    if (!compilable[i] || function.is_declaration()) {
       entry.reason = reasons[i];
       ++skipped_count_;
       continue;
     }
 
-    const uint32_t base = static_cast<uint32_t>(words_.size());
+    FileState& file = *files_[entry.file];
+    const auto base = static_cast<uint32_t>(words_.size());
     CompiledFunction compiled =
-        EmitFunction(interner_, types_, &layouts_, module_,
-                     module_.functions[i], compilable, foreign_,
+        EmitFunction(interner_, types_, &file.layouts, file.module, function,
+                     file.compilable, file.foreign, file.strings,
                      static_cast<uint32_t>(traps_.size()));
     WOLANG_CHECK(compiled.compiled);
 
@@ -242,7 +375,8 @@ void CompiledModule::Impl::Compile() {
       traps_.push_back(std::move(site));
     }
     for (const CallFixup& fixup : compiled.calls) {
-      fixups.push_back(CallFixup{base + fixup.word, fixup.callee});
+      fixups.emplace_back(entry.file,
+                          CallFixup{base + fixup.word, fixup.callee});
     }
     ++compiled_count_;
   }
@@ -250,9 +384,10 @@ void CompiledModule::Impl::Compile() {
   // Only once every function has a place can the calls between them be
   // filled in. One module, one block of code: a `bl` reaches 128 megabytes
   // and that is more code than this tier will ever emit at once.
-  for (const CallFixup& fixup : fixups) {
-    WOLANG_CHECK(fixup.callee < entries_.size());
-    const Entry& callee = entries_[fixup.callee];
+  for (const auto& [file_index, fixup] : fixups) {
+    const FileState& file = *files_[file_index];
+    WOLANG_CHECK(fixup.callee < file.global.size());
+    const Entry& callee = entries_[entries_[file.global[fixup.callee]].link];
     WOLANG_CHECK(callee.compiled);
     const int32_t distance = static_cast<int32_t>(callee.body_word) -
                              static_cast<int32_t>(fixup.word);
@@ -267,9 +402,10 @@ void CompiledModule::Impl::Compile() {
 
 // -------------------------------------------------------- marshalling ---
 
-uint64_t CompiledModule::Impl::CanonicalBits(const interp::Value& value,
+uint64_t CompiledModule::Impl::CanonicalBits(LayoutStore* layouts,
+                                             const interp::Value& value,
                                              TypeId type) {
-  const uint32_t bits = layouts_.BitsOf(type);
+  const uint32_t bits = layouts->BitsOf(type);
   if (value.kind() == interp::Value::Kind::kBool) {
     return value.boolean() ? 1 : 0;
   }
@@ -278,30 +414,31 @@ uint64_t CompiledModule::Impl::CanonicalBits(const interp::Value& value,
   }
   const uint64_t mask = (uint64_t{1} << bits) - 1;
   uint64_t raw = value.integer() & mask;
-  if (layouts_.IsSignedInteger(type) &&
+  if (layouts->IsSignedInteger(type) &&
       (raw & (uint64_t{1} << (bits - 1))) != 0) {
     raw |= ~mask;
   }
   return raw;
 }
 
-void CompiledModule::Impl::Encode(const interp::Value& value,
+void CompiledModule::Impl::Encode(LayoutStore* layouts,
+                                  const interp::Value& value,
                                   TypeId type,
                                   uint8_t* destination) {
-  switch (layouts_.ClassOf(type)) {
+  switch (layouts->ClassOf(type)) {
     case ValueClass::kVoid:
     case ValueClass::kUnsupported:
       return;
 
     case ValueClass::kInteger: {
-      const uint64_t raw = CanonicalBits(value, type);
-      const uint32_t size = layouts_.SizeOf(type);
+      const uint64_t raw = CanonicalBits(layouts, value, type);
+      const uint32_t size = layouts->SizeOf(type);
       std::memcpy(destination, &raw, size);
       return;
     }
 
     case ValueClass::kFloat: {
-      if (layouts_.BitsOf(type) == 64) {
+      if (layouts->BitsOf(type) == 64) {
         const double number = value.floating();
         std::memcpy(destination, &number, sizeof(number));
       } else {
@@ -315,7 +452,22 @@ void CompiledModule::Impl::Encode(const interp::Value& value,
       break;
   }
 
-  const Layout& layout = layouts_.Of(type);
+  const Layout& layout = layouts->Of(type);
+  if (types_.KindOf(type) == TypeKind::kStr) {
+    // A view of the bytes the interpreter's value owns. The value outlives
+    // the call -- the caller's argument vector holds it -- which is the
+    // same reason a `str` is safe to pass at all.
+    const char* bytes = value.kind() == interp::Value::Kind::kString
+                            ? value.text().data()
+                            : nullptr;
+    const uint64_t length = value.kind() == interp::Value::Kind::kString
+                                ? value.text().size()
+                                : 0;
+    const auto address = reinterpret_cast<uint64_t>(bytes);
+    std::memcpy(destination, &address, sizeof(address));
+    std::memcpy(destination + 8, &length, sizeof(length));
+    return;
+  }
   if (types_.KindOf(type) == TypeKind::kOptional) {
     const uint8_t tag = value.kind() == interp::Value::Kind::kOptional &&
                                 value.has_value()
@@ -323,7 +475,7 @@ void CompiledModule::Impl::Encode(const interp::Value& value,
                             : 0;
     destination[0] = tag;
     if (tag != 0 && layout.offsets.size() > 1) {
-      Encode(value.inside(), types_.ElementOf(type),
+      Encode(layouts, value.inside(), types_.ElementOf(type),
              destination + layout.offsets[1]);
     }
     return;
@@ -335,14 +487,13 @@ void CompiledModule::Impl::Encode(const interp::Value& value,
   const std::vector<interp::Value>& elements = value.elements();
   if (types_.KindOf(type) == TypeKind::kArray) {
     const TypeId element = types_.ElementOf(type);
-    const uint32_t stride = layouts_.StrideOf(type);
+    const uint32_t stride = layouts->StrideOf(type);
     for (size_t i = 0; i < elements.size(); ++i) {
-      Encode(elements[i], element,
-             destination + i * stride);
+      Encode(layouts, elements[i], element, destination + i * stride);
     }
     return;
   }
-  if (layouts_.IsTagOnly(type)) {
+  if (layouts->IsTagOnly(type)) {
     if (!elements.empty()) {
       const uint32_t tag = static_cast<uint32_t>(elements[0].integer());
       std::memcpy(destination, &tag, sizeof(tag));
@@ -350,16 +501,17 @@ void CompiledModule::Impl::Encode(const interp::Value& value,
     return;
   }
   for (size_t i = 0; i < elements.size() && i < layout.offsets.size(); ++i) {
-    const TypeId field = layouts_.FieldType(type, static_cast<uint32_t>(i));
+    const TypeId field = layouts->FieldType(type, static_cast<uint32_t>(i));
     if (field.is_valid()) {
-      Encode(elements[i], field, destination + layout.offsets[i]);
+      Encode(layouts, elements[i], field, destination + layout.offsets[i]);
     }
   }
 }
 
-interp::Value CompiledModule::Impl::Decode(const uint8_t* source,
+interp::Value CompiledModule::Impl::Decode(LayoutStore* layouts,
+                                           const uint8_t* source,
                                            TypeId type) {
-  switch (layouts_.ClassOf(type)) {
+  switch (layouts->ClassOf(type)) {
     case ValueClass::kVoid:
       return interp::Value::Void();
     case ValueClass::kUnsupported:
@@ -367,7 +519,7 @@ interp::Value CompiledModule::Impl::Decode(const uint8_t* source,
 
     case ValueClass::kInteger: {
       uint64_t raw = 0;
-      std::memcpy(&raw, source, layouts_.SizeOf(type));
+      std::memcpy(&raw, source, layouts->SizeOf(type));
       if (types_.KindOf(type) == TypeKind::kBool) {
         return interp::Value::Bool((raw & 1) != 0);
       }
@@ -377,7 +529,7 @@ interp::Value CompiledModule::Impl::Decode(const uint8_t* source,
     }
 
     case ValueClass::kFloat: {
-      if (layouts_.BitsOf(type) == 64) {
+      if (layouts->BitsOf(type) == 64) {
         double number = 0;
         std::memcpy(&number, source, sizeof(number));
         return interp::Value::Float(number, FloatWidth::k64);
@@ -392,7 +544,19 @@ interp::Value CompiledModule::Impl::Decode(const uint8_t* source,
       break;
   }
 
-  const Layout& layout = layouts_.Of(type);
+  const Layout& layout = layouts->Of(type);
+  if (types_.KindOf(type) == TypeKind::kStr) {
+    uint64_t address = 0;
+    uint64_t length = 0;
+    std::memcpy(&address, source, sizeof(address));
+    std::memcpy(&length, source + 8, sizeof(length));
+    if (address == 0) {
+      return interp::Value::Str(std::string());
+    }
+    return interp::Value::Str(
+        std::string(reinterpret_cast<const char*>(address),
+                    static_cast<size_t>(length)));
+  }
   if (types_.KindOf(type) == TypeKind::kOptional) {
     if (source[0] == 0) {
       return interp::Value::Absent();
@@ -400,18 +564,19 @@ interp::Value CompiledModule::Impl::Decode(const uint8_t* source,
     const TypeId inside = types_.ElementOf(type);
     const uint32_t offset =
         layout.offsets.size() > 1 ? layout.offsets[1] : 0;
-    return interp::Value::Present(Decode(source + offset, inside));
+    return interp::Value::Present(
+        Decode(layouts, source + offset, inside));
   }
   if (types_.KindOf(type) == TypeKind::kArray) {
     const TypeId element = types_.ElementOf(type);
-    const uint32_t stride = layouts_.StrideOf(type);
+    const uint32_t stride = layouts->StrideOf(type);
     std::vector<interp::Value> elements;
     for (uint64_t i = 0; i < types_.Get(type).length; ++i) {
-      elements.push_back(Decode(source + i * stride, element));
+      elements.push_back(Decode(layouts, source + i * stride, element));
     }
     return interp::Value::Aggregate(std::move(elements));
   }
-  if (layouts_.IsTagOnly(type)) {
+  if (layouts->IsTagOnly(type)) {
     uint32_t tag = 0;
     std::memcpy(&tag, source, sizeof(tag));
     std::vector<interp::Value> elements;
@@ -420,11 +585,12 @@ interp::Value CompiledModule::Impl::Decode(const uint8_t* source,
   }
   std::vector<interp::Value> elements;
   for (size_t i = 0; i < layout.offsets.size(); ++i) {
-    const TypeId field = layouts_.FieldType(type, static_cast<uint32_t>(i));
+    const TypeId field = layouts->FieldType(type, static_cast<uint32_t>(i));
     if (!field.is_valid()) {
       continue;
     }
-    elements.push_back(Decode(source + layout.offsets[i], field));
+    elements.push_back(
+        Decode(layouts, source + layout.offsets[i], field));
   }
   return interp::Value::Aggregate(std::move(elements));
 }
@@ -444,8 +610,9 @@ interp::Outcome CompiledModule::Impl::Run(
     return outcome;
   }
 
-  const ir::Function& function =
-      module_.functions[by_name_[name.index]];
+  FileState& file = *files_[entry->file];
+  LayoutStore* layouts = &file.layouts;
+  const ir::Function& function = FunctionOf(*entry);
   const std::span<const ir::InstId> params =
       function.ParamsOf(function.entry());
 
@@ -455,24 +622,24 @@ interp::Outcome CompiledModule::Impl::Run(
   std::vector<std::vector<uint8_t>> buffers(params.size());
   for (size_t i = 0; i < params.size(); ++i) {
     const TypeId type = function.Get(params[i]).type;
-    if (layouts_.ClassOf(type) == ValueClass::kAggregate) {
-      buffers[i].assign(std::max(layouts_.SizeOf(type), 8u), 0);
+    if (layouts->ClassOf(type) == ValueClass::kAggregate) {
+      buffers[i].assign(std::max(layouts->SizeOf(type), 8u), 0);
       if (i < arguments.size()) {
-        Encode(arguments[i], type, buffers[i].data());
+        Encode(layouts, arguments[i], type, buffers[i].data());
       }
       uint8_t* address = buffers[i].data();
       std::memcpy(&slots[i], &address, sizeof(address));
       continue;
     }
     if (i < arguments.size()) {
-      Encode(arguments[i], type,
+      Encode(layouts, arguments[i], type,
              reinterpret_cast<uint8_t*>(&slots[i]));
     }
   }
 
   const TypeId returned = types_.ElementOf(function.type);
   std::vector<uint8_t> result(
-      std::max(returned.is_valid() ? layouts_.SizeOf(returned) : 0u, 16u), 0);
+      std::max(returned.is_valid() ? layouts->SizeOf(returned) : 0u, 16u), 0);
 
   // The context and the landing pad are members rather than locals, and
   // that is not a style choice: an object of automatic storage that is
@@ -498,7 +665,7 @@ interp::Outcome CompiledModule::Impl::Run(
   if (_setjmp(landing_) == 0) {
     stub(&context_, slots.data(), result.data());
     if (returned.is_valid()) {
-      outcome.value = Decode(result.data(), returned);
+      outcome.value = Decode(layouts, result.data(), returned);
     } else {
       outcome.value = interp::Value::Void();
     }
@@ -526,9 +693,8 @@ interp::Outcome CompiledModule::Impl::Run(
 }
 
 std::string CompiledModule::Impl::Symbolize(uint64_t offset) const {
-  const uint32_t word = static_cast<uint32_t>(offset / sizeof(uint32_t));
-  for (size_t i = 0; i < entries_.size(); ++i) {
-    const Entry& entry = entries_[i];
+  const auto word = static_cast<uint32_t>(offset / sizeof(uint32_t));
+  for (const Entry& entry : entries_) {
     if (!entry.compiled || word < entry.first_word ||
         word >= entry.first_word + entry.word_count) {
       continue;
@@ -539,7 +705,7 @@ std::string CompiledModule::Impl::Symbolize(uint64_t offset) const {
       return {};
     }
     std::string text = "@";
-    text.append(interner_.Text(module_.functions[i].name));
+    text.append(interner_.Text(FunctionOf(entry).name));
     text.append("+0x");
     char buffer[16] = {};
     std::snprintf(buffer, sizeof(buffer), "%x",
@@ -582,25 +748,15 @@ std::string CompiledModule::Symbolize(uint32_t offset) const {
 std::vector<std::pair<std::string, uint32_t>> CompiledModule::Listing()
     const {
   std::vector<std::pair<std::string, uint32_t>> listing;
-  for (size_t i = 0; i < impl_->entries_.size(); ++i) {
-    const Impl::Entry& entry = impl_->entries_[i];
+  for (const Impl::Entry& entry : impl_->entries_) {
     if (!entry.compiled) {
       continue;
     }
     listing.push_back(std::pair<std::string, uint32_t>(
-        std::string(impl_->interner_.Text(impl_->module_.functions[i].name)),
+        std::string(impl_->interner_.Text(impl_->FunctionOf(entry).name)),
         entry.word_count * static_cast<uint32_t>(sizeof(uint32_t))));
   }
   return listing;
-}
-
-std::span<const uint32_t> CompiledModule::WordsOf(Symbol name) const {
-  const Impl::Entry* entry = impl_->Find(name);
-  if (entry == nullptr || !entry->compiled) {
-    return {};
-  }
-  return std::span<const uint32_t>(impl_->words_.data() + entry->first_word,
-                                   entry->word_count);
 }
 
 size_t CompiledModule::size() const {
@@ -615,14 +771,20 @@ uint32_t CompiledModule::skipped_count() const {
 
 std::unique_ptr<CompiledModule> Compile(const StringInterner& interner,
                                         const TypeStore& types,
-                                        const FileResolution& resolution,
-                                        const ir::Module& module) {
+                                        std::span<const FileCode> files) {
   auto compiled = std::unique_ptr<CompiledModule>(new CompiledModule());
   compiled->impl_ =
-      std::make_unique<CompiledModule::Impl>(interner, types, resolution,
-                                             module);
+      std::make_unique<CompiledModule::Impl>(interner, types, files);
   compiled->impl_->Compile();
   return compiled;
+}
+
+std::unique_ptr<CompiledModule> Compile(const StringInterner& interner,
+                                        const TypeStore& types,
+                                        const FileResolution& resolution,
+                                        const ir::Module& module) {
+  const FileCode one{&resolution, &module};
+  return Compile(interner, types, std::span<const FileCode>(&one, 1));
 }
 
 }  // namespace codegen

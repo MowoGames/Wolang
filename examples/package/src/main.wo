@@ -3,14 +3,14 @@ need demo.engine.{Report, m, s}
 need demo.combat.{Falloff, TravelTime}
 
 fun main() {
-  let reach = 3m
+  const reach = 3m
 
   // Units are checked at compile time and cost nothing at runtime: swapping
   // these two arguments would not compile.
-  let damage = Falloff(10.0, 1m, reach)
+  const damage = Falloff(10.0, 1m, reach)
 
-  let speed = 2m / 1s
-  let eta = TravelTime(reach, speed)
+  const speed = 2m / 1s
+  const eta = TravelTime(reach, speed)
 
   Report(damage, eta)
 }

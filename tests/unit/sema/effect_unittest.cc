@@ -115,9 +115,9 @@ WOLANG_TEST(EffectRowTest, CallingOutOfTheLanguageIsUnsafe) {
   testing::TempTree tree("ffi-unsafe");
   tree.Write("wolang.toml", "[package]\nname = \"ffi\"\nversion = \"1\"\n");
   tree.Write("src/main.wo", R"(
-extern "C" fun abs(n: i32) -> i32
+extern "C" fun abs(n: s32) -> s32
 
-offer fun Quiet(n: i32) -> i32 {
+offer fun Quiet(n: s32) -> s32 {
   return abs(n)
 }
 )");
@@ -133,9 +133,9 @@ WOLANG_TEST(EffectRowTest, APackageThatForbidsUnsafeCannotReachC) {
              "[package]\nname = \"ffi\"\nversion = \"1\"\n\n"
              "[build]\nunsafe = \"deny\"\n");
   tree.Write("src/main.wo", R"(
-extern "C" fun abs(n: i32) -> i32
+extern "C" fun abs(n: s32) -> s32
 
-fun Magnitude(n: i32) -> i32 uses unsafe {
+fun Magnitude(n: s32) -> s32 uses unsafe {
   return abs(n)
 }
 )");

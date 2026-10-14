@@ -220,7 +220,7 @@ fun Fib(n: int) -> int {
 WOLANG_TEST(CodegenTest, PassesBlockParametersAcrossEdges) {
   Fixture f(R"(
 fun Pick(c: bool) -> int {
-  let v = if c { 10 } else { 20 }
+  const v = if c { 10 } else { 20 }
   return v
 }
 )");
@@ -234,7 +234,7 @@ WOLANG_TEST(CodegenTest, TrapsTheSameWayTheInterpreterDoes) {
   Fixture f(R"(
 fun Divide(a: int, b: int) -> int => a / b
 
-fun Overflow(a: i8, b: i8) -> i8 => a + b
+fun Overflow(a: s8, b: s8) -> s8 => a + b
 
 fun Shift(a: int, b: int) -> int => a << b
 )");
@@ -277,9 +277,9 @@ fun Compare(a: float, b: float) -> bool => a < b
 
 WOLANG_TEST(CodegenTest, ConvertsWithAs) {
   Fixture f(R"(
-fun Widen(n: i32) -> i64 => n as i64
+fun Widen(n: s32) -> s64 => n as s64
 
-fun Narrow(n: i32) -> u8 => n as u8
+fun Narrow(n: s32) -> u8 => n as u8
 
 fun ToFloat(n: int) -> float => n as float
 
@@ -318,7 +318,7 @@ fun Scale(v: Vec2, k: float) -> Vec2 {
 WOLANG_TEST(CodegenTest, TrapsOutsideAnArray) {
   Fixture f(R"(
 fun At(i: int) -> int {
-  let xs = [10, 20, 30]
+  const xs = [10, 20, 30]
   return xs[i]
 }
 )");
@@ -334,7 +334,7 @@ fun At(i: int) -> int {
 WOLANG_TEST(CodegenTest, RunsOptionals) {
   Fixture f(R"(
 fun Unwrap(p: int?) -> int {
-  if let v = p {
+  if const v = p {
     return v
   }
   return 0
@@ -372,11 +372,12 @@ WOLANG_TEST(CodegenTest, SaysWhatItCannotCompile) {
   // A tier that compiles what it can has to say what it did not, or "why
   // is this slow" has no answer.
   Fixture f(R"(
-fun Greet(name: str) -> str => name
+fun Greet(name: text) -> Text => "hello, {name}"
 
 fun Count(n: int) -> int => n + 1
 )");
-  WOLANG_EXPECT_EQ(f.Skipped("Greet"), "takes `str`");
+  // An owned string means allocating one, and this tier has no heap.
+  WOLANG_EXPECT_EQ(f.Skipped("Greet"), "returns `Text`");
   WOLANG_EXPECT_EQ(f.Skipped("Count"), "");
 }
 
@@ -384,17 +385,17 @@ WOLANG_TEST(CodegenTest, SpillsWhenThereAreMoreValuesThanRegisters) {
   // Nine integer registers, and this holds more than nine values at once.
   Fixture f(R"(
 fun Many(a: int, b: int, c: int, d: int, e: int) -> int {
-  let p = a + b
-  let q = b + c
-  let r = c + d
-  let s = d + e
-  let t = e + a
-  let u = p + q
-  let v = q + r
-  let w = r + s
-  let x = s + t
-  let y = t + u
-  let z = u + v
+  const p = a + b
+  const q = b + c
+  const r = c + d
+  const s = d + e
+  const t = e + a
+  const u = p + q
+  const v = q + r
+  const w = r + s
+  const x = s + t
+  const y = t + u
+  const z = u + v
   return p + q + r + s + t + u + v + w + x + y + z
 }
 )");
@@ -425,7 +426,7 @@ fun PickFloat(a: float, b: float) -> float => Larger(a, b)
   WOLANG_EXPECT_EQ(f.Run("PickFloat", {Fixture::Float(2.5),
                                        Fixture::Float(1.5)}),
                    "2.5");
-  WOLANG_EXPECT_EQ(f.Skipped("Larger<i32>"), "");
+  WOLANG_EXPECT_EQ(f.Skipped("Larger<s32>"), "");
   WOLANG_EXPECT_EQ(f.Skipped("Larger<f32>"), "");
 }
 
@@ -435,7 +436,7 @@ WOLANG_TEST(CodegenTest, CallsOutOfTheLanguage) {
   // only one of them could, every program using the FFI would fall out of
   // the differential check.
   Fixture f(R"(
-extern "C" fun abs(n: i32) -> i32
+extern "C" fun abs(n: s32) -> s32
 
 extern "C" fun fabs(x: f64) -> f64
 
@@ -450,7 +451,7 @@ fun Distance(x: f64) -> f64 => fabs(x)
 
 WOLANG_TEST(CodegenTest, SaysWhenAForeignSymbolIsMissing) {
   Fixture f(R"(
-extern "C" fun NotInAnyLibrary(n: i32) -> i32
+extern "C" fun NotInAnyLibrary(n: s32) -> s32
 
 fun Try(n: int) -> int => NotInAnyLibrary(n)
 )");
@@ -466,13 +467,13 @@ WOLANG_TEST(CodegenTest, AllocatesThroughTheForeignBoundary) {
   // the same load as reading a local. Both tiers do it, which is what makes
   // this comparable at all.
   Fixture f(R"(
-extern "C" fun malloc(size: u64) -> *i32
-extern "C" fun free(block: *i32)
+extern "C" fun malloc(size: u64) -> *s32
+extern "C" fun free(block: *s32)
 
 fun RoundTrip(n: int) -> int {
-  let block = malloc(4)
+  const block = malloc(4)
   *block = n + 1
-  let read = *block
+  const read = *block
   free(block)
   return read
 }
@@ -485,12 +486,31 @@ WOLANG_TEST(CodegenTest, TakesTheAddressOfALocal) {
   Fixture f(R"(
 fun Through(n: int) -> int {
   var x = n
-  let p = &x
+  const p = &x
   *p = *p + 1
   return x
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Through", {Fixture::Int(5)}), "6");
+}
+
+WOLANG_TEST(CodegenTest, CarriesABorrowedString) {
+  // A `str` is a pointer and a length, and a literal is a view of bytes
+  // that live with the module -- which is why it is a borrow and why it
+  // costs no allocation.
+  Fixture f(R"(
+fun Which(c: bool) -> text {
+  if c {
+    return "yes"
+  }
+  return "no"
+}
+
+fun Length(message: text) -> int => 0
+)");
+  WOLANG_EXPECT_EQ(f.Run("Which", {Fixture::Bool(true)}), "\"yes\"");
+  WOLANG_EXPECT_EQ(f.Run("Which", {Fixture::Bool(false)}), "\"no\"");
+  WOLANG_EXPECT_EQ(f.Skipped("Length"), "");
 }
 
 }  // namespace

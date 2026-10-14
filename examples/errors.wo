@@ -2,13 +2,13 @@
 // that lexical diagnostics point at the right place.
 //   wolang check examples/errors.wo
 
-let unterminated = "no closing quote
-let bad_escape = "a\qb"
-let bad_unicode = "\u{110000}"
-let empty_interpolation = "{}"
-let bad_number = 0b1012
-let too_big = 18446744073709551616
-let bad_suffix = 1f128
-let empty_char = ''
-let reserved = transactional
-let stray = $
+const unterminated = "no closing quote
+const bad_escape = "a\qb"
+const bad_unicode = "\u{110000}"
+const empty_interpolation = "{}"
+const bad_number = 0b1012
+const too_big = 18446744073709551616
+const bad_suffix = 1f128
+const empty_char = ''
+const reserved = transactional
+const stray = $

@@ -108,7 +108,7 @@ fun Flip() -> bool {
 WOLANG_TEST(PassTest, RemovesAnUnusedComputationThatCannotTrap) {
   Fixture f(R"(
 fun Dead(n: int) -> int {
-  let _unused = n > 0
+  const _unused = n > 0
   return n
 }
 )");
@@ -125,7 +125,7 @@ WOLANG_TEST(PassTest, KeepsUnusedArithmeticBecauseItCanTrap) {
   // that does not. Removing it needs a proof that it cannot trap.
   Fixture f(R"(
 fun Kept(n: int) -> int {
-  let _unused = n + n
+  const _unused = n + n
   return n
 }
 )");
@@ -298,12 +298,12 @@ fun Mix(n: int, p: Vec3?, s: Shape) -> int {
     }
     i = i + 1
   }
-  let area = match s {
+  const area = match s {
     Circle(r) => 1
     Point => 0
   }
-  let reach = p?.x ?? 0.0
-  if let q = p {
+  const reach = p?.x ?? 0.0
+  if const q = p {
     total = total + 1
   }
   return total + area

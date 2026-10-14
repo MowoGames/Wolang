@@ -20,6 +20,12 @@
 namespace wolang {
 namespace codegen {
 
+// One file's IR, with the resolution its types need.
+struct FileCode {
+  const FileResolution* resolution = nullptr;
+  const ir::Module* module = nullptr;
+};
+
 // A module's functions as machine code.
 //
 // The dev tier compiles what it can and says what it could not: the
@@ -70,17 +76,31 @@ class CompiledModule {
   class Impl;
 
  private:
-  friend std::unique_ptr<CompiledModule> Compile(const StringInterner&,
-                                                 const TypeStore&,
-                                                 const FileResolution&,
-                                                 const ir::Module&);
+  friend std::unique_ptr<CompiledModule> Compile(
+      const StringInterner&,
+      const TypeStore&,
+      std::span<const FileCode>);
 
   std::unique_ptr<Impl> impl_;
 };
 
-// Compiles every function of |module| the dev tier can take. Never fails:
-// a module where nothing could be compiled is an empty one, and the
-// interpreter runs it all.
+// Compiles every function the dev tier can take, across all the files given
+// at once.
+//
+// All of them together, because lowering is per file and a call into
+// another file is a declaration with no body: compiling one file at a time
+// would leave every cross-module call to the interpreter, which in a real
+// package is most of them. A declaration is linked to its definition by the
+// declaration it came from -- a file and an item index -- rather than by
+// name, because two files may each define a private `Helper`.
+//
+// Never fails: a module where nothing could be compiled is an empty one,
+// and the interpreter runs it all.
+std::unique_ptr<CompiledModule> Compile(const StringInterner& interner,
+                                        const TypeStore& types,
+                                        std::span<const FileCode> files);
+
+// One file on its own, which is what a test and a single-file program want.
 std::unique_ptr<CompiledModule> Compile(const StringInterner& interner,
                                         const TypeStore& types,
                                         const FileResolution& resolution,

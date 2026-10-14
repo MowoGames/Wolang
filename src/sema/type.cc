@@ -44,9 +44,9 @@ std::string_view TypeKindName(TypeKind kind) {
     case TypeKind::kFloatLiteral:
       return "float literal";
     case TypeKind::kString:
-      return "String";
+      return "Text";
     case TypeKind::kStr:
-      return "str";
+      return "text";
     case TypeKind::kNamed:
       return "named";
     case TypeKind::kParameter:
@@ -656,16 +656,16 @@ std::string TypeStore::Describe(const StringInterner& interner,
     case TypeKind::kChar:
       return "char";
     case TypeKind::kString:
-      return "String";
+      return "Text";
     case TypeKind::kStr:
-      return "str";
+      return "text";
     case TypeKind::kIntLiteral:
       return "integer literal";
     case TypeKind::kFloatLiteral:
       return "float literal";
 
     case TypeKind::kInt: {
-      std::string text = type.is_signed ? "i" : "u";
+      std::string text = type.is_signed ? "s" : "u";
       text.append(std::to_string(BitWidth(id)));
       return text;
     }
@@ -696,18 +696,18 @@ std::string TypeStore::Describe(const StringInterner& interner,
     case TypeKind::kFallible:
       return Describe(interner, type.element) + "!";
 
+    // `[]T` and `[N]T` read left to right: a slice of T, an array of N of
+    // them. The brackets say what the shape is before the element does.
     case TypeKind::kSlice: {
-      std::string text = type.is_soa ? "soa [" : "[";
+      std::string text = type.is_soa ? "soa []" : "[]";
       text.append(Describe(interner, type.element));
-      text.push_back(']');
       return text;
     }
     case TypeKind::kArray: {
       std::string text = type.is_soa ? "soa [" : "[";
-      text.append(Describe(interner, type.element));
-      text.append("; ");
       text.append(std::to_string(type.length));
       text.push_back(']');
+      text.append(Describe(interner, type.element));
       return text;
     }
 

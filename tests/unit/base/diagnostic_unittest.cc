@@ -57,7 +57,7 @@ WOLANG_TEST(DiagnosticEngine, SuppressedBuilderIgnoresLabels) {
   DiagnosticEngine diagnostics;
   diagnostics.SetSeverityOverride("H0101", Severity::kOff);
   {
-    DiagnosticBuilder builder = diagnostics.Hint("H0101", "prefer `let`");
+    DiagnosticBuilder builder = diagnostics.Hint("H0101", "prefer `const`");
     builder.Primary(SourceSpan{FileId{0}, 0, 1}, "here").Note("note");
     WOLANG_EXPECT(builder.is_suppressed());
   }
@@ -105,24 +105,24 @@ WOLANG_TEST(DiagnosticRenderer, RendersLabelsNotesAndLocation) {
   SourceManager sources;
   const FileId file = sources.AddVirtualFile(
       "combat/turret.wo",
-      "fun Fire() {\n  let t = target\n  await Wait(0.5s)\n}\n");
+      "fun Fire() {\n  const t = target\n  wait Wait(0.5s)\n}\n");
 
   DiagnosticEngine diagnostics;
-  diagnostics.Warning("W0107", "actor reference `t` held across `await`")
-      .Secondary(SourceSpan{file, 19, 20}, "`t` captured here")
-      .Primary(SourceSpan{file, 32, 48}, "`t` may be destroyed while waiting")
-      .Note("re-check liveness after the await");
+  diagnostics.Warning("W0107", "actor reference `t` held across `wait`")
+      .Secondary(SourceSpan{file, 21, 22}, "`t` captured here")
+      .Primary(SourceSpan{file, 34, 49}, "`t` may be destroyed while waiting")
+      .Note("re-check liveness after the wait");
 
   const std::string expected =
-      "warning[W0107]: actor reference `t` held across `await`\n"
+      "warning[W0107]: actor reference `t` held across `wait`\n"
       " --> combat/turret.wo:3:3\n"
       "  |\n"
-      "2 |   let t = target\n"
-      "  |       - `t` captured here\n"
-      "3 |   await Wait(0.5s)\n"
-      "  |   ^^^^^^^^^^^^^^^^ `t` may be destroyed while waiting\n"
+      "2 |   const t = target\n"
+      "  |         - `t` captured here\n"
+      "3 |   wait Wait(0.5s)\n"
+      "  |   ^^^^^^^^^^^^^^^ `t` may be destroyed while waiting\n"
       "  |\n"
-      "  = note: re-check liveness after the await\n";
+      "  = note: re-check liveness after the wait\n";
 
   WOLANG_EXPECT_EQ(
       RenderDiagnostic(sources, diagnostics.diagnostics().front()), expected);
@@ -154,7 +154,7 @@ WOLANG_TEST(DiagnosticRenderer, RendersFixWithAppliedEdit) {
 
 WOLANG_TEST(DiagnosticRenderer, MarksMultiLineSpansAsContinuing) {
   SourceManager sources;
-  const FileId file = sources.AddVirtualFile("a.wo", "let s = \"abc\ndef\n");
+  const FileId file = sources.AddVirtualFile("a.wo", "const s = \"abc\ndef\n");
 
   DiagnosticEngine diagnostics;
   diagnostics.Error("E0001", "unterminated string literal")
@@ -167,17 +167,17 @@ WOLANG_TEST(DiagnosticRenderer, MarksMultiLineSpansAsContinuing) {
 
 WOLANG_TEST(DiagnosticRenderer, ExpandsTabsWhenAligningMarkers) {
   SourceManager sources;
-  const FileId file = sources.AddVirtualFile("a.wo", "\tlet x = 1\n");
+  const FileId file = sources.AddVirtualFile("a.wo", "\tconst x = 1\n");
 
   DiagnosticEngine diagnostics;
   diagnostics.Error("E0105", "cannot assign to `x`")
-      .Primary(SourceSpan{file, 5, 6}, "immutable binding");
+      .Primary(SourceSpan{file, 7, 8}, "immutable binding");
 
   const std::string rendered =
       RenderDiagnostic(sources, diagnostics.diagnostics().front());
-  // The tab becomes four spaces, so `x` sits in display column 9.
-  WOLANG_EXPECT(rendered.find("1 |     let x = 1\n") != std::string::npos);
-  WOLANG_EXPECT(rendered.find("  |         ^ immutable binding\n") !=
+  // The tab becomes four spaces, so `x` sits in display column 11.
+  WOLANG_EXPECT(rendered.find("1 |     const x = 1\n") != std::string::npos);
+  WOLANG_EXPECT(rendered.find("  |           ^ immutable binding\n") !=
                 std::string::npos);
 }
 
@@ -222,7 +222,7 @@ WOLANG_TEST(DiagnosticRenderer, SummaryCountsAndPluralizes) {
 
 WOLANG_TEST(DiagnosticRenderer, ColorOptionAddsEscapeSequences) {
   SourceManager sources;
-  const FileId file = sources.AddVirtualFile("a.wo", "let x = 1\n");
+  const FileId file = sources.AddVirtualFile("a.wo", "const x = 1\n");
   DiagnosticEngine diagnostics;
   diagnostics.Error("E0101", "mismatched types")
       .Primary(SourceSpan{file, 4, 5});

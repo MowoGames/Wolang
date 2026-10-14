@@ -349,7 +349,7 @@ WOLANG_TEST(PrinterTest, PrintsBlockParametersAndEdges) {
                    "^0:  // entry\n"
                    "  %1 = const.int 7\n"
                    "  jmp %1 ^1\n"
-                   "^1(%0: i32):  // join\n"
+                   "^1(%0: s32):  // join\n"
                    "  ret %0\n"
                    "}\n");
 }

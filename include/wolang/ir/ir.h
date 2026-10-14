@@ -148,6 +148,14 @@ struct Function {
   // call is the `unsafe` effect, so the checker has already decided whether
   // it is allowed to be here at all.
   Symbol foreign_symbol;
+  // Which declaration this function came from: a file index and an item
+  // index inside it. Carried so that a call into another file resolves to
+  // one definition rather than to a name two files might both define --
+  // the IR knows only unqualified names, and linking by name would be a
+  // guess.
+  static constexpr uint32_t kNoSource = 0xFFFFFFFFu;
+  uint32_t source_file = kNoSource;
+  uint32_t source_item = kNoSource;
   // Block 0 is the entry, and its parameters are the function's.
   std::vector<Block> blocks;
   std::vector<Inst> instructions;
@@ -185,6 +193,8 @@ struct Function {
   }
 
   bool is_foreign() const { return foreign_symbol.is_valid(); }
+
+  bool has_source() const { return source_item != kNoSource; }
 
   // A declaration with no body -- a trait method, an `extern`, a host
   // function -- has a signature and no blocks. Everything that walks blocks

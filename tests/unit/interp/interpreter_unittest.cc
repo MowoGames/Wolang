@@ -123,7 +123,7 @@ WOLANG_TEST(InterpreterTest, PassesBlockParametersAcrossEdges) {
   // This is what a phi node would have had to work out backwards.
   Fixture f(R"(
 fun Pick(c: bool) -> int {
-  let v = if c { 10 } else { 20 }
+  const v = if c { 10 } else { 20 }
   return v
 }
 )");
@@ -135,7 +135,7 @@ WOLANG_TEST(InterpreterTest, ShortCircuitsWithoutEvaluatingTheRightSide) {
   // `Boom` divides by zero, so reaching it would trap. `&&` must not.
   Fixture f(R"(
 fun Boom() -> bool {
-  let x = 1 / 0
+  const x = 1 / 0
   return true
 }
 
@@ -158,7 +158,7 @@ WOLANG_TEST(InterpreterTest, TrapsOnOverflowRatherThanWrapping) {
   // A language that wraps silently turns an arithmetic bug into a wrong
   // answer somewhere else entirely.
   Fixture f(R"(
-fun Grow(a: i8, b: i8) -> i8 {
+fun Grow(a: s8, b: s8) -> s8 {
   return a + b
 }
 )");
@@ -174,7 +174,7 @@ fun Grow(a: i8, b: i8) -> i8 {
 WOLANG_TEST(InterpreterTest, TrapsOutsideAnArray) {
   Fixture f(R"(
 fun Read(i: int) -> int {
-  let xs: [int; 3] = [10, 20, 30]
+  const xs: [3]int = [10, 20, 30]
   return xs[i]
 }
 )");
@@ -284,8 +284,8 @@ WOLANG_TEST(InterpreterTest, ConvertsBetweenNumbersWithAs) {
   // something: before this it was lowered to nothing and the width never
   // changed.
   Fixture f(R"(
-fun Widen(n: i32) -> i64 {
-  return n as i64
+fun Widen(n: s32) -> s64 {
+  return n as s64
 }
 
 fun ToFloat(n: int) -> float {
@@ -306,12 +306,12 @@ WOLANG_TEST(InterpreterTest, ANarrowingCastTrapsRatherThanTruncating) {
   // Overflow traps everywhere else in this language; a cast that quietly
   // kept the low bits would be the one place a number changes silently.
   Fixture f(R"(
-fun Narrow(n: i32) -> u8 {
+fun Narrow(n: s32) -> u8 {
   return n as u8
 }
 
-fun Huge(x: f64) -> i32 {
-  return x as i32
+fun Huge(x: f64) -> s32 {
+  return x as s32
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::Int(200)}), "200");
@@ -483,7 +483,7 @@ fun main() uses io {
   Print("hello")
 }
 
-offer fun Print(text: str) uses io
+offer fun Print(message: text) uses io
 )");
   WOLANG_EXPECT_EQ(f.Output(), "hello\n");
 }
@@ -493,13 +493,13 @@ WOLANG_TEST(IntrinsicTest, BuildsAnInterpolatedString) {
   // which is the one thing here the language cannot say about itself.
   ProgramFixture f(R"(
 fun main() uses io {
-  let n = 42
-  let f = 1.5
-  let b = true
+  const n = 42
+  const f = 1.5
+  const b = true
   Print("n={n} f={f} b={b} and {n}")
 }
 
-offer fun Print(text: str) uses io
+offer fun Print(message: text) uses io
 )");
   WOLANG_EXPECT_EQ(f.Output(), "n=42 f=1.5 b=true and 42\n");
 }
@@ -510,11 +510,11 @@ WOLANG_TEST(IntrinsicTest, AnOwnedStringIsAcceptedWhereABorrowedOneIsWanted) {
   // type check.
   ProgramFixture f(R"(
 fun main() uses io {
-  let who = "world"
+  const who = "world"
   Print("hello, {who}")
 }
 
-offer fun Print(text: str) uses io
+offer fun Print(message: text) uses io
 )");
   WOLANG_EXPECT_EQ(f.Output(), "hello, world\n");
 }
@@ -522,7 +522,7 @@ offer fun Print(text: str) uses io
 WOLANG_TEST(IntrinsicTest, ADeclarationThatIsNotAnIntrinsicTraps) {
   ProgramFixture f(R"(
 fun main() {
-  let _x = Nowhere()
+  const _x = Nowhere()
 }
 
 offer fun Nowhere() -> int

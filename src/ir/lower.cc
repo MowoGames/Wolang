@@ -102,6 +102,10 @@ class Lowerer {
         function.name = item.name;
         function.type = Erase(signature);
         function.effects = EffectsOf(id, &function.effects_known);
+        if (binding != nullptr) {
+          function.source_file = binding->file;
+          function.source_item = binding->item;
+        }
         if (HasFlag(item.flags, ItemFlags::kExtern)) {
           // `extern "C" fun puts(...) = "puts"` names the symbol; without
           // the clause the symbol is the declaration's own name.
@@ -252,6 +256,8 @@ class Lowerer {
     function.name = name;
     function.type = Erase(types_->Substitute(binding->type, substitution));
     function.effects = EffectsOf(item, &function.effects_known);
+    function.source_file = binding->file;
+    function.source_item = binding->item;
     const auto index = static_cast<uint32_t>(module_->functions.size());
     module_->functions.push_back(std::move(function));
     specializations_.emplace_back(name, index);
@@ -272,7 +278,10 @@ class Lowerer {
   // back to whichever declaration it came from.
   // Adds a signature-only entry for a function this file calls but does not
   // define, reusing one if it is already there.
-  uint32_t DeclareExternal(Symbol name, TypeId type) {
+  uint32_t DeclareExternal(Symbol name,
+                           TypeId type,
+                           uint32_t file = Function::kNoSource,
+                           uint32_t item = Function::kNoSource) {
     for (uint32_t i = 0; i < module_->functions.size(); ++i) {
       if (module_->functions[i].name == name) {
         return i;
@@ -281,6 +290,11 @@ class Lowerer {
     Function declaration;
     declaration.name = name;
     declaration.type = Erase(type);
+    // Where the definition is, so that something linking the module's
+    // files together knows which one this names. An intrinsic the compiler
+    // synthesized has no declaration to point at.
+    declaration.source_file = file;
+    declaration.source_item = item;
     module_->functions.push_back(std::move(declaration));
     return static_cast<uint32_t>(module_->functions.size() - 1);
   }
@@ -912,6 +926,12 @@ class Lowerer {
   uint32_t FieldIndex(TypeId owner, Symbol name) const {
     uint32_t index = 0;
     TypeId named = owner;
+    // A string's two parts are built in rather than declared, so there is
+    // no member table to look them up in.
+    if (types_->KindOf(named) == TypeKind::kStr ||
+        types_->KindOf(named) == TypeKind::kString) {
+      return interner_->Text(name) == "length" ? 1 : 0;
+    }
     if (types_->KindOf(named) == TypeKind::kInstance) {
       named = types_->Get(named).base;
     }
@@ -1061,8 +1081,10 @@ class Lowerer {
       // declaration here -- the same shape a trait method or an `extern`
       // has, and what the linker will resolve.
       if (binding != nullptr && binding->kind == BindingKind::kFunction) {
-        return builder_->Call(DeclareExternal(name, binding->type), type,
-                              std::move(arguments));
+        return builder_->Call(
+            DeclareExternal(name, binding->type, binding->file,
+                            binding->item),
+            type, std::move(arguments));
       }
     }
     return builder_->Undef(type);

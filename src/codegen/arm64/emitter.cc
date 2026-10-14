@@ -96,6 +96,7 @@ class FunctionEmitter {
                   const ir::Function& function,
                   const std::vector<bool>& compilable,
                   const std::vector<uint64_t>& foreign,
+                  const std::vector<std::pair<uint64_t, uint64_t>>& strings,
                   uint32_t trap_site_base)
       : interner_(interner),
         types_(types),
@@ -103,6 +104,7 @@ class FunctionEmitter {
         function_(function),
         compilable_(compilable),
         foreign_(foreign),
+        strings_(strings),
         trap_site_base_(trap_site_base) {}
 
   CompiledFunction Run() {
@@ -174,7 +176,10 @@ class FunctionEmitter {
       }
       switch (inst.opcode) {
         case ir::Opcode::kConstString:
-          return "builds a string";
+          if (inst.payload.string >= strings_.size()) {
+            return "names a string literal that is not in the module";
+          }
+          break;
         case ir::Opcode::kCallIndirect:
           return "calls through a value";
         case ir::Opcode::kCall: {
@@ -826,6 +831,20 @@ class FunctionEmitter {
         FinishFloat(id, reg);
         return;
       }
+      case ir::Opcode::kConstString: {
+        // The bytes stay where they are and the value is a view of them,
+        // which is what a `str` is.
+        const std::pair<uint64_t, uint64_t>& literal =
+            strings_[inst.payload.string];
+        const Register area = UseArea(id, 0);
+        const Register value = Scratch(1);
+        assembler_.MovImmediate(IWidth::k64, value, literal.first);
+        assembler_.Str(IWidth::k64, value, area, 0);
+        assembler_.MovImmediate(IWidth::k64, value, literal.second);
+        assembler_.Str(IWidth::k64, value, area, 8);
+        return;
+      }
+
       case ir::Opcode::kConstNull: {
         // An absent optional is a zero tag; the payload is never read.
         const Register area = UseArea(id, 0);
@@ -1871,6 +1890,7 @@ class FunctionEmitter {
   const ir::Function& function_;
   const std::vector<bool>& compilable_;
   const std::vector<uint64_t>& foreign_;
+  const std::vector<std::pair<uint64_t, uint64_t>>& strings_;
   uint32_t trap_site_base_ = 0;
 
   Assembler assembler_;
@@ -1908,9 +1928,11 @@ CompiledFunction EmitFunction(const StringInterner& interner,
                               const ir::Function& function,
                               const std::vector<bool>& compilable,
                               const std::vector<uint64_t>& foreign,
+                              const std::vector<std::pair<uint64_t,
+                                                          uint64_t>>& strings,
                               uint32_t trap_site_base) {
   FunctionEmitter emitter(interner, types, layouts, module, function,
-                          compilable, foreign, trap_site_base);
+                          compilable, foreign, strings, trap_site_base);
   return emitter.Run();
 }
 

@@ -45,6 +45,10 @@ struct Options {
   std::string command;
   std::vector<std::string> inputs;
   bool color = true;
+  // `run` only: stay on the interpreter even where the dev tier could take
+  // the program. Useful for telling a code generator bug from a program
+  // bug, which is otherwise the hardest thing to tell apart.
+  bool interpret = false;
   bool show_trivia = false;
   bool show_spans = false;
   // `fmt` only: verify instead of printing, or rewrite the file in place.
@@ -91,7 +95,8 @@ void PrintUsage() {
       "  --spans         annotate `ast` output with positions\n"
       "  --check         `fmt` only: fail if a file is not formatted\n"
       "  --write         `fmt` only: rewrite the file in place\n"
-      "  --no-cache      ignore and do not write the on-disk cache\n",
+      "  --no-cache      ignore and do not write the on-disk cache\n"
+      "  --interpret     `run` only: do not use the compiled tier\n",
       std::string(kVersion).c_str());
 }
 
@@ -415,6 +420,7 @@ int RunProgram(const Options& options) {
 
   std::vector<Diagnostic> all = load_diagnostics.diagnostics();
   const LoweredFile* program = nullptr;
+  const CheckedFile* program_file = nullptr;
   for (FileId file : files) {
     if (const std::vector<Diagnostic>* diagnostics =
             database.Diagnostics(file)) {
@@ -429,6 +435,7 @@ int RunProgram(const Options& options) {
     }
     if (lowered->module.Find(database.interner().Intern("main")) != nullptr) {
       program = lowered;
+      program_file = database.Checked(file);
     }
   }
 
@@ -442,42 +449,45 @@ int RunProgram(const Options& options) {
   }
 
   const Symbol main = database.interner().Intern("main");
-  interp::Output reference_output;
-  interp::Output optimized_output;
-  // The interpreter can leave the language too, through a thunk the code
-  // generator makes: both tiers reach C the same way or neither does.
+
+  // A program runs **once**.
+  //
+  // Wave 7 ran it twice -- once on the unoptimized IR and once on the
+  // optimized one -- and compared, which was worth it when the only thing a
+  // program could do was fill a sink the driver owned. Now that a program
+  // can call `write`, running it twice writes twice: a side effect is not
+  // something to repeat for the compiler's benefit. The comparison moved to
+  // where it belongs, which is `wolang test`: every `@Test` runs in both
+  // tiers and has to agree.
   const std::unique_ptr<interp::ForeignCaller> foreign =
       codegen::MakeForeignCaller();
-  const interp::Outcome reference = interp::RunNamed(
-      database.interner(), database.types(), program->unoptimized, main, {},
-      {}, &reference_output, foreign.get());
-  const interp::Outcome optimized = interp::RunNamed(
-      database.interner(), database.types(), program->module, main, {}, {},
-      &optimized_output, foreign.get());
 
-  // What the program printed is part of what it does, so the two tiers have
-  // to agree about that too.
-  if (reference.trap != optimized.trap ||
-      reference_output.text != optimized_output.text ||
-      (reference.ok() && reference.value != optimized.value)) {
-    // A difference here is a miscompile, which is the most serious kind of
-    // bug this compiler can have.
-    std::fprintf(stderr,
-                 "wolang: internal: the passes changed the meaning of the "
-                 "program\n  before: %s\n  after:  %s\n",
-                 Describe(reference).c_str(), Describe(optimized).c_str());
-    return 70;
+  std::unique_ptr<codegen::CompiledModule> compiled;
+  if (!options.interpret && codegen::IsSupportedTarget() &&
+      program_file != nullptr) {
+    compiled = codegen::Compile(database.interner(), database.types(),
+                                program_file->resolution, program->module);
   }
 
-  std::fputs(reference_output.text.c_str(), stdout);
-  if (!reference.ok()) {
+  interp::Output output;
+  interp::Outcome outcome;
+  if (compiled != nullptr && compiled->Contains(main)) {
+    outcome = compiled->Run(main, {});
+  } else {
+    outcome = interp::RunNamed(database.interner(), database.types(),
+                               program->module, main, {}, {}, &output,
+                               foreign.get());
+  }
+
+  std::fputs(output.text.c_str(), stdout);
+  if (!outcome.ok()) {
     std::fprintf(stderr, "wolang: %s at %s: %s\n",
-                 std::string(interp::TrapKindName(reference.trap)).c_str(),
-                 reference.where.c_str(), reference.message.c_str());
+                 std::string(interp::TrapKindName(outcome.trap)).c_str(),
+                 outcome.where.c_str(), outcome.message.c_str());
     return 1;
   }
-  if (reference.value.kind() != interp::Value::Kind::kVoid) {
-    std::fprintf(stdout, "%s\n", reference.value.Describe().c_str());
+  if (outcome.value.kind() != interp::Value::Kind::kVoid) {
+    std::fprintf(stdout, "%s\n", outcome.value.Describe().c_str());
   }
   return 0;
 }
@@ -786,6 +796,8 @@ int Run(int argc, char** argv) {
       options.write_in_place = true;
     } else if (argument == "--no-cache") {
       options.no_cache = true;
+    } else if (argument == "--interpret") {
+      options.interpret = true;
     } else if (argument.size() > 1 && argument[0] == '-') {
       std::fprintf(stderr, "wolang: unknown option %.*s\n",
                    static_cast<int>(argument.size()), argument.data());

@@ -28,7 +28,7 @@ class Turret : Actor {
 
   // `component` is the keyword that declares an ECS component, so attaching a
   // sub-object is an ordinary host function instead.
-  let muzzle = attach<SceneComponent>("Muzzle")
+  const muzzle = attach<SceneComponent>("Muzzle")
   var target: Weak<Pawn>
 
   signal Destroyed(by: Actor?)
@@ -39,23 +39,23 @@ class Turret : Actor {
     spawn ScanLoop()
   }
 
-  async fun ScanLoop() uses rand {
+  task fun ScanLoop() uses rand {
     loop {
       target = World.Overlap<Pawn>(position, range).Closest(position)
 
-      if let t = target.alive {
+      if const t = target.alive {
         rotation = Quat.LookAt(t.position - position)
         Fire(t)
-        await Wait(1.0 / fire_rate)
+        wait Wait(1.0 / fire_rate)
       } else {
-        await Wait(0.25s)
+        wait Wait(0.25s)
       }
     }
   }
 
   @Server
   fun Fire(t: Pawn) {
-    let direction = (t.position - muzzle.position).normalized
+    const direction = (t.position - muzzle.position).normalized
     World.Spawn<Projectile>(muzzle.position, direction) { speed = 40.0 }
   }
 
@@ -75,7 +75,7 @@ machine Door {
   }
   state Opening {
     enter {
-      await animation.Play("Open")
+      wait animation.Play("Open")
     }
     always -> Open
   }
@@ -84,7 +84,7 @@ machine Door {
   }
   state Closing {
     enter {
-      await animation.Play("Close")
+      wait animation.Play("Close")
     }
     always -> Closed
   }
@@ -98,14 +98,14 @@ struct Particle {
   var life: float
 }
 
-var burst: soa [Particle]
+var burst: soa []Particle
 var prototype: Particle
 
 error NoTarget, OutOfAmmo
 
 // `T?` may be absent, `T!` may fail; both are postfix, so a type reads left
 // to right.
-fun PickTarget(candidates: [Pawn]) -> Pawn?! uses rand {
+fun PickTarget(candidates: []Pawn) -> Pawn?! uses rand {
   if candidates.len == 0 {
     return NoTarget
   }
@@ -128,16 +128,20 @@ system Integrate(dt: float, q: Query<mut Transform, Velocity>) after Gravity {
   }
 }
 
-fun Describe(count: int?) -> String {
+// Both arms build a string, so both are owned: an interpolated literal is a
+// `Text`. A plain literal would be a `text` -- a view of bytes that are
+// already there -- and turning one into an owned string allocates, which the
+// language will not do silently.
+fun Describe(count: int?) -> Text {
   // Optionals need no Some/None vocabulary: the type says `int?`, the pattern
   // says `n?`, and absence is spelled `null`.
   match count {
     n? => "{n} left"
-    null => "unknown"
+    null => "{0} left"
   }
 }
 
-fun Search(grid: [[Cell]]) -> Cell? {
+fun Search(grid: [][]Cell) -> Cell? {
   outer: for row in grid {
     for cell in row[1..] {
       if cell.matches {
@@ -151,7 +155,7 @@ fun Search(grid: [[Cell]]) -> Cell? {
   return null
 }
 
-fun DescribeHealth(hp: int, max: int) -> String {
+fun DescribeHealth(hp: int, max: int) -> Text {
   return "hp {hp} / {max} ({hp * 100 / max}%)"
 }
 

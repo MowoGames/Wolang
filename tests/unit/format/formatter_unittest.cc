@@ -94,12 +94,12 @@ WOLANG_TEST(Formatter, NormalizesSpacingAndIndentation) {
 }
 
 WOLANG_TEST(Formatter, DropsSemicolonsAndExtraBlankLines) {
-  Pass pass("fun f() {\n  let a = 1;\n\n\n  let b = 2;\n}\n");
+  Pass pass("fun f() {\n  const a = 1;\n\n\n  const b = 2;\n}\n");
   WOLANG_EXPECT_EQ(pass.formatted(),
                    "fun f() {\n"
-                   "  let a = 1\n"
+                   "  const a = 1\n"
                    "\n"
-                   "  let b = 2\n"
+                   "  const b = 2\n"
                    "}\n");
 }
 
@@ -137,50 +137,50 @@ WOLANG_TEST(Formatter, PlainNotationWinsTies) {
   // `%g` renders 40.0 as `4e+01`: it round-trips and saves a character, and
   // nobody writes it. Plain notation wins a tie; a magnitude that genuinely
   // needs an exponent keeps one.
-  Pass pass("let a = 40.0\nlet b = 4000.0\nlet c = 1e30\n");
+  Pass pass("const a = 40.0\nconst b = 4000.0\nconst c = 1e30\n");
   WOLANG_EXPECT_EQ(pass.formatted(),
-                   "let a = 40.0\n"
-                   "let b = 4000.0\n"
-                   "let c = 1e+30\n");
-  WOLANG_EXPECT_STABLE("let a = 40.0\nlet c = 1e30\n");
+                   "const a = 40.0\n"
+                   "const b = 4000.0\n"
+                   "const c = 1e+30\n");
+  WOLANG_EXPECT_STABLE("const a = 40.0\nconst c = 1e30\n");
 }
 
 WOLANG_TEST(Formatter, KeepsFloatLiteralsFloating) {
   // `15.0` must not come back as `15`, which would re-read as an integer.
-  Pass pass("let a = 15.0\nlet b = 0.25s\nlet c = 1e10\nlet d = 200ms\n");
+  Pass pass("const a = 15.0\nconst b = 0.25s\nconst c = 1e10\nconst d = 200ms\n");
   // Notation is chosen by magnitude, not by length: 1e10 is inside the range
   // ordinary code lives in, so it comes back written out.
   WOLANG_EXPECT_EQ(pass.formatted(),
-                   "let a = 15.0\n"
-                   "let b = 0.25s\n"
-                   "let c = 10000000000.0\n"
-                   "let d = 200ms\n");
-  WOLANG_EXPECT_STABLE("let a = 15.0\nlet b = 0.25s\n");
+                   "const a = 15.0\n"
+                   "const b = 0.25s\n"
+                   "const c = 10000000000.0\n"
+                   "const d = 200ms\n");
+  WOLANG_EXPECT_STABLE("const a = 15.0\nconst b = 0.25s\n");
 }
 
 WOLANG_TEST(Formatter, RestoresNeededParentheses) {
   // Grouping parentheses are not in the tree, so the formatter has to derive
   // them from precedence.
-  Pass pass("let a = (1 + 2) * 3\n");
-  WOLANG_EXPECT_EQ(pass.formatted(), "let a = (1 + 2) * 3\n");
+  Pass pass("const a = (1 + 2) * 3\n");
+  WOLANG_EXPECT_EQ(pass.formatted(), "const a = (1 + 2) * 3\n");
 
-  Pass kept("let a = 1 + 2 * 3\n");
-  WOLANG_EXPECT_EQ(kept.formatted(), "let a = 1 + 2 * 3\n");
+  Pass kept("const a = 1 + 2 * 3\n");
+  WOLANG_EXPECT_EQ(kept.formatted(), "const a = 1 + 2 * 3\n");
 
-  Pass dropped("let a = 1 + (2 * 3)\n");
-  WOLANG_EXPECT_EQ(dropped.formatted(), "let a = 1 + 2 * 3\n");
+  Pass dropped("const a = 1 + (2 * 3)\n");
+  WOLANG_EXPECT_EQ(dropped.formatted(), "const a = 1 + 2 * 3\n");
 
-  Pass unary("let a = (-b).abs()\n");
-  WOLANG_EXPECT_EQ(unary.formatted(), "let a = (-b).abs()\n");
+  Pass unary("const a = (-b).abs()\n");
+  WOLANG_EXPECT_EQ(unary.formatted(), "const a = (-b).abs()\n");
 
-  Pass right("let a = x = y = z\n");
-  WOLANG_EXPECT_EQ(right.formatted(), "let a = x = y = z\n");
+  Pass right("const a = x = y = z\n");
+  WOLANG_EXPECT_EQ(right.formatted(), "const a = x = y = z\n");
 
-  Pass left("let a = (x - y) - z\n");
-  WOLANG_EXPECT_EQ(left.formatted(), "let a = x - y - z\n");
+  Pass left("const a = (x - y) - z\n");
+  WOLANG_EXPECT_EQ(left.formatted(), "const a = x - y - z\n");
 
-  Pass needed("let a = x - (y - z)\n");
-  WOLANG_EXPECT_EQ(needed.formatted(), "let a = x - (y - z)\n");
+  Pass needed("const a = x - (y - z)\n");
+  WOLANG_EXPECT_EQ(needed.formatted(), "const a = x - (y - z)\n");
 }
 
 WOLANG_TEST(Formatter, BreaksLongArgumentLists) {
@@ -213,7 +213,7 @@ WOLANG_TEST(Formatter, KeepsComments) {
       "// leading\n"
       "fun f() {\n"
       "  // inside\n"
-      "  let a = 1  // trailing\n"
+      "  const a = 1  // trailing\n"
       "  // before the end\n"
       "}\n"
       "// at the end of the file\n");
@@ -221,7 +221,7 @@ WOLANG_TEST(Formatter, KeepsComments) {
                    "// leading\n"
                    "fun f() {\n"
                    "  // inside\n"
-                   "  let a = 1  // trailing\n"
+                   "  const a = 1  // trailing\n"
                    "  // before the end\n"
                    "}\n"
                    "// at the end of the file\n");
@@ -325,8 +325,8 @@ WOLANG_TEST(Formatter, FormatsStateMachines) {
 }
 
 WOLANG_TEST(Formatter, FormatsStringsAndInterpolations) {
-  Pass pass("let s = \"hp {hp*2} / {max}\\n\"\n");
-  WOLANG_EXPECT_EQ(pass.formatted(), "let s = \"hp {hp * 2} / {max}\\n\"\n");
+  Pass pass("const s = \"hp {hp*2} / {max}\\n\"\n");
+  WOLANG_EXPECT_EQ(pass.formatted(), "const s = \"hp {hp * 2} / {max}\\n\"\n");
   WOLANG_EXPECT_STABLE(pass.formatted());
 }
 
@@ -352,12 +352,12 @@ WOLANG_TEST(Formatter, FormatsTheNewSurface) {
       "  fun TakeDamage(amount: float) {}\n"
       "}\n"
       "fun Find(id: int) -> Pawn?\n"
-      "fun Load(p: str) -> Level!\n"
-      "fun Lookup(k: str) -> Pawn?!\n"
-      "fun Sum(xs: [float]) -> float\n"
-      "fun Fixed(xs: [float; 3])\n"
-      "var burst: soa [Particle]\n"
-      "var packed: aos [Particle]\n");
+      "fun Load(p: text) -> Level!\n"
+      "fun Lookup(k: text) -> Pawn?!\n"
+      "fun Sum(xs: []float) -> float\n"
+      "fun Fixed(xs: [3]float)\n"
+      "var burst: soa []Particle\n"
+      "var packed: aos []Particle\n");
 }
 
 WOLANG_TEST(Formatter, FormatsLabelledLoopsAndRanges) {
@@ -365,8 +365,8 @@ WOLANG_TEST(Formatter, FormatsLabelledLoopsAndRanges) {
       "fun f() {\n"
       "outer: loop {\n"
       "for i in 2.. { break outer }\n"
-      "let a = xs[..5]\n"
-      "let b = xs[..]\n"
+      "const a = xs[..5]\n"
+      "const b = xs[..]\n"
       "continue outer\n"
       "}\n"
       "}\n");
@@ -393,8 +393,8 @@ WOLANG_TEST(Formatter, FormatsOptionalPatterns) {
 }
 
 WOLANG_TEST(Formatter, FormatsStructPatternsInConditions) {
-  Pass pass("fun f() { if let Point { x, y: inner } = p { Use(x) } }");
-  WOLANG_EXPECT(pass.formatted().find("if let Point { x, y: inner } = p") !=
+  Pass pass("fun f() { if const Point { x, y: inner } = p { Use(x) } }");
+  WOLANG_EXPECT(pass.formatted().find("if const Point { x, y: inner } = p") !=
                 std::string::npos);
   WOLANG_EXPECT_STABLE(pass.formatted());
 }
@@ -423,9 +423,9 @@ WOLANG_TEST(Formatter, FormatsEveryDeclarationKind) {
       "struct Hit {\n  var point: Vec3 = origin\n}\n"
       "signal Died(by: Actor?)\n"
       "system Integrate(dt: float) after Gravity {\n  Step(dt)\n}\n"
-      "offer async fun Run<T: Actor>(x: T) -> T? uses io {\n  return null\n}\n"
+      "offer task fun Run<T: Actor>(x: T) -> T? uses io {\n  return null\n}\n"
       "extern \"C\" fun Noise(x: float) -> float = \"wolang_noise\"\n"
-      "comptime let Table = Build()\n");
+      "comptime const Table = Build()\n");
 }
 
 WOLANG_TEST(Formatter, StaysStableOnTheBundledExamples) {

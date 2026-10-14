@@ -426,6 +426,18 @@ class Interpreter {
       }
       case ir::Opcode::kExtract: {
         const Value& aggregate = Operand(frame, inst, 0);
+        if (aggregate.kind() == Value::Kind::kString) {
+          // A string's parts: the bytes it holds, and how many. The pointer
+          // is into the value's own storage, which lives as long as the
+          // value does -- the same guarantee a `str` makes.
+          if (inst.field == 1) {
+            return Value::Int(aggregate.text().size(), IntWidth::k64,
+                              /*is_signed=*/false);
+          }
+          return Value::Int(
+              reinterpret_cast<uint64_t>(aggregate.text().data()),
+              IntWidth::k64, /*is_signed=*/false);
+        }
         if (aggregate.kind() != Value::Kind::kAggregate ||
             inst.field >= aggregate.elements().size()) {
           return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),

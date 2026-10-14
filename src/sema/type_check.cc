@@ -1015,7 +1015,21 @@ void Checker::RecordCallEffects(ExprId callee) {
   if (const EffectRow* declared =
           resolution_->DeclaredRow(binding->file, binding->item);
       declared != nullptr) {
-    result_.direct_effects.Merge(*declared);
+    // A declared `uses unsafe` absorbs the obligation rather than
+    // re-exporting it. That is the difference between `unsafe` and every
+    // other effect: `io` and `net` are capabilities -- what the code needs
+    // the outside world for, which a caller has to know about -- while
+    // `unsafe` is an audit, and the declaration that states it is the one
+    // taking responsibility. Without this a safe wrapper over an unsafe
+    // primitive would be impossible, and `std.io.Print` would make every
+    // program that prints an unsafe one.
+    const EffectId unsafe_effect =
+        types_->BuiltinEffectId(BuiltinEffect::kUnsafe);
+    for (EffectId effect : declared->effects()) {
+      if (effect != unsafe_effect) {
+        result_.direct_effects.Add(effect);
+      }
+    }
     return;
   }
   // Not stated here, so the row has to come from the module-wide fixpoint.
@@ -1096,6 +1110,21 @@ TypeId Checker::CheckField(const Expr& expr) {
 
   if (types_->IsError(named)) {
     return types_->error();
+  }
+
+  // A string is a pointer and a length, and saying so is what lets the
+  // standard library write `Print` in Wolang: the platform floor needs the
+  // bytes and how many there are, and nothing else about a string.
+  if (types_->KindOf(named) == TypeKind::kStr ||
+      types_->KindOf(named) == TypeKind::kString) {
+    const std::string_view field = interner_->Text(expr.name);
+    if (field == "data") {
+      return types_->Pointer(types_->Int(IntWidth::k8, /*is_signed=*/false),
+                             /*is_mutable=*/false);
+    }
+    if (field == "length") {
+      return types_->Int(IntWidth::k64, /*is_signed=*/false);
+    }
   }
 
   const Member* member = resolution_->FindMember(named, expr.name);

@@ -49,7 +49,7 @@ WOLANG_TEST(Database, RepeatedQuestionsDoNotRecompute) {
 WOLANG_TEST(Database, CollectsDiagnosticsPerFile) {
   Database db;
   const FileId good = db.AddFile("good.wo", "fun f() {}\n");
-  const FileId bad = db.AddFile("bad.wo", "fun f() { let a = * }\n");
+  const FileId bad = db.AddFile("bad.wo", "fun f() { const a = * }\n");
 
   WOLANG_EXPECT(db.Diagnostics(good)->empty());
   WOLANG_ASSERT_EQ(db.Diagnostics(bad)->size(), size_t{1});
@@ -59,10 +59,10 @@ WOLANG_TEST(Database, CollectsDiagnosticsPerFile) {
 
 WOLANG_TEST(Database, DiagnosticsFollowAnEdit) {
   Database db;
-  const FileId file = db.AddFile("a.wo", "fun f() -> int { let a = * }\n");
+  const FileId file = db.AddFile("a.wo", "fun f() -> int { const a = * }\n");
   WOLANG_EXPECT_EQ(db.Diagnostics(file)->size(), size_t{1});
 
-  db.SetFileText(file, "fun f() -> int { let a = 1\n  return a\n}\n");
+  db.SetFileText(file, "fun f() -> int { const a = 1\n  return a\n}\n");
   WOLANG_EXPECT(db.Diagnostics(file)->empty());
 }
 

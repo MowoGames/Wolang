@@ -106,12 +106,12 @@ WOLANG_TEST(Lexer, IndexingPastTheEndReturnsEndOfFile) {
 }
 
 WOLANG_TEST(Lexer, TokensCarrySpans) {
-  Fixture fixture("let speed = 10.0");
-  WOLANG_EXPECT_EQ(fixture.TextAt(0), "let");
+  Fixture fixture("const speed = 10.0");
+  WOLANG_EXPECT_EQ(fixture.TextAt(0), "const");
   WOLANG_EXPECT_EQ(fixture.TextAt(1), "speed");
   WOLANG_EXPECT_EQ(fixture.TextAt(2), "=");
   WOLANG_EXPECT_EQ(fixture.TextAt(3), "10.0");
-  WOLANG_EXPECT_EQ(fixture.At(1).offset, 4u);
+  WOLANG_EXPECT_EQ(fixture.At(1).offset, 6u);
   WOLANG_EXPECT_EQ(fixture.At(1).length, 5u);
 }
 
@@ -126,9 +126,9 @@ WOLANG_TEST(Lexer, LexesNewKeywords) {
 }
 
 WOLANG_TEST(Lexer, LexesDeclarations) {
-  Fixture fixture("offer async fun Fire(target: Pawn) -> bool { return true }");
+  Fixture fixture("offer task fun Fire(target: Pawn) -> bool { return true }");
   WOLANG_EXPECT_EQ(fixture.Kinds(),
-                   "KwOffer KwAsync KwFun Identifier LeftParen Identifier Colon "
+                   "KwOffer KwTask KwFun Identifier LeftParen Identifier Colon "
                    "Identifier RightParen Arrow Identifier LeftBrace "
                    "KwReturn KwTrue RightBrace");
 }
@@ -148,41 +148,41 @@ WOLANG_TEST(Lexer, ContextualKeywordsLexAsIdentifiers) {
 }
 
 WOLANG_TEST(Lexer, UnderscoreIsItsOwnToken) {
-  Fixture fixture("let _ = f(_x)");
+  Fixture fixture("const _ = f(_x)");
   WOLANG_EXPECT_EQ(fixture.Kinds(),
-                   "KwLet Underscore Eq Identifier LeftParen Identifier "
+                   "KwConst Underscore Eq Identifier LeftParen Identifier "
                    "RightParen");
 }
 
 WOLANG_TEST(Lexer, AcceptsUnicodeIdentifiers) {
-  Fixture fixture("let скорость = 1");
-  WOLANG_EXPECT_EQ(fixture.Kinds(), "KwLet Identifier Eq IntLiteral");
+  Fixture fixture("const скорость = 1");
+  WOLANG_EXPECT_EQ(fixture.Kinds(), "KwConst Identifier Eq IntLiteral");
   WOLANG_EXPECT_EQ(fixture.SpellingAt(1), "скорость");
   WOLANG_EXPECT(fixture.Codes().empty());
 
   // Letters from any script are fine, as are digits and marks after the
   // first character.
-  WOLANG_EXPECT(Fixture("let 速度 = 1").Codes().empty());
-  WOLANG_EXPECT(Fixture("let café2 = 1").Codes().empty());
+  WOLANG_EXPECT(Fixture("const 速度 = 1").Codes().empty());
+  WOLANG_EXPECT(Fixture("const café2 = 1").Codes().empty());
 }
 
 WOLANG_TEST(Lexer, RejectsNonLettersInIdentifiers) {
   // An emoji or a symbol would let two different names look identical, and
   // an invisible character would hide one name inside another.
-  WOLANG_EXPECT_EQ(Fixture("let 🚀 = 1").Codes(), "E0013");
-  WOLANG_EXPECT_EQ(Fixture("let a\u200Bb = 1").Codes(), "E0013");
-  WOLANG_EXPECT_EQ(Fixture("let ❤ = 1").Codes(), "E0013");
+  WOLANG_EXPECT_EQ(Fixture("const 🚀 = 1").Codes(), "E0013");
+  WOLANG_EXPECT_EQ(Fixture("const a\u200Bb = 1").Codes(), "E0013");
+  WOLANG_EXPECT_EQ(Fixture("const ❤ = 1").Codes(), "E0013");
 }
 
 WOLANG_TEST(Lexer, RequiresIdentifiersInNfcForm) {
   // `й` precomposed is accepted; the same letter spelled as `и` plus a
   // combining breve is rejected, so one name has exactly one spelling.
-  WOLANG_EXPECT(Fixture("let й = 1").Codes().empty());
-  WOLANG_EXPECT_EQ(Fixture("let и\u0306 = 1").Codes(), "E0014");
-  WOLANG_EXPECT_EQ(Fixture("let cafe\u0301 = 1").Codes(), "E0014");
+  WOLANG_EXPECT(Fixture("const й = 1").Codes().empty());
+  WOLANG_EXPECT_EQ(Fixture("const и\u0306 = 1").Codes(), "E0014");
+  WOLANG_EXPECT_EQ(Fixture("const cafe\u0301 = 1").Codes(), "E0014");
 
   // A mark that cannot compose with what precedes it is already in NFC.
-  WOLANG_EXPECT(Fixture("let \u0915\u093E = 1").Codes().empty());
+  WOLANG_EXPECT(Fixture("const \u0915\u093E = 1").Codes().empty());
 }
 
 WOLANG_TEST(Lexer, SkipsBlockComments) {
@@ -223,7 +223,7 @@ WOLANG_TEST(Lexer, ReportsReservedWords) {
   // message instead of a confusing parse failure.
   WOLANG_EXPECT_EQ(Fixture("impl Vec3 {}").Codes(), "E0011");
 
-  Fixture fixture("let transactional = 1");
+  Fixture fixture("const transactional = 1");
   WOLANG_EXPECT_EQ(fixture.Codes(), "E0011");
   // Recovery keeps it an identifier so the rest of the line still parses.
   WOLANG_EXPECT_EQ(fixture.At(1).kind, TokenKind::kIdentifier);
@@ -562,7 +562,7 @@ WOLANG_TEST(Lexer, SkipsByteOrderMark) {
 }
 
 WOLANG_TEST(Lexer, ReportsInvalidUtf8) {
-  std::string code = "let x = ";
+  std::string code = "const x = ";
   code.push_back(static_cast<char>(0xFF));
   code.push_back(static_cast<char>(0xFE));
 
@@ -582,12 +582,12 @@ WOLANG_TEST(Lexer, LexesARepresentativeDeclaration) {
       "  @Edit @Range(1, 50) var range: float = 15.0\n"
       "  var target: Weak<Pawn>\n"
       "\n"
-      "  async fun ScanLoop() uses rand {\n"
+      "  task fun ScanLoop() uses rand {\n"
       "    loop {\n"
-      "      if let t = target.alive {\n"
-      "        await Wait(1.0 / fireRate)\n"
+      "      if const t = target.alive {\n"
+      "        wait Wait(1.0 / fireRate)\n"
       "      } else {\n"
-      "        await Wait(0.25s)\n"
+      "        wait Wait(0.25s)\n"
       "      }\n"
       "    }\n"
       "  }\n"

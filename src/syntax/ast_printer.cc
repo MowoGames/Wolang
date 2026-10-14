@@ -145,7 +145,7 @@ class Printer {
 
     std::string head(ItemKindName(item.kind));
     if (item.kind == ItemKind::kBinding) {
-      head = HasFlag(item.flags, ItemFlags::kMutable) ? "var" : "let";
+      head = HasFlag(item.flags, ItemFlags::kMutable) ? "var" : "const";
     }
     Open(indent, head);
 
@@ -292,7 +292,7 @@ class Printer {
     } kNames[] = {
         {ItemFlags::kOffer, "offer"},
         {ItemFlags::kPriv, "priv"},
-        {ItemFlags::kAsync, "async"},
+        {ItemFlags::kAsync, "task"},
         {ItemFlags::kVirtual, "virtual"},
         {ItemFlags::kOverride, "override"},
         {ItemFlags::kComptime, "comptime"},

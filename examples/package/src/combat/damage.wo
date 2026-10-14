@@ -7,7 +7,7 @@ offer error OutOfRange, Immune
 offer fun Falloff(base: float, distance: Length, reach: Length) -> float {
   // Dividing two lengths cancels the dimension, so the ratio is a plain
   // number and multiplying by `base` type checks.
-  let ratio = distance / reach
+  const ratio = distance / reach
   return base * (1.0 - ratio)
 }
 

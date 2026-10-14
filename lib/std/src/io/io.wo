@@ -1,15 +1,33 @@
-// The console, and the conversions an interpolated string needs.
+// The console, written in Wolang over the one call the platform provides.
 //
-// Every declaration here has no body: it is the platform floor, implemented
-// by the host rather than in Wolang. The list is deliberately tiny —
-// everything that *can* be written in Wolang is written in Wolang.
+// `write` is the floor: the language cannot make a system call, and this is
+// where that stops being true. Everything above it is Wolang -- which is
+// what makes `Print` a function with a body rather than something the
+// compiler knows about.
+//
+// `Write` declares `uses unsafe` and so takes responsibility for it: an
+// `unsafe` effect that a declaration states is absorbed rather than
+// re-exported, which is what lets a safe console be built over an unsafe
+// primitive. Nothing above here is unsafe.
+
+extern "C" fun write(fd: s32, buffer: *u8, count: u64) -> s64
+
+/// Writes `text` to standard output, with no line break.
+offer fun Write(message: text) uses io, unsafe {
+  const _written = write(1, message.data, message.length)
+}
 
 /// Writes `text` and a line break.
-offer fun Print(text: str) uses io
+offer fun Print(message: text) uses io {
+  Write(message)
+  Write("\n")
+}
 
 /// Conversions. Lowering calls these for the pieces of an interpolated
 /// string, so they have to exist even where the source never names them.
-offer fun IntToStr(value: int) -> str
-offer fun FloatToStr(value: float) -> str
-offer fun BoolToStr(value: bool) -> str
-offer fun ConcatStr(left: str, right: str) -> str
+/// Each builds an owned string, which is the one thing still waiting for a
+/// heap: these remain the platform floor until there is one.
+offer fun IntToStr(value: int) -> text
+offer fun FloatToStr(value: float) -> text
+offer fun BoolToStr(value: bool) -> text
+offer fun ConcatStr(left: text, right: text) -> text

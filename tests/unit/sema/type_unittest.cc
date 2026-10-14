@@ -138,7 +138,7 @@ WOLANG_TEST(TypeStoreTest, DescribesTypesTheWayTheyAreWritten) {
   const TypeId pawn = store.Named(interner.Intern("Pawn"), 0, 0);
   const TypeId array = store.Named(interner.Intern("Array"), 0, 1);
 
-  WOLANG_EXPECT_EQ(store.Describe(interner, i32), "i32");
+  WOLANG_EXPECT_EQ(store.Describe(interner, i32), "s32");
   WOLANG_EXPECT_EQ(store.Describe(interner, f32), "f32");
   WOLANG_EXPECT_EQ(store.Describe(interner, store.Int(IntWidth::k8, false)),
                    "u8");
@@ -147,17 +147,17 @@ WOLANG_TEST(TypeStoreTest, DescribesTypesTheWayTheyAreWritten) {
       store.Describe(interner, store.Fallible(pawn, store.ErrorSet({}))),
       "Pawn!");
   WOLANG_EXPECT_EQ(store.Describe(interner, store.Slice(f32, false)),
-                   "[f32]");
+                   "[]f32");
   WOLANG_EXPECT_EQ(store.Describe(interner, store.Slice(pawn, true)),
-                   "soa [Pawn]");
+                   "soa []Pawn");
   WOLANG_EXPECT_EQ(store.Describe(interner, store.Array(f32, 3, false)),
-                   "[f32; 3]");
+                   "[3]f32");
   WOLANG_EXPECT_EQ(store.Describe(interner, store.Instance(array, {i32})),
-                   "Array<i32>");
+                   "Array<s32>");
   WOLANG_EXPECT_EQ(store.Describe(interner, store.Tuple({i32, f32})),
-                   "(i32, f32)");
+                   "(s32, f32)");
   WOLANG_EXPECT_EQ(store.Describe(interner, store.Function({i32}, f32)),
-                   "fun(i32) -> f32");
+                   "fun(s32) -> f32");
   WOLANG_EXPECT_EQ(
       store.Describe(interner, store.Function({}, store.void_type())),
       "fun()");

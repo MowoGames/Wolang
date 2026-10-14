@@ -61,7 +61,7 @@ bool StartsExpression(TokenKind kind, bool allow_brace) {
     case TokenKind::kAmp:
     case TokenKind::kPipe:
     case TokenKind::kPipePipe:
-    case TokenKind::kKwAwait:
+    case TokenKind::kKwWait:
     case TokenKind::kKwSpawn:
     case TokenKind::kKwIf:
     case TokenKind::kKwMatch:
@@ -70,7 +70,7 @@ bool StartsExpression(TokenKind kind, bool allow_brace) {
     case TokenKind::kKwFor:
     case TokenKind::kKwForeach:
     case TokenKind::kKwUnsafe:
-    case TokenKind::kKwRegion:
+    case TokenKind::kKwArena:
       return true;
     default:
       return false;
@@ -96,7 +96,7 @@ bool StartsItem(TokenKind kind) {
     case TokenKind::kKwPriv:
     case TokenKind::kKwComptime:
     case TokenKind::kKwExtern:
-    case TokenKind::kKwAsync:
+    case TokenKind::kKwTask:
     case TokenKind::kKwVirtual:
     case TokenKind::kKwOverride:
     case TokenKind::kKwFun:
@@ -624,8 +624,8 @@ ItemFlags Parser::ParseModifiers(Symbol* abi) {
         add(ItemFlags::kPriv, "priv");
         Advance();
         continue;
-      case TokenKind::kKwAsync:
-        add(ItemFlags::kAsync, "async");
+      case TokenKind::kKwTask:
+        add(ItemFlags::kAsync, "task");
         Advance();
         continue;
       case TokenKind::kKwVirtual:
@@ -654,7 +654,7 @@ ItemFlags Parser::ParseModifiers(Symbol* abi) {
     // `derived` is contextual: only a `derived var` or `derived let` counts.
     if (AtContextual(ContextualKeyword::kDerived) &&
         (PeekKind(1) == TokenKind::kKwVar ||
-         PeekKind(1) == TokenKind::kKwLet)) {
+         PeekKind(1) == TokenKind::kKwConst)) {
       add(ItemFlags::kDerived, "derived");
       Advance();
       continue;
@@ -706,7 +706,7 @@ ItemId Parser::ParseItem(bool allow_error_item) {
       return ParseSignal(std::move(item), start);
     case TokenKind::kKwOn:
       return ParseOn(std::move(item), start);
-    case TokenKind::kKwLet:
+    case TokenKind::kKwConst:
     case TokenKind::kKwVar:
       return ParseBinding(std::move(item), start);
     case TokenKind::kKwType:
@@ -1488,9 +1488,9 @@ StmtId Parser::ParseStatement() {
       Advance();
       return StmtId{};
 
-    case TokenKind::kKwLet:
+    case TokenKind::kKwConst:
     case TokenKind::kKwVar: {
-      stmt.kind = At(TokenKind::kKwLet) ? StmtKind::kLet : StmtKind::kVar;
+      stmt.kind = At(TokenKind::kKwConst) ? StmtKind::kLet : StmtKind::kVar;
       Advance();
       stmt.pattern = ParsePattern();
       if (Eat(TokenKind::kColon)) {
@@ -1722,11 +1722,11 @@ ExprId Parser::ParseUnary() {
       return ast_->Add(std::move(expr));
     }
 
-    case TokenKind::kKwAwait:
+    case TokenKind::kKwWait:
     case TokenKind::kKwSpawn: {
       Advance();
       Expr expr;
-      expr.kind = kind == TokenKind::kKwAwait ? ExprKind::kAwait
+      expr.kind = kind == TokenKind::kKwWait ? ExprKind::kAwait
                                               : ExprKind::kSpawn;
       expr.lhs = ParseUnary();
       expr.span = SpanFrom(start);
@@ -1938,7 +1938,7 @@ bool Parser::LooksLikeGenericCall() const {
 }
 
 ExprId Parser::ParseConditionWithOptionalBinding(PatternId* pattern) {
-  if (Eat(TokenKind::kKwLet)) {
+  if (Eat(TokenKind::kKwConst)) {
     // A pattern position: `{` here can only start a struct pattern, never a
     // block, so `if let Point { x } = p` parses.
     *pattern = ParsePattern();
@@ -2301,7 +2301,7 @@ ExprId Parser::ParsePrimary() {
       return ParseClosure();
 
     case TokenKind::kKwUnsafe:
-    case TokenKind::kKwRegion: {
+    case TokenKind::kKwArena: {
       const bool is_unsafe = At(TokenKind::kKwUnsafe);
       Advance();
       Expr expr;
@@ -2706,20 +2706,23 @@ TypeRefId Parser::ParseTypeNoSuffix() {
       return ast_->Add(type);
     }
 
+    // `[]T` is a slice and `[N]T` an array: the brackets say what the shape
+    // is, and the element follows. Left to right, and shorter than putting
+    // the length after the element.
     case TokenKind::kLeftBracket: {
       Advance();
-      type.element = ParseType();
-      if (Eat(TokenKind::kSemicolon)) {
+      if (Eat(TokenKind::kRightBracket)) {
+        type.kind = TypeRefKind::kSlice;
+      } else {
         type.kind = TypeRefKind::kArray;
         type.length = ParseExpression();
         if (!type.length.is_valid()) {
           Report(kExpectedArraySize, "expected an array length",
                  CurrentSpan());
         }
-      } else {
-        type.kind = TypeRefKind::kSlice;
+        ExpectToken(TokenKind::kRightBracket);
       }
-      ExpectToken(TokenKind::kRightBracket);
+      type.element = ParseType();
       type.span = SpanFrom(start);
       return ast_->Add(type);
     }

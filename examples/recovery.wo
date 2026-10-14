@@ -11,8 +11,8 @@ class Broken : Actor {
   var health: int = 100
 
   fun method() {
-    let a = 1 let b = 2
-    let c = *
+    const a = 1 const b = 2
+    const c = *
     DoWork()
   }
 }

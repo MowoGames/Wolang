@@ -75,7 +75,7 @@ WOLANG_TEST(Workspace, ResolvesImportsAcrossDiscoveredModules) {
   // assertion rather than becoming "nothing but the unused-import lint".
   tree.Write("src/main.wo",
              "need game.engine.{Vec3}\n"
-             "fun main() { let _v = Vec3() }\n");
+             "fun main() { const _v = Vec3() }\n");
   tree.Write("src/engine/math.wo", "offer struct Vec3 {}\n");
 
   Database db;
@@ -251,7 +251,7 @@ WOLANG_TEST(Workspace, AppliesTheLintPolicyOfThePackage) {
   TempTree tree("lints");
   tree.Write("wolang.toml",
              "[package]\nname = \"game\"\n[lints]\nE0024 = \"off\"\n");
-  tree.Write("src/main.wo", "fun main() { let a = * }\n");
+  tree.Write("src/main.wo", "fun main() { const a = * }\n");
 
   Database db;
   DiagnosticEngine diagnostics;

@@ -11,14 +11,14 @@ namespace {
 
 WOLANG_TEST(SourceManager, RegistersFilesWithStableIds) {
   SourceManager sources;
-  const FileId first = sources.AddVirtualFile("a.wo", "let a = 1\n");
-  const FileId second = sources.AddVirtualFile("b.wo", "let b = 2\n");
+  const FileId first = sources.AddVirtualFile("a.wo", "const a = 1\n");
+  const FileId second = sources.AddVirtualFile("b.wo", "const b = 2\n");
 
   WOLANG_EXPECT(first.is_valid());
   WOLANG_EXPECT_NE(first, second);
   WOLANG_EXPECT_EQ(sources.file_count(), size_t{2});
   WOLANG_EXPECT_EQ(sources.Path(first), "a.wo");
-  WOLANG_EXPECT_EQ(sources.Text(second), "let b = 2\n");
+  WOLANG_EXPECT_EQ(sources.Text(second), "const b = 2\n");
 }
 
 WOLANG_TEST(SourceManager, InvalidFileQueriesAreEmpty) {

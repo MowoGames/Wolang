@@ -26,8 +26,8 @@ WOLANG_TEST(StringInterner, DifferentTextYieldsDifferentSymbols) {
 
 WOLANG_TEST(StringInterner, TextRoundTrips) {
   StringInterner interner;
-  const Symbol symbol = interner.Intern("await");
-  WOLANG_EXPECT_EQ(interner.Text(symbol), "await");
+  const Symbol symbol = interner.Intern("wait");
+  WOLANG_EXPECT_EQ(interner.Text(symbol), "wait");
 }
 
 WOLANG_TEST(StringInterner, CopiesTextSoCallerBufferCanDie) {

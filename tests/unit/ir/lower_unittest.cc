@@ -79,7 +79,7 @@ WOLANG_TEST(LowerTest, LowersArithmetic) {
   Fixture f("fun Add(a: int, b: int) -> int {\n  return a + b\n}\n");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   WOLANG_EXPECT_EQ(f.Function("Add"),
-                   "fun @Add(%0: i32, %1: i32) -> i32 {\n"
+                   "fun @Add(%0: s32, %1: s32) -> s32 {\n"
                    "^0:  // entry\n"
                    "  %2 = add %0, %1\n"
                    "  ret %2\n"
@@ -97,7 +97,7 @@ fun Max(a: int, b: int) -> int {
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   WOLANG_EXPECT_EQ(f.Function("Max"),
-                   "fun @Max(%0: i32, %1: i32) -> i32 {\n"
+                   "fun @Max(%0: s32, %1: s32) -> s32 {\n"
                    "^0:  // entry\n"
                    "  %2 = gt %0, %1\n"
                    "  br %2 ^1 ^2\n"
@@ -115,7 +115,7 @@ WOLANG_TEST(LowerTest, AnIfExpressionJoinsThroughABlockParameter) {
   // thing an arity check the verifier already does.
   Fixture f(R"(
 fun Pick(c: bool) -> int {
-  let v = if c { 1 } else { 2 }
+  const v = if c { 1 } else { 2 }
   return v
 }
 )");
@@ -137,7 +137,7 @@ fun Count(n: int) -> int {
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   const std::string body = f.Function("Count");
-  WOLANG_EXPECT(body.find("alloca : i32") != std::string::npos);
+  WOLANG_EXPECT(body.find("alloca : s32") != std::string::npos);
   WOLANG_EXPECT(body.find("store") != std::string::npos);
   WOLANG_EXPECT(body.find("load") != std::string::npos);
 }
@@ -145,7 +145,7 @@ fun Count(n: int) -> int {
 WOLANG_TEST(LowerTest, AnImmutableLocalNeedsNoSlot) {
   Fixture f(R"(
 fun Twice(n: int) -> int {
-  let doubled = n + n
+  const doubled = n + n
   return doubled
 }
 )");
@@ -272,7 +272,7 @@ struct Pawn {
 }
 
 fun Hurt(p: Pawn?) -> float {
-  if let q = p {
+  if const q = p {
     return q.health
   }
   return 0.0
@@ -426,8 +426,8 @@ fun UseFloat() -> float => Identity(1.5)
   WOLANG_EXPECT_EQ(f.Problems(), "");
   // Two call sites with the same argument share one copy; a different
   // argument gets its own.
-  WOLANG_EXPECT_EQ(f.Function("Identity<i32>"),
-                   "fun @Identity<i32>(%0: i32) -> i32 {\n"
+  WOLANG_EXPECT_EQ(f.Function("Identity<s32>"),
+                   "fun @Identity<s32>(%0: s32) -> s32 {\n"
                    "^0:  // entry\n"
                    "  ret %0\n"
                    "}\n");
@@ -451,11 +451,11 @@ fun Twice<T>(value: T) -> T => Identity(Identity(value))
 fun Use() -> int => Twice(3)
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
-  WOLANG_EXPECT_EQ(f.Function("Twice<i32>"),
-                   "fun @Twice<i32>(%0: i32) -> i32 {\n"
+  WOLANG_EXPECT_EQ(f.Function("Twice<s32>"),
+                   "fun @Twice<s32>(%0: s32) -> s32 {\n"
                    "^0:  // entry\n"
-                   "  %1 = call @Identity<i32>, %0\n"
-                   "  %2 = call @Identity<i32>, %1\n"
+                   "  %1 = call @Identity<s32>, %0\n"
+                   "  %2 = call @Identity<s32>, %1\n"
                    "  ret %2\n"
                    "}\n");
 }

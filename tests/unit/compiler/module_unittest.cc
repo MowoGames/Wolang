@@ -442,7 +442,7 @@ WOLANG_TEST(ModuleScopeTest, ApplyingTheManifestLintPolicy) {
   const PackageId package = db.AddPackage("game", "/game", manifest);
 
   const ModuleId module = db.AddModule("game", "/game/src", package);
-  const FileId file = db.AddFile("a.wo", "fun f() { let a = * }\n");
+  const FileId file = db.AddFile("a.wo", "fun f() { const a = * }\n");
   db.SetModuleFiles(module, {file});
 
   // The syntax error is real, but this package turned that code off.

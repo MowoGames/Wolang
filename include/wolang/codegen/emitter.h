@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "wolang/base/string_interner.h"
@@ -61,6 +62,10 @@ struct CompiledFunction {
 // |foreign| holds the address of each foreign function of the module, by
 // index, or zero for one that is not foreign or whose symbol was not found.
 // Resolving a symbol is the host's business, not the emitter's.
+//
+// |strings| holds the address and length of each of the module's string
+// literals. The bytes live with the module, so a literal is a pointer to
+// them rather than a copy -- which is also why a `str` is a borrow.
 CompiledFunction EmitFunction(const StringInterner& interner,
                               const TypeStore& types,
                               LayoutStore* layouts,
@@ -68,6 +73,8 @@ CompiledFunction EmitFunction(const StringInterner& interner,
                               const ir::Function& function,
                               const std::vector<bool>& compilable,
                               const std::vector<uint64_t>& foreign,
+                              const std::vector<std::pair<uint64_t,
+                                                          uint64_t>>& strings,
                               uint32_t trap_site_base);
 
 }  // namespace codegen

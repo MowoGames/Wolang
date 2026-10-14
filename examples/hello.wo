@@ -4,10 +4,10 @@
 //   wolang run examples/hello.wo
 
 fun main() uses io {
-  let name = "world"
+  const name = "world"
   Print("hello, {name}")
 }
 
 /// Declared here because a single file resolves no imports; in a package
 /// this comes from `std.io`.
-offer fun Print(text: str) uses io
+offer fun Print(message: text) uses io

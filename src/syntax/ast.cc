@@ -95,7 +95,7 @@ std::string_view ExprKindName(ExprKind kind) {
     case ExprKind::kTry:
       return "try";
     case ExprKind::kAwait:
-      return "await";
+      return "wait";
     case ExprKind::kSpawn:
       return "spawn";
     case ExprKind::kStructLiteral:
@@ -123,7 +123,7 @@ std::string_view ExprKindName(ExprKind kind) {
     case ExprKind::kUnsafe:
       return "unsafe";
     case ExprKind::kRegion:
-      return "region";
+      return "arena";
   }
   return "error";
 }
@@ -133,7 +133,7 @@ std::string_view StmtKindName(StmtKind kind) {
     case StmtKind::kError:
       return "error";
     case StmtKind::kLet:
-      return "let";
+      return "const";
     case StmtKind::kVar:
       return "var";
     case StmtKind::kExpr:

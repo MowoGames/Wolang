@@ -331,7 +331,7 @@ class Formatter {
       }
     }
     if (HasFlag(item.flags, ItemFlags::kAsync)) {
-      Put("async ");
+      Put("task ");
     }
     if (HasFlag(item.flags, ItemFlags::kVirtual)) {
       Put("virtual ");
@@ -657,7 +657,7 @@ class Formatter {
       }
 
       case ItemKind::kBinding: {
-        Put(HasFlag(item.flags, ItemFlags::kMutable) ? "var " : "let ");
+        Put(HasFlag(item.flags, ItemFlags::kMutable) ? "var " : "const ");
         Put(Name(item.name));
         if (item.type.is_valid()) {
           Put(": ");
@@ -830,7 +830,7 @@ class Formatter {
     switch (stmt.kind) {
       case StmtKind::kLet:
       case StmtKind::kVar:
-        Put(stmt.kind == StmtKind::kLet ? "let " : "var ");
+        Put(stmt.kind == StmtKind::kLet ? "const " : "var ");
         EmitPattern(stmt.pattern);
         if (stmt.type.is_valid()) {
           Put(": ");
@@ -975,7 +975,7 @@ class Formatter {
         if (parenthesize) {
           Put("(");
         }
-        Put(expr.kind == ExprKind::kAwait ? "await " : "spawn ");
+        Put(expr.kind == ExprKind::kAwait ? "wait " : "spawn ");
         EmitExpr(expr.lhs, Precedence::kUnary);
         if (parenthesize) {
           Put(")");
@@ -1148,7 +1148,7 @@ class Formatter {
       case ExprKind::kIf: {
         Put("if ");
         if (HasFlag(expr.flags, ExprFlags::kHasBinding)) {
-          Put("let ");
+          Put("const ");
           EmitPattern(expr.pattern);
           Put(" = ");
         }
@@ -1214,7 +1214,7 @@ class Formatter {
         EmitLoopLabel(expr.label);
         Put("while ");
         if (HasFlag(expr.flags, ExprFlags::kHasBinding)) {
-          Put("let ");
+          Put("const ");
           EmitPattern(expr.pattern);
           Put(" = ");
         }
@@ -1238,7 +1238,7 @@ class Formatter {
         break;
 
       case ExprKind::kRegion:
-        Put("region");
+        Put("arena");
         EmitBlockBody(expr.lhs);
         break;
 
@@ -1490,16 +1490,14 @@ class Formatter {
         Put("!");
         return;
       case TypeRefKind::kSlice:
-        Put("[");
+        Put("[]");
         EmitType(type.element);
-        Put("]");
         return;
       case TypeRefKind::kArray:
         Put("[");
-        EmitType(type.element);
-        Put("; ");
         EmitExpr(type.length);
         Put("]");
+        EmitType(type.element);
         return;
       case TypeRefKind::kFunction: {
         Put("fun(");
