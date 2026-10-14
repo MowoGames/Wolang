@@ -499,3 +499,29 @@ which it is looking at. `.len` is an `int` for the same reason it exists:
 it is read in arithmetic and compared with literals far more often than it
 is handed to an allocator.
 
+**D67. One string in every tier, built by the runtime.** A string is a
+pointer and a length -- interpreted, optimized and compiled alike -- and
+what builds one is a call into the runtime that both tiers make. Before
+this the interpreter held a C++ string and the compiled tier held a pair,
+so a program that formatted anything could only run in one tier, and an
+interpolated string dragged its whole function into the interpreter.
+
+Equality is a call for the same reason: two pointers are not an answer to
+"are these the same bytes", and comparing the pairs -- which is what
+structural equality does -- said that two copies of `"GET"` were different
+strings. Both tiers now call `wolang_text_equal`, and the interpreter calls
+it directly rather than through a thunk, because the reference tier has to
+work on a machine with no backend at all.
+
+**D68. `arena { }` is the allocator, not a promise about one.** Everything
+allocated inside the block -- objects, strings -- comes from one arena, and
+the whole arena is released at the end, including when the way out is a
+`return` or a `break`. One free for the lot, however much was built: a
+request handler allocates as it likes and pays once, and twenty thousand
+blocks allocating a million objects between them peak at three megabytes.
+
+This is the answer to leaking for now, and a better answer than per-value
+destructors for the workload that matters first. `Owned<T>` and a collector
+are still ahead; what keeps a value from outliving its arena is `E0121`,
+which has been enforced since wave 9.
+

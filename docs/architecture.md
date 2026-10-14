@@ -383,6 +383,28 @@ off. The second column is the one that measures this tier's code quality; the
 first includes a loop clang turns into vector code, which a scalar tier is
 not trying to be within 3x of.
 
+## Strings and memory
+
+A string is **a pointer and a length**, in every tier. A literal is a view
+of bytes that live with the module; anything built is built by a call into
+the runtime that the interpreter and the compiled code both make. That is
+what makes `"n={count}"` compile: before it, formatting anything pulled the
+function it was in down into the interpreter, because only the interpreter
+knew what a string was.
+
+Equality is a call too. Two pointers do not answer "are these the same
+bytes", and structural equality on the pair answered that two copies of
+`"GET"` were different strings.
+
+**`arena { }` is where the memory goes.** Everything allocated inside the
+block comes from one arena, and the block releases the whole arena on every
+way out -- the end, a `return`, a `break`. A handler allocates as it likes
+and pays once: twenty thousand blocks allocating a million objects between
+them peak at three megabytes. Nothing else is freed yet: `Owned<T>` and the
+collector are later waves, and until then a string or an object built
+outside an arena stays built. That is said here rather than discovered by a
+server.
+
 ## Places: where a value lives
 
 A field of a struct, an element of a buffer, a method's receiver and what a
