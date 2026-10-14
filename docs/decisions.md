@@ -368,6 +368,25 @@ honest to: `wolang test` runs every `@Test` in both tiers and compares, and
 quietly drop the step limit, which is a property of the run and not
 something a tier gets to change.
 
+## The boundary
+
+**D58. A declared `uses unsafe` absorbs the obligation rather than
+re-exporting it.** `unsafe` is not a capability like `io` or `net` — those
+say what the code needs from the outside world, and a caller has to know.
+`unsafe` says someone checked, and the declaration that states it is the one
+taking responsibility. Without this there is no such thing as a safe
+abstraction over an unsafe primitive: `std.io.Print` would make every
+program that prints an unsafe one, and a package with `unsafe = "deny"`
+could not print at all.
+
+**D59. A program runs once.** Wave 7 ran every program twice — once on the
+unoptimized IR and once on the optimized one — and compared, which was worth
+it while the only thing a program could do was fill a sink the driver owned.
+Once a program can call `write`, running it twice writes twice. A side
+effect is not something to repeat for the compiler's benefit, so the
+comparison moved to `wolang test`: every `@Test` runs in both tiers, and a
+test is the one place a program is known to terminate.
+
 ## Names
 
 **D52. `const` and `var`, not `let` and `var`.** Two visually distinct words

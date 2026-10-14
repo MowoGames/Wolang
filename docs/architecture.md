@@ -338,6 +338,35 @@ off. The second column is the one that measures this tier's code quality; the
 first includes a loop clang turns into vector code, which a scalar tier is
 not trying to be within 3x of.
 
+## The C boundary
+
+An `extern` declaration is implemented outside the language, reached through
+the C ABI. Three things make it work and one sentence makes it safe.
+
+**Calling out of the language is the `unsafe` effect.** Every rule already
+in place then applies — `offer` has to state it, a `@Deterministic` context
+cannot reach it, and a package with `unsafe = "deny"` cannot call out at all
+— and the FFI adds exactly one diagnostic of its own: `E0802`, for a type
+with no C representation. The boundary takes numbers, `bool` and pointers,
+because everything crossing it has to mean the same on both sides.
+
+A declared `uses unsafe` **absorbs** the obligation (D58), which is what
+makes a safe wrapper over an unsafe primitive possible. `std.io.Write` is
+that wrapper; `std.io.Print` calls it and is not unsafe.
+
+**Both tiers reach C the same way.** Compiled code calls the address the
+loader gave; the interpreter calls through a thunk generated with the same
+assembler, which loads the argument registers out of two arrays. One thunk
+covers every signature the boundary allows, because the only thing a
+signature changes is how many registers hold something. Without it, every
+program using the FFI would fall outside the differential check.
+
+**The dev tier compiles a program, not a file.** Lowering is per file, so a
+call into another file is a declaration with no body; the code generator
+takes every file at once and links a declaration to its definition by the
+declaration it came from — a file and an item index — rather than by name,
+because two files may each define a private `Helper`.
+
 ## Memory model
 
 Decided in wave 0, implemented in wave 9:
@@ -388,6 +417,7 @@ keeps that complexity out of the core.
 | `include/wolang/sema`, `src/sema` | types, dimensions, name resolution, type checking, effects |
 | `include/wolang/ir`, `src/ir` | the typed SSA IR, lowering, the verifier, the passes, the printer |
 | `include/wolang/interp`, `src/interp` | the interpreter, values, intrinsics |
+| `include/wolang/sema/flow.h`, `src/sema/flow.cc` | definite assignment, moves and reference escape -- one walk, three rules |
 | `include/wolang/codegen`, `src/codegen` | type layout, register allocation, the arm64 assembler and emitter, the runtime a trap reports through |
 | `benchmarks` | the gameplay kernels, their C++ counterparts, and the script that compares them |
 | `lib/core`, `lib/std` | the standard library, written in Wolang |
