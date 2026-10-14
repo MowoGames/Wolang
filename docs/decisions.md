@@ -360,7 +360,11 @@ prints the reason. The interpreter is the reference semantics and is always
 there, so declining is cheap — and a tier that guessed would be the one thing
 nobody could debug.
 
-**D51. `wolang run` stays on the interpreter until the FFI arrives.** Any
+**D51. `wolang run` stays on the interpreter until the FFI arrives** —
+*settled in wave 9*: the FFI arrived, `std.io.Print` is written in Wolang,
+and `run` uses the compiled tier when it can. `--interpret` forces the other
+one. The reasoning is kept because it is why the dev tier was exercised
+through `wolang test` first. Any
 interesting `main` prints something, and printing goes through an intrinsic
 the dev tier cannot call yet. The compiled tier is exercised where it is
 honest to: `wolang test` runs every `@Test` in both tiers and compares, and

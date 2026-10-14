@@ -5,12 +5,24 @@ ergonomics. Wolang is its own project: the compiler, runtime and libraries have
 no dependency on any game engine, and an engine is just one of the hosts it can
 be embedded into.
 
-**Status:** wave 3 of 16. The front end is incremental: a package of `.wo`
-files becomes syntax trees and module scopes, editing a function body
-recomputes only that function, and there is a formatter and an on-disk cache.
-There is no type checker or code generator yet. See [STATUS.md](STATUS.md) for
-where work stopped and [docs/roadmap.md](docs/roadmap.md) for what each wave
-adds.
+**Status:** wave 9 of 16. Wolang runs, and it runs as machine code: the front
+end is incremental, the IR is typed SSA, and the dev tier compiles to arm64
+with an interpreter alongside it as the reference semantics. Every `@Test`
+runs in both tiers and the two are compared. Programs call C through
+`extern`, and `std.io.Print` is written in Wolang on top of `write`.
+
+What is not there yet: concurrency, ECS, owning heap types and the
+optimizing AOT tier. See [STATUS.md](STATUS.md) for where work stopped and
+[docs/roadmap.md](docs/roadmap.md) for what each wave adds.
+
+```wolang
+need std.io.{Print}
+
+fun main() uses io {
+  const name = "world"
+  Print("hello, {name}")
+}
+```
 
 ## What makes it different
 
@@ -40,9 +52,9 @@ match count {
 ```
 
 Memory is hybrid by design: value semantics with second-class references,
-`Owned`/`Shared` for owned and shared heap data, `arena` blocks for frame arenas, and
-a garbage collector that is optional — a program that never declares a `class`
-does not link one.
+`Owned`/`Shared` for owned and shared heap data, `arena` blocks for frame
+arenas, and a garbage collector that is optional — a program that never
+declares a `class` does not link one.
 
 ## Building
 
