@@ -1,0 +1,176 @@
+// Where components live.
+//
+// The language has had `component`, `Query` and `system` with a schedule
+// since wave 11, and nowhere to put the data: a system was checked and
+// laid out in a stage and could not run, because a `Query` had nothing to
+// be built from. This is that something (D100).
+//
+// The storage is in the runtime rather than here for one reason: a world
+// is a map from a component *type* to an array, and the language cannot
+// spell a map whose keys are types. A token can -- the same number a
+// class carries, the declaration it was written as -- so the runtime
+// holds one dense array per token and this asks for the array it means.
+
+need std.mem.{ViewFromRaw, SizeOf}
+
+extern "C" fun wolang_world_create() -> u64
+extern "C" fun wolang_world_destroy(world: u64)
+extern "C" fun wolang_world_spawn(world: u64) -> u64
+extern "C" fun wolang_world_despawn(world: u64, entity: u64)
+extern "C" fun wolang_world_alive(world: u64, entity: u64) -> bool
+extern "C" fun wolang_world_count(world: u64) -> u64
+extern "C" fun wolang_world_add(world: u64, entity: u64, token: u64, size: u64) -> *mut u8
+extern "C" fun wolang_world_get(world: u64, entity: u64, token: u64) -> *mut u8
+extern "C" fun wolang_world_has(world: u64, entity: u64, token: u64) -> bool
+extern "C" fun wolang_world_remove(world: u64, entity: u64, token: u64)
+extern "C" fun wolang_world_component_count(world: u64, token: u64) -> u64
+
+/// The number that says which component type this is.
+///
+/// A struct rather than a bare `u64` because the type it names is what
+/// makes it the right number: `TokenOf<Position>()` has type
+/// `Token<Position>`, and that is how the compiler knows which token to
+/// answer with.
+offer struct Token<T> {
+  var value: u64
+}
+
+/// The token of `T`. Answered by the compiler, so it has no body.
+offer fun TokenOf<T>() -> Token<T>
+
+/// A world: entities, and a component array per type.
+offer class World {
+  var handle: u64 = 0
+
+  /// A new entity with no components. Never zero.
+  fun Spawn() -> u64 uses unsafe {
+    return wolang_world_spawn(handle)
+  }
+
+  /// Removes it and everything it had.
+  fun Despawn(entity: u64) uses unsafe {
+    wolang_world_despawn(handle, entity)
+  }
+
+  fun Alive(entity: u64) -> bool uses unsafe {
+    return wolang_world_alive(handle, entity)
+  }
+
+  /// How many entities are living.
+  fun Len() -> int uses unsafe {
+    return wolang_world_count(handle) as int
+  }
+
+  /// Gives the storage back. Not a `deinit`: a world is handed to the
+  /// functions that work on it, and a type with a destructor would be
+  /// moved by that rather than borrowed (D87).
+  fun Destroy() uses unsafe {
+    wolang_world_destroy(handle)
+    handle = 0
+  }
+}
+
+offer fun WorldNew() -> World uses unsafe {
+  return World(wolang_world_create())
+}
+
+/// Gives `entity` a component, or replaces the one it has.
+offer fun Add<T>(world: World, entity: u64, value: T) uses unsafe {
+  if entity == 0 {
+    return
+  }
+  const at = wolang_world_add(
+      world.handle,
+      entity,
+      TokenOf<T>().value,
+      SizeOf(value) as u64)
+  var room = ViewFromRaw<T>(at, 1)
+  room[0] = value
+}
+
+/// What `entity`'s component of `T` is, or nothing when it has none.
+offer fun Get<T>(world: World, entity: u64) -> T? uses unsafe {
+  if !wolang_world_has(world.handle, entity, TokenOf<T>().value) {
+    return null
+  }
+  const at = wolang_world_get(world.handle, entity, TokenOf<T>().value)
+  var room = ViewFromRaw<T>(at, 1)
+  return room[0]
+}
+
+/// Whether `entity` has the component `of` names.
+///
+/// The token is an argument rather than a type parameter of its own
+/// because the answer is a `bool`: a type parameter has to appear in the
+/// signature for a call to be able to say what it is (`E0133`), and here
+/// the token is where it appears.
+offer fun Has<T>(world: World, entity: u64, of: Token<T>) -> bool uses unsafe {
+  return wolang_world_has(world.handle, entity, of.value)
+}
+
+/// Takes `T` away from `entity` and gives back what it was.
+offer fun Remove<T>(world: World, entity: u64) -> T? uses unsafe {
+  const held = Get<T>(world, entity)
+  if const value = held {
+    wolang_world_remove(world.handle, entity, TokenOf<T>().value)
+    return value
+  }
+  return null
+}
+
+/// How many entities have the component `of` names.
+offer fun CountOf<T>(world: World, of: Token<T>) -> int uses unsafe {
+  return wolang_world_component_count(world.handle, of.value) as int
+}
+
+// ------------------------------------------------------------- tests ---
+
+component Position {
+  var x: int
+  var y: int
+}
+
+component Tag {
+  var kind: int
+}
+
+@Test
+fun KeepsWhatAnEntityWasGiven() -> bool uses unsafe {
+  var world = WorldNew()
+  const first = world.Spawn()
+  const second = world.Spawn()
+  Add(world, first, Position(1, 2))
+  Add(world, second, Position(3, 4))
+  Add(world, second, Tag(9))
+
+  var total = 0
+  if const held = Get<Position>(world, second) {
+    total = held.x + held.y
+  }
+  const counted = CountOf(world, TokenOf<Position>()) + CountOf(
+      world,
+      TokenOf<Tag>())
+  const gone = Remove<Tag>(world, second)
+  var removed = 0
+  if const value = gone {
+    removed = value.kind
+  }
+  const left = CountOf(world, TokenOf<Tag>())
+  world.Destroy()
+  // Seven from the second entity's position, three positions and tags
+  // between them, nine from the tag that was taken away, and none left.
+  return total == 7 && counted == 3 && removed == 9 && left == 0 && first != second
+}
+
+@Test
+fun ForgetsADespawnedEntity() -> bool uses unsafe {
+  var world = WorldNew()
+  const entity = world.Spawn()
+  Add(world, entity, Position(5, 5))
+  const before = world.Alive(entity) && Has(world, entity, TokenOf<Position>())
+  world.Despawn(entity)
+  const after = world.Alive(entity) || Has(world, entity, TokenOf<Position>())
+  const living = world.Len()
+  world.Destroy()
+  return before && !after && living == 0
+}

@@ -8,6 +8,8 @@
 #include "wolang/runtime/globals.h"
 #include "wolang/runtime/poll.h"
 #include "wolang/runtime/threads.h"
+#include "wolang/runtime/trap.h"
+#include "wolang/runtime/world.h"
 #include "wolang/runtime/signal.h"
 #include "wolang/runtime/text.h"
 
@@ -58,6 +60,39 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_object_free",
        reinterpret_cast<void*>(&wolang_object_free)},
       {"wolang_open_read", reinterpret_cast<void*>(&wolang_open_read)},
+      {"wolang_world_create",
+       reinterpret_cast<void*>(&wolang_world_create)},
+      {"wolang_world_destroy",
+       reinterpret_cast<void*>(&wolang_world_destroy)},
+      {"wolang_world_spawn",
+       reinterpret_cast<void*>(&wolang_world_spawn)},
+      {"wolang_world_despawn",
+       reinterpret_cast<void*>(&wolang_world_despawn)},
+      {"wolang_world_alive",
+       reinterpret_cast<void*>(&wolang_world_alive)},
+      {"wolang_world_count",
+       reinterpret_cast<void*>(&wolang_world_count)},
+      {"wolang_world_add",
+       reinterpret_cast<void*>(&wolang_world_add)},
+      {"wolang_world_get",
+       reinterpret_cast<void*>(&wolang_world_get)},
+      {"wolang_world_has",
+       reinterpret_cast<void*>(&wolang_world_has)},
+      {"wolang_world_remove",
+       reinterpret_cast<void*>(&wolang_world_remove)},
+      {"wolang_world_component_count",
+       reinterpret_cast<void*>(&wolang_world_component_count)},
+      {"wolang_query_open",
+       reinterpret_cast<void*>(&wolang_query_open)},
+      {"wolang_query_next",
+       reinterpret_cast<void*>(&wolang_query_next)},
+      {"wolang_query_entity",
+       reinterpret_cast<void*>(&wolang_query_entity)},
+      {"wolang_query_component",
+       reinterpret_cast<void*>(&wolang_query_component)},
+      {"wolang_query_close",
+       reinterpret_cast<void*>(&wolang_query_close)},
+      {"wolang_report", reinterpret_cast<void*>(&wolang_report)},
       {"wolang_thread_spawn",
        reinterpret_cast<void*>(&wolang_thread_spawn)},
       {"wolang_thread_join",

@@ -21,6 +21,11 @@ extern "C" {
                               const char* message,
                               const char* function);
 
+// What a program built by `wolang fuzz --aot` says it computed. Its own
+// entry point rather than `Print`, so that a generated program needs no
+// library and the driver has one line to read.
+void wolang_report(int64_t value);
+
 }  // extern "C"
 
 }  // namespace runtime

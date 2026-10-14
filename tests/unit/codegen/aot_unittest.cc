@@ -233,7 +233,7 @@ fun main() uses unsafe {
 }
 )");
   const std::string said = program.Output();
-  WOLANG_EXPECT(said.find("index out of bounds") != std::string::npos);
+  WOLANG_EXPECT(said.find("out of bounds") != std::string::npos);
   WOLANG_EXPECT(said.find("exit 70") != std::string::npos);
 }
 

@@ -162,6 +162,14 @@ class Printer {
         out_.push_back(' ');
         out_.append(std::to_string(inst.field));
         break;
+      case Opcode::kTypeSize:
+        // Which type is being measured: the whole content of the
+        // instruction, so a dump that left it out said nothing.
+        out_.append(" : ");
+        out_.append(types_.Describe(
+            interner_,
+            TypeId{static_cast<uint32_t>(inst.payload.integer)}));
+        break;
       case Opcode::kAlloca:
       case Opcode::kUndef:
       case Opcode::kConstNull:

@@ -711,6 +711,15 @@ void Translator::Emit(ir::InstId id, const ir::Inst& inst) {
       return;
     }
 
+    case ir::Opcode::kTypeSize: {
+      const TypeId measured{static_cast<uint32_t>(inst.payload.integer)};
+      Produce(id, Const(measured.is_valid()
+                            ? std::max(layouts.SizeOf(measured), 1u)
+                            : 1u,
+                        Held(file_, inst.type)));
+      return;
+    }
+
     case ir::Opcode::kSoaNew: {
       // Storage for a run of records, as either one array per field or
       // one record after another. How big that is, is this tier's own

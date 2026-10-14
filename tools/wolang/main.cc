@@ -26,6 +26,8 @@
 #include "wolang/base/string_interner.h"
 #include "wolang/compiler/cache.h"
 #include "wolang/compiler/database.h"
+#include <unistd.h>
+
 #include "wolang/codegen/aot.h"
 #include "wolang/codegen/compiler.h"
 #include "wolang/abi/layout.h"
@@ -56,6 +58,11 @@ struct Options {
   bool interpret = false;
   bool show_trivia = false;
   bool show_spans = false;
+  // `fuzz` only: also build each program into a binary and run it, which
+  // is the only way to compare the ahead-of-time tier (D98). Slower by
+  // the cost of a link per program, so it is asked for rather than
+  // assumed.
+  bool fuzz_aot = false;
   // `fuzz` only: which program to start from, how many, and whether to
   // print what was generated -- which is the first thing wanted when one
   // of them disagrees.
@@ -118,6 +125,8 @@ void PrintUsage() {
       "  --seed <n>      the first seed `fuzz` generates from\n"
       "  --count <n>     how many programs `fuzz` generates\n"
       "  --source        print the programs `fuzz` generated\n"
+      "  --aot           `fuzz`: build and run each program as a binary "
+      "too\n"
       "  --unoptimized   `ir`: print what lowering produced, before passes\n"
       "  -o <path>       `build`: where the binary goes\n"
       "  --emit-object   `build`: stop at the object file\n"
@@ -968,6 +977,91 @@ int RunModules(const Options& options) {
 // says whether the passes kept the meaning, and the machine code says
 // whether the back end agrees with both. A seed names one program, so a
 // disagreement can be looked at again.
+
+// Builds |source| into a binary, runs it, and says what it computed in the
+// same words the other tiers use.
+//
+// A generated program has a `Probe` and no `main`, so a wrapper is added
+// that calls it and reports the answer. What comes back is either a value,
+// a `trap: ...` -- the binary prints one and exits, since there is nobody
+// to report an outcome to -- or a `<...>` saying the comparison itself
+// could not be made (D98).
+std::string BuildAndRun(const std::string& source, uint64_t seed) {
+  std::string wrapped = source;
+  wrapped.append(
+      "\nextern \"C\" fun wolang_report(value: s64)\n"
+      "\nfun main() uses unsafe {\n  wolang_report(Probe() as s64)\n}\n");
+
+  Database database;
+  const FileId file = database.AddFile("<fuzz>", wrapped);
+  const LoweredFile* lowered = database.Lowered(file);
+  const CheckedFile* checked = database.Checked(file);
+  if (lowered == nullptr || checked == nullptr) {
+    return "<the wrapped program did not lower>";
+  }
+  if (const std::vector<Diagnostic>* diagnostics =
+          database.Diagnostics(file)) {
+    for (const Diagnostic& diagnostic : *diagnostics) {
+      if (diagnostic.severity == Severity::kError) {
+        return "<the wrapped program was rejected: " +
+               std::string(diagnostic.code) + ">";
+      }
+    }
+  }
+
+  const std::string stem = "/tmp/wolang-fuzz-" +
+                           std::to_string(static_cast<long>(::getpid())) +
+                           "-" + std::to_string(seed);
+  const codegen::FileCode files[1] = {
+      codegen::FileCode{&checked->resolution, &lowered->module}};
+  codegen::AotOptions settings;
+  settings.object_path = stem + ".o";
+  const codegen::AotResult built = codegen::EmitObject(
+      database.interner(), database.types(), files, settings);
+  if (!built.error.empty()) {
+    return "<the backend failed: " + built.error + ">";
+  }
+  if (!built.skipped.empty()) {
+    return "<left out of the binary: " + built.skipped.front() + ">";
+  }
+  const std::string link = "c++ -o '" + stem + "' '" + settings.object_path +
+                           "' '" + std::string(codegen::RuntimeArchive()) +
+                           "' -lpthread 2>/dev/null";
+  const int linked = std::system(link.c_str());
+  std::remove(settings.object_path.c_str());
+  if (linked != 0) {
+    return "<the linker failed>";
+  }
+
+  std::string said;
+  FILE* running = ::popen((stem + " 2>&1").c_str(), "r");
+  if (running != nullptr) {
+    char buffer[256];
+    while (std::fgets(buffer, sizeof(buffer), running) != nullptr) {
+      said.append(buffer);
+    }
+    ::pclose(running);
+  }
+  std::remove(stem.c_str());
+
+  // "value 42" is what it computed; "wolang: out of bounds: ..." is a
+  // trap, and the words after the colon are the kind.
+  if (said.rfind("value ", 0) == 0) {
+    std::string number = said.substr(6);
+    while (!number.empty() &&
+           (number.back() == '\n' || number.back() == ' ')) {
+      number.pop_back();
+    }
+    return number;
+  }
+  if (said.rfind("wolang: ", 0) == 0) {
+    const size_t end = said.find_first_of(":\n", 8);
+    return "trap: " + said.substr(8, end == std::string::npos ? end
+                                                              : end - 8);
+  }
+  return "<the binary said nothing>";
+}
+
 int RunFuzz(const Options& options) {
   const uint64_t first = options.fuzz_seed;
   const uint64_t count = options.fuzz_count;
@@ -1072,6 +1166,25 @@ int RunFuzz(const Options& options) {
                    static_cast<unsigned long long>(seed),
                    describe(reference).c_str(), describe(machine).c_str());
       ++failed;
+      continue;
+    }
+
+    if (options.fuzz_aot && codegen::HasAotBackend()) {
+      const std::string said = BuildAndRun(source, seed);
+      if (said.rfind("<", 0) == 0) {
+        std::fprintf(stdout, "[ failed ] seed %llu: %s\n",
+                     static_cast<unsigned long long>(seed), said.c_str());
+        ++failed;
+        continue;
+      }
+      if (said != describe(reference)) {
+        std::fprintf(stdout,
+                     "[ failed ] seed %llu: the binary disagrees: "
+                     "interpreter said %s, the binary said %s\n",
+                     static_cast<unsigned long long>(seed),
+                     describe(reference).c_str(), said.c_str());
+        ++failed;
+      }
     }
   }
 
@@ -1239,6 +1352,10 @@ int Run(int argc, char** argv) {
   Options options;
   for (int i = 1; i < argc; ++i) {
     const std::string_view argument = argv[i];
+    if (argument == "--aot") {
+      options.fuzz_aot = true;
+      continue;
+    }
     if (argument == "--emit-object") {
       options.emit_object = true;
       continue;

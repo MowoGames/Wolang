@@ -12,22 +12,25 @@ namespace {
 // The names match the trap kinds in `ir/trap.h`. Spelled here rather than
 // shared, because the runtime must not depend on the compiler: this file
 // is linked into programs, not into the toolchain.
+// The same words the compiler's `TrapKindName` uses, so that a trap in a
+// binary and one reported by a tier with a host under it read the same --
+// which is what lets the differential fuzzer compare them (D98).
 const char* KindName(int32_t kind) {
   switch (kind) {
     case 1:
       return "division by zero";
     case 2:
-      return "arithmetic overflow";
+      return "overflow";
     case 3:
-      return "index out of bounds";
+      return "out of bounds";
     case 4:
       return "undefined value";
     case 5:
-      return "reached unreachable code";
+      return "unreachable";
     case 6:
-      return "out of steps";
+      return "step limit";
     case 7:
-      return "no body to run";
+      return "no body";
     case 8:
       return "out of memory";
     default:
@@ -36,6 +39,12 @@ const char* KindName(int32_t kind) {
 }
 
 }  // namespace
+
+extern "C" void wolang_report(int64_t value) {
+  // What a program built for the differential fuzzer says it computed.
+  std::fprintf(stdout, "value %lld\n", static_cast<long long>(value));
+  std::fflush(stdout);
+}
 
 extern "C" void wolang_trap(int32_t kind,
                             const char* message,

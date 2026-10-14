@@ -277,6 +277,25 @@ class Lowerer {
         return id;
       }
     }
+    // The list above is this file's. A body borrowed from another one --
+    // a generic being instantiated here -- calls *its* file's generics,
+    // which are not in it: `Remove<T>` calling `Get<T>` found a
+    // declaration with no body behind it instead (D100).
+    for (ItemId id : ast().Get(ast().root())) {
+      if (!ast().Contains(id)) {
+        continue;
+      }
+      const Item& item = ast().Get(id);
+      if (item.kind != ItemKind::kFunction || item.name != name ||
+          ast().Get(item.generics).empty()) {
+        continue;
+      }
+      const Binding* binding = resolution().Find(name);
+      if (binding != nullptr && binding->type.is_valid() &&
+          types_->MentionsParameter(binding->type)) {
+        return id;
+      }
+    }
     return ItemId{};
   }
 
@@ -1563,10 +1582,27 @@ class Lowerer {
     if (types_->KindOf(target) != TypeKind::kOptional) {
       return value;
     }
-    if (types_->KindOf(Erase(from)) == TypeKind::kOptional) {
+    // Asked of the value rather than of what the checker recorded.
+    //
+    // The checker records the type the *context* wanted, so a `value`
+    // being returned where `T?` is declared is recorded as `T?` while the
+    // value in hand is a `T`. Reading the recorded type here meant no
+    // wrap was emitted and a bare `T` was returned as an optional: the
+    // compiled tier read its first field as the tag and the reference
+    // tier saw a value of the wrong shape (D100).
+    const TypeId held = ValueType(value);
+    if (types_->KindOf(held) == TypeKind::kOptional) {
       return value;
     }
     return builder_->Add(Opcode::kOptionalWrap, target, {value});
+  }
+
+  // The type an instruction says it produces, which is what a value
+  // actually is -- as against what the checker recorded at the expression
+  // it came from, which is what its context wanted.
+  TypeId ValueType(InstId value) {
+    const Function& current = module_->functions[current_function_];
+    return current.Contains(value) ? current.Get(value).type : TypeId{};
   }
 
   // The type a value is built at, when the context asked for an optional of
@@ -3309,6 +3345,52 @@ class Lowerer {
       return builder_->Call(free, types_->void_type(), {data});
     }
 
+    // `SizeOf(value)` is not a call: how many bytes a value of its type
+    // takes is a question only a tier can answer, so the instruction
+    // carries the type and each tier answers it. The value itself is not
+    // read -- what is wanted is its type, which is why this is spelled
+    // with an argument at all (D100).
+    if (ast().Contains(expr.lhs) &&
+        ast().Get(expr.lhs).kind == ExprKind::kPath &&
+        interner_->Text(ast().Get(expr.lhs).name) == "SizeOf" &&
+        arguments.size() == 1) {
+      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      if ((binding == nullptr || !binding->has_body) &&
+          !ast().Get(expr.args).empty()) {
+        // Through the substitution in force: inside `Add<T>` the
+        // argument's recorded type is `T`, and what is wanted is the size
+        // of what `T` stands for in this copy (D100).
+        const TypeId measured =
+            Erase(Apply(TypeOf(ast().Get(expr.args)[0])));
+        if (measured.is_valid()) {
+          const InstId size =
+              builder_->Add(Opcode::kTypeSize,
+                            types_->Int(IntWidth::k64, /*is_signed=*/true));
+          builder_->Mutable(size).payload.integer = measured.index;
+          return size;
+        }
+      }
+    }
+
+    // `TokenOf<T>()` is not a call: the number that says which type `T`
+    // is, is the one every tier computes the same way -- the declaration
+    // it was written as, packed (D85). The result type is what carries
+    // `T`, which is why it is a `Token<T>` rather than a bare number.
+    if (ast().Contains(expr.lhs) &&
+        ast().Get(expr.lhs).kind == ExprKind::kPath &&
+        interner_->Text(ast().Get(expr.lhs).name) == "TokenOf" &&
+        arguments.empty()) {
+      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      const TypeId wrapper = Erase(Apply(type));
+      const std::vector<TypeId> named = types_->ArgumentsOf(wrapper);
+      if ((binding == nullptr || !binding->has_body) && !named.empty()) {
+        const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
+        const InstId number = builder_->ConstInt(
+            word, ir::ClassTokenOf(*types_, Erase(Apply(named[0]))));
+        return builder_->Add(Opcode::kMakeStruct, wrapper, {number});
+      }
+    }
+
     // `SoaNew<T>(count)` is not a call either: how big that storage is, is
     // a question only a tier can answer.
     if (ast().Contains(expr.lhs) &&
@@ -3399,11 +3481,20 @@ class Lowerer {
       // declaration here -- the same shape a trait method or an `extern`
       // has, and what the linker will resolve.
       if (binding != nullptr && binding->kind == BindingKind::kFunction) {
-        return builder_->Call(
+        const uint32_t target =
             DeclareExternal(name, binding->type, binding->file,
                             binding->item, binding->is_task,
-                            binding->has_body),
-            type, std::move(arguments));
+                            binding->has_body);
+        // An `extern` from another file is reached through the C ABI
+        // here too. Without this the declaration linked to nothing --
+        // the file it came from has no body for it either -- and a
+        // generic instantiated into this file that called one trapped
+        // with "no body to run" (D100).
+        if (binding->is_foreign &&
+            !module_->functions[target].foreign_symbol.is_valid()) {
+          module_->functions[target].foreign_symbol = name;
+        }
+        return builder_->Call(target, type, std::move(arguments));
       }
     }
     // Through a value: the callee is whatever the expression evaluated to.
@@ -3571,7 +3662,11 @@ class Lowerer {
     // `TextFromRaw` is the same instruction with a different name: a
     // `text` is a pointer and a length too (D67), so what both stand for
     // is the pair rather than a call.
-    if (called != "BytesFromRaw" && called != "TextFromRaw") {
+    // `ViewFromRaw<T>` is the same instruction with the element type
+    // coming from the call rather than being `u8`: what all three stand
+    // for is the pair, not a call (D100).
+    if (called != "BytesFromRaw" && called != "TextFromRaw" &&
+        called != "ViewFromRaw") {
       return InstId{};
     }
     const TypeId slice = Erase(type);

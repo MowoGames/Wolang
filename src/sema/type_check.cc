@@ -42,6 +42,9 @@ constexpr std::string_view kModuleBindingNeedsType = "E0130";
 // A `for` over something that is not a sequence and says no other way to
 // walk it.
 constexpr std::string_view kNotIterable = "E0131";
+// A function's type parameter that its signature never mentions, so no
+// call can say what it is.
+constexpr std::string_view kUnboundParameter = "E0133";
 constexpr std::string_view kWaitOutsideTask = "E0301";
 constexpr std::string_view kTaskNotWaited = "E0302";
 constexpr std::string_view kWaitNotWholeExpression = "E0303";
@@ -2633,6 +2636,44 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   in_task_ = HasFlag(item.flags, ItemFlags::kAsync);
   return_type_ = item.type.is_valid() ? resolver_.Resolve(ast_, item.type)
                                       : types_->void_type();
+
+  // Every type parameter has to appear in the signature.
+  //
+  // Not a style rule: a call says what `T` is by what it passes or by
+  // what it is used as, and a parameter the signature never mentions
+  // cannot be said at all -- `Has<Position>(world, entity)` on a
+  // `fun Has<T>(world: World, entity: u64) -> bool` was accepted, bound
+  // nothing, and lowered to a call with no body behind it (D100).
+  if (!item.generics.empty()) {
+    std::vector<TypeId> mentioned;
+    for (ParamId param_id : ast_.Get(item.params)) {
+      const Param& param = ast_.Get(param_id);
+      if (param.type.is_valid()) {
+        types_->CollectParameters(resolver_.Resolve(ast_, param.type),
+                                  &mentioned);
+      }
+    }
+    types_->CollectParameters(return_type_, &mentioned);
+    for (GenericParamId generic_id : ast_.Get(item.generics)) {
+      const GenericParam& generic = ast_.Get(generic_id);
+      bool found = false;
+      for (TypeId seen : mentioned) {
+        found |= types_->KindOf(seen) == TypeKind::kParameter &&
+                 types_->Get(seen).name == generic.name;
+      }
+      if (!found) {
+        std::string message = "type parameter `";
+        message.append(interner_->Text(generic.name));
+        message.append("` appears nowhere in the signature of `");
+        message.append(interner_->Text(item.name));
+        message.append("`");
+        Report(kUnboundParameter, std::move(message), generic.span,
+               "a call says what a type parameter is by what it passes or "
+               "by what the result is used as, so one that is mentioned "
+               "nowhere can never be said");
+      }
+    }
+  }
   if (is_foreign) {
     CheckForeignType(return_type_,
                      item.type.is_valid() ? ast_.Get(item.type).span

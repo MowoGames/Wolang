@@ -871,6 +871,17 @@ class Interpreter {
         return array.elements()[index.integer()];
       }
 
+      case ir::Opcode::kTypeSize: {
+        // The tier's own answer about its own layout (D100).
+        const TypeId measured{static_cast<uint32_t>(inst.payload.integer)};
+        if (layouts_ == nullptr || !measured.is_valid()) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "asked how big a type is without a layout to ask");
+        }
+        return Value::Int(std::max(layouts_->SizeOf(measured), 1u),
+                          IntWidth::k64, /*is_signed=*/true);
+      }
+
       case ir::Opcode::kSoaNew: {
         // Storage for a record, one array per field. The size is this
         // tier's answer, the way `new`'s is.

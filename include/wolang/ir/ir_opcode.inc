@@ -140,6 +140,10 @@ WOLANG_IR_OP(WaitCall, "wait.call",
              "one of these into a state machine before anything runs")
 WOLANG_IR_OP(CallIndirect, "call.indirect", "calls through a value")
 
+WOLANG_IR_OP(TypeSize, "type.size",
+             "how many bytes a value of the type named by |integer| "
+             "takes. A question only a tier can answer, the way `new`'s "
+             "size is -- and what making room for a component needs")
 // ------------------------------------------------------------ conversions ---
 
 WOLANG_IR_OP(Cast, "cast", "a numeric conversion written with `as`")

@@ -1316,6 +1316,20 @@ class FunctionEmitter {
         return;
       }
 
+      case ir::Opcode::kTypeSize: {
+        // A constant here: this tier knows its own layout at compile
+        // time, which is the whole reason the question is an instruction
+        // rather than a call (D100).
+        const TypeId measured{static_cast<uint32_t>(inst.payload.integer)};
+        const Register reg = DestInt(id, 0);
+        assembler_.MovImmediate(
+            IWidth::k64, reg,
+            measured.is_valid() ? std::max(layouts_.SizeOf(measured), 1u)
+                                : 1u);
+        FinishInt(id, reg);
+        return;
+      }
+
       case ir::Opcode::kSoaNew: {
         // Storage for a record, one array per field. How big that is, is
         // this tier's own answer -- which is why it is an operation.

@@ -43,3 +43,17 @@ offer fun ArrayNew<T>(count: int) -> []T uses unsafe
 /// Like the two above, it has no body: what a view's storage *is* depends
 /// on how the tier laid it out, so the compiler answers at the call.
 offer fun Free<T>(items: []T) uses unsafe
+
+/// A view of `count` values of `T` at `data`.
+///
+/// `BytesFromRaw` with an element type: the same pair, and the same
+/// reason for having no body. `unsafe` because nothing here can check
+/// that there are that many values there, or that they stay.
+offer fun ViewFromRaw<T>(data: *u8, count: int) -> []T uses unsafe
+
+/// How many bytes a value of `value`'s type takes.
+///
+/// The value is not read -- what is wanted is its type, which is why this
+/// is spelled with an argument. How big a value is depends on how the
+/// tier laid it out, so the compiler answers at the call (D100).
+offer fun SizeOf<T>(value: T) -> int
