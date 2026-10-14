@@ -988,5 +988,28 @@ WOLANG_TEST(Parser, EffectListAcceptsTheUnsafeKeyword) {
                    "    (block)))\n");
 }
 
+WOLANG_TEST(Parser, AKeywordMayBeAName) {
+  // Where only a name can appear -- after a `.`, or as what a declaration
+  // calls itself -- a keyword is a name. A language whose keywords are off
+  // limits as field names makes its users rename their data, and `tag`,
+  // `state` and `task` are words gameplay code wants.
+  const std::string source = R"(
+need engine.task
+
+struct Thing {
+  var tag: int = 0
+  var state: int = 1
+
+  fun Total() -> int => self.tag + self.state
+}
+
+fun Use(t: Thing) -> int {
+  return t.tag + t.Total()
+}
+)";
+  Fixture f(source);
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang

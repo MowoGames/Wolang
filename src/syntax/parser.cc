@@ -231,6 +231,7 @@ class Parser {
   bool ExpectToken(TokenKind kind);
   // Stores the span of the identifier in |span| when it is not null.
   Symbol ExpectIdentifier(SourceSpan* span = nullptr);
+  Symbol ExpectName(SourceSpan* span = nullptr);
   // Consumes a closing brace, blaming |open| when it is missing.
   bool ExpectCloseBrace(SourceSpan open);
   void ExpectStatementEnd();
@@ -411,6 +412,33 @@ bool Parser::ExpectToken(TokenKind kind) {
   message.append(DescribeCurrent());
   Report(kExpectedToken, std::move(message), CurrentSpan());
   return false;
+}
+
+// A name in a position where nothing else can appear: after a `.`, or
+// where a declaration gives its own name. A keyword is allowed there --
+// `o.tag`, `need std.task`, `var state: int` -- because there is nothing
+// for it to be ambiguous with, and because a language whose keywords are
+// off limits as field names makes its users rename their data.
+//
+// It is still a keyword in an expression, so a field named one has to be
+// written `self.tag` rather than `tag`. Making those contextual everywhere
+// is a bigger change to the grammar and is written down as one.
+Symbol Parser::ExpectName(SourceSpan* span) {
+  if (span != nullptr) {
+    *span = CurrentSpan();
+  }
+  if (At(TokenKind::kIdentifier)) {
+    return tokens_.IdentifierOf(Advance());
+  }
+  if (IsKeyword(PeekKind())) {
+    const std::string_view text = TokenKindSpelling(PeekKind());
+    Advance();
+    return interner_->Intern(text);
+  }
+  std::string message = "expected a name, found ";
+  message.append(DescribeCurrent());
+  Report(kExpectedIdentifier, std::move(message), CurrentSpan());
+  return Symbol{};
 }
 
 Symbol Parser::ExpectIdentifier(SourceSpan* span) {
@@ -800,7 +828,7 @@ ItemId Parser::ParseImport(Item item, size_t start) {
       Advance();
       item.flags |= ItemFlags::kNeedList;
       while (!AtEnd() && !At(TokenKind::kRightBrace)) {
-        const Symbol name = ExpectIdentifier();
+        const Symbol name = ExpectName();
         if (name.is_valid()) {
           names.push_back(name);
         } else {
@@ -814,7 +842,9 @@ ItemId Parser::ParseImport(Item item, size_t start) {
       break;
     }
 
-    const Symbol segment = ExpectIdentifier();
+    // A module may be named after a keyword: `need std.task` reads as the
+    // path it looks like, because a segment can only be a name.
+    const Symbol segment = ExpectName();
     if (!segment.is_valid()) {
       item.flags |= ItemFlags::kHasError;
       break;
@@ -1003,7 +1033,7 @@ AstRange<TypeRefId> Parser::ParseEffectList() {
 ItemId Parser::ParseFunction(Item item, size_t start) {
   Advance();  // `fun`
   item.kind = ItemKind::kFunction;
-  item.name = ExpectIdentifier(&item.name_span);
+  item.name = ExpectName(&item.name_span);
 
   std::vector<GenericParamId> generics;
   for (GenericParamId id : ast_->Get(ParseGenericParameters())) {
@@ -1052,7 +1082,7 @@ ItemId Parser::ParseFunction(Item item, size_t start) {
 ItemId Parser::ParseAggregate(Item item, size_t start, ItemKind kind) {
   Advance();  // `class`, `struct`, `trait` or `component`
   item.kind = kind;
-  item.name = ExpectIdentifier(&item.name_span);
+  item.name = ExpectName(&item.name_span);
 
   std::vector<GenericParamId> generics;
   for (GenericParamId id : ast_->Get(ParseGenericParameters())) {
@@ -1079,7 +1109,7 @@ ItemId Parser::ParseAggregate(Item item, size_t start, ItemKind kind) {
 ItemId Parser::ParseEnum(Item item, size_t start) {
   Advance();  // `enum`
   item.kind = ItemKind::kEnum;
-  item.name = ExpectIdentifier(&item.name_span);
+  item.name = ExpectName(&item.name_span);
   item.generics = ParseGenericParameters();
 
   const SourceSpan open = CurrentSpan();
@@ -1101,7 +1131,7 @@ ItemId Parser::ParseEnum(Item item, size_t start) {
     variant.attributes =
         ast_->AddRange(std::span<const AttributeId>(attributes));
 
-    variant.name = ExpectIdentifier(&variant.name_span);
+    variant.name = ExpectName(&variant.name_span);
     if (!variant.name.is_valid()) {
       SkipToItemBoundary();
       break;
@@ -1164,7 +1194,7 @@ ItemId Parser::ParseExtend(Item item, size_t start) {
 ItemId Parser::ParseTag(Item item, size_t start) {
   Advance();  // `tag`
   item.kind = ItemKind::kTag;
-  item.name = ExpectIdentifier(&item.name_span);
+  item.name = ExpectName(&item.name_span);
   item.span = SpanFrom(start);
   return ast_->Add(std::move(item));
 }
@@ -1172,7 +1202,7 @@ ItemId Parser::ParseTag(Item item, size_t start) {
 ItemId Parser::ParseSystem(Item item, size_t start) {
   Advance();  // `system`
   item.kind = ItemKind::kSystem;
-  item.name = ExpectIdentifier(&item.name_span);
+  item.name = ExpectName(&item.name_span);
   item.params = ParseParameterList(/*types_required=*/true);
   item.effects = ParseEffectList();
 
@@ -1210,7 +1240,7 @@ ItemId Parser::ParseSystem(Item item, size_t start) {
 ItemId Parser::ParseSignal(Item item, size_t start) {
   Advance();  // `signal`
   item.kind = ItemKind::kSignal;
-  item.name = ExpectIdentifier(&item.name_span);
+  item.name = ExpectName(&item.name_span);
   item.params = ParseParameterList(/*types_required=*/true);
   item.span = SpanFrom(start);
   return ast_->Add(std::move(item));
@@ -1246,7 +1276,7 @@ ItemId Parser::ParseBinding(Item item, size_t start) {
   }
   Advance();  // `let` or `var`
 
-  item.name = ExpectIdentifier(&item.name_span);
+  item.name = ExpectName(&item.name_span);
   if (Eat(TokenKind::kColon)) {
     item.type = ParseType();
   }
@@ -1264,7 +1294,7 @@ ItemId Parser::ParseBinding(Item item, size_t start) {
 ItemId Parser::ParseTypeAlias(Item item, size_t start) {
   Advance();  // `type`
   item.kind = ItemKind::kTypeAlias;
-  item.name = ExpectIdentifier(&item.name_span);
+  item.name = ExpectName(&item.name_span);
   item.generics = ParseGenericParameters();
   if (ExpectToken(TokenKind::kEq)) {
     item.type = ParseType();
@@ -1311,7 +1341,7 @@ ItemId Parser::ParseDimension(Item item, size_t start) {
 ItemId Parser::ParseUnit(Item item, size_t start) {
   Advance();  // `unit`
   item.kind = ItemKind::kUnit;
-  item.name = ExpectIdentifier(&item.name_span);
+  item.name = ExpectName(&item.name_span);
 
   if (Eat(TokenKind::kColon)) {
     item.path = ParseDottedPath();
@@ -1357,7 +1387,7 @@ ItemId Parser::ParseErrorSet(Item item, size_t start) {
 ItemId Parser::ParseEffect(Item item, size_t start) {
   Advance();  // `effect`
   item.kind = ItemKind::kEffect;
-  item.name = ExpectIdentifier(&item.name_span);
+  item.name = ExpectName(&item.name_span);
   item.span = SpanFrom(start);
   return ast_->Add(std::move(item));
 }
@@ -1365,7 +1395,7 @@ ItemId Parser::ParseEffect(Item item, size_t start) {
 ItemId Parser::ParseMachine(Item item, size_t start) {
   Advance();  // `machine`
   item.kind = ItemKind::kMachine;
-  item.name = ExpectIdentifier(&item.name_span);
+  item.name = ExpectName(&item.name_span);
 
   const SourceSpan open = CurrentSpan();
   if (!ExpectToken(TokenKind::kLeftBrace)) {
@@ -1402,7 +1432,7 @@ StateId Parser::ParseState() {
   Advance();  // `state`
 
   State state;
-  state.name = ExpectIdentifier();
+  state.name = ExpectName();
 
   const SourceSpan open = CurrentSpan();
   if (!ExpectToken(TokenKind::kLeftBrace)) {
@@ -1801,7 +1831,7 @@ ExprId Parser::ParsePostfix(ExprId operand, size_t start) {
         field.kind = kind == TokenKind::kDot ? ExprKind::kField
                                              : ExprKind::kOptionalField;
         field.lhs = operand;
-        field.name = ExpectIdentifier();
+        field.name = ExpectName();
         field.span = SpanFrom(start);
         operand = ast_->Add(std::move(field));
         continue;
