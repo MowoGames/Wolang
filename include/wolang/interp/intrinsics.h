@@ -11,21 +11,28 @@
 namespace wolang {
 namespace interp {
 
-// The operations the language cannot express about itself: writing to the
-// console, turning a number into text. A declaration with no body whose name
-// matches one of these is implemented by the host rather than being an
-// error.
+// The operations the language cannot express about itself.
 //
-// Declared in Wolang as a body-less `offer fun` in `std`, which is what
-// `docs/roadmap.md` calls the platform floor. The list is deliberately tiny:
-// everything that *can* be written in Wolang is.
+// Two kinds live here, and they are here for different reasons. `Print` is
+// a fallback for a file compiled on its own: a single file links no
+// standard library, and a language whose `Print` stops working outside a
+// package is a worse language to try things in.
+//
+// The rest are the string floor the runtime provides. The compiled tier
+// reaches them through the C boundary; the interpreter calls the same
+// functions directly, so that building a string needs no thunk and no
+// backend -- the reference tier has to work on a machine that has neither.
+//
+// The list is deliberately tiny: everything that *can* be written in
+// Wolang is.
 enum class Intrinsic : uint8_t {
   kNone,
   kPrint,
-  kConcatStr,
-  kIntToStr,
-  kFloatToStr,
-  kBoolToStr,
+  kTextFromInt,
+  kTextFromFloat,
+  kTextFromBool,
+  kTextConcat,
+  kTextEqual,
 };
 
 Intrinsic LookupIntrinsic(std::string_view name);

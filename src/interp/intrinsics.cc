@@ -3,6 +3,9 @@
 #include "wolang/interp/intrinsics.h"
 
 #include <cstdio>
+#include <string_view>
+
+#include "wolang/runtime/text.h"
 
 namespace wolang {
 namespace interp {
@@ -13,13 +16,48 @@ struct Entry {
   Intrinsic intrinsic;
 };
 
+// What is left of this file, and why.
+//
+// `Print` is written in Wolang over `write`, and the conversions an
+// interpolated string needs are calls into the runtime that both tiers
+// make. So the only thing still here is a `Print` for a file that was
+// compiled on its own: a single file does not link the standard library,
+// and a language whose `Print` stops working outside a package would be a
+// worse language to try things in.
 constexpr Entry kIntrinsics[] = {
     {"Print", Intrinsic::kPrint},
-    {"ConcatStr", Intrinsic::kConcatStr},
-    {"IntToStr", Intrinsic::kIntToStr},
-    {"FloatToStr", Intrinsic::kFloatToStr},
-    {"BoolToStr", Intrinsic::kBoolToStr},
+    {"wolang_text_from_int", Intrinsic::kTextFromInt},
+    {"wolang_text_from_float", Intrinsic::kTextFromFloat},
+    {"wolang_text_from_bool", Intrinsic::kTextFromBool},
+    {"wolang_text_concat", Intrinsic::kTextConcat},
+    {"wolang_text_equal", Intrinsic::kTextEqual},
 };
+
+// A pointer the runtime handed back, as a value. The IR reads the pair out
+// of it the same way in every tier.
+Value Handle(const runtime::Text* text) {
+  return Value::Int(reinterpret_cast<uint64_t>(text), IntWidth::k64,
+                    /*is_signed=*/false);
+}
+
+// The bytes of a string value: a pointer and a length, in every tier.
+std::string_view BytesOf(const Value& value) {
+  if (value.kind() != Value::Kind::kAggregate ||
+      value.elements().size() != 2) {
+    return {};
+  }
+  const Value& data = value.elements()[0];
+  const Value& length = value.elements()[1];
+  if (data.kind() != Value::Kind::kInt ||
+      length.kind() != Value::Kind::kInt) {
+    return {};
+  }
+  const auto* bytes = reinterpret_cast<const char*>(data.integer());
+  if (bytes == nullptr) {
+    return {};
+  }
+  return std::string_view(bytes, static_cast<size_t>(length.integer()));
+}
 
 }  // namespace
 
@@ -35,60 +73,52 @@ Intrinsic LookupIntrinsic(std::string_view name) {
 Value CallIntrinsic(Intrinsic intrinsic,
                     const std::vector<Value>& arguments,
                     Output* output) {
-  const auto argument = [&arguments](size_t index) -> const Value& {
-    static const Value kMissing;
-    return index < arguments.size() ? arguments[index] : kMissing;
-  };
-
   switch (intrinsic) {
     case Intrinsic::kPrint: {
-      const Value& text = argument(0);
-      if (text.kind() != Value::Kind::kString) {
-        return Value();
-      }
+      const std::string_view text =
+          BytesOf(arguments.empty() ? Value() : arguments.front());
       if (output != nullptr) {
-        output->text.append(text.text());
+        output->text.append(text);
         output->text.push_back('\n');
+      } else {
+        std::fwrite(text.data(), 1, text.size(), stdout);
+        std::fputc('\n', stdout);
       }
       return Value::Void();
     }
 
-    case Intrinsic::kConcatStr: {
-      const Value& left = argument(0);
-      const Value& right = argument(1);
-      if (left.kind() != Value::Kind::kString ||
-          right.kind() != Value::Kind::kString) {
+    case Intrinsic::kTextFromInt:
+      return Handle(runtime::wolang_text_from_int(
+          arguments.empty() ? 0 : arguments[0].signed_integer()));
+
+    case Intrinsic::kTextFromFloat:
+      return Handle(runtime::wolang_text_from_float(
+          arguments.empty() ? 0.0 : arguments[0].floating()));
+
+    case Intrinsic::kTextFromBool:
+      return Handle(runtime::wolang_text_from_bool(
+          !arguments.empty() && arguments[0].boolean()));
+
+    case Intrinsic::kTextConcat: {
+      if (arguments.size() < 4) {
         return Value();
       }
-      return Value::Str(left.text() + right.text());
+      return Handle(runtime::wolang_text_concat(
+          reinterpret_cast<const uint8_t*>(arguments[0].integer()),
+          arguments[1].integer(),
+          reinterpret_cast<const uint8_t*>(arguments[2].integer()),
+          arguments[3].integer()));
     }
 
-    case Intrinsic::kIntToStr: {
-      const Value& number = argument(0);
-      if (number.kind() != Value::Kind::kInt) {
+    case Intrinsic::kTextEqual: {
+      if (arguments.size() < 4) {
         return Value();
       }
-      return Value::Str(number.is_signed()
-                            ? std::to_string(number.signed_integer())
-                            : std::to_string(number.integer()));
-    }
-
-    case Intrinsic::kFloatToStr: {
-      const Value& number = argument(0);
-      if (number.kind() != Value::Kind::kFloat) {
-        return Value();
-      }
-      char buffer[32];
-      std::snprintf(buffer, sizeof(buffer), "%g", number.floating());
-      return Value::Str(buffer);
-    }
-
-    case Intrinsic::kBoolToStr: {
-      const Value& flag = argument(0);
-      if (flag.kind() != Value::Kind::kBool) {
-        return Value();
-      }
-      return Value::Str(flag.boolean() ? "true" : "false");
+      return Value::Bool(runtime::wolang_text_equal(
+          reinterpret_cast<const uint8_t*>(arguments[0].integer()),
+          arguments[1].integer(),
+          reinterpret_cast<const uint8_t*>(arguments[2].integer()),
+          arguments[3].integer()));
     }
 
     case Intrinsic::kNone:

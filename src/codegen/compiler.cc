@@ -491,17 +491,18 @@ void CompiledModule::Impl::Encode(abi::LayoutStore* layouts,
   }
 
   const abi::Layout& layout = layouts->Of(type);
-  if (types_.KindOf(type) == TypeKind::kStr) {
-    // A view of the bytes the interpreter's value owns. The value outlives
-    // the call -- the caller's argument vector holds it -- which is the
-    // same reason a `str` is safe to pass at all.
-    const char* bytes = value.kind() == interp::Value::Kind::kString
-                            ? value.text().data()
-                            : nullptr;
-    const uint64_t length = value.kind() == interp::Value::Kind::kString
-                                ? value.text().size()
-                                : 0;
-    const auto address = reinterpret_cast<uint64_t>(bytes);
+  if (types_.KindOf(type) == TypeKind::kStr ||
+      types_.KindOf(type) == TypeKind::kString) {
+    // The pair the value already is. Both tiers hold a string the same
+    // way, so crossing the boundary copies two words and nothing else --
+    // which is also why a string survives the crossing at all.
+    uint64_t address = 0;
+    uint64_t length = 0;
+    if (value.kind() == interp::Value::Kind::kAggregate &&
+        value.elements().size() == 2) {
+      address = value.elements()[0].integer();
+      length = value.elements()[1].integer();
+    }
     std::memcpy(destination, &address, sizeof(address));
     std::memcpy(destination + 8, &length, sizeof(length));
     return;
@@ -583,17 +584,21 @@ interp::Value CompiledModule::Impl::Decode(abi::LayoutStore* layouts,
   }
 
   const abi::Layout& layout = layouts->Of(type);
-  if (types_.KindOf(type) == TypeKind::kStr) {
+  if (types_.KindOf(type) == TypeKind::kStr ||
+      types_.KindOf(type) == TypeKind::kString) {
+    // The pair, not a copy of the bytes: a string is a pointer and a
+    // length in every tier, and handing one back as something else is how
+    // the two tiers used to be unable to pass a string to each other.
     uint64_t address = 0;
     uint64_t length = 0;
     std::memcpy(&address, source, sizeof(address));
     std::memcpy(&length, source + 8, sizeof(length));
-    if (address == 0) {
-      return interp::Value::Str(std::string());
-    }
-    return interp::Value::Str(
-        std::string(reinterpret_cast<const char*>(address),
-                    static_cast<size_t>(length)));
+    std::vector<interp::Value> pair;
+    pair.push_back(
+        interp::Value::Int(address, IntWidth::k64, /*is_signed=*/false));
+    pair.push_back(
+        interp::Value::Int(length, IntWidth::k64, /*is_signed=*/false));
+    return interp::Value::Aggregate(std::move(pair));
   }
   if (types_.KindOf(type) == TypeKind::kOptional) {
     if (source[0] == 0) {

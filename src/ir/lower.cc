@@ -972,8 +972,9 @@ class Lowerer {
                                    ast_.string(text.aux));
     }
     // Interpolation builds a string at runtime, by turning each piece into
-    // text and concatenating. The conversions are intrinsics -- the one
-    // thing here the language cannot say about itself.
+    // text and concatenating. The conversions are calls into the runtime
+    // -- the floor the language stands on -- and both tiers make the same
+    // ones.
     const TypeId str = types_->str();
     InstId result;
     for (ExprId part : parts) {
@@ -990,9 +991,7 @@ class Lowerer {
       if (!text.is_valid()) {
         continue;
       }
-      result = result.is_valid() ? Intrinsic("ConcatStr", str,
-                                             {result, text})
-                                 : text;
+      result = result.is_valid() ? ConcatText(result, text) : text;
     }
     return result.is_valid() ? result
                              : builder_->ConstString(str, std::string());
@@ -1000,20 +999,106 @@ class Lowerer {
 
   // Calls a host-provided function by name, declaring it if this file has
   // not named it yet.
-  InstId Intrinsic(std::string_view name,
-                   TypeId result,
-                   std::vector<InstId> arguments) {
-    const Symbol symbol = interner_->Intern(name);
+  // A call into the runtime: the floor the language stands on, reached the
+  // same way an `extern` declaration is. Which is what makes a string work
+  // in both tiers -- the interpreter calls the same C function the machine
+  // code does, rather than having an idea of its own about strings.
+  InstId RuntimeCall(std::string_view symbol,
+                     TypeId result,
+                     std::vector<InstId> arguments) {
+    const Symbol name = interner_->Intern(symbol);
     std::vector<TypeId> params;
+    const Function& current = module_->functions[current_function_];
     for (InstId argument : arguments) {
-      params.push_back(
-          module_->functions[current_function_].Contains(argument)
-              ? module_->functions[current_function_].Get(argument).type
-              : types_->error());
+      params.push_back(current.Contains(argument)
+                           ? current.Get(argument).type
+                           : types_->error());
     }
-    const uint32_t callee =
-        DeclareExternal(symbol, types_->Function(params, result));
+    const uint32_t callee = DeclareRuntime(name,
+                                           types_->Function(params, result));
     return builder_->Call(callee, result, std::move(arguments));
+  }
+
+  // The runtime takes a 64-bit value, so a narrower one is converted
+  // first: the C boundary has no idea what width the source said.
+  InstId Widen(InstId value, TypeId to) {
+    const Function& current = module_->functions[current_function_];
+    if (!current.Contains(value) || current.Get(value).type == to) {
+      return value;
+    }
+    return builder_->Add(Opcode::kCast, to, {value});
+  }
+
+  uint32_t DeclareRuntime(Symbol name, TypeId type) {
+    for (uint32_t i = 0; i < module_->functions.size(); ++i) {
+      if (module_->functions[i].name == name) {
+        return i;
+      }
+    }
+    Function declaration;
+    declaration.name = name;
+    declaration.type = Erase(type);
+    // The symbol is its own name: the runtime table is consulted before
+    // the host's loader, so these cannot be shadowed.
+    declaration.foreign_symbol = name;
+    module_->functions.push_back(std::move(declaration));
+    return static_cast<uint32_t>(module_->functions.size() - 1);
+  }
+
+  // Two strings joined. The pieces are pairs, so the call takes four
+  // arguments and gives back a string that owns its bytes.
+  InstId ConcatText(InstId left, InstId right) {
+    const TypeId bytes = types_->Pointer(
+        types_->Int(IntWidth::k8, /*is_signed=*/false),
+        /*is_mutable=*/false);
+    const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
+    return TextFromRuntime(
+        "wolang_text_concat",
+        {builder_->Extract(bytes, left, 0),
+         builder_->Extract(word, left, 1),
+         builder_->Extract(bytes, right, 0),
+         builder_->Extract(word, right, 1)});
+  }
+
+  // Whether two strings hold the same bytes.
+  InstId TextEqual(InstId left, InstId right) {
+    const TypeId bytes = types_->Pointer(
+        types_->Int(IntWidth::k8, /*is_signed=*/false),
+        /*is_mutable=*/false);
+    const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
+    return RuntimeCall("wolang_text_equal", types_->bool_type(),
+                       {builder_->Extract(bytes, left, 0),
+                        builder_->Extract(word, left, 1),
+                        builder_->Extract(bytes, right, 0),
+                        builder_->Extract(word, right, 1)});
+  }
+
+  // A string the runtime built: one call, then the pair read out of what
+  // it returned. The pointer is what crosses the boundary, because a
+  // sixteen-byte value cannot be returned through the C ABI this tier
+  // speaks.
+  InstId TextFromRuntime(std::string_view symbol,
+                         std::vector<InstId> arguments) {
+    const TypeId bytes = types_->Pointer(
+        types_->Int(IntWidth::k8, /*is_signed=*/false),
+        /*is_mutable=*/false);
+    const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
+    // A pointer to the pair itself, so that the field offsets are the
+    // ones a string has: pointing at a word instead would put the length
+    // at offset zero and read the bytes as a length.
+    const TypeId handle =
+        types_->Pointer(types_->str(), /*is_mutable=*/true);
+    const InstId pair =
+        RuntimeCall(symbol, handle, std::move(arguments));
+    const InstId data_address =
+        builder_->FieldAddress(types_->Pointer(bytes, true), pair, 0);
+    const InstId length_address =
+        builder_->FieldAddress(types_->Pointer(word, true), pair, 1);
+    const InstId data = builder_->Add(Opcode::kLoad, bytes, {data_address});
+    const InstId length =
+        builder_->Add(Opcode::kLoad, word, {length_address});
+    return builder_->Add(Opcode::kMakeStruct, types_->str(),
+                         {data, length});
   }
 
   // Turns a value into text, picking the conversion by its type.
@@ -1027,11 +1112,15 @@ class Lowerer {
       case TypeKind::kString:
         return value;
       case TypeKind::kInt:
-        return Intrinsic("IntToStr", str, {value});
+        return TextFromRuntime("wolang_text_from_int",
+                               {Widen(value, types_->Int(IntWidth::k64,
+                                                         true))});
       case TypeKind::kFloat:
-        return Intrinsic("FloatToStr", str, {value});
+        return TextFromRuntime("wolang_text_from_float",
+                               {Widen(value,
+                                      types_->Float(FloatWidth::k64))});
       case TypeKind::kBool:
-        return Intrinsic("BoolToStr", str, {value});
+        return TextFromRuntime("wolang_text_from_bool", {value});
       default:
         // Anything else needs a formatting trait, which arrives with the
         // rest of `core`.
@@ -1097,6 +1186,18 @@ class Lowerer {
     const Opcode opcode = BinaryOpcode(expr.op);
     if (opcode == Opcode::kUndef) {
       return builder_->Undef(type);
+    }
+    // Two strings are equal when they hold the same bytes. A pair of
+    // pointers is not an answer to that, so this is a call -- and
+    // comparing the pairs, which is what it used to do, said that two
+    // copies of "GET" were different strings.
+    if ((opcode == Opcode::kEq || opcode == Opcode::kNe) &&
+        IsView(TypeOf(expr.lhs)) && IsView(TypeOf(expr.rhs))) {
+      const InstId equal = TextEqual(left, right);
+      return opcode == Opcode::kEq
+                 ? equal
+                 : builder_->Add(Opcode::kLogicalNot, types_->bool_type(),
+                                 {equal});
     }
     const bool compare = opcode >= Opcode::kEq && opcode <= Opcode::kGe;
     return builder_->Add(opcode, compare ? types_->bool_type() : type,

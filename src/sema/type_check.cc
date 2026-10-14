@@ -712,6 +712,12 @@ TypeId Checker::CheckBinary(const Expr& expr) {
     // The left side is the bare `null` literal, whose type says nothing
     // about what it is being compared with.
     right_expectation = TypeId{};
+  } else if (types_->KindOf(left) == TypeKind::kString) {
+    // An owned string on the left says nothing about what the right side
+    // has to be: comparing what was built with a literal is the most
+    // common thing done with a string, and demanding an owned one on both
+    // sides would make it an error.
+    right_expectation = TypeId{};
   }
   const TypeId right =
       Check(expr.rhs, right_expectation, /*keep_open=*/true);

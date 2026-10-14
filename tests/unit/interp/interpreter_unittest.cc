@@ -455,15 +455,24 @@ class ProgramFixture {
       return "<verifier: " + lowered->problems.front() + ">";
     }
 
+    // A string is a pointer and a length now, so reading one needs the
+    // layout: where a field of an aggregate is, is the one question the
+    // interpreter cannot answer by itself.
+    const CheckedFile* checked = db_.Checked(file_);
+    if (checked == nullptr) {
+      return "<not checked>";
+    }
+    abi::LayoutStore layouts(db_.types(), checked->resolution);
+
     const Symbol main = db_.interner().Intern("main");
     interp::Output reference;
     interp::Output optimized;
-    const interp::Outcome a =
-        interp::RunNamed(db_.interner(), db_.types(), lowered->unoptimized,
-                         main, {}, {}, &reference);
-    const interp::Outcome b =
-        interp::RunNamed(db_.interner(), db_.types(), lowered->module, main,
-                         {}, {}, &optimized);
+    const interp::Outcome a = interp::RunNamed(
+        db_.interner(), db_.types(), lowered->unoptimized, main, {}, {},
+        &reference, nullptr, &layouts);
+    const interp::Outcome b = interp::RunNamed(
+        db_.interner(), db_.types(), lowered->module, main, {}, {},
+        &optimized, nullptr, &layouts);
     if (!a.ok()) {
       return "trap: " + std::string(interp::TrapKindName(a.trap));
     }

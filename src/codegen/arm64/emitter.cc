@@ -301,6 +301,19 @@ class FunctionEmitter {
     swap_base_ = offset;
     offset += widest * 8;
 
+    // Where the result of an aggregate return goes. It arrives in a
+    // register the platform lets a callee clobber, so a function that
+    // returns an aggregate *and* calls anything has to keep it somewhere
+    // of its own -- which every such function does the moment an
+    // interpolated string is built.
+    const TypeId returned = types_.ElementOf(function_.type);
+    indirect_ = returned.is_valid() &&
+                layouts_.ClassOf(returned) == abi::ValueClass::kAggregate;
+    if (indirect_) {
+      indirect_base_ = offset;
+      offset += 8;
+    }
+
     for (size_t i = 0; i < values_.size(); ++i) {
       if (values_[i].holding != Holding::kArea) {
         continue;
@@ -665,6 +678,11 @@ class FunctionEmitter {
                           static_cast<int32_t>(slot.first + written));
         }
       }
+    }
+
+    if (indirect_) {
+      assembler_.Str(IWidth::k64, kIndirectResult, Register::kSp,
+                     static_cast<int32_t>(indirect_base_));
     }
 
     // The incoming arguments go where the allocator put them.
@@ -1312,8 +1330,10 @@ class FunctionEmitter {
               break;
             case abi::ValueClass::kAggregate: {
               const Register source = UseArea(value, 1);
-              CopyBytes(kIndirectResult, 0, source, 0,
-                        layouts_.SizeOf(type), 2);
+              const Register target = Scratch(3);
+              assembler_.Ldr(IWidth::k64, target, Register::kSp,
+                             static_cast<int32_t>(indirect_base_));
+              CopyBytes(target, 0, source, 0, layouts_.SizeOf(type), 2);
               break;
             }
             case abi::ValueClass::kVoid:
@@ -2091,6 +2111,8 @@ class FunctionEmitter {
   uint32_t saved_floats_ = 0;
   uint32_t spill_base_ = 0;
   uint32_t swap_base_ = 0;
+  bool indirect_ = false;
+  uint32_t indirect_base_ = 0;
   uint32_t frame_bytes_ = 0;
   // Every `alloca`'s area, which the prologue zeroes.
   std::vector<std::pair<uint32_t, uint32_t>> slots_;

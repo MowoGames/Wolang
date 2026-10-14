@@ -23,11 +23,12 @@ offer fun Print(message: text) uses io {
   Write("\n")
 }
 
-/// Conversions. Lowering calls these for the pieces of an interpolated
-/// string, so they have to exist even where the source never names them.
-/// Each builds an owned string, which is the one thing still waiting for a
-/// heap: these remain the platform floor until there is one.
-offer fun IntToStr(value: int) -> text
-offer fun FloatToStr(value: float) -> text
-offer fun BoolToStr(value: bool) -> text
-offer fun ConcatStr(left: text, right: text) -> text
+// The pieces of an interpolated string are built by the runtime, and both
+// tiers call the same functions for them -- so an interpolated string
+// compiles rather than dragging the program it is in into the interpreter.
+// Nothing here has to declare them: lowering names them itself, the way it
+// names the allocator a `class` needs.
+//
+// They allocate and nothing frees them yet. The collector is a later wave
+// and `Owned<T>` the wave after that; until then a string that is built
+// stays built, which `docs/architecture.md` says out loud.

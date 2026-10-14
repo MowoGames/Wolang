@@ -159,10 +159,50 @@ class Fixture {
 
   static std::string Describe(const interp::Outcome& outcome) {
     if (outcome.ok()) {
+      // A string is a pointer and a length in every tier, so comparing
+      // one means comparing its bytes: the pointers differ between two
+      // runs of the same program and say nothing about what it computed.
+      if (const std::string text = AsText(outcome.value); !text.empty()) {
+        return text;
+      }
       return outcome.value.Describe();
     }
     return "trap: " + std::string(ir::TrapKindName(outcome.trap)) + " at " +
            outcome.where + ": " + outcome.message;
+  }
+
+  // The bytes of a value that looks like a string: a pair of a pointer
+  // and a length. Empty when it is not one.
+  static std::string AsText(const interp::Value& value) {
+    if (value.kind() != interp::Value::Kind::kAggregate ||
+        value.elements().size() != 2) {
+      return {};
+    }
+    const interp::Value& data = value.elements()[0];
+    const interp::Value& length = value.elements()[1];
+    if (data.kind() != interp::Value::Kind::kInt ||
+        length.kind() != interp::Value::Kind::kInt ||
+        data.integer() == 0 || data.is_signed() || length.is_signed()) {
+      return {};
+    }
+    const auto* bytes = reinterpret_cast<const char*>(data.integer());
+    return "\"" + std::string(bytes, static_cast<size_t>(
+                                          length.integer())) +
+           "\"";
+  }
+
+  // A string argument: the pair, pointing at bytes the fixture keeps
+  // alive for as long as the run.
+  static interp::Value Text(std::string_view bytes) {
+    static std::vector<std::unique_ptr<std::string>> kept;
+    kept.push_back(std::make_unique<std::string>(bytes));
+    const std::string& storage = *kept.back();
+    std::vector<interp::Value> pair;
+    pair.push_back(interp::Value::Int(
+        reinterpret_cast<uint64_t>(storage.data()), IntWidth::k64, false));
+    pair.push_back(
+        interp::Value::Int(storage.size(), IntWidth::k64, false));
+    return interp::Value::Aggregate(std::move(pair));
   }
 
   static interp::Value Int(int64_t value) {
@@ -1046,6 +1086,68 @@ fun OnceIntoABuffer() -> int {
 )");
   WOLANG_EXPECT_EQ(f.Run("Once", {}), "201");
   WOLANG_EXPECT_EQ(f.Run("OnceIntoABuffer", {}), "71");
+}
+
+WOLANG_TEST(CodegenTest, BuildsAndComparesStrings) {
+  // A string is a pointer and a length in every tier, and what is built
+  // from one is built by the runtime both tiers call. Which is what makes
+  // an interpolated string compile rather than drag the program it is in
+  // into the interpreter.
+  //
+  // Equality compares the bytes. Comparing the pairs -- which is what
+  // structural equality does, and what this used to do -- answers that two
+  // copies of "GET" are different strings.
+  Fixture f(R"(
+fun Greeting(name: text) -> text => "hello, {name}"
+
+fun Counted(n: int) -> text => "n={n}"
+
+fun Same(a: text, b: text) -> bool => a == b
+
+fun Differs(a: text, b: text) -> bool => a != b
+
+fun SameLiterals() -> bool {
+  const a = "GET"
+  const b = "GET"
+  return a == b
+}
+
+fun SameBuilt() -> bool {
+  const built = "GE{"T"}"
+  return built == "GET"
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Greeting", {Fixture::Text("world")}),
+                   "\"hello, world\"");
+  WOLANG_EXPECT_EQ(f.Run("Counted", {Fixture::Int(42)}), "\"n=42\"");
+  WOLANG_EXPECT_EQ(f.Run("SameLiterals", {}), "true");
+  WOLANG_EXPECT_EQ(f.Run("SameBuilt", {}), "true");
+}
+
+WOLANG_TEST(CodegenTest, ReturnsAnAggregateFromAFunctionThatCalls) {
+  // The register an aggregate result is written through is one a callee
+  // may clobber, so a function that returns an aggregate *and* calls
+  // something has to keep that address itself. Every function that builds
+  // an interpolated string is one, which is how this was found.
+  Fixture f(R"(
+struct Pair {
+  var a: int
+  var b: int
+}
+
+fun Twice(n: int) -> int => n * 2
+
+fun Build(n: int) -> Pair {
+  return Pair(Twice(n), Twice(n + 1))
+}
+
+fun Nested(n: int) -> Pair {
+  const inner = Build(n)
+  return Pair(inner.b, inner.a)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Build", {Fixture::Int(3)}), "(6, 8)");
+  WOLANG_EXPECT_EQ(f.Run("Nested", {Fixture::Int(3)}), "(8, 6)");
 }
 
 }  // namespace

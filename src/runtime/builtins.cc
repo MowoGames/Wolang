@@ -2,6 +2,8 @@
 
 #include "wolang/runtime/builtins.h"
 
+#include "wolang/runtime/text.h"
+
 #include "wolang/runtime/scheduler.h"
 
 #include <cstdlib>
@@ -48,6 +50,16 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_object_alloc)},
       {"wolang_object_free",
        reinterpret_cast<void*>(&wolang_object_free)},
+      {"wolang_text_from_int",
+       reinterpret_cast<void*>(&wolang_text_from_int)},
+      {"wolang_text_from_float",
+       reinterpret_cast<void*>(&wolang_text_from_float)},
+      {"wolang_text_from_bool",
+       reinterpret_cast<void*>(&wolang_text_from_bool)},
+      {"wolang_text_concat",
+       reinterpret_cast<void*>(&wolang_text_concat)},
+      {"wolang_text_equal",
+       reinterpret_cast<void*>(&wolang_text_equal)},
       {"wolang_sched_pending",
        reinterpret_cast<void*>(&wolang_sched_pending)},
   };

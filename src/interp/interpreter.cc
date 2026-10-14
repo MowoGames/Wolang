@@ -83,6 +83,18 @@ class Interpreter {
              std::vector<Value> arguments,
              Outcome* outcome) {
     if (function.is_foreign()) {
+      // The runtime's own functions are called directly rather than
+      // through the C boundary: building a string must not depend on
+      // there being a thunk, because the reference tier has to work on a
+      // machine with no backend at all.
+      const Intrinsic builtin =
+          LookupIntrinsic(interner_.Text(function.foreign_symbol));
+      if (builtin != Intrinsic::kNone) {
+        Value result = CallIntrinsic(builtin, arguments, output_);
+        if (!result.is_undefined()) {
+          return result;
+        }
+      }
       return CallForeign(function, arguments, outcome);
     }
     if (function.is_declaration()) {
@@ -386,11 +398,23 @@ class Interpreter {
         return Value::Bool(inst.payload.boolean);
       case ir::Opcode::kConstNull:
         return Value::Absent();
-      case ir::Opcode::kConstString:
-        return inst.payload.string < frame->module->strings.size()
-                   ? Value::Str(
-                         frame->module->strings[inst.payload.string])
-                   : Value::Str("");
+      case ir::Opcode::kConstString: {
+        // A string is a pointer and a length, here as much as in machine
+        // code: the bytes live with the module, so a literal is a view of
+        // them. One representation in every tier is what lets the
+        // standard library build a string rather than the compiler.
+        static const std::string kEmpty;
+        const std::string& bytes =
+            inst.payload.string < frame->module->strings.size()
+                ? frame->module->strings[inst.payload.string]
+                : kEmpty;
+        std::vector<Value> pair;
+        pair.push_back(Value::Int(reinterpret_cast<uint64_t>(bytes.data()),
+                                  IntWidth::k64, /*is_signed=*/false));
+        pair.push_back(Value::Int(bytes.size(), IntWidth::k64,
+                                  /*is_signed=*/false));
+        return Value::Aggregate(std::move(pair));
+      }
 
       case ir::Opcode::kUndef:
         // Reaching one means control went where the front end proved it
