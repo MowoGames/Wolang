@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "wolang/base/string_interner.h"
-#include "wolang/codegen/layout.h"
+#include "wolang/abi/layout.h"
 #include "wolang/ir/ir.h"
 #include "wolang/ir/trap.h"
 
@@ -68,7 +68,7 @@ struct CompiledFunction {
 // them rather than a copy -- which is also why a `str` is a borrow.
 CompiledFunction EmitFunction(const StringInterner& interner,
                               const TypeStore& types,
-                              LayoutStore* layouts,
+                              abi::LayoutStore* layouts,
                               const ir::Module& module,
                               const ir::Function& function,
                               const std::vector<bool>& compilable,

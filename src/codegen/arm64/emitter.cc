@@ -91,7 +91,7 @@ class FunctionEmitter {
  public:
   FunctionEmitter(const StringInterner& interner,
                   const TypeStore& types,
-                  LayoutStore* layouts,
+                  abi::LayoutStore* layouts,
                   const ir::Module& module,
                   const ir::Function& function,
                   const std::vector<bool>& compilable,
@@ -154,7 +154,7 @@ class FunctionEmitter {
       if (!layouts_.IsSupported(type)) {
         return "takes " + Describe(type);
       }
-      if (layouts_.ClassOf(type) == ValueClass::kFloat) {
+      if (layouts_.ClassOf(type) == abi::ValueClass::kFloat) {
         ++floats;
       } else {
         ++integers;
@@ -202,7 +202,7 @@ class FunctionEmitter {
               function_.OperandsOf(inst);
           if (!operands.empty() &&
               layouts_.ClassOf(function_.Get(operands[0]).type) ==
-                  ValueClass::kAggregate) {
+                  abi::ValueClass::kAggregate) {
             return "compares two aggregates";
           }
           break;
@@ -235,15 +235,15 @@ class FunctionEmitter {
         continue;
       }
       switch (layouts_.ClassOf(inst.type)) {
-        case ValueClass::kInteger:
+        case abi::ValueClass::kInteger:
           values_[i].holding = Holding::kInteger;
           classes[i] = RegClass::kInteger;
           break;
-        case ValueClass::kFloat:
+        case abi::ValueClass::kFloat:
           values_[i].holding = Holding::kFloat;
           classes[i] = RegClass::kFloat;
           break;
-        case ValueClass::kAggregate:
+        case abi::ValueClass::kAggregate:
           values_[i].holding = Holding::kArea;
           break;
         default:
@@ -288,11 +288,11 @@ class FunctionEmitter {
         continue;
       }
       const TypeId type = function_.instructions[i].type;
-      const Layout& layout = layouts_.Of(type);
+      const abi::Layout& layout = layouts_.Of(type);
       if (layout.size == 0) {
         continue;
       }
-      offset = AlignUp(offset, std::max(layout.align, 1u));
+      offset = abi::AlignUp(offset, std::max(layout.align, 1u));
       values_[i].area = offset;
       if (function_.instructions[i].opcode == ir::Opcode::kAlloca) {
         slots_.push_back(std::pair<uint32_t, uint32_t>(offset, layout.size));
@@ -303,7 +303,7 @@ class FunctionEmitter {
       }
     }
 
-    frame_bytes_ = AlignUp(offset, 16);
+    frame_bytes_ = abi::AlignUp(offset, 16);
     if (frame_bytes_ > kMaxFrameBytes) {
       return "needs a frame larger than this tier emits";
     }
@@ -496,7 +496,7 @@ class FunctionEmitter {
     const TypeId returned = types_.ElementOf(function_.type);
     const bool indirect = returned.is_valid() &&
                           layouts_.ClassOf(returned) ==
-                              ValueClass::kAggregate;
+                              abi::ValueClass::kAggregate;
     if (indirect) {
       assembler_.Mov(IWidth::k64, kIndirectResult, Register::kX2);
     }
@@ -506,7 +506,7 @@ class FunctionEmitter {
     for (size_t i = 0; i < params.size(); ++i) {
       const TypeId type = TypeOf(params[i]);
       const int32_t slot = static_cast<int32_t>(i * 8);
-      if (layouts_.ClassOf(type) == ValueClass::kFloat) {
+      if (layouts_.ClassOf(type) == abi::ValueClass::kFloat) {
         assembler_.LdrFloat(FloatWidthOf(type),
                             kFloatArgumentRegisters[floats++], Register::kX9,
                             slot);
@@ -520,10 +520,10 @@ class FunctionEmitter {
 
     if (!indirect && returned.is_valid()) {
       assembler_.Ldr(IWidth::k64, Register::kX9, Register::kSp, 24);
-      if (layouts_.ClassOf(returned) == ValueClass::kFloat) {
+      if (layouts_.ClassOf(returned) == abi::ValueClass::kFloat) {
         assembler_.StrFloat(FWidth::k64, FloatRegister::kV0, Register::kX9,
                             0);
-      } else if (layouts_.ClassOf(returned) != ValueClass::kVoid) {
+      } else if (layouts_.ClassOf(returned) != abi::ValueClass::kVoid) {
         assembler_.Str(IWidth::k64, Register::kX0, Register::kX9, 0);
       }
     }
@@ -617,8 +617,8 @@ class FunctionEmitter {
     uint32_t floats = 0;
     for (ir::InstId param : params) {
       const TypeId type = TypeOf(param);
-      const ValueClass value_class = layouts_.ClassOf(type);
-      if (value_class == ValueClass::kFloat) {
+      const abi::ValueClass value_class = layouts_.ClassOf(type);
+      if (value_class == abi::ValueClass::kFloat) {
         const FloatRegister source = kFloatArgumentRegisters[floats++];
         if (Info(param).allocation.in_register()) {
           assembler_.FMov(FWidth::k64,
@@ -630,7 +630,7 @@ class FunctionEmitter {
         continue;
       }
       const Register source = kArgumentRegisters[integers++];
-      if (value_class == ValueClass::kAggregate) {
+      if (value_class == abi::ValueClass::kAggregate) {
         // An aggregate arrives as a pointer and is copied into this
         // frame's area, so that every aggregate value is addressed the
         // same way wherever it came from.
@@ -708,7 +708,7 @@ class FunctionEmitter {
                   ir::InstId destination,
                   Register base,
                   int32_t offset) {
-    if (layouts_.ClassOf(type) == ValueClass::kFloat) {
+    if (layouts_.ClassOf(type) == abi::ValueClass::kFloat) {
       const FloatRegister reg = DestFloat(destination, 0);
       assembler_.LdrFloat(FloatWidthOf(type), reg, base, offset);
       FinishFloat(destination, reg);
@@ -769,18 +769,18 @@ class FunctionEmitter {
                  unsigned scratch) {
     const TypeId type = TypeOf(value);
     switch (layouts_.ClassOf(type)) {
-      case ValueClass::kFloat: {
+      case abi::ValueClass::kFloat: {
         const FloatRegister reg = UseFloat(value, scratch);
         assembler_.StrFloat(FloatWidthOf(type), reg, base, offset);
         break;
       }
-      case ValueClass::kAggregate: {
+      case abi::ValueClass::kAggregate: {
         const Register source = UseArea(value, scratch);
         CopyBytes(base, offset, source, 0, layouts_.SizeOf(type),
                   scratch + 1);
         break;
       }
-      case ValueClass::kVoid:
+      case abi::ValueClass::kVoid:
         break;
       default: {
         const Register reg = UseInt(value, scratch);
@@ -863,7 +863,7 @@ class FunctionEmitter {
       case ir::Opcode::kLoad: {
         const ir::InstId slot = function_.OperandsOf(inst)[0];
         const Register base = AddressOf(slot, 1);
-        if (layouts_.ClassOf(inst.type) == ValueClass::kAggregate) {
+        if (layouts_.ClassOf(inst.type) == abi::ValueClass::kAggregate) {
           const Register area = UseArea(id, 2);
           CopyBytes(area, 0, base, 0, layouts_.SizeOf(inst.type), 3);
           return;
@@ -882,7 +882,7 @@ class FunctionEmitter {
       case ir::Opcode::kMakeStruct:
       case ir::Opcode::kMakeArray: {
         const Register area = UseArea(id, 0);
-        const Layout& layout = layouts_.Of(inst.type);
+        const abi::Layout& layout = layouts_.Of(inst.type);
         const bool is_array =
             types_.KindOf(inst.type) == TypeKind::kArray;
         const uint32_t stride =
@@ -901,12 +901,12 @@ class FunctionEmitter {
       }
       case ir::Opcode::kExtract: {
         const ir::InstId source = function_.OperandsOf(inst)[0];
-        const Layout& layout = layouts_.Of(TypeOf(source));
+        const abi::Layout& layout = layouts_.Of(TypeOf(source));
         const int32_t offset = static_cast<int32_t>(
             inst.field < layout.offsets.size() ? layout.offsets[inst.field]
                                                : 0);
         const Register base = UseArea(source, 1);
-        if (layouts_.ClassOf(inst.type) == ValueClass::kAggregate) {
+        if (layouts_.ClassOf(inst.type) == abi::ValueClass::kAggregate) {
           const Register area = UseArea(id, 2);
           CopyBytes(area, 0, base, offset, layouts_.SizeOf(inst.type), 3);
           return;
@@ -917,7 +917,7 @@ class FunctionEmitter {
       case ir::Opcode::kInsert: {
         const std::span<const ir::InstId> operands =
             function_.OperandsOf(inst);
-        const Layout& layout = layouts_.Of(inst.type);
+        const abi::Layout& layout = layouts_.Of(inst.type);
         const Register area = UseArea(id, 0);
         const Register source = UseArea(operands[0], 1);
         CopyBytes(area, 0, source, 0, layouts_.SizeOf(inst.type), 2);
@@ -934,7 +934,7 @@ class FunctionEmitter {
 
       case ir::Opcode::kOptionalWrap: {
         const ir::InstId inside = function_.OperandsOf(inst)[0];
-        const Layout& layout = layouts_.Of(inst.type);
+        const abi::Layout& layout = layouts_.Of(inst.type);
         const Register area = UseArea(id, 0);
         const Register one = Scratch(1);
         assembler_.MovImmediate(IWidth::k32, one, 1);
@@ -956,7 +956,7 @@ class FunctionEmitter {
       }
       case ir::Opcode::kOptionalValue: {
         const ir::InstId optional = function_.OperandsOf(inst)[0];
-        const Layout& layout = layouts_.Of(TypeOf(optional));
+        const abi::Layout& layout = layouts_.Of(TypeOf(optional));
         const Register base = UseArea(optional, 1);
         const Register tag = Scratch(2);
         assembler_.Ldrb(tag, base, 0);
@@ -966,7 +966,7 @@ class FunctionEmitter {
         assembler_.Cbz(IWidth::k32, tag, trap);
         const int32_t offset = static_cast<int32_t>(
             layout.offsets.size() > 1 ? layout.offsets[1] : 0);
-        if (layouts_.ClassOf(inst.type) == ValueClass::kAggregate) {
+        if (layouts_.ClassOf(inst.type) == abi::ValueClass::kAggregate) {
           const Register area = UseArea(id, 3);
           CopyBytes(area, 0, base, offset, layouts_.SizeOf(inst.type), 4);
           return;
@@ -1045,7 +1045,7 @@ class FunctionEmitter {
     assembler_.MovImmediate(IWidth::k64, offset, stride);
     assembler_.Mul(IWidth::k64, offset, index, offset);
     assembler_.Add(IWidth::k64, base, base, offset);
-    if (layouts_.ClassOf(inst.type) == ValueClass::kAggregate) {
+    if (layouts_.ClassOf(inst.type) == abi::ValueClass::kAggregate) {
       const Register area = UseArea(id, 4);
       CopyBytes(area, 0, base, 0, layouts_.SizeOf(inst.type), 5);
       return;
@@ -1057,7 +1057,7 @@ class FunctionEmitter {
     const TypeId returned = inst.type;
     const bool indirect = returned.is_valid() &&
                           layouts_.ClassOf(returned) ==
-                              ValueClass::kAggregate;
+                              abi::ValueClass::kAggregate;
     if (indirect) {
       assembler_.AddImm(IWidth::k64, kIndirectResult, Register::kSp,
                         Info(id).area);
@@ -1068,17 +1068,17 @@ class FunctionEmitter {
     for (ir::InstId operand : function_.OperandsOf(inst)) {
       const TypeId type = TypeOf(operand);
       switch (layouts_.ClassOf(type)) {
-        case ValueClass::kFloat: {
+        case abi::ValueClass::kFloat: {
           const FloatRegister source = UseFloat(operand, 0);
           assembler_.FMov(FWidth::k64, kFloatArgumentRegisters[floats++],
                           source);
           break;
         }
-        case ValueClass::kAggregate:
+        case abi::ValueClass::kAggregate:
           assembler_.AddImm(IWidth::k64, kArgumentRegisters[integers++],
                             Register::kSp, Info(operand).area);
           break;
-        case ValueClass::kVoid:
+        case abi::ValueClass::kVoid:
           break;
         default: {
           const Register source = UseInt(operand, 0);
@@ -1111,13 +1111,13 @@ class FunctionEmitter {
       return;
     }
     switch (layouts_.ClassOf(returned)) {
-      case ValueClass::kFloat: {
+      case abi::ValueClass::kFloat: {
         const FloatRegister reg = DestFloat(id, 0);
         assembler_.FMov(FWidth::k64, reg, FloatRegister::kV0);
         FinishFloat(id, reg);
         break;
       }
-      case ValueClass::kVoid:
+      case abi::ValueClass::kVoid:
         break;
       default: {
         const Register reg = DestInt(id, 0);
@@ -1135,17 +1135,17 @@ class FunctionEmitter {
           const ir::InstId value = function_.OperandsOf(inst)[0];
           const TypeId type = TypeOf(value);
           switch (layouts_.ClassOf(type)) {
-            case ValueClass::kFloat:
+            case abi::ValueClass::kFloat:
               assembler_.FMov(FWidth::k64, FloatRegister::kV0,
                               UseFloat(value, 0));
               break;
-            case ValueClass::kAggregate: {
+            case abi::ValueClass::kAggregate: {
               const Register source = UseArea(value, 1);
               CopyBytes(kIndirectResult, 0, source, 0,
                         layouts_.SizeOf(type), 2);
               break;
             }
-            case ValueClass::kVoid:
+            case abi::ValueClass::kVoid:
               break;
             default:
               assembler_.Mov(IWidth::k64, Register::kX0, UseInt(value, 0));
@@ -1273,20 +1273,20 @@ class FunctionEmitter {
     }
     const TypeId type = TypeOf(to);
     switch (layouts_.ClassOf(type)) {
-      case ValueClass::kFloat: {
+      case abi::ValueClass::kFloat: {
         const FloatRegister source = UseFloat(from, 0);
         const FloatRegister destination = DestFloat(to, 1);
         assembler_.FMov(FWidth::k64, destination, source);
         FinishFloat(to, destination);
         break;
       }
-      case ValueClass::kAggregate: {
+      case abi::ValueClass::kAggregate: {
         const Register source = UseArea(from, 0);
         const Register destination = UseArea(to, 1);
         CopyBytes(destination, 0, source, 0, layouts_.SizeOf(type), 2);
         break;
       }
-      case ValueClass::kVoid:
+      case abi::ValueClass::kVoid:
         break;
       default: {
         const Register source = UseInt(from, 0);
@@ -1302,15 +1302,15 @@ class FunctionEmitter {
     const int32_t offset = static_cast<int32_t>(swap_base_ + index * 8);
     const TypeId type = TypeOf(value);
     switch (layouts_.ClassOf(type)) {
-      case ValueClass::kFloat:
+      case abi::ValueClass::kFloat:
         assembler_.StrFloat(FWidth::k64, UseFloat(value, 0), Register::kSp,
                             offset);
         break;
-      case ValueClass::kAggregate:
+      case abi::ValueClass::kAggregate:
         // The address is what an aggregate value is, and an area never
         // moves, so there is nothing to trade.
         break;
-      case ValueClass::kVoid:
+      case abi::ValueClass::kVoid:
         break;
       default:
         assembler_.Str(IWidth::k64, UseInt(value, 0), Register::kSp,
@@ -1323,14 +1323,14 @@ class FunctionEmitter {
     const int32_t offset = static_cast<int32_t>(swap_base_ + index * 8);
     const TypeId type = TypeOf(value);
     switch (layouts_.ClassOf(type)) {
-      case ValueClass::kFloat: {
+      case abi::ValueClass::kFloat: {
         const FloatRegister reg = DestFloat(value, 0);
         assembler_.LdrFloat(FWidth::k64, reg, Register::kSp, offset);
         FinishFloat(value, reg);
         break;
       }
-      case ValueClass::kAggregate:
-      case ValueClass::kVoid:
+      case abi::ValueClass::kAggregate:
+      case abi::ValueClass::kVoid:
         break;
       default: {
         const Register reg = DestInt(value, 0);
@@ -1348,8 +1348,8 @@ class FunctionEmitter {
     const TypeId from = TypeOf(source);
     const TypeId to = inst.type;
     const bool from_float =
-        layouts_.ClassOf(from) == ValueClass::kFloat;
-    const bool to_float = layouts_.ClassOf(to) == ValueClass::kFloat;
+        layouts_.ClassOf(from) == abi::ValueClass::kFloat;
+    const bool to_float = layouts_.ClassOf(to) == abi::ValueClass::kFloat;
 
     if (from_float && to_float) {
       const FloatRegister value = UseFloat(source, 1);
@@ -1537,7 +1537,7 @@ class FunctionEmitter {
       return;
     }
     const TypeId operand_type = TypeOf(operands[0]);
-    if (layouts_.ClassOf(operand_type) == ValueClass::kFloat) {
+    if (layouts_.ClassOf(operand_type) == abi::ValueClass::kFloat) {
       EmitFloatArithmetic(id, inst, operand_type);
       return;
     }
@@ -1886,7 +1886,7 @@ class FunctionEmitter {
 
   const StringInterner& interner_;
   const TypeStore& types_;
-  LayoutStore& layouts_;
+  abi::LayoutStore& layouts_;
   const ir::Function& function_;
   const std::vector<bool>& compilable_;
   const std::vector<uint64_t>& foreign_;
@@ -1923,7 +1923,7 @@ class FunctionEmitter {
 
 CompiledFunction EmitFunction(const StringInterner& interner,
                               const TypeStore& types,
-                              LayoutStore* layouts,
+                              abi::LayoutStore* layouts,
                               const ir::Module& module,
                               const ir::Function& function,
                               const std::vector<bool>& compilable,

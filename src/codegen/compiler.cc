@@ -16,7 +16,7 @@
 
 #include "wolang/base/check.h"
 #include "wolang/codegen/code_block.h"
-#include "wolang/codegen/layout.h"
+#include "wolang/abi/layout.h"
 #include "wolang/codegen/runtime.h"
 
 namespace wolang {
@@ -106,7 +106,7 @@ class CompiledModule::Impl {
         : module(module), layouts(types, resolution) {}
 
     const ir::Module& module;
-    LayoutStore layouts;
+    abi::LayoutStore layouts;
     // Where each string literal's bytes are.
     std::vector<std::pair<uint64_t, uint64_t>> strings;
     // This file's local function index to the global one.
@@ -168,16 +168,16 @@ class CompiledModule::Impl {
   // carries its own shape and machine memory does not, so this boundary is
   // where one becomes the other -- and the only place either tier has to
   // know about the other's representation.
-  void Encode(LayoutStore* layouts,
+  void Encode(abi::LayoutStore* layouts,
               const interp::Value& value,
               TypeId type,
               uint8_t* destination);
-  interp::Value Decode(LayoutStore* layouts,
+  interp::Value Decode(abi::LayoutStore* layouts,
                        const uint8_t* source,
                        TypeId type);
   // The canonical register form of an integer: extended to 64 bits, which
   // is how compiled code holds one.
-  uint64_t CanonicalBits(LayoutStore* layouts,
+  uint64_t CanonicalBits(abi::LayoutStore* layouts,
                          const interp::Value& value,
                          TypeId type);
 };
@@ -402,7 +402,7 @@ void CompiledModule::Impl::Compile() {
 
 // -------------------------------------------------------- marshalling ---
 
-uint64_t CompiledModule::Impl::CanonicalBits(LayoutStore* layouts,
+uint64_t CompiledModule::Impl::CanonicalBits(abi::LayoutStore* layouts,
                                              const interp::Value& value,
                                              TypeId type) {
   const uint32_t bits = layouts->BitsOf(type);
@@ -421,23 +421,23 @@ uint64_t CompiledModule::Impl::CanonicalBits(LayoutStore* layouts,
   return raw;
 }
 
-void CompiledModule::Impl::Encode(LayoutStore* layouts,
+void CompiledModule::Impl::Encode(abi::LayoutStore* layouts,
                                   const interp::Value& value,
                                   TypeId type,
                                   uint8_t* destination) {
   switch (layouts->ClassOf(type)) {
-    case ValueClass::kVoid:
-    case ValueClass::kUnsupported:
+    case abi::ValueClass::kVoid:
+    case abi::ValueClass::kUnsupported:
       return;
 
-    case ValueClass::kInteger: {
+    case abi::ValueClass::kInteger: {
       const uint64_t raw = CanonicalBits(layouts, value, type);
       const uint32_t size = layouts->SizeOf(type);
       std::memcpy(destination, &raw, size);
       return;
     }
 
-    case ValueClass::kFloat: {
+    case abi::ValueClass::kFloat: {
       if (layouts->BitsOf(type) == 64) {
         const double number = value.floating();
         std::memcpy(destination, &number, sizeof(number));
@@ -448,11 +448,11 @@ void CompiledModule::Impl::Encode(LayoutStore* layouts,
       return;
     }
 
-    case ValueClass::kAggregate:
+    case abi::ValueClass::kAggregate:
       break;
   }
 
-  const Layout& layout = layouts->Of(type);
+  const abi::Layout& layout = layouts->Of(type);
   if (types_.KindOf(type) == TypeKind::kStr) {
     // A view of the bytes the interpreter's value owns. The value outlives
     // the call -- the caller's argument vector holds it -- which is the
@@ -508,16 +508,16 @@ void CompiledModule::Impl::Encode(LayoutStore* layouts,
   }
 }
 
-interp::Value CompiledModule::Impl::Decode(LayoutStore* layouts,
+interp::Value CompiledModule::Impl::Decode(abi::LayoutStore* layouts,
                                            const uint8_t* source,
                                            TypeId type) {
   switch (layouts->ClassOf(type)) {
-    case ValueClass::kVoid:
+    case abi::ValueClass::kVoid:
       return interp::Value::Void();
-    case ValueClass::kUnsupported:
+    case abi::ValueClass::kUnsupported:
       return interp::Value();
 
-    case ValueClass::kInteger: {
+    case abi::ValueClass::kInteger: {
       uint64_t raw = 0;
       std::memcpy(&raw, source, layouts->SizeOf(type));
       if (types_.KindOf(type) == TypeKind::kBool) {
@@ -528,7 +528,7 @@ interp::Value CompiledModule::Impl::Decode(LayoutStore* layouts,
                                 described.is_signed);
     }
 
-    case ValueClass::kFloat: {
+    case abi::ValueClass::kFloat: {
       if (layouts->BitsOf(type) == 64) {
         double number = 0;
         std::memcpy(&number, source, sizeof(number));
@@ -540,11 +540,11 @@ interp::Value CompiledModule::Impl::Decode(LayoutStore* layouts,
                                   FloatWidth::k32);
     }
 
-    case ValueClass::kAggregate:
+    case abi::ValueClass::kAggregate:
       break;
   }
 
-  const Layout& layout = layouts->Of(type);
+  const abi::Layout& layout = layouts->Of(type);
   if (types_.KindOf(type) == TypeKind::kStr) {
     uint64_t address = 0;
     uint64_t length = 0;
@@ -611,7 +611,7 @@ interp::Outcome CompiledModule::Impl::Run(
   }
 
   FileState& file = *files_[entry->file];
-  LayoutStore* layouts = &file.layouts;
+  abi::LayoutStore* layouts = &file.layouts;
   const ir::Function& function = FunctionOf(*entry);
   const std::span<const ir::InstId> params =
       function.ParamsOf(function.entry());
@@ -622,7 +622,7 @@ interp::Outcome CompiledModule::Impl::Run(
   std::vector<std::vector<uint8_t>> buffers(params.size());
   for (size_t i = 0; i < params.size(); ++i) {
     const TypeId type = function.Get(params[i]).type;
-    if (layouts->ClassOf(type) == ValueClass::kAggregate) {
+    if (layouts->ClassOf(type) == abi::ValueClass::kAggregate) {
       buffers[i].assign(std::max(layouts->SizeOf(type), 8u), 0);
       if (i < arguments.size()) {
         Encode(layouts, arguments[i], type, buffers[i].data());

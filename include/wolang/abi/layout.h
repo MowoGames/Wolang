@@ -1,7 +1,7 @@
 // Copyright 2026 The Wolang Authors. All rights reserved.
 
-#ifndef WOLANG_CODEGEN_LAYOUT_H_
-#define WOLANG_CODEGEN_LAYOUT_H_
+#ifndef WOLANG_ABI_LAYOUT_H_
+#define WOLANG_ABI_LAYOUT_H_
 
 #include <cstdint>
 #include <unordered_map>
@@ -11,15 +11,15 @@
 #include "wolang/sema/type.h"
 
 namespace wolang {
-namespace codegen {
+namespace abi {
 
 // Where a value of some type lives.
 //
-// The interpreter never needed this: its values carry their own shape. A
-// code generator has to decide, once, how many bytes a struct takes and
-// where each field starts -- and the FFI in a later wave needs the same
-// answer, which is why it is its own component rather than a detail of the
-// emitter.
+// Its own layer rather than part of the code generator, because three
+// things need the same answer: the emitter, the C boundary, and the
+// interpreter whenever it has to read a value out of raw memory. A layout
+// is about the machine, not about the type system, which is why it is not
+// in `sema` either.
 enum class ValueClass : uint8_t {
   // A general purpose register: `bool`, every integer width, a tag.
   kInteger,
@@ -91,7 +91,7 @@ class LayoutStore {
 // Rounds |value| up to a multiple of |align|.
 uint32_t AlignUp(uint32_t value, uint32_t align);
 
-}  // namespace codegen
+}  // namespace abi
 }  // namespace wolang
 
-#endif  // WOLANG_CODEGEN_LAYOUT_H_
+#endif  // WOLANG_ABI_LAYOUT_H_

@@ -11,9 +11,9 @@ add_library(wolang_core STATIC
     compiler/manifest.cc
     compiler/module.cc
     compiler/workspace.cc
+    abi/layout.cc
     codegen/arm64/assembler.cc
     codegen/code_block.cc
-    codegen/layout.cc
     codegen/reg_alloc.cc
     codegen/compiler.cc
     codegen/foreign.cc
@@ -46,6 +46,7 @@ target_sources(wolang_core PUBLIC
     FILE_SET HEADERS
     BASE_DIRS ${PROJECT_SOURCE_DIR}/include
     FILES
+        ${PROJECT_SOURCE_DIR}/include/wolang/abi/layout.h
         ${PROJECT_SOURCE_DIR}/include/wolang/base/arena.h
         ${PROJECT_SOURCE_DIR}/include/wolang/base/check.h
         ${PROJECT_SOURCE_DIR}/include/wolang/base/diagnostic.h
@@ -61,7 +62,6 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/compiler/workspace.h
         ${PROJECT_SOURCE_DIR}/include/wolang/codegen/arm64/assembler.h
         ${PROJECT_SOURCE_DIR}/include/wolang/codegen/code_block.h
-        ${PROJECT_SOURCE_DIR}/include/wolang/codegen/layout.h
         ${PROJECT_SOURCE_DIR}/include/wolang/codegen/reg_alloc.h
         ${PROJECT_SOURCE_DIR}/include/wolang/codegen/compiler.h
         ${PROJECT_SOURCE_DIR}/include/wolang/codegen/emitter.h

@@ -1,11 +1,11 @@
 // Copyright 2026 The Wolang Authors. All rights reserved.
 
-#include "wolang/codegen/layout.h"
+#include "wolang/abi/layout.h"
 
 #include <algorithm>
 
 namespace wolang {
-namespace codegen {
+namespace abi {
 
 uint32_t AlignUp(uint32_t value, uint32_t align) {
   if (align <= 1) {
@@ -292,5 +292,5 @@ bool LayoutStore::IsSignedInteger(TypeId type) const {
   return false;
 }
 
-}  // namespace codegen
+}  // namespace abi
 }  // namespace wolang
