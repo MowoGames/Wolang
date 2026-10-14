@@ -3445,6 +3445,39 @@ class Lowerer {
       }
     }
 
+    // `WrappingAdd`, `WrappingSub` and `WrappingMul` are the arithmetic
+    // that does not trap.
+    //
+    // Everything else in this language traps on overflow, which is right
+    // for a program counting damage and wrong for one hashing a key or
+    // stepping a generator: those *want* the low bits of a wrapped
+    // result. Not a call, because what they stand for is the instruction
+    // the compiler already writes for its own address arithmetic (D107).
+    if (ast().Contains(expr.lhs) &&
+        ast().Get(expr.lhs).kind == ExprKind::kPath &&
+        arguments.size() == 2) {
+      const std::string_view called =
+          interner_->Text(ast().Get(expr.lhs).name);
+      Opcode wrapping = Opcode::kUndef;
+      if (called == "WrappingAdd") {
+        wrapping = Opcode::kAdd;
+      } else if (called == "WrappingSub") {
+        wrapping = Opcode::kSub;
+      } else if (called == "WrappingMul") {
+        wrapping = Opcode::kMul;
+      }
+      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      if (wrapping != Opcode::kUndef &&
+          (binding == nullptr || !binding->has_body)) {
+        const TypeId word = Erase(type);
+        const InstId answer = builder_->Add(
+            wrapping, word, {Widen(arguments[0], word),
+                             Widen(arguments[1], word)});
+        builder_->Mutable(answer).is_unchecked = true;
+        return answer;
+      }
+    }
+
     // `SizeOf(value)` is not a call: how many bytes a value of its type
     // takes is a question only a tier can answer, so the instruction
     // carries the type and each tier answers it. The value itself is not

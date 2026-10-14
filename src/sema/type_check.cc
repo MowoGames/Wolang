@@ -1317,12 +1317,21 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
     std::vector<TypeId> found;
     found.reserve(args.size());
     for (size_t i = 0; i < args.size(); ++i) {
-      // Checked without an expectation: the expectation is what is being
-      // inferred. A literal takes its default type, because `T` has no
-      // context to narrow it.
-      // Checked with no expectation, which is also what settles a literal
-      // on its default type -- `T` gives it no context to narrow to.
-      const TypeId actual = Adapt(Check(args[i], TypeId{}), TypeId{},
+      // What this parameter is, as far as the arguments before it have
+      // said. A parameter still mentioning a type variable gives no
+      // expectation -- that is what is being inferred, and a literal
+      // settles on its default type without one. One that is already
+      // concrete does give it: `Sort(items, |a, b| a < b)` binds `T` from
+      // the first argument, and the closure's parameter types come from
+      // the second parameter with `T` filled in (D107).
+      TypeId wanted;
+      if (i < params.size()) {
+        const TypeId narrowed = types_->Substitute(params[i], substitution);
+        if (!types_->MentionsParameter(narrowed)) {
+          wanted = narrowed;
+        }
+      }
+      const TypeId actual = Adapt(Check(args[i], wanted), wanted,
                                   ast_.Get(args[i]).span);
       found.push_back(actual);
       if (i < params.size()) {
@@ -1337,6 +1346,26 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
       }
     }
     CheckBounds(substitution, expr.span);
+    // A parameter nothing narrowed stands for itself.
+    //
+    // A generic body calling a generic -- itself, most often -- passes
+    // its own `T` along, and inference has nothing to do: the two types
+    // are already the same. Recording that as "no arguments" left the
+    // call with no instantiation to find, and lowering turned a recursive
+    // `Quicksort` into an `undef` (D107).
+    {
+      std::vector<TypeId> mentioned;
+      types_->CollectParameters(callee, &mentioned);
+      for (const TypeId parameter : mentioned) {
+        bool named = false;
+        for (const auto& [written, value] : substitution) {
+          named |= written == parameter;
+        }
+        if (!named) {
+          substitution.emplace_back(parameter, parameter);
+        }
+      }
+    }
     RecordInstantiation(id, substitution);
     if (params.size() != args.size()) {
       std::string message = "expected ";

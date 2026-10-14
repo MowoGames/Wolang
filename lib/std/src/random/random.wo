@@ -1,0 +1,139 @@
+// Random numbers.
+//
+// xorshift128+ with a splitmix seed: a generator the size of two words,
+// no allocation, and good enough for everything a game does with random
+// numbers -- spread, jitter, loot, level generation. Not for anything
+// where an attacker is on the other side; that is what a system random
+// source is for, and this is not one.
+
+need std.math.{WrappingAdd, WrappingMul}
+need std.time.{Now}
+
+/// A generator. Two words of state, held by value.
+offer class Random {
+  var low: u64 = 0
+  var high: u64 = 0
+
+  /// The next 64 bits.
+  fun Next() -> u64 uses unsafe {
+    // xorshift128+: three shifts, three xors and an add per number.
+    var first = low
+    const second = high
+    low = second
+    first = first ^ first << 23
+    first = first ^ first >> 17
+    first = first ^ second
+    first = first ^ second >> 26
+    high = first
+    return WrappingAdd(first, second)
+  }
+
+  /// A number in `0 .. limit`, with `limit` itself excluded.
+  ///
+  /// Zero when the limit is not positive, which is the answer that keeps
+  /// a caller's loop from running forever.
+  fun Below(limit: int) -> int uses unsafe {
+    if limit <= 0 {
+      return 0
+    }
+    return (Next() % limit as u64) as int
+  }
+
+  /// A number from `low` to `high`, both included.
+  fun Between(from: int, to: int) -> int uses unsafe {
+    if to <= from {
+      return from
+    }
+    return from + Below(to - from + 1)
+  }
+
+  /// A float in `0.0 .. 1.0`.
+  fun Unit() -> float uses unsafe {
+    // The top 24 bits, which is what an `f32` can hold exactly.
+    const bits = Next() >> 40
+    return bits as float / 16777216.0
+  }
+
+  /// A float from `from` to `to`.
+  fun Range(from: float, to: float) -> float uses unsafe {
+    return from + (to - from) * Unit()
+  }
+
+  /// True with probability `chance`.
+  fun Chance(chance: float) -> bool uses unsafe {
+    return Unit() < chance
+  }
+}
+
+// splitmix64, which is what turns one number into a state a shift
+// register can start from: a seed of 1 and a seed of 2 have to give
+// unrelated sequences, and xorshift started from a small number does not.
+fun Mix(value: u64) -> u64 uses unsafe {
+  var x = WrappingAdd(value, 11400714819323198485)
+  x = WrappingMul(x ^ x >> 30, 13787848793156543929)
+  x = WrappingMul(x ^ x >> 27, 10723151780598845931)
+  return x ^ x >> 31
+}
+
+/// A generator from a seed. The same seed gives the same sequence, which
+/// is what makes a bug in a procedural level reproducible.
+offer fun RandomNew(seed: u64) -> Random uses unsafe {
+  const first = Mix(seed)
+  return Random(first, Mix(first))
+}
+
+/// A generator seeded from the clock.
+offer fun RandomFromClock() -> Random uses unsafe {
+  return RandomNew(Now().nanos as u64)
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun TheSameSeedGivesTheSameSequence() -> bool uses unsafe {
+  var first = RandomNew(7)
+  var second = RandomNew(7)
+  var same = true
+  var i = 0
+  while i < 20 {
+    same = same && first.Next() == second.Next()
+    i = i + 1
+  }
+  var other = RandomNew(8)
+  return same && other.Next() != first.Next()
+}
+
+@Test
+fun StaysInsideTheRangeItWasGiven() -> bool uses unsafe {
+  var generator = RandomNew(3)
+  var inside = true
+  var i = 0
+  while i < 200 {
+    const below = generator.Below(10)
+    const between = generator.Between(-5, 5)
+    const unit = generator.Unit()
+    inside = inside && below >= 0 && below < 10 && between >= -5 && between <= 5 && unit >= 0.0 && unit < 1.0
+    i = i + 1
+  }
+  return inside
+}
+
+@Test
+fun SpreadsAcrossTheRange() -> bool uses unsafe {
+  // Every bucket hit at least once in two hundred draws of ten: a
+  // generator stuck on one value passes nothing else here.
+  var generator = RandomNew(11)
+  var seen = [false, false, false, false, false, false, false, false, false, false]
+  var i = 0
+  while i < 200 {
+    seen[generator.Below(10)] = true
+    i = i + 1
+  }
+  var all = true
+  var at = 0
+  while at < 10 {
+    all = all && seen[at]
+    at = at + 1
+  }
+  return all
+}

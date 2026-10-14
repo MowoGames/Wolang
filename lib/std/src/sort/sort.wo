@@ -1,0 +1,187 @@
+// Putting things in order.
+//
+// One sort, over a slice, with the comparison as an argument -- which is
+// what closures made writable without a type per element order (D106).
+// Insertion sort below a dozen elements and quicksort above: the small
+// case is most of the calls in gameplay code, and insertion sort beats
+// everything on it.
+
+/// Sorts `items` in place, with `before(a, b)` saying whether `a` comes
+/// first.
+///
+/// The comparison has to be a strict order: `before(a, a)` false, and
+/// `before(a, b)` and `before(b, a)` never both true. A comparison that
+/// is not one leaves the elements in some order rather than looping.
+offer fun Sort<T>(items: []T, before: fun(T, T) -> bool) {
+  Quicksort(items, 0, items.len - 1, before)
+}
+
+fun Quicksort<T>(items: []T, low: int, high: int, before: fun(T, T) -> bool) {
+  var left = low
+  var right = high
+  // Tail recursion by hand: the bigger side is looped over rather than
+  // called, so the depth stays logarithmic even on sorted input.
+  while left < right {
+    if right - left < 12 {
+      Insertion(items, left, right, before)
+      return
+    }
+    const middle = Partition(items, left, right, before)
+    if middle - left < right - middle {
+      Quicksort(items, left, middle, before)
+      left = middle + 1
+    } else {
+      Quicksort(items, middle + 1, right, before)
+      right = middle
+    }
+  }
+}
+
+fun Insertion<T>(items: []T, low: int, high: int, before: fun(T, T) -> bool) {
+  var at = low + 1
+  while at <= high {
+    const value = items[at]
+    var hole = at
+    while hole > low && before(value, items[hole - 1]) {
+      items[hole] = items[hole - 1]
+      hole = hole - 1
+    }
+    items[hole] = value
+    at = at + 1
+  }
+}
+
+// The middle element as the pivot, which is what keeps sorted input from
+// being the worst case.
+fun Partition<T>(items: []T, low: int, high: int, before: fun(T, T) -> bool) -> int {
+  const pivot = items[low + (high - low) / 2]
+  var left = low - 1
+  var right = high + 1
+  loop {
+    left = left + 1
+    while before(items[left], pivot) {
+      left = left + 1
+    }
+    right = right - 1
+    while before(pivot, items[right]) {
+      right = right - 1
+    }
+    if left >= right {
+      return right
+    }
+    const held = items[left]
+    items[left] = items[right]
+    items[right] = held
+  }
+}
+
+/// Where `value` is in a sorted slice, or where it would go.
+///
+/// The answer is an index between zero and `items.len`, which is what
+/// makes it useful for inserting as well as for finding.
+offer fun LowerBound<T>(items: []T, value: T, before: fun(T, T) -> bool) -> int {
+  var low = 0
+  var high = items.len
+  while low < high {
+    const middle = low + (high - low) / 2
+    if before(items[middle], value) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+  return low
+}
+
+/// Whether a sorted slice holds `value`.
+offer fun Contains<T>(items: []T, value: T, before: fun(T, T) -> bool) -> bool {
+  const at = LowerBound(items, value, before)
+  if at >= items.len {
+    return false
+  }
+  // Equal is "neither one before the other", which needs no second
+  // comparison from the caller.
+  return !before(value, items[at])
+}
+
+// ------------------------------------------------------------- tests ---
+
+need std.mem.{ArrayNew, Free}
+
+fun Fill(items: []int, seed: int) {
+  var i = 0
+  var state = seed
+  while i < items.len {
+    state = (state * 31 + 17) % 1000
+    items[i] = state
+    i = i + 1
+  }
+}
+
+@Test
+fun SortsASmallSlice() -> bool uses unsafe {
+  var items = ArrayNew<int>(7)
+  items[0] = 5
+  items[1] = 3
+  items[2] = 9
+  items[3] = 1
+  items[4] = 3
+  items[5] = 8
+  items[6] = 0
+  Sort(items, |a, b| a < b)
+  var ordered = true
+  var i = 1
+  while i < items.len {
+    ordered = ordered && items[i - 1] <= items[i]
+    i = i + 1
+  }
+  const first = items[0]
+  const last = items[6]
+  Free(items)
+  return ordered && first == 0 && last == 9
+}
+
+@Test
+fun SortsPastTheInsertionThreshold() -> bool uses unsafe {
+  var items = ArrayNew<int>(200)
+  Fill(items, 7)
+  Sort(items, |a, b| a < b)
+  var ordered = true
+  var i = 1
+  while i < items.len {
+    ordered = ordered && items[i - 1] <= items[i]
+    i = i + 1
+  }
+  Free(items)
+  return ordered
+}
+
+@Test
+fun SortsTheOtherWayRound() -> bool uses unsafe {
+  var items = ArrayNew<int>(5)
+  items[0] = 1
+  items[1] = 4
+  items[2] = 2
+  items[3] = 5
+  items[4] = 3
+  Sort(items, |a, b| a > b)
+  const first = items[0]
+  const last = items[4]
+  Free(items)
+  return first == 5 && last == 1
+}
+
+@Test
+fun FindsWhereAValueGoes() -> bool uses unsafe {
+  var items = ArrayNew<int>(5)
+  items[0] = 1
+  items[1] = 3
+  items[2] = 5
+  items[3] = 7
+  items[4] = 9
+  const at = LowerBound(items, 6, |a, b| a < b)
+  const held = Contains(items, 7, |a, b| a < b)
+  const missing = Contains(items, 8, |a, b| a < b)
+  Free(items)
+  return at == 3 && held && !missing
+}

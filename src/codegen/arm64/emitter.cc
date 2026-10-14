@@ -308,12 +308,30 @@ class FunctionEmitter {
     // One swap slot per block parameter, for the one case a jump cannot be
     // done with direct moves: when the values going around a loop have to
     // trade places.
+    //
+    // A slot is as wide as the widest *aggregate* a block parameter is,
+    // not eight bytes: a slice traded places through a word-sized slot
+    // kept its address and lost its length, which is a miscompile the
+    // dev tier made the moment two loops in a row walked one (D107).
     uint32_t widest = 0;
+    swap_stride_ = 8;
     for (const ir::Block& block : function_.blocks) {
       widest = std::max(widest, block.param_count);
+      for (uint32_t i = 0; i < block.param_count; ++i) {
+        const ir::InstId param = block.instructions[i];
+        if (!function_.Contains(param)) {
+          continue;
+        }
+        const TypeId type = TypeOf(param);
+        if (type.is_valid() &&
+            layouts_.ClassOf(type) == abi::ValueClass::kAggregate) {
+          swap_stride_ = std::max(swap_stride_, layouts_.SizeOf(type));
+        }
+      }
     }
+    swap_stride_ = (swap_stride_ + 15) / 16 * 16;
     swap_base_ = offset;
-    offset += widest * 8;
+    offset += widest * swap_stride_;
 
     // Where the result of an aggregate return goes. It arrives in a
     // register the platform lets a callee clobber, so a function that
@@ -1960,17 +1978,24 @@ class FunctionEmitter {
   }
 
   void SpillToSwap(ir::InstId value, uint32_t index) {
-    const int32_t offset = static_cast<int32_t>(swap_base_ + index * 8);
+    const int32_t offset =
+        static_cast<int32_t>(swap_base_ + index * swap_stride_);
     const TypeId type = TypeOf(value);
     switch (layouts_.ClassOf(type)) {
       case abi::ValueClass::kFloat:
         assembler_.StrFloat(FWidth::k64, UseFloat(value, 0), Register::kSp,
                             offset);
         break;
-      case abi::ValueClass::kAggregate:
-        // The address is what an aggregate value is, and an area never
-        // moves, so there is nothing to trade.
+      case abi::ValueClass::kAggregate: {
+        // Copied into the swap area rather than skipped: the destination
+        // is another parameter's area, and leaving it alone left whatever
+        // was in it. Each slot is wide enough for it (see the frame).
+        const Register source = UseArea(value, 0);
+        const Register room = Scratch(1);
+        AreaAddress(room, static_cast<uint32_t>(offset));
+        CopyBytes(room, 0, source, 0, layouts_.SizeOf(type), 2);
         break;
+      }
       case abi::ValueClass::kVoid:
         break;
       default:
@@ -1981,7 +2006,8 @@ class FunctionEmitter {
   }
 
   void LoadFromSwap(ir::InstId value, uint32_t index) {
-    const int32_t offset = static_cast<int32_t>(swap_base_ + index * 8);
+    const int32_t offset =
+        static_cast<int32_t>(swap_base_ + index * swap_stride_);
     const TypeId type = TypeOf(value);
     switch (layouts_.ClassOf(type)) {
       case abi::ValueClass::kFloat: {
@@ -1990,7 +2016,14 @@ class FunctionEmitter {
         FinishFloat(value, reg);
         break;
       }
-      case abi::ValueClass::kAggregate:
+      case abi::ValueClass::kAggregate: {
+        // Back out of the swap area into this parameter's own.
+        const Register destination = UseArea(value, 0);
+        const Register room = Scratch(1);
+        AreaAddress(room, static_cast<uint32_t>(offset));
+        CopyBytes(destination, 0, room, 0, layouts_.SizeOf(type), 2);
+        break;
+      }
       case abi::ValueClass::kVoid:
         break;
       default: {
@@ -2615,6 +2648,9 @@ class FunctionEmitter {
   uint32_t saved_floats_ = 0;
   uint32_t spill_base_ = 0;
   uint32_t swap_base_ = 0;
+  // How wide one swap slot is: eight bytes, or the widest aggregate a
+  // block parameter of this function is.
+  uint32_t swap_stride_ = 8;
   bool indirect_ = false;
   uint32_t indirect_base_ = 0;
   uint32_t frame_bytes_ = 0;

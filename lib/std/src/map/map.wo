@@ -98,6 +98,52 @@ offer class Map<K, V> {
     values[at] = value
   }
 
+  /// Takes `key` out. Answers whether it was there.
+  ///
+  /// By shifting the run that follows back rather than by leaving a
+  /// tombstone: a probe stops at the first empty slot, so a hole in the
+  /// middle of a run would hide everything after it. Shifting keeps the
+  /// invariant that every key is reachable from where it hashes to,
+  /// which is what makes a lookup a walk and not a search.
+  fun Remove(key: K) -> bool {
+    const size = filled.len
+    const at = Slot(key)
+    if at < 0 || !filled[at] {
+      return false
+    }
+    filled[at] = false
+    count = count - 1
+
+    // Everything in the run after the hole is reinserted where it
+    // belongs, which for most of them is where they already are.
+    var hole = at
+    var next = at + 1
+    if next >= size {
+      next = 0
+    }
+    while filled[next] {
+      var wanted = hash(keys[next]) % size
+      if wanted < 0 {
+        wanted = wanted + size
+      }
+      // Whether this entry may move back into the hole: it may when the
+      // hole is between where it wants to be and where it is.
+      const moves = Between(wanted, hole, next, size)
+      if moves {
+        keys[hole] = keys[next]
+        values[hole] = values[next]
+        filled[hole] = true
+        filled[next] = false
+        hole = next
+      }
+      next = next + 1
+      if next >= size {
+        next = 0
+      }
+    }
+    return true
+  }
+
   /// Makes room for `wanted` entries, keeping the table at most half
   /// full: linear probing degrades sharply past that, and the whole
   /// reason to probe rather than chain is that it does not chase
@@ -163,6 +209,16 @@ offer class MapWalk<K, V> {
 }
 
 /// An empty map, with no table until something is put in it.
+fun Between(wanted: int, hole: int, at: int, _size: int) -> bool {
+  // Whether `hole` is in the stretch from `wanted` to `at`, going round the
+  // table. The one question backward-shift deletion asks.
+  if wanted <= at {
+    return wanted <= hole && hole < at
+  }
+  // The run wrapped round the end of the table.
+  return wanted <= hole || hole < at
+}
+
 offer fun MapNew<K, V>(hash: fun(K) -> int, equals: fun(K, K) -> bool) -> Map<K, V> uses unsafe {
   return Map<K, V>(
       ArrayNew<K>(0),
@@ -208,6 +264,37 @@ fun PutsAndGets() -> bool uses unsafe {
     return false
   }
   return map.Get(50, -1) == -1 && !map.Has(50) && map.Has(7)
+}
+
+@Test
+fun TakesAKeyOutAndKeepsTheRestFindable() -> bool uses unsafe {
+  var map = MapNew<int, int>(IntHash, IntEquals)
+  var i = 0
+  // Enough keys that several share a run, which is where a removal that
+  // left a hole would lose one.
+  while i < 40 {
+    map.Put(i, i * 3)
+    i = i + 1
+  }
+  var removed = 0
+  i = 0
+  while i < 40 {
+    if i % 3 == 0 && map.Remove(i) {
+      removed = removed + 1
+    }
+    i = i + 1
+  }
+  var found = 0
+  i = 0
+  while i < 40 {
+    if i % 3 != 0 && map.Get(i, -1) == i * 3 {
+      found = found + 1
+    }
+    i = i + 1
+  }
+  const gone = !map.Has(0) && !map.Has(3) && map.Has(1)
+  const left = map.Len()
+  return removed == 14 && found == 26 && gone && left == 26
 }
 
 @Test

@@ -57,7 +57,7 @@ offer fun Parallelism() -> int uses unsafe {
 offer class Mutex {
   var handle: u64 = 0
 
-  deinit {
+  deinit  {
     if handle != 0 {
       wolang_mutex_destroy(handle)
     }

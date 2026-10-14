@@ -1772,16 +1772,23 @@ class FunctionEmitter {
   }
 
   void SpillToSwap(ir::InstId value, uint32_t index) {
-    const uint32_t offset = swap_base_ + index * 8;
+    const uint32_t offset = swap_base_ + index * swap_stride_;
     const TypeId type = TypeOf(value);
     switch (layouts_.ClassOf(type)) {
       case abi::ValueClass::kFloat:
         assembler_.StoreFloat(FWidth::k64, Slot(offset), UseFloat(value, 0));
         break;
-      case abi::ValueClass::kAggregate:
+      case abi::ValueClass::kAggregate: {
+        // Copied into the swap area rather than skipped: the destination
+        // is another parameter's area, and leaving it alone left whatever
+        // was in it (D107).
+        const Register source = UseArea(value, 0);
+        const Register room = Scratch(1);
+        assembler_.Lea(room, Slot(offset));
+        CopyBytes(room, 0, source, 0, layouts_.SizeOf(type), 2);
+        break;
+      }
       case abi::ValueClass::kVoid:
-        // The address is what an aggregate value is, and an area never
-        // moves, so there is nothing to trade.
         break;
       default:
         assembler_.Store(IWidth::k64, Slot(offset), UseInt(value, 0));
@@ -1790,7 +1797,7 @@ class FunctionEmitter {
   }
 
   void LoadFromSwap(ir::InstId value, uint32_t index) {
-    const uint32_t offset = swap_base_ + index * 8;
+    const uint32_t offset = swap_base_ + index * swap_stride_;
     const TypeId type = TypeOf(value);
     switch (layouts_.ClassOf(type)) {
       case abi::ValueClass::kFloat: {
@@ -1799,7 +1806,14 @@ class FunctionEmitter {
         FinishFloat(value, reg);
         break;
       }
-      case abi::ValueClass::kAggregate:
+      case abi::ValueClass::kAggregate: {
+        // Back out of the swap area into this parameter's own.
+        const Register destination = UseArea(value, 0);
+        const Register room = Scratch(1);
+        assembler_.Lea(room, Slot(static_cast<uint32_t>(offset)));
+        CopyBytes(destination, 0, room, 0, layouts_.SizeOf(type), 2);
+        break;
+      }
       case abi::ValueClass::kVoid:
         break;
       default: {
@@ -2466,6 +2480,9 @@ class FunctionEmitter {
   uint32_t saved_integers_ = 0;
   uint32_t spill_base_ = 0;
   uint32_t swap_base_ = 0;
+  // How wide one swap slot is: eight bytes, or the widest aggregate a
+  // block parameter of this function is.
+  uint32_t swap_stride_ = 8;
   bool indirect_ = false;
   uint32_t indirect_base_ = 0;
   uint32_t frame_bytes_ = 0;

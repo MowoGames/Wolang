@@ -474,6 +474,32 @@ fun Down(n: int) -> int {
   }
 }
 
+WOLANG_TEST(CodegenTest, CarriesASliceThroughTwoLoops) {
+  // A slice travelling as a block parameter through two loops in a row.
+  // The dev tier traded block parameters through a word-sized slot, so
+  // the slice kept its address and lost its length -- and the second
+  // loop compared against garbage (D107).
+  Fixture f(R"(
+fun Probe() -> int {
+  var room = [0, 0, 0, 0]
+  var items = room[0..4]
+  var i = 0
+  while i < items.len {
+    items[i] = i
+    i = i + 1
+  }
+  var total = 0
+  i = 0
+  while i < items.len {
+    total = total + items[i]
+    i = i + 1
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Probe"), "6");
+}
+
 WOLANG_TEST(CodegenTest, RunsClosures) {
   // A closure is a function the program wrote where it is used, and its
   // value is that function's address: the parameter types come from the

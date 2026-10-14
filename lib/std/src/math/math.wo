@@ -1,0 +1,187 @@
+// Numbers.
+//
+// The floating point part is the platform's: `sqrt` and the rest are one
+// instruction on every machine this targets, and reimplementing them in
+// Wolang would be slower and less accurate for no gain. The integer part
+// is here because it is three lines each.
+
+// The single-precision ones, because `float` is `f32` here: a gameplay
+// number is a position, not a bank balance.
+extern "C" fun sqrtf(x: f32) -> f32
+extern "C" fun sinf(x: f32) -> f32
+extern "C" fun cosf(x: f32) -> f32
+extern "C" fun tanf(x: f32) -> f32
+extern "C" fun atan2f(y: f32, x: f32) -> f32
+extern "C" fun powf(x: f32, y: f32) -> f32
+extern "C" fun expf(x: f32) -> f32
+extern "C" fun logf(x: f32) -> f32
+extern "C" fun floorf(x: f32) -> f32
+extern "C" fun ceilf(x: f32) -> f32
+extern "C" fun roundf(x: f32) -> f32
+extern "C" fun fmodf(x: f32, y: f32) -> f32
+
+/// The ratio of a circle's circumference to its diameter.
+offer const Pi: float = 3.141592653589793
+/// A whole turn, which is the one that comes up in gameplay code.
+offer const Tau: float = 6.283185307179586
+
+offer fun Sqrt(x: float) -> float uses unsafe {
+  return sqrtf(x)
+}
+
+offer fun Sin(x: float) -> float uses unsafe {
+  return sinf(x)
+}
+
+offer fun Cos(x: float) -> float uses unsafe {
+  return cosf(x)
+}
+
+offer fun Tan(x: float) -> float uses unsafe {
+  return tanf(x)
+}
+
+/// The angle of the vector `(x, y)`, in radians.
+offer fun Atan2(y: float, x: float) -> float uses unsafe {
+  return atan2f(y, x)
+}
+
+offer fun Pow(x: float, y: float) -> float uses unsafe {
+  return powf(x, y)
+}
+
+offer fun Exp(x: float) -> float uses unsafe {
+  return expf(x)
+}
+
+/// The natural logarithm.
+offer fun Log(x: float) -> float uses unsafe {
+  return logf(x)
+}
+
+offer fun Floor(x: float) -> float uses unsafe {
+  return floorf(x)
+}
+
+offer fun Ceil(x: float) -> float uses unsafe {
+  return ceilf(x)
+}
+
+offer fun Round(x: float) -> float uses unsafe {
+  return roundf(x)
+}
+
+/// The remainder of `x / y`, keeping `x`'s sign.
+offer fun Mod(x: float, y: float) -> float uses unsafe {
+  return fmodf(x, y)
+}
+
+offer fun AbsFloat(x: float) -> float {
+  if x < 0.0 {
+    return -x
+  }
+  return x
+}
+
+offer fun Abs(x: int) -> int {
+  if x < 0 {
+    return -x
+  }
+  return x
+}
+
+offer fun Min(a: int, b: int) -> int {
+  if a < b {
+    return a
+  }
+  return b
+}
+
+offer fun Max(a: int, b: int) -> int {
+  if a > b {
+    return a
+  }
+  return b
+}
+
+offer fun MinFloat(a: float, b: float) -> float {
+  if a < b {
+    return a
+  }
+  return b
+}
+
+offer fun MaxFloat(a: float, b: float) -> float {
+  if a > b {
+    return a
+  }
+  return b
+}
+
+/// `value`, kept between `low` and `high`.
+offer fun Clamp(value: int, low: int, high: int) -> int {
+  return Min(Max(value, low), high)
+}
+
+offer fun ClampFloat(value: float, low: float, high: float) -> float {
+  return MinFloat(MaxFloat(value, low), high)
+}
+
+/// `a` and `b` mixed by `t`, which is the one every gameplay curve is
+/// made of.
+offer fun Lerp(a: float, b: float, t: float) -> float {
+  return a + (b - a) * t
+}
+
+/// Whether two floats are within `tolerance` of each other.
+///
+/// Comparing floats with `==` is almost always a bug; this is what the
+/// comparison usually meant.
+offer fun Near(a: float, b: float, tolerance: float) -> bool {
+  return AbsFloat(a - b) <= tolerance
+}
+
+// --------------------------------------------- arithmetic that wraps ---
+
+/// `a + b`, keeping the low bits instead of trapping.
+///
+/// Everything else in this language traps on overflow, which is right for
+/// a program counting damage and wrong for one hashing a key or stepping
+/// a generator (D107). These three have no body: what they stand for is
+/// the instruction the compiler already writes for its own arithmetic.
+offer fun WrappingAdd(a: u64, b: u64) -> u64
+
+/// `a - b`, keeping the low bits.
+offer fun WrappingSub(a: u64, b: u64) -> u64
+
+/// `a * b`, keeping the low bits.
+offer fun WrappingMul(a: u64, b: u64) -> u64
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun RootsAndAnglesAreThePlatformsAnswers() -> bool uses unsafe {
+  const root = Sqrt(16.0)
+  const quarter = Sin(Pi / 2.0)
+  return Near(root, 4.0, 1e-06) && Near(quarter, 1.0, 1e-06)
+}
+
+@Test
+fun KeepsAValueBetweenTwoOthers() -> bool {
+  return Clamp(15, 0, 10) == 10 && Clamp(-3, 0, 10) == 0 && Clamp(7, 0, 10) == 7 && Abs(
+      -9) == 9 && Max(2, 5) == 5
+}
+
+@Test
+fun MixesTwoValues() -> bool {
+  return Near(Lerp(0.0, 10.0, 0.25), 2.5, 1e-06)
+}
+
+@Test
+fun WrappingArithmeticKeepsTheLowBits() -> bool {
+  // One past the largest `u64`, which is zero when the bits wrap.
+  const most: u64 = 18446744073709551615
+  const wrapped = WrappingAdd(most, 1)
+  const product = WrappingMul(most, 2)
+  return wrapped == 0 && product == 18446744073709551614
+}

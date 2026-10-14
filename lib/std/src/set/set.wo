@@ -1,0 +1,57 @@
+// A set of values.
+//
+// A map whose values are nothing, which is what a set is: the work is
+// the hashing and the probing, and `std.map` already does both (D91).
+// Kept as its own type rather than as a convention, because
+// `Put(value)` and `Put(key, true)` read differently in a program.
+
+need std.map.{Map, MapNew, IntHash, IntEquals}
+
+/// A set of `T`, with the hash and the equality the caller gives.
+offer class Set<T> {
+  var held: Map<T, bool>
+
+  /// How many values it holds.
+  fun Len() -> int {
+    return held.Len()
+  }
+
+  /// Puts `value` in. Answers whether it was new.
+  fun Add(value: T) -> bool uses unsafe {
+    if held.Get(value, false) {
+      return false
+    }
+    held.Put(value, true)
+    return true
+  }
+
+  /// Whether `value` is in it.
+  fun Has(value: T) -> bool uses unsafe {
+    return held.Get(value, false)
+  }
+
+  /// Takes `value` out. Answers whether it was there.
+  fun Remove(value: T) -> bool uses unsafe {
+    return held.Remove(value)
+  }
+}
+
+offer fun SetNew<T>(hash: fun(T) -> int, equals: fun(T, T) -> bool) -> Set<T> uses unsafe {
+  return Set<T>(MapNew<T, bool>(hash, equals))
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun HoldsEachValueOnce() -> bool uses unsafe {
+  var set = SetNew<int>(IntHash, IntEquals)
+  const first = set.Add(7)
+  const again = set.Add(7)
+  const second = set.Add(9)
+  const held = set.Has(7) && set.Has(9) && !set.Has(8)
+  const size = set.Len()
+  const gone = set.Remove(7)
+  const missing = set.Remove(7)
+  const left = set.Len()
+  return first && !again && second && held && size == 2 && gone && !missing && left == 1
+}
