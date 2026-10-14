@@ -127,7 +127,11 @@ class FunctionEmitter {
     assembler_.Resolve();
 
     result.compiled = true;
-    result.words = assembler_.words();
+    const std::vector<uint32_t>& words = assembler_.words();
+    result.bytes.resize(words.size() * sizeof(uint32_t));
+    if (!words.empty()) {
+      std::memcpy(result.bytes.data(), words.data(), result.bytes.size());
+    }
     result.stub = 0;
     result.body = body_offset_;
     result.traps = std::move(traps_);
@@ -1117,9 +1121,10 @@ class FunctionEmitter {
       assembler_.MovImmediate(IWidth::k64, kCallScratch, address);
       assembler_.Blr(kCallScratch);
     } else {
-      calls_.push_back(
-          CallFixup{static_cast<uint32_t>(assembler_.words().size()),
-                    inst.payload.callee});
+      calls_.push_back(CallFixup{
+          static_cast<uint32_t>(assembler_.words().size() *
+                                sizeof(uint32_t)),
+          inst.payload.callee});
       // The displacement is filled in once every function has been placed.
       assembler_.BlPlaceholder();
     }

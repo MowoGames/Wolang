@@ -5,9 +5,11 @@
 #include <dlfcn.h>
 
 #include <string>
+#include <cstring>
 #include <vector>
 
 #include "wolang/codegen/arm64/assembler.h"
+#include "wolang/codegen/x64/assembler.h"
 #include "wolang/codegen/code_block.h"
 #include "wolang/codegen/target.h"
 #include "wolang/runtime/builtins.h"
@@ -74,7 +76,12 @@ class Caller : public interp::ForeignCaller {
     a.Ret();
     a.Resolve();
 
-    return block_.Install(a.words());
+    const std::vector<uint32_t>& words = a.words();
+    std::vector<uint8_t> code(words.size() * sizeof(uint32_t));
+    if (!words.empty()) {
+      std::memcpy(code.data(), words.data(), code.size());
+    }
+    return block_.Install(code);
   }
 
   bool Call(std::string_view symbol,
@@ -123,13 +130,134 @@ class Caller : public interp::ForeignCaller {
   CodeBlock block_;
 };
 
-#endif  // arm64
+#elif defined(__x86_64__) || defined(_M_X64)
+
+using x64::Address;
+using x64::Assembler;
+using x64::Condition;
+using x64::Register;
+using x64::XmmRegister;
+using FWidth = x64::FloatWidth;
+using IWidth = x64::Width;
+
+// This ABI passes six integers and eight floats in registers, where arm64
+// passes eight of each.
+constexpr uint32_t kMaxIntegerArguments = 6;
+constexpr uint32_t kMaxFloatArguments = 8;
+
+using Thunk = void (*)(const void*, const uint64_t*, const uint64_t*,
+                       uint64_t*, uint64_t);
+
+class Caller : public interp::ForeignCaller {
+ public:
+  bool Build() {
+    Assembler a;
+    const Register result_slot = Register::kRsp;
+    a.Push(Register::kRbp);
+    a.Mov(IWidth::k64, Register::kRbp, Register::kRsp);
+    // Sixteen bytes, which is also what keeps the stack aligned for the
+    // call below -- this ABI requires that and some callees check it.
+    a.SubImmediate(IWidth::k64, Register::kRsp, 16);
+    a.Store(IWidth::k64, Address{result_slot, 0}, Register::kRcx);
+    a.Store(IWidth::k64, Address{result_slot, 8}, Register::kR8);
+
+    // The target and the integer array go where no argument register is,
+    // so that loading the arguments cannot overwrite either.
+    a.Mov(IWidth::k64, Register::kR10, Register::kRdi);
+    a.Mov(IWidth::k64, Register::kR11, Register::kRsi);
+    // The floats first, while the pointer to them is still in `rdx`: that
+    // register is itself the third integer argument.
+    for (uint32_t i = 0; i < kMaxFloatArguments; ++i) {
+      a.LoadFloat(FWidth::k64, static_cast<XmmRegister>(i),
+                  Address{Register::kRdx, static_cast<int32_t>(i * 8)});
+    }
+    static constexpr Register kIntegerArguments[kMaxIntegerArguments] = {
+        Register::kRdi, Register::kRsi, Register::kRdx,
+        Register::kRcx, Register::kR8,  Register::kR9,
+    };
+    for (uint32_t i = 0; i < kMaxIntegerArguments; ++i) {
+      a.Load(IWidth::k64, kIntegerArguments[i],
+             Address{Register::kR11, static_cast<int32_t>(i * 8)});
+    }
+    // How many vector registers hold arguments, which a variadic callee
+    // reads out of `al`. Eight is the truth here: all of them are loaded.
+    a.MovImmediate(IWidth::k32, Register::kRax, kMaxFloatArguments);
+    a.CallRegister(Register::kR10);
+
+    a.Load(IWidth::k64, Register::kRcx, Address{result_slot, 0});
+    a.Load(IWidth::k64, Register::kR8, Address{result_slot, 8});
+    const x64::Label floating = a.CreateLabel();
+    const x64::Label done = a.CreateLabel();
+    a.Test(IWidth::k64, Register::kR8, Register::kR8);
+    a.Jcc(Condition::kNotEqual, floating);
+    a.Store(IWidth::k64, Address{Register::kRcx, 0}, Register::kRax);
+    a.Jmp(done);
+    a.Bind(floating);
+    a.StoreFloat(FWidth::k64, Address{Register::kRcx, 0},
+                 XmmRegister::kXmm0);
+    a.Bind(done);
+    a.Mov(IWidth::k64, Register::kRsp, Register::kRbp);
+    a.Pop(Register::kRbp);
+    a.Ret();
+    a.Resolve();
+
+    return block_.Install(a.bytes());
+  }
+
+  bool Call(std::string_view symbol,
+            std::span<const interp::ForeignArgument> arguments,
+            bool returns_float,
+            uint64_t* result) override {
+    if (!block_.is_installed()) {
+      return false;
+    }
+    const std::string name(symbol);
+    void* target = runtime::LookupSymbol(name);
+    if (target == nullptr) {
+      target = ::dlsym(RTLD_DEFAULT, name.c_str());
+    }
+    if (target == nullptr) {
+      return false;
+    }
+
+    uint64_t integers[kMaxIntegerArguments] = {};
+    uint64_t floats[kMaxFloatArguments] = {};
+    uint32_t integer_count = 0;
+    uint32_t float_count = 0;
+    for (const interp::ForeignArgument& argument : arguments) {
+      if (argument.is_float) {
+        if (float_count >= kMaxFloatArguments) {
+          return false;
+        }
+        floats[float_count++] = argument.bits;
+        continue;
+      }
+      if (integer_count >= kMaxIntegerArguments) {
+        return false;
+      }
+      integers[integer_count++] = argument.bits;
+    }
+
+    const auto thunk =
+        reinterpret_cast<Thunk>(const_cast<void*>(block_.AddressOf(0)));
+    uint64_t raw = 0;
+    thunk(target, integers, floats, &raw, returns_float ? 1 : 0);
+    *result = raw;
+    return true;
+  }
+
+ private:
+  CodeBlock block_;
+};
+
+#endif  // the host
 
 }  // namespace
 
 std::unique_ptr<interp::ForeignCaller> MakeForeignCaller() {
-#if defined(__aarch64__) || defined(_M_ARM64)
-  if (HostTarget() != Target::kArm64) {
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
+    defined(_M_X64)
+  if (!HasBackend(HostTarget())) {
     return nullptr;
   }
   auto caller = std::make_unique<Caller>();

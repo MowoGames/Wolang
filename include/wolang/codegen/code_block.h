@@ -26,10 +26,10 @@ class CodeBlock {
   CodeBlock(CodeBlock&& other) noexcept;
   CodeBlock& operator=(CodeBlock&& other) noexcept;
 
-  // Copies |words| into fresh pages and makes them executable. Returns false
+  // Copies |code| into fresh pages and makes them executable. Returns false
   // when the system refused, which a caller has to handle: the dev tier
   // falls back to the interpreter rather than failing the build.
-  bool Install(const std::vector<uint32_t>& words);
+  bool Install(const std::vector<uint8_t>& code);
 
   bool is_installed() const { return base_ != nullptr; }
   size_t size() const { return size_; }

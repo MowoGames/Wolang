@@ -124,6 +124,9 @@ class Assembler {
   void SarImmediate(Width width, Register destination, uint8_t amount);
   // Sign extends `rax` into `rdx`, which `idiv` needs.
   void Cqo(Width width);
+  // The widening multiply, whose high half is how an unsigned product
+  // says it overflowed.
+  void MulWide(Width width, Register right);
   void Idiv(Width width, Register divisor);
   void Div(Width width, Register divisor);
 

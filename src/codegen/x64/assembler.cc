@@ -371,6 +371,13 @@ void Assembler::Cqo(Width width) {
   Emit(0x99);
 }
 
+void Assembler::MulWide(Width width, Register right) {
+  Prefix(width);
+  Rex(width, 0, Num(right));
+  Emit(0xF7);
+  ModRegRm(4, Num(right));
+}
+
 void Assembler::Idiv(Width width, Register divisor) {
   Prefix(width);
   Rex(width, 0, Num(divisor));

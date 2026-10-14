@@ -75,12 +75,12 @@ void CodeBlock::Release() {
   }
 }
 
-bool CodeBlock::Install(const std::vector<uint32_t>& words) {
+bool CodeBlock::Install(const std::vector<uint8_t>& code) {
   Release();
-  if (words.empty()) {
+  if (code.empty()) {
     return false;
   }
-  const size_t bytes = words.size() * sizeof(uint32_t);
+  const size_t bytes = code.size();
   const size_t rounded = RoundUpToPage(bytes);
 
   void* memory = ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE,
@@ -88,7 +88,7 @@ bool CodeBlock::Install(const std::vector<uint32_t>& words) {
   if (memory == MAP_FAILED) {
     return false;
   }
-  std::memcpy(memory, words.data(), bytes);
+  std::memcpy(memory, code.data(), bytes);
 
   if (::mprotect(memory, rounded, PROT_READ | PROT_EXEC) != 0) {
     ::munmap(memory, rounded);

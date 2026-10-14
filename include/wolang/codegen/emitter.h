@@ -27,10 +27,12 @@ struct TrapSite {
   std::string message;
 };
 
-// A `bl` whose target is another function of the same module, which is only
-// known once every function has been placed.
+// A call whose target is another function of the same module, which is only
+// known once every function has been placed. |at| is where the instruction
+// starts, in bytes; what to write there is the target's business, because a
+// displacement is a bit field on one machine and four bytes on another.
 struct CallFixup {
-  uint32_t word = 0;
+  uint32_t at = 0;
   uint32_t callee = 0;
 };
 
@@ -40,10 +42,13 @@ struct CompiledFunction {
   // compiles what it can and says what it could not, rather than failing:
   // the interpreter is the reference semantics and always available.
   std::string reason;
-  std::vector<uint32_t> words;
-  // Where the entry trampoline begins, in words from the start.
+  // The machine code, as bytes: arm64 instructions are all four bytes wide
+  // and x86-64 instructions are between one and fifteen, so the seam counts
+  // in the unit they have in common.
+  std::vector<uint8_t> bytes;
+  // Where the entry trampoline begins, in bytes from the start.
   uint32_t stub = 0;
-  // Where the function body begins, which is what a `bl` from elsewhere
+  // Where the function body begins, which is what a call from elsewhere
   // has to reach.
   uint32_t body = 0;
   std::vector<TrapSite> traps;
@@ -81,6 +86,15 @@ CompiledFunction EmitFunction(Target target,
                                                           uint64_t>>& strings,
                               uint32_t trap_site_base);
 
+// Writes the displacement of a call into |code|, now that the callee's
+// offset is known. The one piece of placement that cannot be shared: a
+// displacement is a bit field inside an instruction word on arm64 and four
+// bytes after the opcode on x86-64.
+void PatchCall(Target target,
+               std::vector<uint8_t>* code,
+               uint32_t at,
+               uint32_t callee);
+
 namespace arm64 {
 
 // The arm64 emitter. Every target has one of these and nothing else.
@@ -96,6 +110,22 @@ CompiledFunction EmitFunction(const StringInterner& interner,
                               uint32_t trap_site_base);
 
 }  // namespace arm64
+
+namespace x64 {
+
+// The x86-64 emitter.
+CompiledFunction EmitFunction(const StringInterner& interner,
+                              const TypeStore& types,
+                              abi::LayoutStore* layouts,
+                              const ir::Module& module,
+                              const ir::Function& function,
+                              const std::vector<bool>& compilable,
+                              const std::vector<uint64_t>& foreign,
+                              const std::vector<std::pair<uint64_t,
+                                                          uint64_t>>& strings,
+                              uint32_t trap_site_base);
+
+}  // namespace x64
 
 }  // namespace codegen
 }  // namespace wolang

@@ -136,11 +136,11 @@ class CompiledModule::Impl {
     std::string reason;
     // Where the entry trampoline is, in bytes from the start of the block.
     uint32_t stub = 0;
-    // Where the body is, in words, which is what a call has to reach.
-    uint32_t body_word = 0;
+    // Where the body is, in bytes, which is what a call has to reach.
+    uint32_t body = 0;
     // The function's whole code, for a dump.
-    uint32_t first_word = 0;
-    uint32_t word_count = 0;
+    uint32_t begin = 0;
+    uint32_t size = 0;
   };
 
   const Entry* Find(Symbol name) const {
@@ -161,7 +161,7 @@ class CompiledModule::Impl {
   const Target target_ = HostTarget();
   std::vector<std::unique_ptr<FileState>> files_;
 
-  std::vector<uint32_t> words_;
+  std::vector<uint8_t> bytes_;
   std::vector<Entry> entries_;
   std::vector<TrapSite> traps_;
   // By name, for the driver and the tests. A definition wins over a
@@ -370,7 +370,9 @@ void CompiledModule::Impl::Compile() {
     }
 
     FileState& file = *files_[entry.file];
-    const auto base = static_cast<uint32_t>(words_.size());
+    // Placed where the code so far ends, so a call between two functions
+    // of the same module is a displacement rather than an address.
+    const auto base = static_cast<uint32_t>(bytes_.size());
     CompiledFunction compiled =
         EmitFunction(target_, interner_, types_, &file.layouts, file.module, function,
                      file.compilable, file.foreign, file.strings,
@@ -378,39 +380,36 @@ void CompiledModule::Impl::Compile() {
     WOLANG_CHECK(compiled.compiled);
 
     entry.compiled = true;
-    entry.first_word = base;
-    entry.word_count = static_cast<uint32_t>(compiled.words.size());
-    entry.stub = (base + compiled.stub / sizeof(uint32_t)) *
-                 static_cast<uint32_t>(sizeof(uint32_t));
-    entry.body_word = base + compiled.body / sizeof(uint32_t);
-    words_.insert(words_.end(), compiled.words.begin(),
-                  compiled.words.end());
+    entry.begin = base;
+    entry.size = static_cast<uint32_t>(compiled.bytes.size());
+    entry.stub = base + compiled.stub;
+    entry.body = base + compiled.body;
+    bytes_.insert(bytes_.end(), compiled.bytes.begin(),
+                  compiled.bytes.end());
     for (TrapSite& site : compiled.traps) {
       traps_.push_back(std::move(site));
     }
     for (const CallFixup& fixup : compiled.calls) {
       fixups.emplace_back(entry.file,
-                          CallFixup{base + fixup.word, fixup.callee});
+                          CallFixup{base + fixup.at, fixup.callee});
     }
     ++compiled_count_;
   }
 
   // Only once every function has a place can the calls between them be
-  // filled in. One module, one block of code: a `bl` reaches 128 megabytes
-  // and that is more code than this tier will ever emit at once.
+  // filled in. One module, one block of code: the shortest reach of the
+  // targets here is 128 megabytes, and that is more code than this tier
+  // will ever emit at once.
   for (const auto& [file_index, fixup] : fixups) {
     const FileState& file = *files_[file_index];
     WOLANG_CHECK(fixup.callee < file.global.size());
     const Entry& callee = entries_[entries_[file.global[fixup.callee]].link];
     WOLANG_CHECK(callee.compiled);
-    const int32_t distance = static_cast<int32_t>(callee.body_word) -
-                             static_cast<int32_t>(fixup.word);
-    WOLANG_CHECK(distance >= -(1 << 25) && distance < (1 << 25));
-    words_[fixup.word] |= static_cast<uint32_t>(distance) & 0x03FFFFFFu;
+    PatchCall(target_, &bytes_, fixup.at, callee.body);
   }
 
-  if (!words_.empty()) {
-    block_.Install(words_);
+  if (!bytes_.empty()) {
+    block_.Install(bytes_);
   }
 }
 
@@ -680,7 +679,7 @@ interp::Outcome CompiledModule::Impl::Run(
   context_.report = &ReportTrap;
   context_.code_begin = reinterpret_cast<uint64_t>(block_.AddressOf(0));
   context_.code_end =
-      context_.code_begin + words_.size() * sizeof(uint32_t);
+      context_.code_begin + bytes_.size();
 
   const auto stub = reinterpret_cast<EntryPoint>(
       const_cast<void*>(block_.AddressOf(entry->stub)));
@@ -716,13 +715,13 @@ interp::Outcome CompiledModule::Impl::Run(
 }
 
 std::string CompiledModule::Impl::Symbolize(uint64_t offset) const {
-  const auto word = static_cast<uint32_t>(offset / sizeof(uint32_t));
+  const auto at = static_cast<uint32_t>(offset);
   for (const Entry& entry : entries_) {
-    if (!entry.compiled || word < entry.first_word ||
-        word >= entry.first_word + entry.word_count) {
+    if (!entry.compiled || at < entry.begin ||
+        at >= entry.begin + entry.size) {
       continue;
     }
-    if (word < entry.body_word) {
+    if (at < entry.body) {
       // The entry trampoline, which belongs to the host side of the call
       // rather than to the function.
       return {};
@@ -732,9 +731,7 @@ std::string CompiledModule::Impl::Symbolize(uint64_t offset) const {
     text.append("+0x");
     char buffer[16] = {};
     std::snprintf(buffer, sizeof(buffer), "%x",
-                  static_cast<unsigned>(offset -
-                                        entry.first_word *
-                                            sizeof(uint32_t)));
+                  static_cast<unsigned>(offset - entry.begin));
     text.append(buffer);
     return text;
   }
@@ -792,7 +789,7 @@ bool CompiledModule::ResumeTask(Symbol dispatch,
   impl.context_.code_begin =
       reinterpret_cast<uint64_t>(impl.block_.AddressOf(0));
   impl.context_.code_end =
-      impl.context_.code_begin + impl.words_.size() * sizeof(uint32_t);
+      impl.context_.code_begin + impl.bytes_.size();
 
   const auto stub = reinterpret_cast<EntryPoint>(
       const_cast<void*>(impl.block_.AddressOf(entry->stub)));
@@ -818,13 +815,13 @@ std::vector<std::pair<std::string, uint32_t>> CompiledModule::Listing()
     }
     listing.push_back(std::pair<std::string, uint32_t>(
         std::string(impl_->interner_.Text(impl_->FunctionOf(entry).name)),
-        entry.word_count * static_cast<uint32_t>(sizeof(uint32_t))));
+        entry.size));
   }
   return listing;
 }
 
 size_t CompiledModule::size() const {
-  return impl_->words_.size() * sizeof(uint32_t);
+  return impl_->bytes_.size();
 }
 uint32_t CompiledModule::compiled_count() const {
   return impl_->compiled_count_;

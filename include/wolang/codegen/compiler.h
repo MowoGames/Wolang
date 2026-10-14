@@ -76,9 +76,6 @@ class CompiledModule {
                   void* frame,
                   bool* faulted) const;
 
-  // The machine words of one function, for a dump or a disassembly test.
-  std::span<const uint32_t> WordsOf(Symbol name) const;
-
   // Bytes of code installed.
   size_t size() const;
   // How many functions were compiled, and how many were left behind.

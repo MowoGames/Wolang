@@ -30,10 +30,8 @@ std::string_view TargetName(Target target) {
 bool HasBackend(Target target) {
   switch (target) {
     case Target::kArm64:
-      return true;
-    // x64 is next: the seam is here so that nothing written in the
-    // meantime assumes there is only one answer.
     case Target::kX64:
+      return true;
     case Target::kUnknown:
       return false;
   }
