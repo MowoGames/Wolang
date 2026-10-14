@@ -2,7 +2,10 @@
 
 #include "wolang/sema/effect.h"
 
+#include "harness/temp_tree.h"
 #include "harness/test.h"
+#include "wolang/compiler/database.h"
+#include "wolang/compiler/workspace.h"
 #include "wolang/sema/type.h"
 
 namespace wolang {
@@ -90,6 +93,56 @@ WOLANG_TEST(EffectRowTest, DescribesARowAsItIsWritten) {
 
   WOLANG_EXPECT_EQ(store.Describe(interner, row), "io, Telemetry");
   WOLANG_EXPECT_EQ(store.Describe(interner, EffectRow()), "no effects");
+}
+
+// The codes a package reports, in order.
+std::string PackageCodes(Database* db) {
+  std::string result;
+  for (const Diagnostic& diagnostic : db->AllDiagnostics()) {
+    if (!result.empty()) {
+      result.push_back(',');
+    }
+    result.append(diagnostic.code);
+  }
+  return result;
+}
+
+WOLANG_TEST(EffectRowTest, CallingOutOfTheLanguageIsUnsafe) {
+  // The whole FFI rule, and there is no second rule to keep in step with
+  // it: a foreign call carries `unsafe`, so everything already decided
+  // about `unsafe` applies -- an offered function has to say so, and a
+  // package that forbids it cannot reach C at all.
+  testing::TempTree tree("ffi-unsafe");
+  tree.Write("wolang.toml", "[package]\nname = \"ffi\"\nversion = \"1\"\n");
+  tree.Write("src/main.wo", R"(
+extern "C" fun abs(n: i32) -> i32
+
+offer fun Quiet(n: i32) -> i32 {
+  return abs(n)
+}
+)");
+  Database db;
+  DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(LoadPackage(&db, tree.path(), &diagnostics));
+  WOLANG_EXPECT_EQ(PackageCodes(&db), "E0704");
+}
+
+WOLANG_TEST(EffectRowTest, APackageThatForbidsUnsafeCannotReachC) {
+  testing::TempTree tree("ffi-denied");
+  tree.Write("wolang.toml",
+             "[package]\nname = \"ffi\"\nversion = \"1\"\n\n"
+             "[build]\nunsafe = \"deny\"\n");
+  tree.Write("src/main.wo", R"(
+extern "C" fun abs(n: i32) -> i32
+
+fun Magnitude(n: i32) -> i32 uses unsafe {
+  return abs(n)
+}
+)");
+  Database db;
+  DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(LoadPackage(&db, tree.path(), &diagnostics));
+  WOLANG_EXPECT_EQ(PackageCodes(&db), "E0801");
 }
 
 }  // namespace

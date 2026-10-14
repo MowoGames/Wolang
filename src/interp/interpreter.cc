@@ -116,6 +116,105 @@ class Interpreter {
     return result;
   }
 
+  // Reading and writing through a raw pointer. Only a scalar: an aggregate
+  // needs the layout the code generator computes, and the interpreter has
+  // no reason to grow one until something needs it.
+  Value LoadThroughPointer(const ir::Function& function,
+                           const Value& pointer,
+                           TypeId type,
+                           ir::InstId id,
+                           Outcome* outcome) {
+    const Type& described = types_.Get(type);
+    const auto address = reinterpret_cast<const void*>(pointer.integer());
+    if (address == nullptr) {
+      return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                  "read through a null pointer");
+    }
+    switch (described.kind) {
+      case TypeKind::kBool: {
+        uint8_t raw = 0;
+        std::memcpy(&raw, address, sizeof(raw));
+        return Value::Bool(raw != 0);
+      }
+      case TypeKind::kFloat: {
+        if (described.float_width == FloatWidth::k64) {
+          double number = 0;
+          std::memcpy(&number, address, sizeof(number));
+          return Value::Float(number, FloatWidth::k64);
+        }
+        float number = 0;
+        std::memcpy(&number, address, sizeof(number));
+        return Value::Float(static_cast<double>(number), FloatWidth::k32);
+      }
+      case TypeKind::kPointer: {
+        uint64_t raw = 0;
+        std::memcpy(&raw, address, sizeof(raw));
+        return Value::Int(raw, IntWidth::k64, /*is_signed=*/false);
+      }
+      case TypeKind::kInt: {
+        uint64_t raw = 0;
+        std::memcpy(&raw, address, WidthInBytes(described.int_width));
+        return Value::Int(raw, described.int_width, described.is_signed);
+      }
+      default:
+        return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                    "read a type through a pointer that this tier cannot "
+                    "lay out");
+    }
+  }
+
+  Value StoreThroughPointer(const ir::Function& function,
+                            const Value& pointer,
+                            const Value& value,
+                            ir::InstId id,
+                            Outcome* outcome) {
+    const auto address = reinterpret_cast<void*>(pointer.integer());
+    if (address == nullptr) {
+      return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                  "wrote through a null pointer");
+    }
+    switch (value.kind()) {
+      case Value::Kind::kBool: {
+        const uint8_t raw = value.boolean() ? 1 : 0;
+        std::memcpy(address, &raw, sizeof(raw));
+        return Value::Void();
+      }
+      case Value::Kind::kFloat: {
+        if (value.float_width() == FloatWidth::k64) {
+          const double number = value.floating();
+          std::memcpy(address, &number, sizeof(number));
+        } else {
+          const auto number = static_cast<float>(value.floating());
+          std::memcpy(address, &number, sizeof(number));
+        }
+        return Value::Void();
+      }
+      case Value::Kind::kInt: {
+        const uint64_t raw = value.integer();
+        std::memcpy(address, &raw, WidthInBytes(value.int_width()));
+        return Value::Void();
+      }
+      default:
+        return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                    "wrote a type through a pointer that this tier cannot "
+                    "lay out");
+    }
+  }
+
+  static size_t WidthInBytes(IntWidth width) {
+    switch (width) {
+      case IntWidth::k8:
+        return 1;
+      case IntWidth::k16:
+        return 2;
+      case IntWidth::k32:
+        return 4;
+      case IntWidth::k64:
+        return 8;
+    }
+    return 4;
+  }
+
   // Out of the language, through the thunk the host handed over. The
   // arguments are reduced to bits and a register file, which is all the C
   // ABI needs; the checker already made sure every type at the boundary has
@@ -281,6 +380,13 @@ class Interpreter {
       }
       case ir::Opcode::kLoad: {
         const Value& slot = Operand(frame, inst, 0);
+        if (slot.kind() == Value::Kind::kInt) {
+          // A raw pointer. Reading through one is `unsafe` and the checker
+          // said so; here it means what it says, and the interpreter reads
+          // the memory the program asked for.
+          return LoadThroughPointer(function, slot, inst.type, id,
+                                    outcome);
+        }
         if (slot.kind() != Value::Kind::kSlot ||
             slot.slot() >= frame->slots.size()) {
           return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
@@ -295,6 +401,10 @@ class Interpreter {
       }
       case ir::Opcode::kStore: {
         const Value& slot = Operand(frame, inst, 0);
+        if (slot.kind() == Value::Kind::kInt) {
+          return StoreThroughPointer(function, slot,
+                                     Operand(frame, inst, 1), id, outcome);
+        }
         if (slot.kind() != Value::Kind::kSlot ||
             slot.slot() >= frame->slots.size()) {
           return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),

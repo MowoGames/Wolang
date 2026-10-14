@@ -1662,5 +1662,23 @@ fun Sides(s: Shape) -> int {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheckTest, ADereferenceDoesNotTakeTheContextsType) {
+  // The expectation reaches an operand only where the operator preserves
+  // the type. Passing it through `*p` checked the pointer against what the
+  // pointee has to be, and reported two errors for a correct program.
+  Fixture f(R"(
+extern "C" fun malloc(size: u64) -> *i32
+
+fun Read(p: *i32) -> i32 {
+  return *p
+}
+
+fun Write(p: *i32, n: i32) {
+  *p = n
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang

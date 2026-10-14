@@ -781,6 +781,12 @@ class Lowerer {
                              {operand});
       case TokenKind::kTilde:
         return builder_->Add(Opcode::kBitNot, type, {operand});
+      case TokenKind::kStar:
+        // Reading through a pointer is the same load as reading a slot: the
+        // operand is an address either way.
+        return builder_->Add(Opcode::kLoad, type, {operand});
+      case TokenKind::kAmp:
+        return Address(expr.lhs, operand);
       default:
         return operand;
     }
@@ -959,6 +965,25 @@ class Lowerer {
     return result;
   }
 
+  // The address of a place, for `&x`. A `var` already has one -- its slot;
+  // anything else is copied into a fresh one, which is what makes taking a
+  // reference to a temporary mean something. References are second class
+  // (`E0120`), so the slot cannot outlive the frame it is in.
+  InstId Address(ExprId place, InstId value) {
+    if (ast_.Contains(place) && ast_.Get(place).kind == ExprKind::kPath) {
+      const Local* local = Find(ast_.Get(place).name);
+      if (local != nullptr && local->slot.is_valid()) {
+        return local->slot;
+      }
+    }
+    if (!value.is_valid()) {
+      return value;
+    }
+    const InstId slot = builder_->Add(Opcode::kAlloca, TypeOf(place));
+    builder_->Add(Opcode::kStore, TypeId{}, {slot, value});
+    return slot;
+  }
+
   InstId LowerAssign(const Expr& expr) {
     const InstId value = Value(expr.rhs);
     if (!ast_.Contains(expr.lhs)) {
@@ -969,6 +994,13 @@ class Lowerer {
       const Local* local = Find(target.name);
       if (local != nullptr && local->slot.is_valid()) {
         builder_->Add(Opcode::kStore, TypeId{}, {local->slot, value});
+      }
+    } else if (target.kind == ExprKind::kUnary &&
+               target.op == TokenKind::kStar) {
+      // `*p = v`: the address is what the operand evaluates to.
+      const InstId address = Value(target.lhs);
+      if (address.is_valid()) {
+        builder_->Add(Opcode::kStore, TypeId{}, {address, value});
       }
     }
     // An assignment is a statement, so it produces nothing a caller can use.

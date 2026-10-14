@@ -166,9 +166,12 @@ void CompiledModule::Impl::Compile() {
   std::vector<bool> compilable(count, true);
   std::vector<std::string> reasons(count);
   for (size_t i = 0; i < count; ++i) {
-    if (module_.functions[i].is_foreign() && foreign_[i] == 0) {
-      reasons[i] = "is `extern` and its symbol was not found";
+    if (!module_.functions[i].is_foreign()) {
+      continue;
     }
+    reasons[i] = foreign_[i] == 0
+                     ? "is `extern` and its symbol was not found"
+                     : "is `extern`, called at the address the loader gave";
   }
   for (size_t i = 0; i < count; ++i) {
     const CompiledFunction attempt =

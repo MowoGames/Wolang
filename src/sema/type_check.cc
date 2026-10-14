@@ -609,7 +609,16 @@ TypeId Checker::CheckPath(const Expr& expr) {
 }
 
 TypeId Checker::CheckUnary(const Expr& expr, TypeId expected) {
-  const TypeId operand = Check(expr.lhs, expected);
+  // The expectation reaches the operand only where the operator preserves
+  // the type. `*p` and `&x` change it, so passing the context's type down
+  // would check the pointer against what the pointee has to be -- which
+  // reports a mismatch on the operand and then a second one on the
+  // dereference of the error type it became.
+  const bool preserves_type = expr.op == TokenKind::kMinus ||
+                              expr.op == TokenKind::kTilde ||
+                              expr.op == TokenKind::kBang;
+  const TypeId operand =
+      Check(expr.lhs, preserves_type ? expected : TypeId{});
   switch (expr.op) {
     case TokenKind::kMinus:
       if (!types_->IsNumeric(operand) && !types_->IsError(operand)) {
@@ -638,6 +647,13 @@ TypeId Checker::CheckUnary(const Expr& expr, TypeId expected) {
       return types_->Reference(operand,
                                HasFlag(expr.flags, ExprFlags::kMutable));
     case TokenKind::kStar: {
+      // Reading through a raw pointer is `unsafe`: nothing in the language
+      // promises there is anything there. A reference carries that promise,
+      // which is the whole difference between the two.
+      if (types_->KindOf(operand) == TypeKind::kPointer) {
+        result_.direct_effects.Add(
+            types_->BuiltinEffectId(BuiltinEffect::kUnsafe));
+      }
       const TypeId target = types_->ElementOf(operand);
       if (!target.is_valid()) {
         std::string message = "cannot dereference `";

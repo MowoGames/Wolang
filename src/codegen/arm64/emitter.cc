@@ -377,6 +377,15 @@ class FunctionEmitter {
     return target;
   }
 
+  // The address a load or a store works through. A slot's address is a
+  // frame offset; a pointer's is whatever the pointer holds. Both are
+  // addresses, which is why one opcode covers reading a local and reading
+  // through a `*T`.
+  Register AddressOf(ir::InstId id, unsigned scratch) {
+    return Info(id).holding == Holding::kArea ? UseArea(id, scratch)
+                                              : UseInt(id, scratch);
+  }
+
   // Where to put the result of an instruction: its own register when it has
   // one, a scratch when it is spilled.
   Register DestInt(ir::InstId id, unsigned scratch) {
@@ -834,7 +843,7 @@ class FunctionEmitter {
 
       case ir::Opcode::kLoad: {
         const ir::InstId slot = function_.OperandsOf(inst)[0];
-        const Register base = UseArea(slot, 1);
+        const Register base = AddressOf(slot, 1);
         if (layouts_.ClassOf(inst.type) == ValueClass::kAggregate) {
           const Register area = UseArea(id, 2);
           CopyBytes(area, 0, base, 0, layouts_.SizeOf(inst.type), 3);
@@ -846,7 +855,7 @@ class FunctionEmitter {
       case ir::Opcode::kStore: {
         const std::span<const ir::InstId> operands =
             function_.OperandsOf(inst);
-        const Register base = UseArea(operands[0], 1);
+        const Register base = AddressOf(operands[0], 1);
         StoreInto(operands[1], base, 0, 2);
         return;
       }

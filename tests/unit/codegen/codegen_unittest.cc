@@ -460,6 +460,39 @@ fun Try(n: int) -> int => NotInAnyLibrary(n)
                    "is `extern` and its symbol was not found");
 }
 
+WOLANG_TEST(CodegenTest, AllocatesThroughTheForeignBoundary) {
+  // The heap, before there is a language feature for it: `malloc` is a
+  // foreign function, a `*i32` is an address, and reading through one is
+  // the same load as reading a local. Both tiers do it, which is what makes
+  // this comparable at all.
+  Fixture f(R"(
+extern "C" fun malloc(size: u64) -> *i32
+extern "C" fun free(block: *i32)
+
+fun RoundTrip(n: int) -> int {
+  let block = malloc(4)
+  *block = n + 1
+  let read = *block
+  free(block)
+  return read
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("RoundTrip", {Fixture::Int(41)}), "42");
+  WOLANG_EXPECT_EQ(f.Run("RoundTrip", {Fixture::Int(-1)}), "0");
+}
+
+WOLANG_TEST(CodegenTest, TakesTheAddressOfALocal) {
+  Fixture f(R"(
+fun Through(n: int) -> int {
+  var x = n
+  let p = &x
+  *p = *p + 1
+  return x
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Through", {Fixture::Int(5)}), "6");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang
