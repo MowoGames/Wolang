@@ -2,8 +2,11 @@
 // formatter are tested on.
 //
 // `wolang check` on this file reports unknown names: it is a single file, so
-// its imports resolve to nothing, and class members are not resolved until
-// wave 5. For an example that type checks end to end, see `examples/package`.
+// its imports resolve to nothing. It also reports the `wait` inside the
+// door's `enter` blocks, which is honest -- a transition that suspends is
+// the part of `machine` that is still a draft (D71). For an example that
+// type checks end to end, see `examples/package`; for a program that runs,
+// `examples/server`.
 
 need engine.gameplay
 need engine.math.{Vec3, Quat}

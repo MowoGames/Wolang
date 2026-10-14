@@ -1,12 +1,12 @@
 # Wave 10 — suspension, and a second machine
 
-**Status:** concurrency, strings, memory and the server are in. The core of
-the wave is complete — the `async` effect, the task
+**Status:** complete. Concurrency, strings, memory, the server, signals,
+reactive values and state machines are all in — the `async` effect, the task
 transform, `spawn`, a scheduler, and `std.tasks`. Machines (`machine` /
 `state`), signals and `derived`, and `wolang-http` as a design driver are
 not built and are carried forward. The x86-64 backend, which the roadmap
 put later, landed here instead; the end of this report says why.
-608 unit tests, all passing in Debug, sanitizers and Release, and all of
+612 unit tests, all passing in Debug, sanitizers and Release, and all of
 them passing again when the whole compiler is built for x86-64.
 
 ## Scope
@@ -204,6 +204,40 @@ reference tier and also what makes a pointer into one meaningless. A buffer
 handed to C is bounced through real memory, and a place names the frame it
 belongs to so that a slice of a local array survives being passed to a
 callee.
+
+## Signals, reactive values and machines
+
+The gameplay half of the wave, and all three landed the same way: as
+members of a type that the compiler synthesizes, so the checker and both
+tiers need no special case above the member table.
+
+**A signal's type is the type of what listens to it.** `signal Died(by:
+Counter)` is connected to by a `fun(Counter)`, so `Connect` and `Emit`
+check against the same thing and a handler of the wrong shape is reported
+where it is written. Connecting is a call into the runtime -- growing a
+list is the part that allocates -- and emitting is a generated loop,
+because calling back into the language is something only the language can
+do. The interpreter has no addresses for its functions, so what it hands
+the runtime is a token it can turn back into the value; that the two tiers
+agree is what the tests check.
+
+**A `derived` field recomputes when an input changes** (D63), which is a
+claim about *when*: a cached value, a bit that says whether the cache is
+current, and a write to any field the expression reads clearing that bit.
+Which fields those are comes from the member table rather than from the
+file the write is in -- the writer may never have seen the expression.
+
+**A machine is its transition table** (D71). From the table the compiler
+generates a method per event, a predicate per state, and the `enter` and
+`exit` blocks as methods; `always` is followed when the table is lowered,
+so one event can pass through several states and each runs its `enter`.
+The table is checked as a table: `E0206` for a transition to a state that
+is not there, `W0109` for a state nothing leads to.
+
+Finding the bug where every one of a machine's generated methods answered
+to the same call took longer than writing them: a machine is one
+declaration and many functions, and (file, item) could not tell them
+apart. Members and IR functions carry a slot beside the item now (D72).
 
 ## What is carried forward
 
