@@ -215,7 +215,7 @@ WOLANG_TEST(TypeCheck, SuffixesFixTheTypeRegardlessOfContext) {
       "fun f() {\n"
       "  const a = 1u8\n"
       "  const b = 2.0f64\n"
-      "  const c = 3i64\n"
+      "  const c = 3s64\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "u8");

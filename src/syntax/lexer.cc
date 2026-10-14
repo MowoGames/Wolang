@@ -118,10 +118,10 @@ struct SuffixEntry {
 };
 
 constexpr std::array<SuffixEntry, 10> kNumericSuffixes = {{
-    {"i8", NumericSuffix::kI8},
-    {"i16", NumericSuffix::kI16},
-    {"i32", NumericSuffix::kI32},
-    {"i64", NumericSuffix::kI64},
+    {"s8", NumericSuffix::kI8},
+    {"s16", NumericSuffix::kI16},
+    {"s32", NumericSuffix::kI32},
+    {"s64", NumericSuffix::kI64},
     {"u8", NumericSuffix::kU8},
     {"u16", NumericSuffix::kU16},
     {"u32", NumericSuffix::kU32},

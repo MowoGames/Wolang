@@ -64,7 +64,7 @@ the IR free of "maybe" cases the back ends would inherit.
 | `&&`, `\|\|`, `??` | control flow, because the right side may not run |
 | `match` | arms tested in order, ending in `unreachable` where the checker proved coverage |
 | `T?` | `opt.present`, `opt.value`, `opt.wrap`, `const.null` |
-| `if let` | a presence test, with the inner value bound for the then-branch |
+| `if const` | a presence test, with the inner value bound for the then-branch |
 | a `var` | an `alloca` with loads and stores |
 | a field | `extract` by index, from the member table's declaration order |
 | a constructor | `struct`, fields in order |
@@ -182,8 +182,8 @@ failing expectation, which is the point of both.
   wave 6.
 - String interpolation lowers to `undef`: building a string at runtime needs
   the formatting traits from `core`, which is wave 7.
-- Destructuring a `let` lowers the initializer and drops the pattern.
-- `for`, `foreach`, `defer`, `async` and the entity constructs are not
+- Destructuring a `const` lowers the initializer and drops the pattern.
+- `for`, `foreach`, `defer`, `task` and the entity constructs are not
   lowered yet; each belongs with the wave that gives it semantics.
 
 ## Next

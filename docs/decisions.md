@@ -38,8 +38,8 @@ artifacts of the language; `STATUS.md` is the working log.
 
 **D8. Hybrid memory, optional collector.** Values with mutable value
 semantics; references are second class, so they may be parameters and locals
-but not fields — memory safety without a borrow checker. `Box<T>` for unique
-ownership, `Rc`/`Arc` for shared, `region { }` for frame arenas, and `class`
+but not fields — memory safety without a borrow checker. `Owned<T>` for unique
+ownership, `Shared` for shared, `arena { }` for frame arenas, and `class`
 with a garbage collector as a **separate optional component**. A program that
 declares no `class` links no collector, which is what makes WASM and embedded
 targets practical.
@@ -51,7 +51,7 @@ the type its context expects, defaulting to `int`. `0xFFFFFFFFFFFF` needs no
 suffix, `comptime` arithmetic is exact, and a literal that does not fit its
 destination is an error rather than a silent wrap.
 
-**D10. `[T; N]` and `[T]` are language constructs; `Array<T>` is a library
+**D10. `[N]T` and `[]T` are language constructs; `Array<T>` is a library
 type.** Fixed arrays and slices allocate nothing and `core` needs them, so
 they belong to the language. A growable array needs an allocator, so it
 belongs to `std` (wave 13).
@@ -82,15 +82,15 @@ deterministic — the nondeterminism comes from the compiler, not the hardware.
 A library `Fixed<N>` can arrive in wave 13 if measurements call for it.
 
 **D15a. There are no implicit numeric conversions, not even widening.**
-`let n: i64 = some_i32` is an error; `some_i32 as i64` is how it is written.
+`const n: s64 = narrow` is an error; `narrow as s64` is how it is written.
 Arbitrary-precision literals (D9) remove the common case that would
 otherwise make this tiresome, and a conversion that is always spelled is a
 conversion that can always be found. This retires the planned `W0114`
 "implicit narrowing" lint: there is no implicit narrowing to warn about.
 
-**D15b. An owned `String` is accepted where a borrowed `str` is wanted.** An
+**D15b. An owned `Text` is accepted where a borrowed `text` is wanted.** An
 implicit borrow, and safe for the reason references are second class (D8): a
-`str` cannot be stored in a field, so the view can never outlive the string
+`text` cannot be stored in a field, so the view can never outlive the string
 it points into. Without this, printing an interpolated string — the most
 common operation in any language — would not type check, and requiring a
 sigil for it would buy nothing a borrow checker is not already providing.
@@ -107,8 +107,8 @@ bug into a wrong answer somewhere else.
 ## Syntax
 
 **D16. Control flow is expression-shaped.** `if`, `match`, `loop`, `while`,
-`for`, `foreach`, `unsafe`, `region` and blocks are all expressions, so
-`let x = if c { a } else { b }` needs no special case.
+`for`, `foreach`, `unsafe`, `arena` and blocks are all expressions, so
+`const x = if c { a } else { b }` needs no special case.
 
 **D17. An operator at the start of a line begins a new statement.** A line
 starting with `-` is a unary minus, never a continuation, so two statements
@@ -140,7 +140,7 @@ intuition. `impl` is reserved, so the Rust spelling gets a message rather than
 a confusing parse failure.
 
 **D22. Storage layout is a property of the storage, not of the type.**
-`soa [Particle]` rather than `@layout(soa) struct Particle`. This is a
+`soa []Particle` rather than `@layout(soa) struct Particle`. This is a
 capability difference, not a spelling one: the same type can be one value in
 one place and a struct-of-arrays in another, and the choice can be flipped
 where it is measured.
@@ -272,7 +272,7 @@ kqueue, epoll, io_uring — belongs in `std` (wave 13), not in the HTTP
 library: a server is one user of readiness notification, not its owner.
 
 Three language features make it unusually good rather than merely possible:
-a `region` per request is arena-per-request, which is how the fastest
+a `arena` per request is arena-per-request, which is how the fastest
 servers already work but spelled as a language construct; effects and
 capabilities give per-handler sandboxing checked at compile time, so a route
 declared `uses net` cannot touch the filesystem and a plugin route can be
@@ -296,7 +296,7 @@ that quietly changed a number would be the one place it does not.
 **D42. A generic function is never lowered; one specialization is emitted per
 instantiation.** A generic declaration is a recipe, and lowering it would put
 a `T` in the IR that every back end would then need an answer for — the
-verifier rightly rejects a call passing an `i32` where a `T` is declared. The
+verifier rightly rejects a call passing an `s32` where a `T` is declared. The
 specialization is named after its arguments, so two call sites that inferred
 the same arguments share one copy. Cross-file instantiation needs
 whole-program lowering and waits for the linking story.
@@ -367,3 +367,46 @@ honest to: `wolang test` runs every `@Test` in both tiers and compares, and
 `wolang bench` times it. Running `main` through compiled code would also
 quietly drop the step limit, which is a property of the run and not
 something a tier gets to change.
+
+## Names
+
+**D52. `const` and `var`, not `let` and `var`.** Two visually distinct words
+for two different things, rather than one word and a modifier. Mutable
+locals are most of the locals gameplay code has, so `var x` must not cost
+more to write than the immutable form -- and `const` is free to mean "never
+changes" because compile-time evaluation is spelled `comptime`.
+
+**D53. `task fun` and `wait`, not `async` and `await`.** Shorter, and `wait`
+says what the machine does rather than naming a protocol. The suspension
+point stays visible at the call site, which is the one thing the alternative
+-- making suspension an effect in the `uses` row and dropping `wait`
+entirely -- would have given up. That alternative is the more interesting
+design and may come back when the effect system has the concurrency wave
+behind it; until then a reader can see where a function yields.
+
+**D54. `Owned<T>` and `Shared<T>`, and `arena` for a scope.** They say in
+English what the relationship is: one owner, several owners, a region freed
+all at once. `arena` is also the word the gameplay world already uses for
+exactly this allocator.
+
+**D55. `s32`, not `i32`.** Both halves of the width table are integers and
+only one of them is signed, so `s` carries the information `i` does not.
+Gameplay SDKs have spelled it this way for years. `int` and `float` remain
+the aliases for code that does not care about a width, and `f32`/`f64` keep
+their spelling because there is no second letter to disagree about.
+
+**D56. `text` and `Text`, not `str` and `String`.** Lowercase for the view,
+PascalCase for the type that owns its bytes -- the same rule every declared
+type in the language already follows. A view costs nothing and an owned
+string allocates, and the capital letter is where that difference is
+visible.
+
+**D57. `[]T` and `[N]T`, not `[T]` and `[T; N]`.** The brackets say what the
+shape is before the element does, so a type reads left to right: a slice of
+`T`, an array of `N` of them. It is also two characters shorter in the array
+case, and the semicolon inside a type bracket was the one piece of
+punctuation nobody could guess the meaning of.
+
+The words these replaced -- `let`, `async`, `await`, `region` -- are
+**reserved** rather than free, so writing one gets a diagnostic instead of a
+confusing parse failure.

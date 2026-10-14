@@ -332,7 +332,7 @@ WOLANG_TEST(Lexer, DotAfterIntegerStaysAnOperator) {
 }
 
 WOLANG_TEST(Lexer, LexesTypeSuffixes) {
-  Fixture fixture("255u8 -1i64 2.0f64 1f32");
+  Fixture fixture("255u8 -1s64 2.0f64 1f32");
   const TokenStream& stream = fixture.stream();
   WOLANG_EXPECT_EQ(stream.NumberOf(fixture.At(0)).suffix, NumericSuffix::kU8);
   WOLANG_EXPECT_EQ(stream.NumberOf(fixture.At(2)).suffix, NumericSuffix::kI64);

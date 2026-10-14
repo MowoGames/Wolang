@@ -25,12 +25,12 @@ conditions.
 | `extend T` and `extend T as Trait` | replaces `impl`, target first (D21) |
 | `error NotFound, Corrupt` | one declaration binds several tags |
 | Postfix `T!` | reads left to right and combines as `Pawn?!` (D13) |
-| `[T]` and `[T; N]` | language constructs, not library types (D10) |
-| `soa [Particle]`, `aos [Particle]` | layout belongs to the storage (D22) |
+| `[]T` and `[N]T` | language constructs, not library types (D10) |
+| `soa []Particle`, `aos []Particle` | layout belongs to the storage (D22) |
 | Loop labels, `break outer` | `E0044` when no enclosing loop carries the label |
 | Partial ranges `..b`, `a..`, `..` | |
 | `n?` and `null` patterns | no `Some`/`None` vocabulary (D12) |
-| Structural patterns in conditions | `if let Point { x } = p` |
+| Structural patterns in conditions | `if const Point { x } = p` |
 
 ### Types — `include/wolang/sema/type.h`, `src/sema/type.cc`
 
@@ -112,7 +112,7 @@ What it checks:
 - **trait conformance**, from the member table rather than from the block
   that names the trait, so a method may come from anywhere;
 - **exhaustive `match`**, naming what is missing;
-- **nullability**, with `if let`, `?.`, `??`, an `x?` pattern, and an
+- **nullability**, with `if const`, `?.`, `??`, an `x?` pattern, and an
   explicit `p != null` in either order.
 
 Narrowing shadows the name in the current scope, so it applies to the branch

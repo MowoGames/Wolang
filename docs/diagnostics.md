@@ -47,9 +47,9 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0008` | integer literal does not fit in 64 bits | `18446744073709551616` |
 | `E0009` | invalid Unicode escape | `"\u41"`, `"\u{110000}"`, `"\u{D800}"` |
 | `E0010` | invalid numeric suffix | `1f128`, `1.5u8`, `0xFFm` |
-| `E0011` | reserved word used as an identifier | `let transactional = 1` |
+| `E0011` | reserved word used as an identifier | `const transactional = 1` |
 | `E0012` | unterminated block comment | `/*` with no `*/` |
-| `E0013` | code point cannot appear in an identifier | `let 🚀 = 1` |
+| `E0013` | code point cannot appear in an identifier | `const 🚀 = 1` |
 | `E0014` | identifier is not in Unicode NFC form | `и` plus a combining breve |
 
 Lexing never stops at the first problem: a malformed token is reported, flagged
@@ -66,7 +66,7 @@ character.
 | `E0021` | expected an identifier | `fun 1() {}` |
 | `E0022` | expected a specific token | `class C` without `{` |
 | `E0023` | expected a type | `fun f(a: ) {}` |
-| `E0024` | expected an expression | `let a = *` |
+| `E0024` | expected an expression | `const a = *` |
 | `E0025` | expected a pattern | `for in items {}` |
 | `E0026` | unmatched delimiter | a block without its `}` |
 | `E0028` | expected a block | `fun f() ???` |
@@ -75,12 +75,12 @@ character.
 | `E0035` | expected a `state` declaration | a `fn` inside a `machine` |
 | `E0036` | expected a transition | a stray name inside a `state` |
 | `E0037` | expected a unit definition | `unit m` with no dimension |
-| `E0040` | expected a line break between statements | `let a = 1 let b = 2` |
+| `E0040` | expected a line break between statements | `const a = 1 const b = 2` |
 | `E0041` | nesting too deep | hundreds of nested parentheses |
 | `E0042` | unknown type parameter in a `where` clause | `fun f<T>() where U: A {}` |
 | `E0043` | unexpected token after an expression | `"{a b}"` |
 | `E0044` | no enclosing loop carries that label | `break nowhere` |
-| `E0045` | expected an array length | `[int; ]` |
+| `E0045` | expected an array length | `[]int` |
 
 `E0026` carries two labels: the primary one where the closing delimiter was
 expected, and a secondary one on the delimiter that was left open.
@@ -148,7 +148,7 @@ unused.
 | `E0703` | the package was not granted the capability | `uses net` under `capabilities = "io"` |
 | `E0704` | an offered signature does not state its effects | `offer fun f()` whose body does `io` |
 | `E0801` | `unsafe` where the package forbids it | `unsafe { }` under `unsafe = "deny"` |
-| `E0802` | a type with no C representation crosses the `extern` boundary | `extern "C" fun f(s: str)` |
+| `E0802` | a type with no C representation crosses the `extern` boundary | `extern "C" fun f(s: text)` |
 | `E0803` | an `extern` function has a body | `extern "C" fun f() { }` |
 
 A row is inferred inside a module and stated on offered signatures. A
@@ -181,15 +181,15 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 
 | Code | Message | Example |
 |---|---|---|
-| `E0101` | mismatched types | `let x: bool = 1` |
+| `E0101` | mismatched types | `const x: bool = 1` |
 | `E0102` | wrong number of arguments | calling a two-parameter function with one |
-| `E0103` | no value with that name is in scope | `let x = nothing_here` |
+| `E0103` | no value with that name is in scope | `const x = nothing_here` |
 | `E0104` | a value that may be absent was used directly | `p.field` where `p: Pawn?` |
-| `E0105` | assignment to a `let` binding | `let a = 1` then `a = 2` |
+| `E0105` | assignment to a `const` binding | `const a = 1` then `a = 2` |
 | `E0106` | the callee is not callable | calling an integer |
 | `E0107` | the value cannot be indexed | `n[0]` where `n: int` |
-| `E0108` | an operator got the wrong kind of operand | `-s` where `s: str` |
-| `E0109` | the literal does not fit its type | `let x: u8 = 300` |
+| `E0108` | an operator got the wrong kind of operand | `-s` where `s: text` |
+| `E0109` | the literal does not fit its type | `const x: u8 = 300` |
 | `E0110` | no type with that name is in scope | `fun f(a: Nothing)` |
 | `E0111` | the name is not a type | a function used in type position |
 | `E0112` | the type has no such member | `v.z` where `Vec3` has `x` and `y` |
@@ -208,9 +208,9 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0401` | `override` disagrees with the base method | marked `override` with nothing to override |
 | `E0120` | a field holds a reference | `var r: &int` |
 | `E0121` | a reference would outlive what it points into | `return &local` |
-| `E0122` | a value that was moved out of is used again | `let b = a` then `Take(a)` where `a: String` |
+| `E0122` | a value that was moved out of is used again | `const b = a` then `Take(a)` where `a: Text` |
 | `E0123` | a variable is used before anything is written to it | `var x: int` then `return x` |
-| `E0124` | the conversion is not between numbers | `s as int` where `s: str` |
+| `E0124` | the conversion is not between numbers | `s as int` where `s: text` |
 | `E0070` | `@allow` is missing a code or a reason | `@allow(W0101)` |
 
 An error type propagates silently: one unknown name produces one message, not
@@ -236,14 +236,14 @@ does not.
 
 `E0121` is the escape rule for a second-class reference (D8): a reference may
 be passed inwards and never kept somewhere that outlives it. Two scopes can
-be failed to outlive -- a `region`, whose value leaves it, and the call
+be failed to outlive -- a `arena`, whose value leaves it, and the call
 frame, which a `return` leaves.
 
 `E0122` is the other half of the same walk. A type that owns a resource --
-today a `String`, later a `Box<T>` -- cannot be in two places, so handing it
+today a `Text`, later an `Owned<T>` -- cannot be in two places, so handing it
 somewhere moves it and the name it was in no longer holds a value. Which use
 moves and which merely borrows is the question "what did the context want":
-a `String` where a `String` is expected moves, and a `String` where a `str`
+a `Text` where a `Text` is expected moves, and a `Text` where a `text`
 is expected is the implicit borrow of D15b. A write gives the name a value
 again. Writes merge by intersection and moves by union: a value moved on one
 branch is gone at the join, while a value written on one branch is not
@@ -269,7 +269,7 @@ already reported and one cause should produce one message.
 
 `E0117` is about storage, not about recursion: a value type stores its
 members inline, so `struct S { var next: S }` describes something of
-infinite size, and so do `S?`, `[S; 4]` and `(int, S)` inside it. One
+infinite size, and so do `S?`, `[4]S` and `(int, S)` inside it. One
 indirection is enough to have a size — a slice, a reference, or a `class`,
 which is a handle to a heap object.
 
@@ -284,8 +284,8 @@ in use appear in the implemented tables above, not here.
 
 | Code | Catches |
 |---|---|
-| `E0301` | `await` outside an `async` function |
-| `E0302` | `async` function called without `await` or `spawn` |
+| `E0301` | `wait` outside a `task` function |
+| `E0302` | a `task` function called without `wait` or `spawn` |
 | `E0501` | two systems write the same component without an ordering |
 | `E0502` | cycle in system ordering |
 | `E0601` | server-only function called from a client context |
@@ -301,8 +301,8 @@ in use appear in the implemented tables above, not here.
 | `W0104` | ignored result of a `@MustUse` function |
 | `W0105` | floats compared with `==` |
 | `W0106` | overflow or division by zero in a constant expression |
-| `W0107` | reference held across an `await` |
-| `W0108` | `loop` in an `async` function with a path that never awaits |
+| `W0107` | reference held across an `wait` |
+| `W0108` | `loop` in a `task` function with a path that never waits |
 | `W0109` | signal subscription that outlives the subscriber |
 | `W0110` | replicated field written on a client |
 | `W0111` | `self` used after `Destroy()` |
@@ -329,7 +329,7 @@ in use appear in the implemented tables above, not here.
 
 | Code | Catches |
 |---|---|
-| `H0101` | `var` never reassigned, use `let` |
+| `H0101` | `var` never reassigned, use `const` |
 | `H0102` | did you mean a similarly spelled name |
 | `H0103` | null check that could be `?.` |
 | `H0104` | redundant explicit type |
@@ -341,15 +341,15 @@ Diagnostics are rendered with the source line, markers under the relevant
 spans, notes and machine-applicable fixes:
 
 ```
-warning[W0107]: actor reference `t` held across `await`
+warning[W0107]: actor reference `t` held across `wait`
  --> combat/turret.wo:3:3
   |
-2 |   let t = target
+2 |   const t = target
   |       - `t` captured here
-3 |   await Wait(0.5s)
+3 |   wait Wait(0.5s)
   |   ^^^^^^^^^^^^^^^^ `t` may be destroyed while waiting
   |
-  = note: re-check liveness after the await
+  = note: re-check liveness after the wait
 ```
 
 Primary spans are marked with `^`, secondary spans with `-`, and a span that

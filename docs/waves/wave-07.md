@@ -13,8 +13,8 @@ $ wolang run examples/hello.wo
 hello, world
 
 $ wolang test lib/core
-[     ok ] ComparesInOrder
-[     ok ] ClampsToTheRange
+[]ok ComparesInOrder
+[]ok ClampsToTheRange
 
 2 tests run, 0 failed
 ```
@@ -107,7 +107,7 @@ leaving it to discipline.
 | A trap is a defined outcome with a kind and a location | a later tier has to be comparable against it |
 | Overflow traps rather than wrapping | a wrap turns an arithmetic bug into a wrong answer elsewhere |
 | Arithmetic is therefore **not** pure (D15c) | removing an unused `a + b` would turn a faulting program into one that does not fault |
-| An owned `String` is accepted where `str` is wanted (D15b) | an implicit borrow, safe because references are second class; without it, printing an interpolated string would not type check |
+| An owned `Text` is accepted where `text` is wanted (D15b) | an implicit borrow, safe because references are second class; without it, printing an interpolated string would not type check |
 | The step limit is a property of the run | `comptime` and a program run want different budgets |
 | `comptime` is evaluated in the lowering query | evaluating during checking would be a query cycle |
 | Differential execution on every run | a miscompile is too serious to find in a nightly job |

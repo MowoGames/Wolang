@@ -37,7 +37,7 @@ is the same trick as a dimension product travelling with its binding.
 A parameter or a local may hold a reference; a field may not (`E0120`). That
 is what gives memory safety without a borrow checker — a reference can never
 outlive the frame it was made in. Region escape (`E0121`) waits for wave 9,
-where `region` actually allocates.
+where `arena` actually allocates.
 
 ### Lints and suppression
 
@@ -144,7 +144,7 @@ gets. The check looks at the declared row as well as the inferred one, so
 | Decision | Rationale |
 |---|---|
 | No implicit numeric conversions, not even widening (D15a) | a conversion that is always spelled is one that can always be found; arbitrary-precision literals remove the tiresome case. Retires the planned `W0114`. |
-| An uninterpolated string literal is `str`, not `String` | static data in the binary, not an allocation. Interpolation builds a string at runtime, which is what makes *that* owned. |
+| An uninterpolated string literal is `text`, not `Text` | static data in the binary, not an allocation. Interpolation builds a string at runtime, which is what makes *that* owned. |
 | Trait conformance is declared, not structural | `extend T as Trait` is the declaration; a type that happens to have the right methods has not promised anything |
 | Effect inference is one query per module | a per-declaration query makes mutual recursion a query cycle, and the answer would depend on evaluation order |
 | An `offer` function with effects must state them | the only alternative is a cycle between modules' effect queries |
@@ -154,8 +154,8 @@ gets. The check looks at the declared row as well as the inferred one, so
 
 - **`uses unsafe` did not parse.** `unsafe` is a keyword, and the effect list
   was parsing type references. The list now accepts the spelling.
-- **`fun Name() -> str => "actor"` was a type error.** A string literal was
-  always `String`, so the idiomatic borrowed return did not type check.
+- **`fun Name() -> text => "actor"` was a type error.** A string literal was
+  always `Text`, so the idiomatic borrowed return did not type check.
 - **An unknown `extend` target was reported twice** — once by the member
   pass and once by the trait check, which resolved it again.
 - **Two test fixtures asserted on all diagnostics**, so the first lint broke
@@ -176,7 +176,7 @@ gets. The check looks at the declared row as well as the inferred one, so
 
 ## Deferred to later waves
 
-- `E0121` (value escapes its `region`) and `E0122` (use after move) wait for
+- `E0121` (value escapes its `arena`) and `E0122` (use after move) wait for
   wave 9, where the memory rules exist.
 - `E0123` (use of an uninitialized variable) needs the same flow analysis.
 - `W0103` (a local shadowing a field) and the rest of the `W01xx` catalog.

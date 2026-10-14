@@ -17,8 +17,8 @@ $ wolang bench benchmarks/gameplay.wo
 @BenchArraySum                 4.066 ms   result 7750000
 
 $ wolang test lib/core
-[     ok ] ComparesInOrder (both tiers)
-[     ok ] ClampsToTheRange (both tiers)
+[]ok ComparesInOrder (both tiers)
+[]ok ClampsToTheRange (both tiers)
 ```
 
 The second of those is the wave's real result: the same functions, compiled
@@ -88,12 +88,12 @@ divides by zero three calls deep and gets three named frames.
 
 The debt from wave 4, and it turned out to be the difference between generics
 that type check and generics that run. Before it, every generic call produced
-IR the verifier rejected — `call @Identity` passing an `i32` where a `T` was
+IR the verifier rejected — `call @Identity` passing an `s32` where a `T` was
 declared.
 
 A generic function is now never lowered (D42). The checker records what each
 generic call was inferred to be, and lowering emits one specialization per
-instantiation: `Identity<i32>`, `Identity<f32>`. A generic body calling
+instantiation: `Identity<s32>`, `Identity<f32>`. A generic body calling
 another generic passes its own type parameters along, so the inner
 instantiation becomes concrete only when the outer one does — which is why
 specializations come off a worklist rather than a second pass.
@@ -174,11 +174,11 @@ and printing goes through an intrinsic this tier cannot call until the FFI.
   folded the trap kind back to the zero it was initialized with — correctly.
   The context moved into the heap object (D46).
 - **`as` did nothing.** The interpreter returned its operand unchanged, so
-  `n as i64` kept its width and `x as int` stayed a float; lowering did not
+  `n as s64` kept its width and `x as int` stayed a float; lowering did not
   emit the cast at all; and the checker accepted `s as int` on a string.
   Fixing it needed a decision about what `as` means (D41) and a new
   diagnostic (`E0124`).
-- **A widening cast kept the bit pattern instead of the value.** `-5 as i64`
+- **A widening cast kept the bit pattern instead of the value.** `-5 as s64`
   became 4294967291. Found by the differential check, which is exactly the
   kind of thing it is for: the machine code was right and the reference
   implementation was wrong.

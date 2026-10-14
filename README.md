@@ -21,7 +21,7 @@ the usual places. These five are the parts it is actually built around:
 |---|---|
 | **Effects and capabilities** | A function's signature states what it may do (`uses io, alloc, rand`). One mechanism covers determinism, allocation-free hot paths, sandboxed plugins, compile-time evaluation and server/client separation. |
 | **Units in the type system** | `dimension` and `unit` declarations make `10m / 2s` a velocity and `Quat.FromAxis(up, 90deg)` reject radians. Checked at compile time, free at runtime. |
-| **Layout polymorphism** | `soa [Particle]` stores one array per field; `aos [Particle]` stores records. Layout belongs to the storage, so the same type works both ways and `foreach` maps the loop onto SIMD lanes either way. |
+| **Layout polymorphism** | `soa []Particle` stores one array per field; `aos []Particle` stores records. Layout belongs to the storage, so the same type works both ways and `foreach` maps the loop onto SIMD lanes either way. |
 | **State machines and timelines** | `machine`, `state`, `on ... after 3s ->` are language constructs, checked for unreachable states, survivable across hot reload. |
 | **Reactive values** | `derived` fields recompute when their inputs change, which is what UI and stat aggregation actually need. |
 
@@ -31,7 +31,7 @@ optionals need no `Some`/`None` vocabulary, because `x?` and `null` already
 say it:
 
 ```wolang
-fun Lookup(key: str) -> Pawn?!
+fun Lookup(key: text) -> Pawn?!
 
 match count {
   n? => n
@@ -40,7 +40,7 @@ match count {
 ```
 
 Memory is hybrid by design: value semantics with second-class references,
-`Box`/`Rc` for owned and shared heap data, `region` blocks for frame arenas, and
+`Owned`/`Shared` for owned and shared heap data, `arena` blocks for frame arenas, and
 a garbage collector that is optional — a program that never declares a `class`
 does not link one.
 

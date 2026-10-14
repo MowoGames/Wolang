@@ -30,7 +30,7 @@ the parser and the formatter read.
 // a comment, ignored
 /// documentation, attached to the declaration that follows
 //// four or more slashes is an ordinary comment again
-/* a block comment, which /* may nest */ so a region containing one
+/* a block comment, which /* may nest */ so a section containing one
    can still be commented out */
 ```
 
@@ -58,12 +58,12 @@ Thai and Vietnamese names work.
 ### 1.5 Keywords
 
 ```
-after    as       async    await    before   break    class    component
-comptime continue defer    else     enum     error    extend   extern
-false    for      foreach  fun      if       in       let      loop
-match    mut      need     null     offer    on       override priv
-region   return   self     signal   spawn    struct   system   tag
-trait    true     type     unsafe   uses     var      virtual  where
+after     arena     as        before    break     class     component comptime
+const     continue  defer     else      enum      error     extend    extern
+false     for       foreach   fun       if        in        loop      match
+mut       need      null      offer     on        override  priv      return
+self      signal    spawn     struct    system    tag       task      trait
+true      type      unsafe    uses      var       virtual   wait      where
 while
 ```
 
@@ -89,16 +89,22 @@ follows them.
 them later cannot break existing code:
 
 ```
-abstract actor  case   catch   const  delete do      final  fn
-goto   impl   need interface is   kernel lazy   macro module
-namespace new  nil    operator package private protected pub
-public rollback shader sizeof static super switch template this
-throw  transactional try typedef typeof union using void yield
+abstract      actor         async         await         case
+catch         delete        do            final         fn
+goto          impl          import        interface     is
+kernel        lazy          let           macro         module
+namespace     new           nil           operator      package
+private       protected     pub           public        region
+rollback      shader        sizeof        static        super
+switch        template      this          throw         transactional
+try           typedef       typeof        union         using
+void          yield
 ```
 
-`fn`, `import`, `offer` and `impl` are reserved because they were the earlier
-spellings of `fun`, `need`, `offer` and `extend`; writing one gets a message
-instead of a confusing parse failure.
+`fn`, `import` and `impl` are reserved because they were the earlier
+spellings of `fun`, `need` and `extend`; so are `let`, `async`, `await` and
+`region`, which this language used to spell that way and most others still
+do. Writing one gets a message instead of a confusing parse failure.
 
 ### 1.6 Literals
 
@@ -116,12 +122,12 @@ range and `1.max()` a method call. An exponent may follow.
 3.14  1e3  1.5e-3  2E+2
 ```
 
-**Type suffixes** are `i8 i16 i32 i64 u8 u16 u32 u64 f32 f64`. An `f32` or
+**Type suffixes** are `s8 s16 s32 s64 u8 u16 u32 u64 f32 f64`. An `f32` or
 `f64` suffix makes an otherwise integral literal a float. An integer suffix on
 a floating point literal is an error (`E0010`).
 
 ```wolang
-255u8  -1i64  2.0f64  1f32
+255u8  -1s64  2.0f64  1f32
 ```
 
 **Unit suffixes** are any other identifier directly after the digits. Units are
@@ -191,7 +197,7 @@ Member access is the exception: `.` and `?.` may open a line, because
 multi-line method chains are a normal way to write a pipeline.
 
 ```wolang
-let closest = World.Overlap<Pawn>(position, range)
+const closest = World.Overlap<Pawn>(position, range)
     .Filter(|p| p.alive)
     .Closest(position)
 ```
@@ -217,7 +223,7 @@ right associative.
 | 12 | `*` `/` `%` |
 | 13 | `as` |
 
-Prefix operators (`-`, `!`, `~`, `*`, `&`, `&mut`, `await`, `spawn`) bind
+Prefix operators (`-`, `!`, `~`, `*`, `&`, `&mut`, `wait`, `spawn`) bind
 tighter than any binary operator. Postfix forms — call, index, `.name`,
 `?.name`, `?`, and an initializer block — bind tightest of all.
 
@@ -252,7 +258,7 @@ outer: for row in grid {
 `as` performs an explicit conversion and takes a type on its right:
 
 ```wolang
-let index = position as i64
+const index = position as s64
 ```
 
 ### 2.5 Two deliberate ambiguities
@@ -263,8 +269,8 @@ immediately follows the closing `>`, it is a generic call; otherwise `<` is a
 comparison.
 
 ```wolang
-World.Spawn<Projectile>(origin)   // generic call
-if a < b && c > d { }             // two comparisons
+World.Spawn<Projectile>(origin) // generic call
+if a < b && c > d { }           // two comparisons
 ```
 
 The scan accepts only tokens that can appear in a type argument, and
@@ -276,7 +282,7 @@ as a generic call. Both are rare enough to be worth the simpler rule.
 and a brace block after a call is an initializer block:
 
 ```wolang
-let weapon = Weapon { ammo = 30 }
+const weapon = Weapon { ammo = 30 }
 World.Spawn<Projectile>(at, dir) { speed = 40.0 }
 ```
 
@@ -342,7 +348,10 @@ trait for it. The target comes first either way, so the declaration reads as a
 sentence. (`impl` is reserved, so the Rust spelling produces a message rather
 than a confusing parse failure.)
 
-`let` binds immutably, `var` mutably. Visibility is module-private by default,
+`const` binds a name that never changes and `var` one that does. Two words
+rather than one word and a modifier, because mutable locals are most of the
+locals gameplay code has and `var x` should not cost more to write than the
+immutable form. Visibility is module-private by default,
 `offer` across modules, `priv` within one file. Methods are statically dispatched
 unless declared `virtual`, and overriding requires `override`.
 
@@ -354,19 +363,19 @@ the coroutine or actor rather than unwinding.
 
 | Category | Types |
 |---|---|
-| Integers | `int` (= `i32`), `i8 i16 i32 i64`, `u8 u16 u32 u64` |
+| Integers | `int` (= `s32`), `s8 s16 s32 s64`, `u8 u16 u32 u64` |
 | Floats | `float` (= `f32`), `f64` |
 | Other scalars | `bool`, `char` |
-| Strings | `String` owning, `str` borrowed |
-| Fixed arrays | `[T; N]`, a language construct: no allocation |
-| Slices | `[T]`, a borrowed view: no allocation. An array converts to one |
+| Strings | `Text` owning, `text` borrowed |
+| Fixed arrays | `[N]T`, a language construct: no allocation |
+| Slices | `[]T`, a borrowed view: no allocation. An array converts to one |
 | Collections | `Array<T>`, `Map<K, V>`, `Set<T>` — library types |
 | Optionals | `T?`, which *is* `Option<T>`; references are non-nullable by default |
 | Fallible | `T!`, a value or one of an inferred set of errors |
-| Ownership | `Box<T>`, `Rc<T>`, `Arc<T>`, `Weak<T>` |
+| Ownership | `Owned<T>`, `Shared<T>`, `Weak<T>` |
 | Functions | `fun(int) -> bool`, closures |
 
-`[T; N]` and `[T]` are part of the language because `core` needs them and
+`[N]T` and `[]T` are part of the language because `core` needs them and
 because they allocate nothing, which is what makes them usable on WASM and on
 embedded targets. A growable `Array<T>` needs an allocator, so it is a library
 type from wave 13 onwards.
@@ -377,10 +386,10 @@ An integer literal has arbitrary precision until it is used, and then takes
 the type the context expects, defaulting to `int`:
 
 ```wolang
-let a = 1                   // int
-let b: u8 = 200             // the literal takes u8
-let big = 0xFFFFFFFFFFFF    // fits, with no suffix
-comptime let c = 1 << 100   // exact, no overflow
+const a = 1                 // int
+const b: u8 = 200           // the literal takes u8
+const big = 0xFFFFFFFFFFFF  // fits, with no suffix
+comptime const c = 1 << 100 // exact, no overflow
 TakeU8(300)                 // E0101: does not fit in u8
 ```
 
@@ -396,8 +405,8 @@ spells presence and absence: `T?` in a type, `x?` in a pattern, `null` for
 absence, `??` for a default.
 
 ```wolang
-if let t = target { t.TakeDamage(10) }
-let name = target?.display_name ?? "none"
+if const t = target { t.TakeDamage(10) }
+const name = target?.display_name ?? "none"
 
 match count {
   n? => n
@@ -415,12 +424,12 @@ combine:
 ```wolang
 error NotFound, Corrupt
 
-fun Find(id: int) -> Pawn?                 // may be absent
-fun Load(path: str) -> Level! uses io      // may fail
-fun Lookup(key: str) -> Pawn?!             // either
+fun Find(id: int) -> Pawn?             // may be absent
+fun Load(path: text) -> Level! uses io // may fail
+fun Lookup(key: text) -> Pawn?!        // either
 
-fun Load(path: str) -> Level! uses io {
-  let bytes = ReadFile(path)?             // errors join the set
+fun Load(path: text) -> Level! uses io {
+  const bytes = ReadFile(path)?        // errors join the set
   if bytes.len == 0 { return Corrupt }
   return Parse(bytes)
 }
@@ -441,9 +450,9 @@ There are no implicit numeric conversions. Widening is as explicit as
 narrowing:
 
 ```wolang
-let small: i32 = 1
-let wide: i64 = small          // E0101: expected `i64`, found `i32`
-let fine: i64 = small as i64
+const small: s32 = 1
+const wide: s64 = small          // E0101: expected `s64`, found `s32`
+const fine: s64 = small as s64
 ```
 
 Integer literals are the exception, and the reason this is not tiresome: a
@@ -452,7 +461,7 @@ its context expects.
 
 `as` converts between numbers and nothing else. It exists because there are
 no implicit conversions, not as a reinterpretation of bits — converting a
-`str`, a struct or a `bool` with it is `E0124`, and reading a value's bits
+`text`, a struct or a `bool` with it is `E0124`, and reading a value's bits
 is what `unsafe` is for.
 
 A conversion that cannot hold the value **traps**. Overflow traps everywhere
@@ -460,11 +469,11 @@ else in this language, so a cast that quietly kept the low bits would be the
 one place a number changes silently:
 
 ```wolang
-fun Narrow(n: i32) -> u8 => n as u8
+fun Narrow(n: s32) -> u8 => n as u8
 
-Narrow(200)       // 200
-Narrow(300)       // traps: the value does not fit
-Narrow(-1)        // traps: and neither does this one
+Narrow(200) // 200
+Narrow(300) // traps: the value does not fit
+Narrow(-1)  // traps: and neither does this one
 ```
 
 A float converted to an integer truncates toward zero — `-2.75 as int` is
@@ -486,9 +495,9 @@ indirection is enough: a slice, a reference, or a `class`, which is a handle
 to a heap object.
 
 ```wolang
-struct Node { var next: Node }      // E0117: no size
-struct List { var rest: [List] }    // fine: a slice is a view
-class Chain { var next: Chain }     // fine: a class is a handle
+struct Node { var next: Node }   // E0117: no size
+struct List { var rest: []List } // fine: a slice is a view
+class Chain { var next: Chain }  // fine: a class is a handle
 ```
 
 ### 4.4 Members
@@ -514,9 +523,9 @@ A type name used as a callee is a constructor, filling the fields in
 declaration order. No arguments asks for the default value:
 
 ```wolang
-let v = Vec3(1.0, 2.0, 3.0)
-let zero = Vec3()
-let bad = Vec3(1.0)          // E0102: Vec3 has 3 fields, found 1 argument
+const v = Vec3(1.0, 2.0, 3.0)
+const zero = Vec3()
+const bad = Vec3(1.0)          // E0102: Vec3 has 3 fields, found 1 argument
 ```
 
 ### 4.5 Generics
@@ -525,11 +534,11 @@ Type parameters are inferred from the arguments at a call site. There is no
 turbofish, and no explicit type argument is needed:
 
 ```wolang
-fun First<T>(items: [T]) -> T => items[0]
+fun First<T>(items: []T) -> T => items[0]
 
-let a = First(xs)            // T = int,   a: int
-let b = First(ys)            // T = float, b: float
-let c = First(1)             // E0101: expected `[T]`, found `i32`
+const a = First(xs) // T = int,   a: int
+const b = First(ys) // T = float, b: float
+const c = First(1)  // E0101: expected `[]T`, found `s32`
 ```
 
 A parameter inferred once cannot be inferred differently by a later argument.
@@ -563,8 +572,8 @@ row** is the set of effects it may produce.
 ```wolang
 effect Telemetry
 
-offer fun LoadLevel(path: str) -> Level! uses io, alloc
-offer fun Report(event: str) uses Telemetry
+offer fun LoadLevel(path: text) -> Level! uses io, alloc
+offer fun Report(event: text) uses Telemetry
 ```
 
 Built-in effects: `alloc`, `io`, `rand`, `time`, `net`, `gpu`, `unsafe`,
@@ -643,8 +652,8 @@ unit cm = 0.01m
 unit s: Time
 unit ms = 0.001s
 
-let velocity = 10m / 2s        // Length/Time
-let wrong = 10m + 2s           // E1001: dimensions do not match
+const velocity = 10m / 2s        // Length/Time
+const wrong = 10m + 2s           // E1001: dimensions do not match
 ```
 
 Multiplying two quantities adds their exponents and dividing subtracts them,
@@ -689,10 +698,10 @@ struct Particle {
   var life: float
 }
 
-var burst: soa [Particle]    // seven parallel arrays
-var prototype: Particle      // one value, laid out as written
+var burst: soa []Particle // seven parallel arrays
+var prototype: Particle   // one value, laid out as written
 
-foreach p in burst {         // the same code either way
+foreach p in burst {      // the same code either way
   p.position += p.velocity * dt
 }
 ```
@@ -709,16 +718,20 @@ identical either way, so the layout is a measurement, not a rewrite.
 ## 8. Concurrency — draft
 
 ```wolang
-async fun OpenDoor() {
-  await animation.Play("Open")
-  await Wait(2s)
-  await All(LightsOn(), MusicFade(1s))
+task fun OpenDoor() {
+  wait animation.Play("Open")
+  wait Wait(2s)
+  wait All(LightsOn(), MusicFade(1s))
 }
 ```
 
+`task fun` declares a function that can suspend and `wait` is where it does.
+Both are shorter than the words most languages use for this, and `wait` says
+what the machine is doing rather than naming a protocol.
+
 Coroutines are stackless and scheduled by the host's tick groups or by the
-runtime's own scheduler. Concurrency is structured: a task belongs to the scope
-that spawned it and is cancelled with it.
+runtime's own scheduler. Concurrency is structured: a task belongs to the
+scope that spawned it and is cancelled with it.
 
 ## 9. State machines — draft
 
@@ -726,7 +739,7 @@ that spawned it and is cancelled with it.
 machine Door {
   state Closed { on Interact -> Opening }
   state Opening {
-    enter { await animation.Play("Open") }
+    enter { wait animation.Play("Open") }
     always -> Open
   }
   state Open { on Interact after 3s -> Closing }
@@ -766,7 +779,7 @@ same component without an ordering.
 ## 12. Compile-time evaluation — draft
 
 ```wolang
-comptime let SinTable = Array<float>.Generate(256, |i| Sin(i * Tau / 256))
+comptime const SinTable = Array<float>.Generate(256, |i| Sin(i * Tau / 256))
 
 comptime fun Validate(config: WeaponConfig) {
   assert(config.fire_rate > 0, "fire rate must be positive")

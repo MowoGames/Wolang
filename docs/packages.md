@@ -56,7 +56,7 @@ unsafe = "allow"
 capabilities = "io, alloc"
 ```
 
-Only `[package].name` is required. Unknown keys and tables are reported rather
+Only the `name` key of `[package]` is required. Unknown keys and tables are reported rather
 than ignored, so a typo in a key name is caught instead of silently doing
 nothing.
 
@@ -86,8 +86,8 @@ declarations.
 ## Needing names
 
 ```wolang
-need mygame.combat                      // the whole module
-need mygame.combat.{Damage, Weapon}     // selected names
+need mygame.combat                  // the whole module
+need mygame.combat.{Damage, Weapon} // selected names
 ```
 
 A `need` names a module, not a file. Needing a name the module does not

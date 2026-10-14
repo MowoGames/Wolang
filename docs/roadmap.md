@@ -17,7 +17,7 @@ Dates are not fixed. Scope is.
 | **1** | CMake project, test harness, base layer (arenas, interning, source manager, diagnostics with a rustc-style renderer), **lexer** | `wolang tokens` and `wolang check` work; lexer covered by tests ✅ |
 | **2** | AST in flat arrays, recursive-descent parser with a Pratt expression parser, error recovery, s-expression tree printer | every construct in `docs/spec.md` parses; golden AST tests ✅ |
 | **3** | Query database (red-green incremental), module and package graph, `wolang.toml`, on-disk cache, `wolang fmt` | editing a function body recomputes that function only ✅ |
-| **4** | Grammar completion (`extend`, `T!`, `[T]`, `soa`, labels, Unicode identifiers) ✅, then types: generics, traits, nullability, flow typing, **units and dimensions** | the examples type check; unit mismatches are errors ✅ |
+| **4** | Grammar completion (`extend`, `T!`, `[]T`, `soa`, labels, Unicode identifiers) ✅, then types: generics, traits, nullability, flow typing, **units and dimensions** | the examples type check; unit mismatches are errors ✅ |
 | **5** | **Effects and capabilities**, checker v1, inheritance, second-class references, `@allow` | diagnostic catalog v1, each lint with a "fires" and a "does not fire" test ✅ |
 | **6** | Typed SSA IR, lowering, verifier, mid-level optimizations | IR dump stable, verifier green on every test input ✅ |
 
@@ -27,13 +27,13 @@ Dates are not fixed. Scope is.
 |---|---|---|
 | **7** | IR interpreter (the reference semantics), `comptime` evaluation, `wolang run`, first `core` modules written in Wolang | `examples/hello.wo` runs; `@Test` functions execute ✅ |
 | **8** | Dev tier: copy-and-patch code generation (arm64 first, then x64), faults, unwind tables, symbolization | gameplay microbenchmarks within 3x of C++ ✅ (three of four against `-O2`; all four against scalar C++) |
-| **9** | Memory: value semantics, second-class references, `Box`/`Rc`, `region` blocks, optional GC; C ABI FFI | a program with no `class` links no collector |
+| **9** | Memory: value semantics, second-class references, `Owned`/`Shared`, `arena` blocks, optional GC; C ABI FFI | a program with no `class` links no collector |
 
 ## Phase C — the gamedev core
 
 | Wave | Content | Exit criterion |
 |---|---|---|
-| **10** | `async` with structured concurrency, signals, `derived`, **state machines**, a minimal HTTP/1.1 server as the design's driver | 100k concurrently waiting coroutines benchmark; the server serves keep-alive traffic |
+| **10** | `task` with structured concurrency, signals, `derived`, **state machines**, a minimal HTTP/1.1 server as the design's driver | 100k concurrently waiting coroutines benchmark; the server serves keep-alive traffic |
 | **11** | ECS, access graph, parallel scheduler, **AoS/SoA layout polymorphism**, SPMD `foreach` | 1M entity integration benchmark; the SoA variant beats the AoS one |
 | **12** | LLVM AOT, WASM target, differential fuzzing across interpreter, JIT and AOT | shipping builds need no JIT; within 1.2x of C++ |
 

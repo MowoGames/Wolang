@@ -188,7 +188,7 @@ lowering simple enough to be obviously correct.
 would put a `T` in the IR that every back end would then need an answer for.
 Instead the checker records what each generic call was inferred to be, and
 lowering emits one specialization per instantiation, named after its
-arguments: `Identity<i32>`. Two call sites that inferred the same arguments
+arguments: `Identity<s32>`. Two call sites that inferred the same arguments
 reach the same copy. A generic body calling another generic passes its own
 parameters along, so the inner instantiation only becomes concrete when the
 outer one does — which makes the worklist, not a second pass, the right
@@ -345,9 +345,9 @@ Decided in wave 0, implemented in wave 9:
 - `struct` is a value type with mutable value semantics; copies are copies.
 - References are **second class**: they may be parameters and locals but not
   fields, which gives memory safety without a borrow checker.
-- `Box<T>` is unique ownership with compile-time move checking.
-- `Rc<T>` and `Arc<T>` are shared ownership.
-- `region { ... }` is an arena whose values may not escape it, checked by
+- `Owned<T>` is unique ownership with compile-time move checking.
+- `Shared<T>` is shared ownership; a thread-safe variant comes with the concurrency wave.
+- `arena { ... }` is an arena whose values may not escape it, checked by
   escape analysis.
 - `class` is a garbage collected reference type, and the collector is a
   separate optional component. A program that declares no `class` links no
@@ -360,7 +360,7 @@ public signatures:
 
 ```wolang
 offer fun Integrate(dt: Seconds, q: Query<mut Transform, Velocity>)
-offer fun LoadLevel(path: str) -> Result<Level> uses io, alloc
+offer fun LoadLevel(path: text) -> Result<Level> uses io, alloc
 ```
 
 Built-in effects are a closed set (`alloc`, `io`, `rand`, `time`, `net`, `gpu`,

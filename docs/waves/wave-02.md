@@ -44,8 +44,8 @@ handlers, bindings including `derived`, type aliases, dimensions and units,
 effects, state machines, extern functions, `comptime` declarations.
 
 Control flow is expression-shaped, as in Rust: `if`, `match`, `loop`, `while`,
-`for`, `foreach`, `unsafe`, `region` and blocks are all expressions, so
-`let x = if c { a } else { b }` needs no special case.
+`for`, `foreach`, `unsafe`, `arena` and blocks are all expressions, so
+`const x = if c { a } else { b }` needs no special case.
 
 Three decisions worth recording:
 
@@ -121,7 +121,7 @@ position. `wolang check` now runs the parser as well as the lexer.
   tree when the construct turns out not to be a declaration. They are
   unreachable and harmless, but a rollback mechanism would be needed if the
   parser ever grew real backtracking.
-- `if let Point { x } = p` does not parse: struct patterns are disabled
+- `if const Point { x } = p` does not parse: struct patterns are disabled
   wherever struct literals are, which is the condition of `if`. Rare enough to
   defer.
 - Doc comments attach to the declaration that follows them, including enum
@@ -131,7 +131,7 @@ position. `wolang check` now runs the parser as well as the lexer.
 
 - `wolang fmt` moves to wave 3, where the printer gets a formatting mode rather
   than an s-expression one.
-- Labelled `break` and `continue`, array and slice types (`[T]`, `[T; N]`),
+- Labelled `break` and `continue`, array and slice types (`[]T`, `[N]T`),
   prefix and suffix ranges (`..b`, `a..`), and `extern "C" { ... }` blocks.
 - File-level attributes: `Ast` carries the field, but no syntax produces them.
 

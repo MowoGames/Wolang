@@ -9,13 +9,13 @@ std::string_view NumericSuffixName(NumericSuffix suffix) {
     case NumericSuffix::kNone:
       return "";
     case NumericSuffix::kI8:
-      return "i8";
+      return "s8";
     case NumericSuffix::kI16:
-      return "i16";
+      return "s16";
     case NumericSuffix::kI32:
-      return "i32";
+      return "s32";
     case NumericSuffix::kI64:
-      return "i64";
+      return "s64";
     case NumericSuffix::kU8:
       return "u8";
     case NumericSuffix::kU16:
