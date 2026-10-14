@@ -41,6 +41,11 @@ constexpr std::string_view kForeignWithBody = "E0803";
 constexpr std::string_view kBadAllow = "E0070";
 constexpr std::string_view kUnusedName = "W0101";
 constexpr std::string_view kUnreachableCode = "W0102";
+// A state nothing leads to, and a transition to a state that is not
+// there. The spec asks for both: a machine is a table, and a table with an
+// unreachable row is a mistake somebody made while editing it.
+constexpr std::string_view kUnreachableState = "W0109";
+constexpr std::string_view kUnknownState = "E0206";
 constexpr std::string_view kBadOperand = "E0108";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
 constexpr std::string_view kDimensionMismatch = "E1001";
@@ -261,6 +266,7 @@ class Checker {
   TypeId CheckUnary(const Expr& expr, TypeId expected);
   TypeId CheckBinary(const Expr& expr);
   TypeId CheckAssign(const Expr& expr);
+  void CheckMachine(const Item& item);
   ExprId RootOfPlace(ExprId id) const;
   const Member* SignalOperand(ExprId id) const;
   bool IsBytesAndText(TypeId from, TypeId to) const;
@@ -959,6 +965,78 @@ ExprId Checker::RootOfPlace(ExprId id) const {
     return current;
   }
   return id;
+}
+
+// A machine's table, checked as a table: every target has to be a state of
+// this machine, and every state has to be reachable. The first is where it
+// starts, so it needs nothing leading to it.
+void Checker::CheckMachine(const Item& item) {
+  const std::span<const StateId> states = ast_.Get(item.states);
+  std::vector<bool> reached(states.size(), false);
+  if (!reached.empty()) {
+    reached[0] = true;
+  }
+
+  for (StateId state_id : states) {
+    if (!ast_.Contains(state_id)) {
+      continue;
+    }
+    const State& state = ast_.Get(state_id);
+    for (TransitionId transition_id : ast_.Get(state.transitions)) {
+      if (!ast_.Contains(transition_id)) {
+        continue;
+      }
+      const Transition& transition = ast_.Get(transition_id);
+      bool found = false;
+      for (size_t i = 0; i < states.size(); ++i) {
+        if (!ast_.Contains(states[i]) ||
+            ast_.Get(states[i]).name != transition.target) {
+          continue;
+        }
+        reached[i] = true;
+        found = true;
+        break;
+      }
+      if (!found) {
+        std::string message = "`";
+        message.append(interner_->Text(item.name));
+        message.append("` has no state named `");
+        message.append(interner_->Text(transition.target));
+        message.append("`");
+        Report(kUnknownState, std::move(message), transition.span);
+      }
+    }
+  }
+
+  for (size_t i = 0; i < states.size(); ++i) {
+    if (reached[i] || !ast_.Contains(states[i])) {
+      continue;
+    }
+    const State& state = ast_.Get(states[i]);
+    std::string message = "state `";
+    message.append(interner_->Text(state.name));
+    message.append("` cannot be reached");
+    Warn(kUnreachableState, std::move(message), state.span,
+         "no transition leads to it, and it is not where the machine "
+         "starts");
+  }
+
+  // The blocks are ordinary code, and `self` in them is the machine.
+  const TypeId previous_self = self_type_;
+  const Binding* binding = Lookup(item.name);
+  self_type_ = binding != nullptr ? binding->type : TypeId{};
+  for (StateId state_id : states) {
+    if (!ast_.Contains(state_id)) {
+      continue;
+    }
+    const State& state = ast_.Get(state_id);
+    for (ExprId block : {state.enter, state.exit}) {
+      if (ast_.Contains(block)) {
+        Check(block, TypeId{});
+      }
+    }
+  }
+  self_type_ = previous_self;
 }
 
 TypeId Checker::CheckAssign(const Expr& expr) {
@@ -2698,6 +2776,10 @@ void Checker::CheckItem(ItemId id) {
 
     case ItemKind::kBinding:
       CheckBinding(item);
+      return;
+
+    case ItemKind::kMachine:
+      CheckMachine(item);
       return;
 
     case ItemKind::kClass:

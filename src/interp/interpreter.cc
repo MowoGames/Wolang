@@ -766,7 +766,8 @@ class Interpreter {
             for (const ir::Function& candidate : other->functions) {
               if (candidate.is_declaration() || !candidate.has_source() ||
                   candidate.source_file != callee->source_file ||
-                  candidate.source_item != callee->source_item) {
+                  candidate.source_item != callee->source_item ||
+                  candidate.source_slot != callee->source_slot) {
                 continue;
               }
               callee = &candidate;

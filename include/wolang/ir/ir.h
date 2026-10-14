@@ -169,6 +169,9 @@ struct Function {
   bool is_primitive_task = false;
   uint32_t source_file = kNoSource;
   uint32_t source_item = kNoSource;
+  // Which of several functions one declaration stands for: a machine
+  // declares one item and has a method per event and per state.
+  uint32_t source_slot = 0;
   // Block 0 is the entry, and its parameters are the function's.
   std::vector<Block> blocks;
   std::vector<Inst> instructions;

@@ -1457,6 +1457,68 @@ fun AfterDisconnect() -> int {
   WOLANG_EXPECT_EQ(f.Run("AfterDisconnect", {}), "10");
 }
 
+WOLANG_TEST(CodegenTest, AMachineIsItsTransitionTable) {
+  // A `machine` is a type whose value is which state it is in, and its
+  // methods are what the table means: one per event, one per state, and
+  // the blocks that run on the way in and out.
+  //
+  // `always` is followed when the target is entered, so one event can pass
+  // through several states -- and every state on the way runs its `enter`.
+  Fixture f(R"(
+machine Lamp {
+  state Off {
+    on Flip -> Warming
+  }
+  state Warming {
+    always -> On
+  }
+  state On {
+    on Flip -> Off
+  }
+}
+
+fun One(yes: bool) -> int {
+  if yes {
+    return 1
+  }
+  return 0
+}
+
+fun StartsInTheFirstState() -> int {
+  const lamp = Lamp()
+  return One(lamp.IsOff()) * 100 + One(lamp.IsOn()) * 10 +
+         One(lamp.IsWarming())
+}
+
+fun FollowsAlways() -> int {
+  const lamp = Lamp()
+  const fired = lamp.Flip()
+  // Off goes to Warming, and `always` carries it on to On.
+  return One(fired) * 100 + One(lamp.IsOn()) * 10 +
+         One(lamp.IsWarming())
+}
+
+fun ComesBack() -> int {
+  const lamp = Lamp()
+  const _first = lamp.Flip()
+  const second = lamp.Flip()
+  return One(second) * 10 + One(lamp.IsOff())
+}
+
+fun EveryFlipFires() -> int {
+  const lamp = Lamp()
+  const _first = lamp.Flip()
+  const again = lamp.Flip()
+  const third = lamp.Flip()
+  return One(again) * 10 + One(third)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("StartsInTheFirstState", {}), "100");
+  WOLANG_EXPECT_EQ(f.Run("FollowsAlways", {}), "110");
+  WOLANG_EXPECT_EQ(f.Run("ComesBack", {}), "11");
+  WOLANG_EXPECT_EQ(f.Run("EveryFlipFires", {}), "11");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

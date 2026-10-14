@@ -261,7 +261,7 @@ class TypeResolver {
 // Reports nothing: an annotation that does not resolve becomes an error type
 // here and is reported once, by the type checker.
 void ResolveSignatures(TypeStore* types,
-                       const StringInterner* interner,
+                       StringInterner* interner,
                        const Ast& ast,
                        uint32_t file_index,
                        FileResolution* resolution,

@@ -224,7 +224,8 @@ void CompiledModule::Impl::Compile() {
         continue;
       }
       if (candidate.source_file == function.source_file &&
-          candidate.source_item == function.source_item) {
+          candidate.source_item == function.source_item &&
+          candidate.source_slot == function.source_slot) {
         entries_[i].link = j;
         break;
       }

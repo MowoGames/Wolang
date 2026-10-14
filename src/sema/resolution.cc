@@ -67,6 +67,10 @@ bool DeclaresAType(ItemKind kind) {
     case ItemKind::kComponent:
     case ItemKind::kTag:
     case ItemKind::kTypeAlias:
+    // A machine is a type whose value is which state it is in. Everything
+    // else about it -- the events, the states, the blocks that run on the
+    // way in and out -- is members of that type.
+    case ItemKind::kMachine:
       return true;
     default:
       return false;
@@ -90,7 +94,10 @@ BindingKind BindingKindOf(ItemKind kind) {
     case ItemKind::kSystem:
       return BindingKind::kSystem;
     case ItemKind::kMachine:
-      return BindingKind::kMachine;
+      // A machine names a type: a value of it is which state it is in.
+      // The kind exists for the places that care about the difference,
+      // and nothing stops it being a type where a type is wanted.
+      return BindingKind::kType;
     default:
       return BindingKind::kType;
   }
@@ -230,6 +237,103 @@ const Binding* FileResolution::Find(Symbol name) const {
 }
 
 namespace {
+
+// The members a `machine` has.
+//
+// `state` is where it is; `Is<State>()` asks; `<Event>()` tries the
+// transition the current state declares for that event and says whether
+// one fired. The states themselves are members too, so that a diagnostic
+// can name them and so that nothing else has to parse the machine again.
+void MachineMembers(const Ast& ast,
+                    const ItemTree& tree,
+                    StringInterner* interner,
+                    TypeStore* types,
+                    uint32_t machine,
+                    uint32_t file_index,
+                    std::vector<Member>* members) {
+  const ItemId id = ResolveItem(ast, machine);
+  if (!ast.Contains(id)) {
+    return;
+  }
+
+  Member current;
+  current.name = Symbol{};
+  current.kind = MemberKind::kMachineState;
+  current.type = types->Int(IntWidth::k32, /*is_signed=*/true);
+  current.file = file_index;
+  current.item = machine;
+  current.is_mutable = true;
+  current.is_public = false;
+  members->push_back(std::move(current));
+
+  // Every event mentioned by any state, once: the method is the event, and
+  // which state is in is what decides what it does.
+  std::vector<Symbol> events;
+  for (StateId state_id : ast.Get(ast.Get(id).states)) {
+    if (!ast.Contains(state_id)) {
+      continue;
+    }
+    const State& state = ast.Get(state_id);
+    for (TransitionId transition_id : ast.Get(state.transitions)) {
+      if (!ast.Contains(transition_id)) {
+        continue;
+      }
+      const Transition& transition = ast.Get(transition_id);
+      if (!transition.event.is_valid()) {
+        continue;  // `always`, which fires on the way in.
+      }
+      if (std::find(events.begin(), events.end(), transition.event) ==
+          events.end()) {
+        events.push_back(transition.event);
+      }
+    }
+  }
+
+  // Each generated member gets a slot of its own: the machine is one
+  // declaration and these are many functions, so the item alone cannot
+  // tell them apart.
+  uint32_t slot = 1;
+  for (Symbol event : events) {
+    Member method;
+    method.name = event;
+    method.kind = MemberKind::kMethod;
+    method.type = types->Function({}, types->bool_type());
+    method.file = file_index;
+    method.item = machine;
+    method.slot = slot++;
+    method.is_public = true;
+    members->push_back(std::move(method));
+  }
+
+  for (StateId state_id : ast.Get(ast.Get(id).states)) {
+    if (!ast.Contains(state_id)) {
+      continue;
+    }
+    const State& state = ast.Get(state_id);
+    if (!state.name.is_valid()) {
+      continue;
+    }
+    Member marker;
+    marker.name = state.name;
+    marker.kind = MemberKind::kState;
+    marker.type = types->Int(IntWidth::k32, /*is_signed=*/true);
+    marker.file = file_index;
+    marker.item = machine;
+    marker.is_public = true;
+    members->push_back(std::move(marker));
+
+    Member predicate;
+    predicate.name = interner->Intern(
+        "Is" + std::string(interner->Text(state.name)));
+    predicate.kind = MemberKind::kMethod;
+    predicate.type = types->Function({}, types->bool_type());
+    predicate.file = file_index;
+    predicate.item = machine;
+    predicate.slot = slot++;
+    predicate.is_public = true;
+    members->push_back(std::move(predicate));
+  }
+}
 
 // Which of |members| the expression of the derived field declared at
 // |item| reads, as indices into that list.
@@ -627,7 +731,11 @@ FileResolution ResolveFile(TypeStore* types,
     if (DeclaresAType(entry.kind)) {
       resolution.item_types[index] = types->Named(
           entry.name, file_index, index,
-          /*is_handle=*/entry.kind == ItemKind::kClass);
+          // A machine is a handle for the same reason a class is: an
+          // event changes which state it is in, and a method that changes
+          // its object has to be given the object rather than a copy.
+          /*is_handle=*/entry.kind == ItemKind::kClass ||
+              entry.kind == ItemKind::kMachine);
     }
   }
 
@@ -853,7 +961,7 @@ FileResolution ResolveFile(TypeStore* types,
 }
 
 void ResolveSignatures(TypeStore* types,
-                       const StringInterner* interner,
+                       StringInterner* interner,
                        const Ast& ast,
                        uint32_t file_index,
                        FileResolution* resolution,
@@ -1096,6 +1204,18 @@ void ResolveSignatures(TypeStore* types,
     // table is what crosses files. The bit is a member for the same
     // reason: it is part of what the type holds, and every tier has to
     // agree about that.
+    // What a machine is: one field saying which state it is in, a
+    // predicate per state, and a method per event.
+    //
+    // Synthesized here because the member table is what the checker reads
+    // -- so `door.Interact()` and `door.IsOpen()` resolve with no special
+    // case anywhere above this, and a machine from another module works
+    // for the same reason a class does.
+    if (tree.entries[index].kind == ItemKind::kMachine) {
+      MachineMembers(ast, tree, interner, types, index, file_index,
+                     &members);
+    }
+
     // What a signal holds: how many handlers, how many it has room for,
     // and where they are. A separate member because the signal's own type
     // is the handler's -- and because a member table is what every tier

@@ -174,7 +174,8 @@ TypeId TypeStore::Float(FloatWidth width) {
 bool HasStorage(MemberKind kind) {
   return kind == MemberKind::kField || kind == MemberKind::kDerived ||
          kind == MemberKind::kReadyBit ||
-         kind == MemberKind::kSignalList;
+         kind == MemberKind::kSignalList ||
+         kind == MemberKind::kMachineState;
 }
 
 TypeId TypeStore::Named(Symbol name,

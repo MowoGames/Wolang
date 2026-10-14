@@ -171,6 +171,10 @@ class Lowerer {
         break;
       }
 
+      case ItemKind::kMachine:
+        DeclareMachine(id, item);
+        break;
+
       case ItemKind::kClass:
       case ItemKind::kStruct:
       case ItemKind::kComponent:
@@ -339,7 +343,8 @@ class Lowerer {
                            uint32_t file = Function::kNoSource,
                            uint32_t item = Function::kNoSource,
                            bool is_task = false,
-                           bool has_body = false) {
+                           bool has_body = false,
+                           uint32_t slot = 0) {
     for (uint32_t i = 0; i < module_->functions.size(); ++i) {
       if (module_->functions[i].name == name) {
         return i;
@@ -353,6 +358,7 @@ class Lowerer {
     // synthesized has no declaration to point at.
     declaration.source_file = file;
     declaration.source_item = item;
+    declaration.source_slot = slot;
     declaration.is_task = is_task;
     // A task with no body anywhere is the suspension primitive, and this
     // file may write its machine; one whose body is elsewhere may not.
@@ -442,18 +448,21 @@ class Lowerer {
     return interner_->Intern(text);
   }
 
-  void Remember(uint32_t file, uint32_t item, size_t index) {
+  void Remember(uint32_t file, uint32_t item, size_t index,
+                uint32_t slot = 0) {
     if (file == Function::kNoSource || item == Function::kNoSource) {
       return;
     }
-    by_source_.emplace_back(std::pair<uint32_t, uint32_t>(file, item),
-                            static_cast<uint32_t>(index));
+    by_source_.push_back(
+        Source{file, item, slot, static_cast<uint32_t>(index)});
   }
 
-  uint32_t IndexOfSource(uint32_t file, uint32_t item) const {
-    for (const auto& [where, index] : by_source_) {
-      if (where.first == file && where.second == item) {
-        return index;
+  uint32_t IndexOfSource(uint32_t file, uint32_t item,
+                         uint32_t slot = 0) const {
+    for (const Source& source : by_source_) {
+      if (source.file == file && source.item == item &&
+          source.slot == slot) {
+        return source.index;
       }
     }
     return 0xFFFFFFFFu;
@@ -490,6 +499,10 @@ class Lowerer {
           LowerConstant(item, IndexOf(id));
         }
         break;
+      case ItemKind::kMachine:
+        DefineMachine(id, item);
+        break;
+
       case ItemKind::kClass:
       case ItemKind::kStruct:
       case ItemKind::kComponent:
@@ -502,6 +515,357 @@ class Lowerer {
       default:
         break;
     }
+  }
+
+  // A machine's generated functions, waiting for their bodies. The
+  // transition table is the source; these are what it means.
+  struct MachineBlock {
+    Symbol state;
+    bool is_enter = false;
+    ExprId body;
+    uint32_t index = 0;
+  };
+  struct MachineMethod {
+    TypeId machine;
+    Symbol name;
+    uint32_t index = 0;
+  };
+
+  // A machine's methods: one per event, one per state, and the blocks that
+  // run on the way in and out of a state.
+  //
+  // Generated rather than written, which is the whole point of the
+  // declaration: the transition table is the source, and the methods are
+  // what it means.
+  void DeclareMachine(ItemId id, const Item& item) {
+    const Binding* binding = resolution_.Find(item.name);
+    if (binding == nullptr) {
+      return;
+    }
+    const TypeId machine = Erase(binding->type);
+    const TypeId answer = types_->bool_type();
+
+    // The blocks first, so an event can call them.
+    for (StateId state_id : ast_.Get(item.states)) {
+      if (!ast_.Contains(state_id)) {
+        continue;
+      }
+      const State& state = ast_.Get(state_id);
+      for (int which = 0; which < 2; ++which) {
+        const ExprId block = which == 0 ? state.enter : state.exit;
+        if (!ast_.Contains(block)) {
+          continue;
+        }
+        Function function;
+        function.name = MachineBlockName(machine, state.name,
+                                         which == 0 ? "enter" : "exit");
+        function.type = types_->Function({machine}, types_->void_type());
+        function.self_type = machine;
+        function.source_file = binding->file;
+        function.source_item = binding->item;
+        machine_blocks_.push_back(
+            MachineBlock{state.name, which == 0, block,
+                         static_cast<uint32_t>(module_->functions.size())});
+        module_->functions.push_back(std::move(function));
+      }
+    }
+
+    for (const Member& member : resolution_.MembersOf(machine)) {
+      if (member.kind != MemberKind::kMethod) {
+        continue;
+      }
+      Function function;
+      function.name = MethodName(machine, member.name);
+      function.type = types_->Function({machine}, answer);
+      function.self_type = machine;
+      function.source_file = member.file;
+      function.source_item = member.item;
+      function.source_slot = member.slot;
+      Remember(member.file, member.item, module_->functions.size(),
+               member.slot);
+      machine_methods_.push_back(
+          MachineMethod{machine, member.name,
+                        static_cast<uint32_t>(module_->functions.size())});
+      module_->functions.push_back(std::move(function));
+    }
+    (void)id;
+  }
+
+  // The bodies. An event method is the transition table as code: which
+  // state we are in decides what happens, and nothing happens when the
+  // current state has no transition for that event.
+  void DefineMachine(ItemId id, const Item& item) {
+    const Binding* binding = resolution_.Find(item.name);
+    if (binding == nullptr) {
+      return;
+    }
+    const TypeId machine = Erase(binding->type);
+
+    // The states, in the order they were declared: that order is the
+    // numbering, and the first one is where a machine starts.
+    std::vector<StateId> states;
+    for (StateId state_id : ast_.Get(item.states)) {
+      if (ast_.Contains(state_id)) {
+        states.push_back(state_id);
+      }
+    }
+
+    for (const MachineBlock& block : machine_blocks_) {
+      LowerMachineBlock(machine, block);
+    }
+    for (const MachineMethod& method : machine_methods_) {
+      if (method.machine != machine) {
+        continue;
+      }
+      LowerMachineMethod(machine, states, method);
+    }
+    machine_blocks_.clear();
+    machine_methods_.clear();
+    (void)id;
+  }
+
+  void LowerMachineBlock(TypeId machine, const MachineBlock& block) {
+    Builder builder(module_, FunctionId{block.index});
+    builder.types = types_;
+    current_function_ = block.index;
+    builder_ = &builder;
+    locals_.clear();
+    loops_.clear();
+    deferred_.clear();
+    arenas_.clear();
+    scope_depth_ = 0;
+    in_task_ = false;
+    self_type_ = machine;
+    return_type_ = types_->void_type();
+
+    const BlockId entry = builder.AddBlock("entry");
+    builder.SetCurrent(entry);
+    self_ = builder.AddParam(entry, machine);
+    locals_.push_back(Local{self_name_, InstId{}, self_, machine});
+    Lower(block.body);
+    if (!builder.Terminated()) {
+      builder.ReturnVoid();
+    }
+    self_type_ = TypeId{};
+    self_ = InstId{};
+    builder_ = nullptr;
+  }
+
+  void LowerMachineMethod(TypeId machine,
+                          const std::vector<StateId>& states,
+                          const MachineMethod& method) {
+    Builder builder(module_, FunctionId{method.index});
+    builder.types = types_;
+    current_function_ = method.index;
+    builder_ = &builder;
+    locals_.clear();
+    loops_.clear();
+    deferred_.clear();
+    arenas_.clear();
+    scope_depth_ = 0;
+    in_task_ = false;
+    self_type_ = machine;
+    return_type_ = types_->bool_type();
+
+    const BlockId entry = builder.AddBlock("entry");
+    builder.SetCurrent(entry);
+    self_ = builder.AddParam(entry, machine);
+
+    const std::string_view name = interner_->Text(method.name);
+    const bool predicate = name.size() > 2 && name.substr(0, 2) == "Is";
+    const TypeId state_type = types_->Int(IntWidth::k32, true);
+    const InstId state_address = builder.FieldAddress(
+        types_->Pointer(state_type, true), self_,
+        MachineStateIndex(machine));
+
+    if (predicate) {
+      // `IsOpen()`: which state, asked by name.
+      const uint32_t which =
+          IndexOfState(states, interner_->Intern(name.substr(2)));
+      const InstId current =
+          builder.Add(Opcode::kLoad, state_type, {state_address});
+      builder.Return(builder.Add(
+          Opcode::kEq, types_->bool_type(),
+          {current, builder.ConstInt(state_type, which)}));
+      Finish();
+      return;
+    }
+
+    // An event: a switch over the states that have a transition for it.
+    std::vector<uint32_t> froms;
+    std::vector<uint32_t> targets;
+    for (uint32_t i = 0; i < states.size(); ++i) {
+      const State& state = ast_.Get(states[i]);
+      for (TransitionId transition_id : ast_.Get(state.transitions)) {
+        if (!ast_.Contains(transition_id)) {
+          continue;
+        }
+        const Transition& transition = ast_.Get(transition_id);
+        if (transition.event != method.name) {
+          continue;
+        }
+        froms.push_back(i);
+        targets.push_back(Settle(states, transition.target));
+        break;
+      }
+    }
+
+    const InstId current =
+        builder.Add(Opcode::kLoad, state_type, {state_address});
+    const BlockId nothing = builder.AddBlock("event.none");
+    std::vector<BlockId> arms;
+    for (size_t i = 0; i < froms.size(); ++i) {
+      arms.push_back(builder.AddBlock("event.arm"));
+    }
+    // One compare per state that answers to this event. A switch would do
+    // as well; this keeps the shape the same whether there is one arm or
+    // ten, and the optimizer turns a chain of compares on a small integer
+    // into what it wants anyway.
+    for (size_t i = 0; i < froms.size(); ++i) {
+      const BlockId next = builder.AddBlock("event.test");
+      const InstId matches = builder.Add(
+          Opcode::kEq, types_->bool_type(),
+          {current, builder.ConstInt(state_type,
+                                     static_cast<uint64_t>(froms[i]))});
+      builder.Branch(matches, arms[i], next);
+      builder.SetCurrent(next);
+    }
+    builder.Jump(nothing);
+
+    for (size_t i = 0; i < froms.size(); ++i) {
+      builder.SetCurrent(arms[i]);
+      // Out of the old state, into the new one, and through whatever
+      // `always` leads from there -- every state on the way gets its
+      // blocks run.
+      CallMachineBlock(machine, ast_.Get(states[froms[i]]).name,
+                       /*is_enter=*/false);
+      builder.Add(Opcode::kStore, TypeId{},
+                  {state_address,
+                   builder.ConstInt(state_type,
+                                    static_cast<uint64_t>(targets[i]))});
+      for (uint32_t step : PathTo(states, froms[i], method.name)) {
+        CallMachineBlock(machine, ast_.Get(states[step]).name,
+                         /*is_enter=*/true);
+      }
+      builder.Return(builder.ConstBool(true));
+    }
+
+    builder.SetCurrent(nothing);
+    builder.Return(builder.ConstBool(false));
+    Finish();
+  }
+
+  void Finish() {
+    self_type_ = TypeId{};
+    self_ = InstId{};
+    builder_ = nullptr;
+  }
+
+  // The states entered by taking |event| out of state |from|: the target,
+  // and then whatever `always` leads on from it.
+  std::vector<uint32_t> PathTo(const std::vector<StateId>& states,
+                               uint32_t from,
+                               Symbol event) {
+    std::vector<uint32_t> path;
+    const State& state = ast_.Get(states[from]);
+    for (TransitionId transition_id : ast_.Get(state.transitions)) {
+      if (!ast_.Contains(transition_id)) {
+        continue;
+      }
+      const Transition& transition = ast_.Get(transition_id);
+      if (transition.event != event) {
+        continue;
+      }
+      uint32_t at = IndexOfState(states, transition.target);
+      // `always` is followed until it stops or comes back round: a cycle
+      // of them would otherwise be a loop with no way out.
+      for (size_t guard = 0; guard <= states.size(); ++guard) {
+        if (at >= states.size() ||
+            std::find(path.begin(), path.end(), at) != path.end()) {
+          break;
+        }
+        path.push_back(at);
+        const uint32_t next = AlwaysFrom(states, at);
+        if (next == at || next >= states.size()) {
+          break;
+        }
+        at = next;
+      }
+      break;
+    }
+    return path;
+  }
+
+  uint32_t AlwaysFrom(const std::vector<StateId>& states, uint32_t from) {
+    if (from >= states.size()) {
+      return from;
+    }
+    const State& state = ast_.Get(states[from]);
+    for (TransitionId transition_id : ast_.Get(state.transitions)) {
+      if (!ast_.Contains(transition_id)) {
+        continue;
+      }
+      const Transition& transition = ast_.Get(transition_id);
+      if (transition.is_always) {
+        return IndexOfState(states, transition.target);
+      }
+    }
+    return from;
+  }
+
+  // Where a transition really ends up, following `always` from its target.
+  uint32_t Settle(const std::vector<StateId>& states, Symbol target) {
+    uint32_t at = IndexOfState(states, target);
+    for (size_t guard = 0; guard <= states.size(); ++guard) {
+      const uint32_t next = AlwaysFrom(states, at);
+      if (next == at) {
+        return at;
+      }
+      at = next;
+    }
+    return at;
+  }
+
+  uint32_t IndexOfState(const std::vector<StateId>& states, Symbol name) {
+    for (uint32_t i = 0; i < states.size(); ++i) {
+      if (ast_.Get(states[i]).name == name) {
+        return i;
+      }
+    }
+    return static_cast<uint32_t>(states.size());
+  }
+
+  void CallMachineBlock(TypeId machine, Symbol state, bool is_enter) {
+    for (const MachineBlock& block : machine_blocks_) {
+      if (block.state != state || block.is_enter != is_enter) {
+        continue;
+      }
+      builder_->Call(block.index, types_->void_type(), {self_});
+      return;
+    }
+  }
+
+  uint32_t MachineStateIndex(TypeId machine) {
+    uint32_t index = 0;
+    for (const Member& member : resolution_.MembersOf(machine)) {
+      if (!HasStorage(member.kind)) {
+        continue;
+      }
+      if (member.kind == MemberKind::kMachineState) {
+        return index;
+      }
+      ++index;
+    }
+    return 0;
+  }
+
+  Symbol MachineBlockName(TypeId machine, Symbol state, const char* which) {
+    std::string text = types_->Describe(*interner_, machine);
+    text.push_back('.');
+    text.append(interner_->Text(state));
+    text.push_back('$');
+    text.append(which);
+    return interner_->Intern(text);
   }
 
   // A derived field's computation, as a method of the type: `self` in,
@@ -2374,7 +2738,8 @@ class Lowerer {
       return InstId{};
     }
 
-    uint32_t index = IndexOfSource(member->file, member->item);
+    uint32_t index =
+        IndexOfSource(member->file, member->item, member->slot);
     if (index == 0xFFFFFFFFu) {
       if (member->file == file_index_) {
         // Declared here and not lowered: a generic, or a method of a
@@ -2392,8 +2757,10 @@ class Lowerer {
       const TypeId signature = types_->Function(
           params, Erase(types_->ElementOf(member->type)));
       index = DeclareExternal(MethodName(owner, name), signature,
-                              member->file, member->item);
-      Remember(member->file, member->item, index);
+                              member->file, member->item,
+                              /*is_task=*/false, /*has_body=*/false,
+                              member->slot);
+      Remember(member->file, member->item, index, member->slot);
     }
 
     std::vector<InstId> with_receiver;
@@ -2951,6 +3318,8 @@ class Lowerer {
   std::vector<std::pair<Symbol, uint32_t>> specializations_;
   // Module-level constants, by the name they were written with.
   std::vector<std::pair<Symbol, size_t>> constants_;
+  std::vector<MachineBlock> machine_blocks_;
+  std::vector<MachineMethod> machine_methods_;
   std::vector<Pending> pending_;
   std::vector<Deferred> deferred_;
   // Whether the function being lowered is a `task`.
@@ -2977,7 +3346,13 @@ class Lowerer {
   // Every function of this module by the declaration it came from, which is
   // how a method call finds the function: a method has no file-scope name
   // to look up.
-  std::vector<std::pair<std::pair<uint32_t, uint32_t>, uint32_t>> by_source_;
+  struct Source {
+    uint32_t file = 0;
+    uint32_t item = 0;
+    uint32_t slot = 0;
+    uint32_t index = 0;
+  };
+  std::vector<Source> by_source_;
 };
 
 }  // namespace

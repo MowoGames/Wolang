@@ -91,6 +91,9 @@ enum class MemberKind : uint8_t {
   // `derived var x: T => expr`: a field whose value is computed from other
   // fields and kept until one of them changes.
   kDerived,
+  // Which state a `machine` is in: one field, written by the transitions
+  // and read by the predicates.
+  kMachineState,
   // What a signal holds: how many handlers there are, how many it has
   // room for, and where they are. Written by the compiler, like the ready
   // bit below and for the same reason.
@@ -122,6 +125,11 @@ struct Member {
   // one up by name would find either.
   uint32_t file = kNoSource;
   uint32_t item = kNoSource;
+  // Which of several members one declaration stands for. A machine
+  // declares one item and has a method per event and per state, so the
+  // item alone does not identify them -- and a call that cannot tell two
+  // methods apart calls whichever came first.
+  uint32_t slot = 0;
   // Fields: whether the member may be assigned through.
   bool is_mutable = false;
   // Whether code outside the declaring module may name it.
@@ -138,7 +146,8 @@ struct Member {
   friend bool operator==(const Member& lhs, const Member& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
            lhs.type == rhs.type && lhs.file == rhs.file &&
-           lhs.item == rhs.item && lhs.is_mutable == rhs.is_mutable &&
+           lhs.item == rhs.item && lhs.slot == rhs.slot &&
+           lhs.is_mutable == rhs.is_mutable &&
            lhs.is_public == rhs.is_public &&
            lhs.is_virtual == rhs.is_virtual &&
            lhs.is_override == rhs.is_override &&
