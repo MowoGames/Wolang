@@ -393,6 +393,26 @@ int RunFormat(const Options& options) {
   return exit_code;
 }
 
+// Every file's IR, for the code generator.
+//
+// All of them at once: lowering is per file, so a call into another file is
+// a declaration with no body, and compiling one file at a time would leave
+// every cross-module call to the interpreter. In a package that is most of
+// them.
+std::vector<codegen::FileCode> CollectCode(Database* database,
+                                           const std::vector<FileId>& files) {
+  std::vector<codegen::FileCode> code;
+  for (FileId file : files) {
+    const LoweredFile* lowered = database->Lowered(file);
+    const CheckedFile* checked = database->Checked(file);
+    if (lowered == nullptr || checked == nullptr) {
+      continue;
+    }
+    code.push_back(codegen::FileCode{&checked->resolution, &lowered->module});
+  }
+  return code;
+}
+
 // Runs `main`, through the interpreter. The reference semantics are the
 // unoptimized IR; the optimized form is run too and the two results are
 // compared, which turns "the passes preserve meaning" into something the
@@ -465,8 +485,8 @@ int RunProgram(const Options& options) {
   std::unique_ptr<codegen::CompiledModule> compiled;
   if (!options.interpret && codegen::IsSupportedTarget() &&
       program_file != nullptr) {
-    compiled = codegen::Compile(database.interner(), database.types(),
-                                program_file->resolution, program->module);
+    const std::vector<codegen::FileCode> code = CollectCode(&database, files);
+    compiled = codegen::Compile(database.interner(), database.types(), code);
   }
 
   interp::Output output;
@@ -517,6 +537,18 @@ int RunTests(const Options& options) {
     return reported;
   }
 
+  // Every test is also a differential check between the tiers: the same
+  // function, compiled and interpreted, has to reach the same answer. Tests
+  // are the one place a program is known to terminate, which is what makes
+  // running it twice safe.
+  std::unique_ptr<codegen::CompiledModule> compiled;
+  const std::unique_ptr<interp::ForeignCaller> foreign =
+      codegen::MakeForeignCaller();
+  if (codegen::IsSupportedTarget()) {
+    const std::vector<codegen::FileCode> code = CollectCode(&database, files);
+    compiled = codegen::Compile(database.interner(), database.types(), code);
+  }
+
   int ran = 0;
   int failed = 0;
   for (FileId file : files) {
@@ -524,19 +556,6 @@ int RunTests(const Options& options) {
     if (lowered == nullptr) {
       continue;
     }
-    // Every test is also a differential check between the tiers: the same
-    // function, compiled and interpreted, has to reach the same answer.
-    // Tests are the one place a program is known to terminate, which is
-    // what makes running it twice safe.
-    std::unique_ptr<codegen::CompiledModule> compiled;
-    const std::unique_ptr<interp::ForeignCaller> foreign =
-        codegen::MakeForeignCaller();
-    const CheckedFile* checked = database.Checked(file);
-    if (checked != nullptr && codegen::IsSupportedTarget()) {
-      compiled = codegen::Compile(database.interner(), database.types(),
-                                  checked->resolution, lowered->module);
-    }
-
     for (Symbol name : lowered->tests) {
       ++ran;
       // Run through the unoptimized IR: the reference semantics are what a
@@ -621,20 +640,21 @@ int RunAsm(const Options& options) {
     return 2;
   }
 
+  const std::vector<codegen::FileCode> code = CollectCode(&database, files);
+  const std::unique_ptr<codegen::CompiledModule> compiled =
+      codegen::Compile(database.interner(), database.types(), code);
+  std::fprintf(stdout,
+               "// %u compiled, %u left to the interpreter, %zu bytes\n",
+               compiled->compiled_count(), compiled->skipped_count(),
+               compiled->size());
+
   for (FileId file : files) {
     const LoweredFile* lowered = database.Lowered(file);
-    const CheckedFile* checked = database.Checked(file);
-    if (lowered == nullptr || checked == nullptr) {
+    if (lowered == nullptr) {
       continue;
     }
-    const std::unique_ptr<codegen::CompiledModule> compiled =
-        codegen::Compile(database.interner(), database.types(),
-                         checked->resolution, lowered->module);
-    std::fprintf(stdout, "// %s: %u compiled, %u left to the interpreter, "
-                         "%zu bytes\n",
-                 std::string(database.sources().Path(file)).c_str(),
-                 compiled->compiled_count(), compiled->skipped_count(),
-                 compiled->size());
+    std::fprintf(stdout, "// %s\n",
+                 std::string(database.sources().Path(file)).c_str());
     for (const ir::Function& function : lowered->module.functions) {
       const std::string name(database.interner().Text(function.name));
       if (compiled->Contains(function.name)) {
@@ -689,18 +709,16 @@ int RunBench(const Options& options) {
     return 2;
   }
 
+  const std::vector<codegen::FileCode> code = CollectCode(&database, files);
+  const std::unique_ptr<codegen::CompiledModule> compiled =
+      codegen::Compile(database.interner(), database.types(), code);
+
   int ran = 0;
   for (FileId file : files) {
     const LoweredFile* lowered = database.Lowered(file);
-    const CheckedFile* checked = database.Checked(file);
-    if (lowered == nullptr || checked == nullptr ||
-        lowered->benches.empty()) {
+    if (lowered == nullptr || lowered->benches.empty()) {
       continue;
     }
-    const std::unique_ptr<codegen::CompiledModule> compiled =
-        codegen::Compile(database.interner(), database.types(),
-                         checked->resolution, lowered->module);
-
     for (Symbol name : lowered->benches) {
       const std::string text(database.interner().Text(name));
       ++ran;
