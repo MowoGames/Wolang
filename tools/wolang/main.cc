@@ -26,6 +26,7 @@
 #include "wolang/base/string_interner.h"
 #include "wolang/compiler/cache.h"
 #include "wolang/compiler/database.h"
+#include "wolang/codegen/aot.h"
 #include "wolang/codegen/compiler.h"
 #include "wolang/abi/layout.h"
 #include "wolang/codegen/foreign.h"
@@ -73,6 +74,11 @@ struct Options {
   // Skip the on-disk cache entirely, which is how a suspected cache problem
   // is ruled out.
   bool no_cache = false;
+  // `build` only: where the binary goes, whether to stop at the object
+  // file, and how hard the back end works.
+  std::string output;
+  bool emit_object = false;
+  int optimization = 2;
 };
 
 bool StderrIsTerminal() {
@@ -99,6 +105,7 @@ void PrintUsage() {
       "  asm <files>     print what the dev tier compiled, and what it did "
       "not\n"
       "  run <paths>     run `main`\n"
+      "  build <paths>   compile to a binary that needs no compiler\n"
       "  bench <paths>   run and time every function marked `@Bench`\n"
       "  test <paths>    run every function marked `@Test`\n"
       "  modules <dir>   print the module graph of a package\n"
@@ -112,6 +119,9 @@ void PrintUsage() {
       "  --count <n>     how many programs `fuzz` generates\n"
       "  --source        print the programs `fuzz` generated\n"
       "  --unoptimized   `ir`: print what lowering produced, before passes\n"
+      "  -o <path>       `build`: where the binary goes\n"
+      "  --emit-object   `build`: stop at the object file\n"
+      "  -O<n>           `build`: how hard the back end optimizes, 0 to 3\n"
       "  --no-color      never emit ANSI colors\n"
       "  --trivia        include comments in `tokens` output\n"
       "  --spans         annotate `ast` output with positions\n"
@@ -1135,10 +1145,113 @@ int RunSystems(const Options& options) {
   return Report(database.sources(), all, render);
 }
 
+
+// Compiles the program into a binary.
+//
+// The third tier: the same IR the dev tier runs, through LLVM, into an
+// object file -- and then through the system's linker, with the runtime
+// archive, into something that needs no compiler to run (D98).
+int RunBuild(const Options& options) {
+  if (!codegen::HasAotBackend()) {
+    std::fprintf(stderr,
+                 "wolang: this build has no ahead-of-time backend; "
+                 "configure with LLVM to get one\n");
+    return 2;
+  }
+  Database database;
+  DiagnosticEngine load_diagnostics;
+  std::vector<FileId> files;
+  if (!CollectInputs(&database, options, &load_diagnostics, &files)) {
+    return 2;
+  }
+  RenderOptions render;
+  render.color = options.color && StderrIsTerminal();
+  std::vector<Diagnostic> all = load_diagnostics.diagnostics();
+  for (FileId file : files) {
+    if (const std::vector<Diagnostic>* diagnostics =
+            database.Diagnostics(file)) {
+      all.insert(all.end(), diagnostics->begin(), diagnostics->end());
+    }
+  }
+  if (const int reported = Report(database.sources(), all, render);
+      reported != 0) {
+    return reported;
+  }
+
+  const std::vector<codegen::FileCode> code = CollectCode(&database, files);
+  if (code.empty()) {
+    std::fprintf(stderr, "wolang: nothing to build\n");
+    return 2;
+  }
+
+  std::string binary = options.output.empty() ? "a.out" : options.output;
+  const std::string object =
+      options.emit_object ? binary : binary + ".o";
+
+  codegen::AotOptions settings;
+  settings.object_path = object;
+  settings.optimization = options.optimization;
+  const codegen::AotResult result = codegen::EmitObject(
+      database.interner(), database.types(), code, settings);
+  if (!result.error.empty()) {
+    std::fprintf(stderr, "wolang: %s\n", result.error.c_str());
+    return 1;
+  }
+  // Said rather than discovered at run time: a binary missing a body is
+  // incomplete, and which bodies is what makes it worth fixing.
+  for (const std::string& left : result.skipped) {
+    std::fprintf(stderr, "wolang: left out of the binary: %s\n",
+                 left.c_str());
+  }
+  if (options.emit_object) {
+    std::fprintf(stdout, "%s\n", object.c_str());
+    return 0;
+  }
+
+  const std::string_view archive = codegen::RuntimeArchive();
+  if (archive.empty()) {
+    std::fprintf(stderr,
+                 "wolang: this build did not record where the runtime "
+                 "archive is\n");
+    return 1;
+  }
+  // The system's linker, through its C driver: it knows where the C++
+  // runtime and the platform's libraries are, and teaching this one that
+  // would be a worse copy of it.
+  std::string command = "c++ -o '";
+  command.append(binary);
+  command.append("' '");
+  command.append(object);
+  command.append("' '");
+  command.append(archive);
+  command.append("' -lpthread");
+  const int linked = std::system(command.c_str());
+  std::remove(object.c_str());
+  if (linked != 0) {
+    std::fprintf(stderr, "wolang: the linker failed\n");
+    return 1;
+  }
+  std::fprintf(stdout, "%s\n", binary.c_str());
+  return 0;
+}
+
 int Run(int argc, char** argv) {
   Options options;
   for (int i = 1; i < argc; ++i) {
     const std::string_view argument = argv[i];
+    if (argument == "--emit-object") {
+      options.emit_object = true;
+      continue;
+    }
+    if (argument == "-o" && i + 1 < argc) {
+      options.output = argv[++i];
+      continue;
+    }
+    if (argument.size() == 3 && argument.rfind("-O", 0) == 0 &&
+        argument[2] >= '0' && argument[2] <= '3') {
+      options.optimization = argument[2] - '0';
+      continue;
+    }
     if (argument == "--unoptimized") {
       options.unoptimized = true;
     } else if (argument == "--source") {
@@ -1191,7 +1304,8 @@ int Run(int argc, char** argv) {
       options.command == "ir" || options.command == "modules" ||
       options.command == "systems" ||
       options.command == "run" || options.command == "test" ||
-      options.command == "asm" || options.command == "bench";
+      options.command == "asm" || options.command == "bench" ||
+      options.command == "build";
   if (needs_inputs && options.inputs.empty()) {
     std::fprintf(stderr, "wolang: %s needs at least one path\n",
                  options.command.c_str());
@@ -1210,6 +1324,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "run") {
     return RunProgram(options);
+  }
+  if (options.command == "build") {
+    return RunBuild(options);
   }
   if (options.command == "test") {
     return RunTests(options);

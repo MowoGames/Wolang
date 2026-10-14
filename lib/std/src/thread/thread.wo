@@ -1,0 +1,118 @@
+// Threads, a lock and a counter.
+//
+// The smallest set that makes "do these at the same time" expressible,
+// and everything above it is Wolang (D97). The reference tier runs a
+// spawned body on the spot rather than starting a thread, so a program
+// whose answer does not depend on interleaving gives the same answer in
+// both tiers -- and one that does depend on it has a bug worth finding
+// rather than hiding.
+
+// The argument is a word rather than a pointer: a body that takes nothing
+// needs none, and zero is what C reads as null.
+extern "C" fun wolang_thread_spawn(body: fun(), argument: u64) -> u64
+extern "C" fun wolang_thread_join(handle: u64) -> s32
+extern "C" fun wolang_thread_count() -> s32
+extern "C" fun wolang_mutex_create() -> u64
+extern "C" fun wolang_mutex_destroy(handle: u64)
+extern "C" fun wolang_mutex_lock(handle: u64)
+extern "C" fun wolang_mutex_unlock(handle: u64)
+extern "C" fun wolang_atomic_add(address: *mut s64, delta: s64) -> s64
+
+/// One running thread.
+offer class Thread {
+  var handle: u64 = 0
+
+  fun IsRunning() -> bool {
+    return handle != 0
+  }
+
+  /// Waits for it to finish. False when there was nothing to wait for.
+  fun Join() -> bool uses unsafe {
+    if handle == 0 {
+      return false
+    }
+    const status = wolang_thread_join(handle)
+    handle = 0
+    return status == 0
+  }
+}
+
+/// Runs `body` alongside the caller.
+///
+/// The body takes nothing and gives nothing back: what a thread works on
+/// is what it can reach, which in this language means a module-level
+/// `var` or something behind a lock. A parameter would be a pointer whose
+/// lifetime nobody checks.
+offer fun Spawn(body: fun()) -> Thread uses unsafe {
+  return Thread(wolang_thread_spawn(body, 0))
+}
+
+/// How many threads this machine will really run at once.
+offer fun Parallelism() -> int uses unsafe {
+  return wolang_thread_count() as int
+}
+
+/// A lock. `deinit` gives it back, so one that goes out of scope leaves
+/// nothing behind.
+offer class Mutex {
+  var handle: u64 = 0
+
+  deinit {
+    if handle != 0 {
+      wolang_mutex_destroy(handle)
+    }
+  }
+
+  fun Lock() uses unsafe {
+    wolang_mutex_lock(handle)
+  }
+
+  fun Unlock() uses unsafe {
+    wolang_mutex_unlock(handle)
+  }
+}
+
+offer fun MutexNew() -> Mutex uses unsafe {
+  return Mutex(wolang_mutex_create())
+}
+
+/// Adds `delta` to the number at `counter` and gives back what was there
+/// before, with no other thread able to see a half-done sum.
+offer fun AtomicAdd(counter: *mut s64, delta: s64) -> s64 uses unsafe {
+  return wolang_atomic_add(counter, delta)
+}
+
+// ------------------------------------------------------------- tests ---
+
+// What the threads add to. A module-level `var` is what a thread can
+// reach (D88): the body takes nothing, so everything it works on is
+// either global or behind a lock.
+var counter: s64 = 0
+var guard: u64 = 0
+
+fun Bump() {
+  // Through the lock, so the sum is the sum no matter how the threads
+  // interleave.
+  wolang_mutex_lock(guard)
+  counter = counter + 1
+  wolang_mutex_unlock(guard)
+}
+
+@Test
+fun ThreadsShareACounter() -> bool uses unsafe {
+  counter = 0
+  guard = wolang_mutex_create()
+  var first = Spawn(Bump)
+  var second = Spawn(Bump)
+  var third = Spawn(Bump)
+  const joined = first.Join() && second.Join() && third.Join()
+  wolang_mutex_destroy(guard)
+  guard = 0
+  // Three bumps, whatever order they happened in.
+  return joined && counter == 3
+}
+
+@Test
+fun ReportsHowManyThreadsRun() -> bool uses unsafe {
+  return Parallelism() >= 1
+}

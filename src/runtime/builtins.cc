@@ -7,6 +7,7 @@
 #include "wolang/runtime/files.h"
 #include "wolang/runtime/globals.h"
 #include "wolang/runtime/poll.h"
+#include "wolang/runtime/threads.h"
 #include "wolang/runtime/signal.h"
 #include "wolang/runtime/text.h"
 
@@ -57,6 +58,22 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_object_free",
        reinterpret_cast<void*>(&wolang_object_free)},
       {"wolang_open_read", reinterpret_cast<void*>(&wolang_open_read)},
+      {"wolang_thread_spawn",
+       reinterpret_cast<void*>(&wolang_thread_spawn)},
+      {"wolang_thread_join",
+       reinterpret_cast<void*>(&wolang_thread_join)},
+      {"wolang_thread_count",
+       reinterpret_cast<void*>(&wolang_thread_count)},
+      {"wolang_mutex_create",
+       reinterpret_cast<void*>(&wolang_mutex_create)},
+      {"wolang_mutex_destroy",
+       reinterpret_cast<void*>(&wolang_mutex_destroy)},
+      {"wolang_mutex_lock",
+       reinterpret_cast<void*>(&wolang_mutex_lock)},
+      {"wolang_mutex_unlock",
+       reinterpret_cast<void*>(&wolang_mutex_unlock)},
+      {"wolang_atomic_add",
+       reinterpret_cast<void*>(&wolang_atomic_add)},
       {"wolang_poll_create",
        reinterpret_cast<void*>(&wolang_poll_create)},
       {"wolang_poll_close", reinterpret_cast<void*>(&wolang_poll_close)},

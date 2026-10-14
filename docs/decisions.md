@@ -1012,3 +1012,58 @@ Walking borrows. `for key in map` asks the map how to be walked and reads
 what comes back; it does not take what the name holds, so the map is
 still there afterwards -- which the move analysis had to be told, because
 an owning value handed to anything is otherwise a move (D87).
+
+**D97. Threads, a lock and one atomic, and the reference tier runs a
+spawned body on the spot.** The smallest set that makes "do these at the
+same time" expressible: `Spawn`, `Join`, a mutex by handle, and an atomic
+add. Everything above it -- a pool, a channel, a work queue -- is Wolang
+over those, which is where it belongs.
+
+A thread in the reference tier would be a second interpreter: its values
+are not addresses and its frames are its own. So `Spawn` there runs the
+body immediately, on the calling thread, and hands back a handle that is
+already finished. A program whose answer does not depend on interleaving
+gives the same answer in both tiers -- which is the only kind of program
+the differential check can compare -- and one that *does* depend on it has
+a bug worth finding rather than hiding.
+
+A function value crosses the C boundary as what it is, an address. That
+is what every threading API in C takes for a callback, and the rule that
+kept it out (`E0802`) was about layouts this compiler decides
+unilaterally, which a function pointer is not.
+
+**D98. A third tier: the same IR, through LLVM, into a binary.** The
+interpreter is the reference and the dev tier is what a developer waits
+for; neither is what a program ships as. `wolang build` turns the
+optimized IR into an object file and links it with the runtime archive,
+and the result needs no compiler to run.
+
+Through LLVM's C API rather than its C++ one, because this project builds
+without RTTI. The translation is deliberately literal: one LLVM
+instruction per IR instruction, a block parameter as a phi node -- the
+form the IR was given so that this would be one line -- and every
+aggregate as the address of storage made once in the entry block. Every
+value is an integer or a float of its own width, and a pointer is an
+`i64`: the optimizer has already turned element addresses into ordinary
+arithmetic, so a value that is added to has to be a number, and it
+becomes a pointer at the one place that reads through it.
+
+Three things the dev tier does for free had to be said out loud here. A
+frame is zeroed, because a program that writes two bytes of a socket
+address and hands all sixteen to C needs the other fourteen to be zero. A
+trap reports and exits, because a binary has nobody to report an outcome
+to. And the class tables are registered at startup by a function the
+backend writes, because nothing is there to register them as it compiles.
+
+What the backend cannot translate is named rather than guessed at: the
+driver prints every function left out, since a binary missing a body is
+incomplete and which body is what makes that worth fixing.
+
+**D99. A block gives nothing back by itself.** A function that declares a
+result returns it with `return`, or is written with `=> expr`. A block
+whose last statement happens to be an expression is not a return.
+
+This was a hole rather than a decision: such a function compiled, and
+returned whatever the register held. `E0132` is the diagnostic, and
+`loop { }` with no `break` in it is not an error because it never reaches
+the end at all.

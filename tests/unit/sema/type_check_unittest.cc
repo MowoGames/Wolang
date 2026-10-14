@@ -368,9 +368,11 @@ WOLANG_TEST(TypeCheck, IfLetNarrowsAnOptional) {
 }
 
 WOLANG_TEST(TypeCheck, PresentPatternNarrowsAnOptional) {
+  // The `return` is the point of D99: a block gives nothing back by
+  // itself, so a function that declares a result says `return`.
   Fixture fixture(
       "fun f(count: int?) -> int {\n"
-      "  match count {\n"
+      "  return match count {\n"
       "    n? => n\n"
       "    null => 0\n"
       "  }\n"

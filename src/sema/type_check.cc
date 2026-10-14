@@ -2563,6 +2563,12 @@ bool Checker::HasForeignRepresentation(TypeId type) const {
     case TypeKind::kFloat:
     case TypeKind::kVoid:
     case TypeKind::kPointer:
+    // A function as a value is an address, which is exactly what C takes
+    // for a callback: `wolang_thread_spawn(body, argument)` is the shape
+    // every threading API in C has (D97). The reference tier passes a
+    // token instead and turns it back into the value, the same way a
+    // signal's handler list already crosses.
+    case TypeKind::kFunction:
     // An error type has already been reported; saying so twice is noise.
     case TypeKind::kError:
       return true;

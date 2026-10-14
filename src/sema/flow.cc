@@ -11,6 +11,9 @@ namespace {
 constexpr std::string_view kEscapesRegion = "E0121";
 constexpr std::string_view kUsedAfterMove = "E0122";
 constexpr std::string_view kUsedBeforeWritten = "E0123";
+// A function that declares a result and has a path that reaches its end
+// without returning one.
+constexpr std::string_view kMissingReturn = "E0132";
 
 // What a statement does to the flow after it.
 enum class Flow : uint8_t {
@@ -71,8 +74,33 @@ class Checker {
       return;
     }
     const size_t depth = locals_.size();
-    Expression(declaration.body);
+    const Flow flow = Expression(declaration.body);
     locals_.resize(depth);
+
+    // A function that says what it gives back has to give one back on
+    // every path. Without this the end of such a body returned whatever
+    // the register happened to hold -- compiled code read the zero the
+    // prologue left and the reference tier read nothing at all, and the
+    // program was wrong in both without being told (D99).
+    //
+    // A declared result is the written `-> T`: a function with nothing
+    // after its parameters returns nothing, and falling off the end of it
+    // is the whole point.
+    // An expression body gives its value back: `fun Add(..) -> int => a + b`
+    // is a return, and only a block can fall off its end.
+    const bool is_block =
+        ast_.Contains(declaration.body) &&
+        ast_.Get(declaration.body).kind == ExprKind::kBlock;
+    if (declaration.kind == ItemKind::kFunction && is_block &&
+        flow == Flow::kFalls && declaration.type.is_valid()) {
+      std::string message = "`";
+      message.append(interner_.Text(declaration.name));
+      message.append("` can reach its end without returning a value");
+      diagnostics_->Error(kMissingReturn, std::move(message))
+          .Primary(declaration.name_span, "declared with a result")
+          .Note("return on every path, or end the function with one "
+                "`return`");
+    }
   }
 
  private:
@@ -106,6 +134,70 @@ class Checker {
       }
     }
     return false;
+  }
+
+  // Whether anything in |body| could leave the loop it belongs to.
+  //
+  // A `break` inside a nested loop belongs to that one, so the walk stops
+  // there -- except for a labelled `break`, which may name an outer loop
+  // and is counted wherever it is. Wrong in the safe direction: a loop
+  // read as one that ends is the answer this had before.
+  bool HasBreak(ExprId body) const {
+    if (!ast_.Contains(body)) {
+      return false;
+    }
+    const Expr& expr = ast_.Get(body);
+    switch (expr.kind) {
+      case ExprKind::kWhile:
+      case ExprKind::kFor:
+      case ExprKind::kForeach:
+      case ExprKind::kLoop:
+        // A nested loop: only a `break` that names something can be for
+        // this one.
+        return HasLabelledBreak(expr.rhs);
+      case ExprKind::kBlock: {
+        for (StmtId id : ast_.Get(expr.stmts)) {
+          if (!ast_.Contains(id)) {
+            continue;
+          }
+          const Stmt& stmt = ast_.Get(id);
+          if (stmt.kind == StmtKind::kBreak) {
+            return true;
+          }
+          if (HasBreak(stmt.expr)) {
+            return true;
+          }
+        }
+        return false;
+      }
+      default:
+        return HasBreak(expr.lhs) || HasBreak(expr.rhs) ||
+               HasBreak(expr.extra);
+    }
+  }
+
+  bool HasLabelledBreak(ExprId body) const {
+    if (!ast_.Contains(body)) {
+      return false;
+    }
+    const Expr& expr = ast_.Get(body);
+    if (expr.kind == ExprKind::kBlock) {
+      for (StmtId id : ast_.Get(expr.stmts)) {
+        if (!ast_.Contains(id)) {
+          continue;
+        }
+        const Stmt& stmt = ast_.Get(id);
+        if (stmt.kind == StmtKind::kBreak && stmt.label.is_valid()) {
+          return true;
+        }
+        if (HasLabelledBreak(stmt.expr)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    return HasLabelledBreak(expr.lhs) || HasLabelledBreak(expr.rhs) ||
+           HasLabelledBreak(expr.extra);
   }
 
   void Report(Symbol name, SourceSpan span) {
@@ -464,7 +556,10 @@ class Checker {
         // wrote with it -- which this does not track. Conservative either
         // way: nothing the body wrote is known afterwards.
         Body(expr.rhs);
-        return Flow::kFalls;
+        // One without a `break` in it never ends, so nothing after it
+        // runs: what makes `loop { }` a legitimate body for a function
+        // that declares a result (D99).
+        return HasBreak(expr.rhs) ? Flow::kFalls : Flow::kDiverges;
 
       case ExprKind::kRegion: {
         // The block's value leaves the region, so a reference to something

@@ -10,6 +10,19 @@ file(GLOB_RECURSE WOLANG_CORE_HEADERS CONFIGURE_DEPENDS
 
 add_library(wolang_core STATIC ${WOLANG_CORE_SOURCES})
 
+# The runtime on its own, as something an ahead-of-time binary can link
+# against. The same files the compiler itself holds: a program built with
+# `wolang build` and one run by `wolang run` share an allocator, a global
+# table and a class table, which is what makes a global written in one
+# tier the one read in the other (D98).
+file(GLOB WOLANG_RUNTIME_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime/*.cc")
+add_library(wolang_runtime STATIC ${WOLANG_RUNTIME_SOURCES})
+target_include_directories(wolang_runtime PUBLIC
+    ${PROJECT_SOURCE_DIR}/include)
+wolang_configure_target(wolang_runtime)
+add_library(wolang::runtime ALIAS wolang_runtime)
+
 target_sources(wolang_core PUBLIC
     FILE_SET HEADERS
     BASE_DIRS ${PROJECT_SOURCE_DIR}/include
@@ -17,6 +30,23 @@ target_sources(wolang_core PUBLIC
 
 target_include_directories(wolang_core PUBLIC
     ${PROJECT_SOURCE_DIR}/include)
+
+# The ahead-of-time backend, when LLVM is available. Through the C API
+# rather than the C++ one: this project builds without RTTI and LLVM's
+# C++ headers want it (D98).
+if(WOLANG_WITH_LLVM)
+    target_compile_definitions(wolang_core PUBLIC WOLANG_WITH_LLVM=1)
+    target_include_directories(wolang_core SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+    llvm_map_components_to_libnames(WOLANG_LLVM_LIBS
+        core target native analysis passes bitwriter)
+    target_link_libraries(wolang_core PUBLIC ${WOLANG_LLVM_LIBS})
+endif()
+
+# Where the runtime archive ends up, so that `wolang build` can hand it
+# to the linker without being told.
+target_compile_definitions(wolang_core PRIVATE
+    WOLANG_RUNTIME_ARCHIVE="$<TARGET_FILE:wolang_runtime>")
+add_dependencies(wolang_core wolang_runtime)
 
 wolang_configure_target(wolang_core)
 

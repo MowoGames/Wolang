@@ -401,6 +401,32 @@ class Interpreter {
     // thunk, because the reference tier has to work on a machine with no
     // backend at all. They get the same arguments the boundary would --
     // addresses, with a buffer already copied out to real memory.
+    // A thread, in a tier whose values are not addresses: the body is
+    // run here and now, on this thread (D97). A program whose answer does
+    // not depend on interleaving gives the same answer either way, which
+    // is the only kind the differential check can compare -- and a
+    // program that *does* depend on it has a bug the comparison should
+    // not be hiding.
+    if (symbol == "wolang_thread_spawn" && !arguments.empty() &&
+        arguments[0].kind() == Value::Kind::kFunction) {
+      Outcome inner;
+      const Value body = arguments[0];
+      const auto* home = static_cast<const ir::Module*>(body.module());
+      if (home != nullptr && body.function() < home->functions.size()) {
+        Call(home->functions[body.function()], home, {}, &inner, caller);
+      }
+      if (!inner.ok()) {
+        *outcome = inner;
+        return Value();
+      }
+      // A handle that is already finished, which is what `Join` on it
+      // means here.
+      return Value::Int(1, IntWidth::k64, /*is_signed=*/false);
+    }
+    if (symbol == "wolang_thread_join") {
+      return Value::Int(0, IntWidth::k32, /*is_signed=*/true);
+    }
+
     const Intrinsic builtin = LookupIntrinsic(symbol);
     if (builtin != Intrinsic::kNone) {
       std::vector<Value> direct;
@@ -1012,8 +1038,13 @@ class Interpreter {
                                   ? frame->values[operands[i].index]
                                   : Value());
         }
-        return Call(home->functions[target.function()], home,
-                    std::move(arguments), outcome, frame);
+        // The value may name a declaration rather than a body: a
+        // function passed from one file to another is one here and the
+        // other there, and calling it has to find the body the same way a
+        // direct call does.
+        const ir::Function* callee = &home->functions[target.function()];
+        Link(&callee, &home);
+        return Call(*callee, home, std::move(arguments), outcome, frame);
       }
 
       case ir::Opcode::kCall: {
@@ -1030,31 +1061,7 @@ class Interpreter {
         const ir::Function* callee =
             &frame->module->functions[inst.payload.callee];
         const ir::Module* home = frame->module;
-        if (callee->is_declaration() && callee->has_source() &&
-            !callee->is_foreign()) {
-          // Lowering is per file, so the definition may be in another one.
-          // Resolved by the declaration it came from, which is the same
-          // thing the code generator links by.
-          for (const ir::Module* other : linked_) {
-            if (other == nullptr || other == frame->module) {
-              continue;
-            }
-            for (const ir::Function& candidate : other->functions) {
-              if (candidate.is_declaration() || !candidate.has_source() ||
-                  candidate.source_file != callee->source_file ||
-                  candidate.source_item != callee->source_item ||
-                  candidate.source_slot != callee->source_slot) {
-                continue;
-              }
-              callee = &candidate;
-              home = other;
-              break;
-            }
-            if (home != frame->module) {
-              break;
-            }
-          }
-        }
+        Link(&callee, &home);
         return Call(*callee, home, std::move(arguments), outcome, frame);
       }
 
@@ -1431,6 +1438,35 @@ class Interpreter {
         break;
     }
     return Value::Int(result, IntWidth::k64, /*is_signed=*/false);
+  }
+
+  // A declaration resolved to the definition it names, which may be in
+  // another file: lowering is per file, so a call that crosses one is a
+  // declaration here and a body there. By the declaration it came from,
+  // not by name -- two files may each define a `Helper`, and this is what
+  // the code generator links by too.
+  void Link(const ir::Function** callee, const ir::Module** home) const {
+    const ir::Function* declaration = *callee;
+    if (!declaration->is_declaration() || !declaration->has_source() ||
+        declaration->is_foreign()) {
+      return;
+    }
+    for (const ir::Module* other : linked_) {
+      if (other == nullptr || other == *home) {
+        continue;
+      }
+      for (const ir::Function& candidate : other->functions) {
+        if (candidate.is_declaration() || !candidate.has_source() ||
+            candidate.source_file != declaration->source_file ||
+            candidate.source_item != declaration->source_item ||
+            candidate.source_slot != declaration->source_slot) {
+          continue;
+        }
+        *callee = &candidate;
+        *home = other;
+        return;
+      }
+    }
   }
 
   Value Arithmetic(Frame* frame,

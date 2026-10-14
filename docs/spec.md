@@ -841,3 +841,93 @@ comptime fun Validate(config: WeaponConfig) {
 
 `comptime` runs on the same IR as the rest of the language and replaces macros,
 template metaprogramming and external code generators.
+
+## Returning a value
+
+A function that declares a result gives one back with `return`, on every
+path that can reach the end of its body:
+
+```wolang
+fun Describe(count: int) -> text {
+  if count == 0 {
+    return "none"
+  }
+  return "some"
+}
+```
+
+A function whose whole body is one expression is written with `=>`, and
+that expression is what it gives back:
+
+```wolang
+fun Add(a: int, b: int) -> int => a + b
+```
+
+A block does not give its last expression back. `fun F() -> int { 42 }`
+is an error (`E0132`), because the value of a block is not the value of
+the function that has it as a body -- what reads as a returned value in
+one language would be a silently discarded one here. `if` and `match`
+*are* expressions, so `return match step { ... }` is how a function
+returns one of several values.
+
+A function that never reaches its end needs no `return`: `loop { }` with
+no `break` in it is a body that never finishes.
+
+## Walking a collection
+
+`for value in thing` works on a range, an array, a slice, and on any type
+that says how to walk itself:
+
+```wolang
+offer class ListWalk<T> {
+  var over: List<T>
+  var at: int = -1
+
+  fun Next() -> bool {
+    at = at + 1
+    return at < over.Len()
+  }
+
+  fun Value() -> T {
+    return over.At(at)
+  }
+}
+```
+
+`Iterate()` hands back something with `Next` and `Value`, and the loop is
+those three calls. Walking borrows what it walks, so a collection that
+owns its storage is still there afterwards.
+
+## Threads
+
+```wolang
+need std.thread.{Spawn, MutexNew}
+
+var total: s64 = 0
+
+fun Work() {
+  // What a thread can reach is what is global or behind a lock.
+}
+
+fun main() uses unsafe {
+  var worker = Spawn(Work)
+  const finished = worker.Join()
+}
+```
+
+A spawned body takes nothing and gives nothing back: what a thread works
+on is what it can reach, which means a module-level `var` or something
+behind a `Mutex`. `AtomicAdd` is there for the counter case.
+
+## Building a binary
+
+```sh
+wolang build path/to/package -o program   # a binary that needs no compiler
+wolang build path/to/package --emit-object -o program.o
+wolang build path/to/package -O3 -o program
+```
+
+`wolang run` compiles in memory and runs; `wolang build` writes a program
+that runs on its own. Both come from the same IR, and a function the
+ahead-of-time backend cannot translate is named rather than quietly left
+to trap.
