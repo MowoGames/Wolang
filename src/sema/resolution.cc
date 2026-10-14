@@ -969,6 +969,15 @@ void ResolveSignatures(TypeStore* types,
       case ItemKind::kSystem:
         resolution->item_types[index] = signature_of(item);
         break;
+      case ItemKind::kSignal:
+      case ItemKind::kOn:
+        // A signal's type is the type of what listens to it: `signal
+        // Died(by: int)` is connected to by a `fun(int)`. One type for
+        // the two sides, so `Connect` and `Emit` check against the same
+        // thing and a handler of the wrong shape is reported where it is
+        // written.
+        resolution->item_types[index] = signature_of(item);
+        break;
       case ItemKind::kBinding:
       case ItemKind::kTypeAlias:
         if (item.type.is_valid()) {
@@ -1087,6 +1096,32 @@ void ResolveSignatures(TypeStore* types,
     // table is what crosses files. The bit is a member for the same
     // reason: it is part of what the type holds, and every tier has to
     // agree about that.
+    // What a signal holds: how many handlers, how many it has room for,
+    // and where they are. A separate member because the signal's own type
+    // is the handler's -- and because a member table is what every tier
+    // reads to find out what a type holds.
+    std::vector<Member> storage;
+    for (const Member& member : members) {
+      if (member.kind != MemberKind::kSignal) {
+        continue;
+      }
+      Member list;
+      list.kind = MemberKind::kSignalList;
+      list.type = types->Tuple(
+          {types->Int(IntWidth::k64, /*is_signed=*/false),
+           types->Int(IntWidth::k64, /*is_signed=*/false),
+           types->Pointer(types->Int(IntWidth::k8, /*is_signed=*/false),
+                          /*is_mutable=*/true)});
+      list.file = member.file;
+      list.item = member.item;
+      list.is_mutable = true;
+      list.is_public = false;
+      storage.push_back(std::move(list));
+    }
+    for (Member& list : storage) {
+      members.push_back(std::move(list));
+    }
+
     std::vector<Member> ready;
     for (uint32_t i = 0; i < members.size(); ++i) {
       if (members[i].kind != MemberKind::kDerived) {

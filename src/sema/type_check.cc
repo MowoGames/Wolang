@@ -262,6 +262,7 @@ class Checker {
   TypeId CheckBinary(const Expr& expr);
   TypeId CheckAssign(const Expr& expr);
   ExprId RootOfPlace(ExprId id) const;
+  const Member* SignalOperand(ExprId id) const;
   bool IsBytesAndText(TypeId from, TypeId to) const;
   bool IsPointerArithmetic(TokenKind op, TypeId left, TypeId right);
   TypeId CheckCall(ExprId id, const Expr& expr);
@@ -920,6 +921,31 @@ bool Checker::IsBytesAndText(TypeId from, TypeId to) const {
   return (is_bytes(from) && is_text(to)) || (is_text(from) && is_bytes(to));
 }
 
+// The signal a field access names, when it names one: `p.Died` in
+// `p.Died.Emit(...)`.
+const Member* Checker::SignalOperand(ExprId id) const {
+  if (!ast_.Contains(id)) {
+    return nullptr;
+  }
+  const Expr& expr = ast_.Get(id);
+  if (expr.kind == ExprKind::kPath) {
+    // A bare name inside a method: `Died.Emit(...)` is `self.Died`, the
+    // same way `health` is `self.health`.
+    const Member* member = SelfMember(expr.name);
+    return member != nullptr && member->kind == MemberKind::kSignal
+               ? member
+               : nullptr;
+  }
+  if (expr.kind != ExprKind::kField) {
+    return nullptr;
+  }
+  const TypeId owner = types_->StripWrappers(result_.TypeOf(expr.lhs));
+  const Member* member = resolution_->FindMember(owner, expr.name);
+  return member != nullptr && member->kind == MemberKind::kSignal
+             ? member
+             : nullptr;
+}
+
 ExprId Checker::RootOfPlace(ExprId id) const {
   ExprId current = id;
   while (ast_.Contains(current)) {
@@ -1329,6 +1355,28 @@ TypeId Checker::CheckField(const Expr& expr) {
        types_->KindOf(named) == TypeKind::kStr ||
        types_->KindOf(named) == TypeKind::kString)) {
     return types_->default_int();
+  }
+
+  // `s.Emit(args)` and `s.Connect(handler)`: the two things a signal does.
+  // Recognized here because a signal's type is the type of what listens
+  // to it, so both sides check against the same thing -- and a handler of
+  // the wrong shape is reported where it is written.
+  if (const Member* signal = SignalOperand(expr.lhs); signal != nullptr) {
+    const std::string_view operation = interner_->Text(expr.name);
+    if (operation == "Emit") {
+      // Emitting takes what the signal declares and gives nothing back.
+      return types_->Function(types_->ArgumentsOf(signal->type),
+                              types_->void_type());
+    }
+    if (operation == "Connect" || operation == "Disconnect") {
+      return types_->Function({signal->type}, types_->void_type());
+    }
+    std::string message = "a signal has `Emit`, `Connect` and "
+                          "`Disconnect`, and no `";
+    message.append(operation);
+    message.append("`");
+    Report(kUnknownMember, std::move(message), expr.span);
+    return types_->error();
   }
 
   // A type with no members at all: an array, a number, a tuple. Saying so

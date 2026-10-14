@@ -3,6 +3,7 @@
 #include "wolang/runtime/builtins.h"
 
 #include "wolang/runtime/arena.h"
+#include "wolang/runtime/signal.h"
 #include "wolang/runtime/text.h"
 
 #include "wolang/runtime/scheduler.h"
@@ -69,6 +70,10 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_arena_depth",
        reinterpret_cast<void*>(&wolang_arena_depth)},
       {"wolang_arena_used", reinterpret_cast<void*>(&wolang_arena_used)},
+      {"wolang_signal_connect",
+       reinterpret_cast<void*>(&wolang_signal_connect)},
+      {"wolang_signal_disconnect",
+       reinterpret_cast<void*>(&wolang_signal_disconnect)},
       {"wolang_sched_pending",
        reinterpret_cast<void*>(&wolang_sched_pending)},
   };

@@ -1379,6 +1379,84 @@ fun ReadTwice() -> int {
   WOLANG_EXPECT_EQ(f.Run("ReadTwice", {}), "24");
 }
 
+WOLANG_TEST(CodegenTest, ASignalCallsWhatIsConnectedToIt) {
+  // A signal's type is the type of what listens to it, so `Connect` and
+  // `Emit` check against the same thing. Connecting is a call into the
+  // runtime -- growing a list is the part that allocates -- and emitting
+  // is a loop here, because calling back into the language is something
+  // only the language can do.
+  //
+  // The interpreter has no addresses for its functions, so what it hands
+  // the runtime is a token it can turn back into the value. That the two
+  // tiers agree on all four lines below is the point.
+  Fixture f(R"(
+class Counter {
+  var value: int = 0
+
+  fun Bump(by: int) {
+    value = value + by
+  }
+}
+
+class Pawn {
+  var hp: int = 10
+
+  signal Died(witness: Counter)
+
+  fun Kill(witness: Counter) {
+    Died.Emit(witness)
+  }
+}
+
+fun One(c: Counter) {
+  c.Bump(1)
+}
+
+fun Ten(c: Counter) {
+  c.Bump(10)
+}
+
+fun NoHandlers() -> int {
+  const pawn = Pawn(10)
+  const witness = Counter(0)
+  pawn.Kill(witness)
+  return witness.value
+}
+
+fun OneHandler() -> int {
+  const pawn = Pawn(10)
+  const witness = Counter(0)
+  pawn.Died.Connect(One)
+  pawn.Kill(witness)
+  pawn.Kill(witness)
+  return witness.value
+}
+
+fun TwoHandlers() -> int {
+  const pawn = Pawn(10)
+  const witness = Counter(0)
+  pawn.Died.Connect(One)
+  pawn.Died.Connect(Ten)
+  pawn.Kill(witness)
+  return witness.value
+}
+
+fun AfterDisconnect() -> int {
+  const pawn = Pawn(10)
+  const witness = Counter(0)
+  pawn.Died.Connect(One)
+  pawn.Died.Connect(Ten)
+  pawn.Died.Disconnect(One)
+  pawn.Kill(witness)
+  return witness.value
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("NoHandlers", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("OneHandler", {}), "2");
+  WOLANG_EXPECT_EQ(f.Run("TwoHandlers", {}), "11");
+  WOLANG_EXPECT_EQ(f.Run("AfterDisconnect", {}), "10");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

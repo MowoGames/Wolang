@@ -91,6 +91,10 @@ enum class MemberKind : uint8_t {
   // `derived var x: T => expr`: a field whose value is computed from other
   // fields and kept until one of them changes.
   kDerived,
+  // What a signal holds: how many handlers there are, how many it has
+  // room for, and where they are. Written by the compiler, like the ready
+  // bit below and for the same reason.
+  kSignalList,
   // The bit that says whether a derived field has been computed. Written
   // by the compiler, not by the source: a member table is the one place
   // every tier agrees about what a type holds, so the bit lives here

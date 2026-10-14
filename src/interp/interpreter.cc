@@ -164,7 +164,12 @@ class Interpreter {
         std::memcpy(&number, address, sizeof(number));
         return Value::Float(static_cast<double>(number), FloatWidth::k32);
       }
+      case TypeKind::kFunction:
       case TypeKind::kPointer: {
+        // A function read out of memory is the token this tier handed to
+        // the runtime, not an address: a call through it looks the token
+        // back up. Which is how a signal's handler list works the same
+        // way in both tiers.
         uint64_t raw = 0;
         std::memcpy(&raw, address, sizeof(raw));
         return Value::Int(raw, IntWidth::k64, /*is_signed=*/false);
@@ -271,6 +276,12 @@ class Interpreter {
         entry.bits = argument.is_signed()
                          ? static_cast<uint64_t>(argument.signed_integer())
                          : argument.integer();
+      } else if (argument.kind() == Value::Kind::kFunction) {
+        // A function value has no address here -- it is a module and an
+        // index -- so what crosses the boundary is a token this run can
+        // turn back into the value. Which is what lets a signal keep its
+        // handlers in the same list the compiled tier uses.
+        entry.bits = Token(argument);
       } else if (argument.kind() == Value::Kind::kSlot ||
                  argument.kind() == Value::Kind::kPlace) {
         // A buffer in a frame slot, handed to something outside the
@@ -700,7 +711,13 @@ class Interpreter {
       }
 
       case ir::Opcode::kCallIndirect: {
-        const Value& target = Operand(frame, inst, 0);
+        Value target = Operand(frame, inst, 0);
+        if (target.kind() == Value::Kind::kInt) {
+          // A token that came back from the runtime: a signal's handler
+          // list holds these, because a function value cannot be an
+          // address in this tier.
+          target = FromToken(target.integer());
+        }
         if (target.kind() != Value::Kind::kFunction) {
           return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
                       "called " + target.Describe() +
@@ -785,6 +802,29 @@ class Interpreter {
     uint32_t offset = 0;
     std::vector<uint8_t> bytes;
   };
+
+  // A function value as something C can hold, and back.
+  //
+  // The runtime stores whatever it is given in a list of pointers; this
+  // tier has no pointers to functions, so it hands out a token instead and
+  // keeps the value. One table per run, which is as long as a signal's
+  // handlers are reachable.
+  uint64_t Token(const Value& function) {
+    for (size_t i = 0; i < tokens_.size(); ++i) {
+      if (tokens_[i] == function) {
+        return i + 1;
+      }
+    }
+    tokens_.push_back(function);
+    return tokens_.size();
+  }
+
+  Value FromToken(uint64_t token) const {
+    if (token == 0 || token > tokens_.size()) {
+      return Value();
+    }
+    return tokens_[token - 1];
+  }
 
   // Whatever a call wrote into a bounced buffer belongs back where it
   // came from.
@@ -1424,6 +1464,8 @@ class Interpreter {
   ForeignCaller* foreign_ = nullptr;
   abi::LayoutStore* layouts_ = nullptr;
   std::span<const ir::Module* const> linked_;
+  // Function values handed to the runtime, by the token it holds instead.
+  std::vector<Value> tokens_;
   uint64_t steps_ = 0;
   uint32_t depth_ = 0;
 };

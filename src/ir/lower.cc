@@ -1936,6 +1936,12 @@ class Lowerer {
                               : value);
     }
 
+    // `s.Connect(handler)` and `s.Emit(args)`: a signal's two operations.
+    if (const InstId done = LowerSignalCall(expr, arguments);
+        done.is_valid()) {
+      return done;
+    }
+
     // `BytesFromRaw(data, length)` is not a call: a slice *is* a pointer
     // and a length, so saying so is the whole of it. The one unsafe way
     // to make a view of memory that came from outside the language --
@@ -2176,6 +2182,162 @@ class Lowerer {
     return builder_->Add(
         Opcode::kMakeStruct, slice,
         {arguments[0], Widen(arguments[1], word)});
+  }
+
+  // What a signal's `Connect`, `Disconnect` or `Emit` becomes.
+  //
+  // Connecting is a call into the runtime, because growing a list is the
+  // one part that allocates. Emitting is *not*: calling back into the
+  // language is something only the language can do, so the loop over the
+  // handlers is emitted here.
+  InstId LowerSignalCall(const Expr& expr,
+                         const std::vector<InstId>& arguments) {
+    if (!ast_.Contains(expr.lhs)) {
+      return InstId{};
+    }
+    const Expr& callee = ast_.Get(expr.lhs);
+    if (callee.kind != ExprKind::kField) {
+      return InstId{};
+    }
+    const std::string_view operation = interner_->Text(callee.name);
+    const bool connect = operation == "Connect";
+    const bool disconnect = operation == "Disconnect";
+    const bool emit = operation == "Emit";
+    if (!connect && !disconnect && !emit) {
+      return InstId{};
+    }
+
+    // The signal itself: `p.Died` in `p.Died.Emit(...)`, or a bare `Died`
+    // inside a method.
+    const Place list = SignalList(callee.lhs);
+    if (!list.pointer.is_valid()) {
+      return InstId{};
+    }
+    const InstId address = AddressOfPlace(list);
+    const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
+    const TypeId handler_pointer = types_->Pointer(
+        types_->Int(IntWidth::k8, /*is_signed=*/false),
+        /*is_mutable=*/true);
+
+    if (connect || disconnect) {
+      if (arguments.empty()) {
+        return InstId{};
+      }
+      return RuntimeCall(connect ? "wolang_signal_connect"
+                                 : "wolang_signal_disconnect",
+                         types_->void_type(), {address, arguments[0]});
+    }
+
+    // Emit: every handler, in the order they were connected.
+    const InstId count_address = builder_->FieldAddress(
+        types_->Pointer(word, true), address, 0);
+    const InstId handlers_address = builder_->FieldAddress(
+        types_->Pointer(handler_pointer, true), address, 2);
+    const InstId count =
+        builder_->Add(Opcode::kLoad, word, {count_address});
+    const InstId handlers =
+        builder_->Add(Opcode::kLoad, handler_pointer, {handlers_address});
+
+    const TypeId handler = Erase(TypeOf(callee.lhs));
+    const InstId index = builder_->Add(Opcode::kAlloca, word);
+    builder_->Add(Opcode::kStore, TypeId{},
+                  {index, builder_->ConstInt(word, 0)});
+
+    const BlockId header = builder_->AddBlock("emit.header");
+    const BlockId body = builder_->AddBlock("emit.body");
+    const BlockId exit = builder_->AddBlock("emit.exit");
+    builder_->Jump(header);
+
+    builder_->SetCurrent(header);
+    const InstId current = builder_->Add(Opcode::kLoad, word, {index});
+    const InstId more =
+        builder_->Add(Opcode::kLt, types_->bool_type(), {current, count});
+    builder_->Branch(more, body, exit);
+
+    builder_->SetCurrent(body);
+    const InstId slot = builder_->IndexAddress(
+        types_->Pointer(handler, true), handlers, current, count);
+    const InstId target = builder_->Add(Opcode::kLoad, handler, {slot});
+    std::vector<InstId> operands;
+    operands.push_back(target);
+    for (InstId argument : arguments) {
+      operands.push_back(argument);
+    }
+    builder_->Add(Opcode::kCallIndirect, types_->void_type(),
+                  std::move(operands));
+    const InstId next = builder_->Add(
+        Opcode::kAdd, word, {current, builder_->ConstInt(word, 1)});
+    builder_->Add(Opcode::kStore, TypeId{}, {index, next});
+    builder_->Jump(header);
+
+    builder_->SetCurrent(exit);
+    // An emit is a statement; what it produces is nothing.
+    return builder_->Add(Opcode::kLoad, word, {count_address});
+  }
+
+  // The storage of the signal |id| names, as a place pointing at it.
+  Place SignalList(ExprId id) {
+    Place place;
+    if (!ast_.Contains(id)) {
+      return place;
+    }
+    const Expr& expr = ast_.Get(id);
+    TypeId owner;
+    Symbol name;
+    InstId object;
+    if (expr.kind == ExprKind::kField) {
+      owner = Erase(TypeOf(expr.lhs));
+      name = expr.name;
+      if (types_->IsHandle(owner)) {
+        object = Value(expr.lhs);
+      } else if (const Place base = PlaceOf(expr.lhs);
+                 base.addressable()) {
+        object = AddressOfPlace(base);
+      }
+    } else if (expr.kind == ExprKind::kPath && self_.is_valid()) {
+      owner = self_type_;
+      name = expr.name;
+      object = types_->IsHandle(self_type_) ? self_ : InstId{};
+    }
+    if (!owner.is_valid() || !object.is_valid()) {
+      return place;
+    }
+    const Member* signal = resolution_.FindMember(owner, name);
+    if (signal == nullptr || signal->kind != MemberKind::kSignal) {
+      return place;
+    }
+    place.pointer = object;
+    place.root_type = owner;
+    place.path.push_back(Step{SignalListIndex(owner, *signal), InstId{},
+                              InstId{}, SignalListType(owner, *signal)});
+    return place;
+  }
+
+  uint32_t SignalListIndex(TypeId owner, const Member& signal) {
+    uint32_t index = 0;
+    for (const Member& candidate : resolution_.MembersOf(owner)) {
+      if (!HasStorage(candidate.kind)) {
+        continue;
+      }
+      if (candidate.kind == MemberKind::kSignalList &&
+          candidate.item == signal.item &&
+          candidate.file == signal.file) {
+        return index;
+      }
+      ++index;
+    }
+    return 0;
+  }
+
+  TypeId SignalListType(TypeId owner, const Member& signal) {
+    for (const Member& candidate : resolution_.MembersOf(owner)) {
+      if (candidate.kind == MemberKind::kSignalList &&
+          candidate.item == signal.item &&
+          candidate.file == signal.file) {
+        return Erase(candidate.type);
+      }
+    }
+    return types_->error();
   }
 
   // A call to a method, when that is what this is. |arguments| holds the
