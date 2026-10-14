@@ -419,6 +419,49 @@ WOLANG_TEST(ComptimeTest, AFunctionWithArgumentsIsLeftForItsCallSite) {
   WOLANG_EXPECT(diagnostics->empty());
 }
 
+WOLANG_TEST(ComptimeTest, ACallWithConstantArgumentsBecomesAConstant) {
+  // The other half of D103: the call site is where one with arguments is
+  // evaluated, and what is left is the constant it worked out to -- in
+  // every tier, because the fold happens before the passes.
+  Database db;
+  const FileId file = db.AddFile(
+      "<test>",
+      "comptime fun Fib(n: int) -> int {\n"
+      "  if n < 2 {\n    return n\n  }\n"
+      "  return Fib(n - 1) + Fib(n - 2)\n}\n"
+      "fun Probe() -> int {\n  return Fib(20) + 1\n}\n");
+  const LoweredFile* lowered = db.Lowered(file);
+  WOLANG_ASSERT_NE(lowered, nullptr);
+  const ir::Function* probe =
+      lowered->module.Find(db.interner().Intern("Probe"));
+  WOLANG_ASSERT_NE(probe, nullptr);
+  bool calls_anything = false;
+  uint64_t folded = 0;
+  for (const ir::Inst& inst : probe->instructions) {
+    calls_anything |= inst.opcode == ir::Opcode::kCall;
+    if (inst.opcode == ir::Opcode::kConstInt) {
+      folded = std::max(folded, inst.payload.integer);
+    }
+  }
+  WOLANG_EXPECT(!calls_anything);
+  // The twentieth Fibonacci number, and the `+ 1` folded with it.
+  WOLANG_EXPECT_EQ(folded, uint64_t{6766});
+}
+
+WOLANG_TEST(ComptimeTest, ATrapInSuchACallIsReportedToo) {
+  Database db;
+  const FileId file = db.AddFile(
+      "<test>",
+      "comptime fun Divide(a: int, b: int) -> int => a / b\n"
+      "fun Probe() -> int {\n  return Divide(10, 0)\n}\n");
+  const std::vector<Diagnostic>* diagnostics = db.Diagnostics(file);
+  WOLANG_ASSERT_NE(diagnostics, nullptr);
+  WOLANG_ASSERT_EQ(diagnostics->size(), size_t{1});
+  WOLANG_EXPECT_EQ(diagnostics->front().code, "E0901");
+  WOLANG_EXPECT(diagnostics->front().message.find("division by zero") !=
+                std::string::npos);
+}
+
 WOLANG_TEST(TestAttributeTest, CollectsFunctionsMarkedTest) {
   Database db;
   const FileId file = db.AddFile(

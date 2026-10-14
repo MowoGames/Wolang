@@ -171,6 +171,7 @@ class Lowerer {
           function.source_item = binding->item;
         }
         function.is_task = HasFlag(item.flags, ItemFlags::kAsync);
+        function.is_comptime = HasFlag(item.flags, ItemFlags::kComptime);
         function.is_primitive_task =
             function.is_task && !item.body.is_valid();
         if (HasFlag(item.flags, ItemFlags::kExtern)) {
@@ -481,6 +482,8 @@ class Lowerer {
     function.source_file = Function::kNoSource;
     function.source_item = Function::kNoSource;
     function.is_task = HasFlag(home.Get(item).flags, ItemFlags::kAsync);
+    function.is_comptime =
+        HasFlag(home.Get(item).flags, ItemFlags::kComptime);
     const auto index = static_cast<uint32_t>(module_->functions.size());
     module_->functions.push_back(std::move(function));
     specializations_.emplace_back(name, index);

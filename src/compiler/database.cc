@@ -69,6 +69,122 @@ QueryKey ModuleEffectsKey(ModuleId module) {
 QueryKey EffectDiagnosticsKey(FileId file) {
   return QueryKey{QueryKind::kEffectDiagnostics, file.index};
 }
+
+constexpr std::string_view kComptimeCallFailed = "E0901";
+
+// A call to a `comptime` function with constant arguments, worked out
+// here and left as the constant it is.
+//
+// The other half of D103: a `comptime fun` with no arguments is evaluated
+// to check that it can be, and one *with* arguments is evaluated where it
+// is called -- which is this. Done on the IR rather than on the syntax so
+// that every tier gets the same constant, and so that the arguments may
+// be anything the passes have already worked out to be constant.
+//
+// Returns how many calls were folded, and reports a trap: a `comptime`
+// call that divides by zero is the program telling the compiler something
+// is wrong (`E0901`).
+uint32_t FoldComptimeCalls(const StringInterner& interner,
+                           const TypeStore& types,
+                           ir::Module* module,
+                           DiagnosticEngine* diagnostics,
+                           const Ast* ast,
+                           const ItemTree* tree) {
+  uint32_t folded = 0;
+  for (ir::Function& function : module->functions) {
+    for (ir::Block& block : function.blocks) {
+      for (const ir::InstId id : block.instructions) {
+        ir::Inst& inst = function.Get(id);
+        if (inst.opcode != ir::Opcode::kCall ||
+            inst.payload.callee >= module->functions.size()) {
+          continue;
+        }
+        const ir::Function& callee = module->functions[inst.payload.callee];
+        if (!callee.is_comptime || callee.is_declaration()) {
+          continue;
+        }
+        // Every argument has to be a constant, or there is nothing to
+        // evaluate with.
+        std::vector<interp::Value> arguments;
+        bool constant = true;
+        for (const ir::InstId operand : function.OperandsOf(inst)) {
+          if (!function.Contains(operand)) {
+            constant = false;
+            break;
+          }
+          const ir::Inst& given = function.Get(operand);
+          switch (given.opcode) {
+            case ir::Opcode::kConstInt:
+              arguments.push_back(interp::Value::Int(
+                  given.payload.integer, types.Get(given.type).int_width,
+                  types.Get(given.type).is_signed));
+              break;
+            case ir::Opcode::kConstBool:
+              arguments.push_back(interp::Value::Bool(given.payload.boolean));
+              break;
+            case ir::Opcode::kConstFloat:
+              arguments.push_back(interp::Value::Float(
+                  given.payload.floating,
+                  types.Get(given.type).float_width));
+              break;
+            default:
+              constant = false;
+              break;
+          }
+          if (!constant) {
+            break;
+          }
+        }
+        if (!constant) {
+          continue;
+        }
+
+        // A tight budget: this runs during compilation, so a loop that
+        // does not finish has to stop being the compiler's problem.
+        interp::Limits limits;
+        limits.steps = 1'000'000;
+        const interp::Outcome outcome = interp::Run(
+            interner, types, *module, callee, arguments, limits);
+        if (!outcome.ok()) {
+          if (diagnostics != nullptr && ast != nullptr && tree != nullptr &&
+              callee.has_source()) {
+            const ItemId at = ResolveItem(*ast, callee.source_item);
+            if (ast->Contains(at)) {
+              std::string message = "`";
+              message.append(interner.Text(callee.name));
+              message.append("` could not be evaluated at compile time: ");
+              message.append(interp::TrapKindName(outcome.trap));
+              diagnostics->Error(kComptimeCallFailed, std::move(message))
+                  .Primary(ast->Get(at).name_span, outcome.message);
+            }
+          }
+          continue;
+        }
+
+        // What came back, as the constant it is. Only a number or a bool:
+        // anything else would need storage, and a constant with storage is
+        // a different feature.
+        const interp::Value& value = outcome.value;
+        if (value.kind() == interp::Value::Kind::kInt) {
+          inst.opcode = ir::Opcode::kConstInt;
+          inst.payload.integer = value.integer();
+        } else if (value.kind() == interp::Value::Kind::kBool) {
+          inst.opcode = ir::Opcode::kConstBool;
+          inst.payload.boolean = value.boolean();
+        } else if (value.kind() == interp::Value::Kind::kFloat) {
+          inst.opcode = ir::Opcode::kConstFloat;
+          inst.payload.floating = value.floating();
+        } else {
+          continue;
+        }
+        inst.operands_count = 0;
+        ++folded;
+      }
+    }
+  }
+  return folded;
+}
+
 QueryKey ModuleSystemsKey(ModuleId module) {
   return QueryKey{QueryKind::kModuleSystems, module.index};
 }
@@ -1122,8 +1238,21 @@ void Database::RegisterQueries() {
           }
         }
 
+        // A call to a `comptime` function with constant arguments is the
+        // constant it works out to. Before the passes, so that the
+        // reference tier sees the same program -- and before inlining in
+        // particular, which would otherwise take the call apart and leave
+        // nothing to evaluate (D103).
+        DiagnosticEngine comptime;
+        FoldComptimeCalls(interner_, types_, &result.module, &comptime,
+                          &parsed->ast, tree);
+
         result.unoptimized = result.module;
         ir::Optimize(&types_, &result.module, &layouts);
+        // Again, for the ones whose arguments only became constant once
+        // the passes had propagated them.
+        FoldComptimeCalls(interner_, types_, &result.module, nullptr,
+                          nullptr, nullptr);
 
         const ir::VerificationResult optimized =
             ir::Verify(interner_, types_, result.module);
@@ -1135,7 +1264,7 @@ void Database::RegisterQueries() {
         // checks -- so it can be run here, inside the compiler. A trap is
         // the program telling the compiler something is wrong, so it
         // becomes a diagnostic rather than an internal note.
-        DiagnosticEngine comptime;
+
         for (uint32_t index = 0; tree != nullptr &&
                                  index < tree->entries.size();
              ++index) {

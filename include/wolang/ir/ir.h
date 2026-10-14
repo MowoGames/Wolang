@@ -168,6 +168,10 @@ struct Function {
   // function the way the machine means it until the transform in
   // `ir/tasks.h` has split it into a state machine.
   bool is_task = false;
+  // Whether the declaration was `comptime`: it has no effects, so a call
+  // to it with constant arguments is a constant, and the compiler works
+  // it out rather than the program (D103).
+  bool is_comptime = false;
   // The type whose method this is, when it is one. Its first parameter is
   // then the receiver, passed by address.
   TypeId self_type;

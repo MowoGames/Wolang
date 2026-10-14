@@ -1139,3 +1139,16 @@ it" rejected it. And a runtime function declared both by a library
 (`extern "C" fun wolang_object_free(at: *mut u8)`) and by lowering (where
 a handle is a word) kept one declaration and two opinions about its
 parameter; a call now says what the surviving declaration says.
+
+**D103. A `comptime` call with constant arguments is a constant.** One
+with no arguments was already evaluated inside the compiler, to check that
+it could be; one *with* arguments needed the call site, which is this. The
+fold happens on the IR, before the passes: before them so that the
+reference tier sees the same program, and before inlining in particular,
+which would otherwise take the call apart and leave nothing to evaluate.
+`Fib(20) + 1` in a body is one `const.int 6766` in every tier.
+
+It runs again after the passes, for the calls whose arguments only became
+constant once propagation had been through. A trap is reported the way it
+is for one with no arguments (`E0901`), because a `comptime` call that
+divides by zero is the program telling the compiler something is wrong.
