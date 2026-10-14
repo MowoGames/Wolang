@@ -1,11 +1,12 @@
 # Wave 10 — suspension, and a second machine
 
-**Status:** the core of the wave is complete — the `async` effect, the task
+**Status:** concurrency, strings, memory and the server are in. The core of
+the wave is complete — the `async` effect, the task
 transform, `spawn`, a scheduler, and `std.tasks`. Machines (`machine` /
 `state`), signals and `derived`, and `wolang-http` as a design driver are
 not built and are carried forward. The x86-64 backend, which the roadmap
 put later, landed here instead; the end of this report says why.
-593 unit tests, all passing in Debug, sanitizers and Release, and all of
+608 unit tests, all passing in Debug, sanitizers and Release, and all of
 them passing again when the whole compiler is built for x86-64.
 
 ## Scope
@@ -155,6 +156,54 @@ differential tests that run every program interpreted, optimized and
 compiled and compare all three. A backend verified by execution rather than
 by inspection, on hardware that is not the target. What that cannot do is
 measure speed: a benchmark there times the translator.
+
+## The server, and what writing it found
+
+`wolang-http` is in `lib/http`: eight socket calls in `socket.wo` and
+everything above them in Wolang. `examples/server` routes three paths over
+it, and nothing in that file is unsafe -- the responsibility stops at the
+floor, which is what `uses unsafe` on a declaration means.
+
+```
+$ wolang run examples/server
+server: http://127.0.0.1:8080
+http: listening
+
+$ curl -s localhost:8080/echo
+you said GET /echo, 81 bytes
+
+20000 keep-alive requests in 0.648 s = 30848 req/s
+```
+
+Thirty thousand requests a second, which is where the measuring client
+tops out: the same client against a threaded Python server reaches 30784,
+so this is the floor of the measurement rather than the ceiling of the
+server. One connection at a time, keep-alive, a four-kilobyte buffer and an
+arena per request.
+
+That number is the second thing the server produced. The first is a list
+of holes it found, every one of which was a wrong answer rather than a
+missing feature:
+
+| what the server needed | what was actually there |
+| --- | --- |
+| a four-kilobyte buffer | the dev tier declined any frame over 4000 bytes, so the whole request path ran interpreted -- 25x slower |
+| `sub sp, sp, x9` for a large frame | the shifted-register form of `sub` reads register 31 as *zero*, not the stack pointer, so the frame was never allocated and the first write faulted |
+| `add x9, sp, x10` for an address in a large frame | the same, which is why the assembler now refuses the stack pointer in that form rather than encoding it wrongly |
+| a buffer a callee fills | slot promotion replaced a load-before-store with an undefined value, so the buffer was undefined before the callee saw it |
+| a slice of a local array | the conversion copied the array, so the callee filled a copy nobody could see |
+| `bytes[i] = v` through a slice parameter | reported as an assignment to a `const` binding -- but a view writes the storage it views |
+| `message.data + sent` to resume a partial write | no pointer arithmetic; now an element address, scaled by the tiers |
+| a module-level `const` | lowered to an undefined value, silently |
+| `message.len` | a field read of an owning string was treated as a *move*, so the next use was reported as a use after move |
+| a string from a buffer the interpreter holds | the interpreter's values have no address, so handing one to C was impossible; now the slot is copied out to real memory for the call and copied back |
+
+The interpreter's side of that last one is worth keeping: its values carry
+their shape rather than living in memory, which is what makes it the
+reference tier and also what makes a pointer into one meaningless. A buffer
+handed to C is bounced through real memory, and a place names the frame it
+belongs to so that a slice of a local array survives being passed to a
+callee.
 
 ## What is carried forward
 
