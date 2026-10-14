@@ -22,6 +22,12 @@ constexpr std::string_view kRecursiveTask = "E0304";
 constexpr std::string_view kAllocSymbol = "wolang_frame_alloc";
 constexpr std::string_view kFreeSymbol = "wolang_frame_free";
 
+// What the scheduler calls to advance any task by one step.
+constexpr std::string_view kDispatchName = "wolang$dispatch";
+
+// Handing a task to the scheduler.
+constexpr std::string_view kSpawnSymbol = "wolang_sched_spawn";
+
 // What a task's frame holds, and where.
 //
 // The state comes first because every machine reads it before anything
@@ -41,8 +47,10 @@ struct Frame {
   // By wait instruction id, in the order they appear.
   std::vector<std::pair<InstId, uint32_t>> waits;
   uint32_t size = 0;
-  // The function that advances this machine by one step.
+  // The function that advances this machine by one step, and the number
+  // the dispatcher knows it by.
   uint32_t resume = 0;
+  uint32_t kind = 0;
 };
 
 class Splitter {
@@ -60,6 +68,255 @@ class Splitter {
         span_of_(span_of),
         diagnostics_(diagnostics) {}
 
+  // `spawn F(args)` becomes a frame, the arguments written into it, and a
+  // call to the scheduler. The instruction that was the spawn *becomes* the
+  // call, so the handle keeps its id and nothing that used it is rewritten
+  // -- the same trick inlining uses.
+  void ExpandSpawns(uint32_t index) {
+    for (uint32_t b = 0; b < module_->functions[index].blocks.size(); ++b) {
+      for (size_t position = 0;
+           position < module_->functions[index].blocks[b].instructions.size();
+           ++position) {
+        const InstId id =
+            module_->functions[index].blocks[b].instructions[position];
+        if (module_->functions[index].Get(id).opcode !=
+            Opcode::kSpawnCall) {
+          continue;
+        }
+        position = ExpandSpawn(index, BlockId{b}, position, id);
+      }
+    }
+  }
+
+  size_t ExpandSpawn(uint32_t index,
+                     BlockId block,
+                     size_t position,
+                     InstId id) {
+    const Inst spawn = module_->functions[index].Get(id);
+    const Frame* callee = FrameOf(spawn.payload.callee);
+    if (callee == nullptr) {
+      // Not a task after all, or one that could not be split. The checker
+      // and the recursion report have already said so.
+      return position;
+    }
+
+    // The declarations this needs, created before anything takes a pointer
+    // into the function: adding a declaration can move the vector.
+    const uint32_t allocate = Allocator(*callee, /*release=*/false);
+    const uint32_t spawner = Spawner();
+    const std::vector<InstId> arguments(
+        module_->functions[index].operands.begin() +
+            spawn.operands_begin,
+        module_->functions[index].operands.begin() + spawn.operands_begin +
+            spawn.operands_count);
+
+    Function* target = &module_->functions[index];
+    // Built in a side list and spliced in before the spawn, so the handle
+    // stays where it was.
+    std::vector<InstId> prelude;
+    const auto emit = [&](Inst inst) {
+      const InstId fresh{
+          static_cast<uint32_t>(target->instructions.size())};
+      target->instructions.push_back(inst);
+      target->owners.push_back(block);
+      prelude.push_back(fresh);
+      return fresh;
+    };
+    const auto constant = [&](TypeId type, uint64_t value) {
+      Inst inst;
+      inst.opcode = Opcode::kConstInt;
+      inst.type = type;
+      inst.payload.integer = value;
+      return emit(inst);
+    };
+    const auto call = [&](uint32_t callee_index, TypeId type,
+                          std::vector<InstId> operands) {
+      Inst inst;
+      inst.opcode = Opcode::kCall;
+      inst.type = type;
+      inst.payload.callee = callee_index;
+      inst.operands_begin = static_cast<uint32_t>(target->operands.size());
+      inst.operands_count = static_cast<uint32_t>(operands.size());
+      for (InstId operand : operands) {
+        target->operands.push_back(operand);
+      }
+      return emit(inst);
+    };
+    const auto field_address = [&](InstId base, uint32_t field,
+                                   TypeId type) {
+      Inst inst;
+      inst.opcode = Opcode::kFieldAddress;
+      inst.type = types_->Pointer(type, /*is_mutable=*/true);
+      inst.field = field;
+      inst.operands_begin = static_cast<uint32_t>(target->operands.size());
+      inst.operands_count = 1;
+      target->operands.push_back(base);
+      return emit(inst);
+    };
+    const auto store = [&](InstId address, InstId value) {
+      Inst inst;
+      inst.opcode = Opcode::kStore;
+      inst.operands_begin = static_cast<uint32_t>(target->operands.size());
+      inst.operands_count = 2;
+      target->operands.push_back(address);
+      target->operands.push_back(value);
+      emit(inst);
+    };
+
+    const TypeId size_type = types_->Int(IntWidth::k64, false);
+    const InstId frame =
+        call(allocate, callee->pointer, {constant(size_type, callee->size)});
+
+    const TypeId state_type = FieldType(*callee, callee->state_field);
+    store(field_address(frame, callee->state_field, state_type),
+          constant(state_type, 0));
+
+    const std::vector<TypeId> fields = types_->ArgumentsOf(callee->type);
+    for (size_t i = 0; i < arguments.size(); ++i) {
+      const uint32_t field =
+          callee->first_param_field + static_cast<uint32_t>(i);
+      if (field >= fields.size()) {
+        break;
+      }
+      store(field_address(frame, field, fields[field]), arguments[i]);
+    }
+
+    const TypeId opaque =
+        types_->Pointer(types_->Int(IntWidth::k8, false), true);
+    Inst cast;
+    cast.opcode = Opcode::kCast;
+    cast.type = opaque;
+    cast.operands_begin = static_cast<uint32_t>(target->operands.size());
+    cast.operands_count = 1;
+    target->operands.push_back(frame);
+    const InstId opaque_frame = emit(cast);
+
+    const TypeId kind_type = types_->Int(IntWidth::k32, true);
+    const InstId kind = constant(kind_type, callee->kind);
+
+    // The spawn becomes the call that hands the frame over: same id, same
+    // type, so the handle is already where everything expects it.
+    Inst handed;
+    handed.opcode = Opcode::kCall;
+    handed.type = spawn.type.is_valid() ? spawn.type : kind_type;
+    handed.payload.callee = spawner;
+    handed.operands_begin = static_cast<uint32_t>(target->operands.size());
+    handed.operands_count = 2;
+    target->operands.push_back(kind);
+    target->operands.push_back(opaque_frame);
+    target->Get(id) = handed;
+
+    Block& body = target->Get(block);
+    body.instructions.insert(body.instructions.begin() +
+                                 static_cast<long>(position),
+                             prelude.begin(), prelude.end());
+    return position + prelude.size();
+  }
+
+  uint32_t Spawner() {
+    const Symbol symbol = interner_->Intern(std::string(kSpawnSymbol));
+    for (uint32_t i = 0; i < module_->functions.size(); ++i) {
+      if (module_->functions[i].name == symbol) {
+        return i;
+      }
+    }
+    const TypeId opaque =
+        types_->Pointer(types_->Int(IntWidth::k8, false), true);
+    Function declaration;
+    declaration.name = symbol;
+    declaration.type = types_->Function(
+        {types_->Int(IntWidth::k32, true), opaque},
+        types_->Int(IntWidth::k32, true));
+    declaration.foreign_symbol = symbol;
+    declaration.effects_known = false;
+    module_->functions.push_back(std::move(declaration));
+    return static_cast<uint32_t>(module_->functions.size() - 1);
+  }
+
+  // One entry point the scheduler can use for any task: a switch over the
+  // kinds, calling each machine's own resume. A handle is then two integers
+  // -- a kind and a frame -- and nothing has to hold a function pointer,
+  // which is also what keeps this working identically in both tiers.
+  void EmitDispatch() {
+    if (kinds_.empty()) {
+      return;
+    }
+    const TypeId kind_type = types_->Int(IntWidth::k32, true);
+    const TypeId opaque =
+        types_->Pointer(types_->Int(IntWidth::k8, false),
+                        /*is_mutable=*/true);
+
+    Function dispatch;
+    dispatch.name = interner_->Intern(std::string(kDispatchName));
+    dispatch.type =
+        types_->Function({kind_type, opaque}, types_->bool_type());
+    dispatch.effects_known = false;
+    const auto position = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(dispatch));
+    Function* target = &module_->functions[position];
+
+    const BlockId entry = AddBlock(target, "entry");
+    Inst kind_param;
+    kind_param.opcode = Opcode::kParam;
+    kind_param.type = kind_type;
+    const InstId kind{static_cast<uint32_t>(target->instructions.size())};
+    target->instructions.push_back(kind_param);
+    target->owners.push_back(entry);
+    target->Get(entry).instructions.push_back(kind);
+    Inst frame_param;
+    frame_param.opcode = Opcode::kParam;
+    frame_param.type = opaque;
+    const InstId frame{static_cast<uint32_t>(target->instructions.size())};
+    target->instructions.push_back(frame_param);
+    target->owners.push_back(entry);
+    target->Get(entry).instructions.push_back(frame);
+    target->Get(entry).param_count = 2;
+
+    std::vector<BlockId> arms;
+    for (const auto& [index, resume] : kinds_) {
+      const Frame* frame_of = FrameOf(index);
+      const BlockId arm = AddBlock(
+          target, "kind." + std::string(interner_->Text(
+                                module_->functions[index].name)));
+      const InstId typed = Add(target, arm, Opcode::kCast,
+                               frame_of->pointer, {frame});
+      const InstId done =
+          Add(target, arm, Opcode::kCall, types_->bool_type(), {typed});
+      target->Get(done).payload.callee = resume;
+      Return(target, arm, done);
+      arms.push_back(arm);
+    }
+
+    const BlockId nowhere = AddBlock(target, "nokind");
+    Inst unreachable;
+    unreachable.opcode = Opcode::kUnreachable;
+    const InstId stop{static_cast<uint32_t>(target->instructions.size())};
+    target->instructions.push_back(unreachable);
+    target->owners.push_back(nowhere);
+    target->Get(nowhere).instructions.push_back(stop);
+
+    Inst switch_inst;
+    switch_inst.opcode = Opcode::kSwitch;
+    switch_inst.operands_begin =
+        static_cast<uint32_t>(target->operands.size());
+    switch_inst.operands_count = 1;
+    target->operands.push_back(kind);
+    switch_inst.successors_begin =
+        static_cast<uint32_t>(target->successors.size());
+    switch_inst.cases_begin = static_cast<uint32_t>(target->cases.size());
+    for (size_t i = 0; i < arms.size(); ++i) {
+      target->successors.push_back(arms[i]);
+      target->cases.push_back(i);
+    }
+    target->successors.push_back(nowhere);
+    switch_inst.successors_count = static_cast<uint32_t>(arms.size() + 1);
+    switch_inst.cases_count = static_cast<uint32_t>(arms.size());
+    const InstId id{static_cast<uint32_t>(target->instructions.size())};
+    target->instructions.push_back(switch_inst);
+    target->owners.push_back(entry);
+    target->Get(entry).instructions.push_back(id);
+  }
+
   void Run() {
     // The frame of a task that waits on another contains that task's frame,
     // so the callees have to be laid out first. A cycle is a task that
@@ -68,6 +325,12 @@ class Splitter {
     const std::vector<uint32_t> order = Order();
     for (uint32_t index : order) {
       Split(index);
+    }
+    EmitDispatch();
+    // A `spawn` can be anywhere, including in a function that is not a
+    // task, so this is its own walk over everything.
+    for (uint32_t i = 0; i < module_->functions.size(); ++i) {
+      ExpandSpawns(i);
     }
   }
 
@@ -322,6 +585,8 @@ class Splitter {
                                 ? EmitPrimitive(index, frames_[index])
                                 : EmitResume(index, frames_[index]);
     frames_[index].resume = resume;
+    frames_[index].kind = static_cast<uint32_t>(kinds_.size());
+    kinds_.emplace_back(index, resume);
     EmitDriver(index, frames_[index], resume);
     module_->functions[index].is_task = false;
   }
@@ -783,6 +1048,8 @@ class Splitter {
   const std::function<SourceSpan(uint32_t)>& span_of_;
   std::vector<Diagnostic>* diagnostics_;
   std::unordered_map<uint32_t, Frame> frames_;
+  // Every task, in the order the dispatcher numbers them.
+  std::vector<std::pair<uint32_t, uint32_t>> kinds_;
   std::set<uint32_t> reported_;
 };
 

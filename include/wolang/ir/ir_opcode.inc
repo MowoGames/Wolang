@@ -85,6 +85,10 @@ WOLANG_IR_OP(OptionalValue, "opt.value", "the value inside; undefined when "
 // ------------------------------------------------------------------ calls ---
 
 WOLANG_IR_OP(Call, "call", "calls a known function")
+WOLANG_IR_OP(SpawnCall, "spawn.call",
+             "starts a `task` alongside the caller and produces a handle "
+             "for it. Expanded by the transform in `ir/tasks.h` into a "
+             "frame and a call to the scheduler")
 WOLANG_IR_OP(WaitCall, "wait.call",
              "calls a `task` and suspends until it finishes. Not something "
              "any back end sees: the transform in `ir/tasks.h` splits every "

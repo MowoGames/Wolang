@@ -78,6 +78,7 @@ bool IsPure(Opcode opcode) {
     case Opcode::kStore:
     case Opcode::kCall:
     case Opcode::kWaitCall:
+    case Opcode::kSpawnCall:
     case Opcode::kCallIndirect:
     case Opcode::kAlloca:
       return false;

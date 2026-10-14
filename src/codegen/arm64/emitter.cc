@@ -1398,6 +1398,16 @@ class FunctionEmitter {
       return;
     }
 
+    // One address as another: nothing to do but carry the value across.
+    if (types_.KindOf(from) == TypeKind::kPointer &&
+        types_.KindOf(to) == TypeKind::kPointer) {
+      const Register value = UseInt(source, 1);
+      const Register reg = DestInt(id, 0);
+      assembler_.Mov(IWidth::k64, reg, value);
+      FinishInt(id, reg);
+      return;
+    }
+
     // Integer to integer. A conversion that cannot hold the value traps
     // rather than keeping the low bits: `as` is a conversion, and overflow
     // traps everywhere else in this language.

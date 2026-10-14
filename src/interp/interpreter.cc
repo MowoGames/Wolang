@@ -617,6 +617,13 @@ class Interpreter {
                   "cast of " + source.Describe());
     }
 
+    if (target.kind == TypeKind::kPointer) {
+      // One address reinterpreted as another: the only cast the machine
+      // does nothing for. The transform that splits a task emits these,
+      // because a scheduler holds every frame as the same kind of pointer.
+      return source;
+    }
+
     // A cast the IR does not distinguish -- a quantity to its own numeric
     // type, or a type to itself.
     return source;

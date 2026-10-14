@@ -28,6 +28,7 @@
 #include "wolang/codegen/compiler.h"
 #include "wolang/abi/layout.h"
 #include "wolang/codegen/foreign.h"
+#include "wolang/runtime/scheduler.h"
 #include "wolang/compiler/workspace.h"
 #include "wolang/format/formatter.h"
 #include "wolang/interp/interpreter.h"
@@ -394,6 +395,62 @@ int RunFormat(const Options& options) {
   return exit_code;
 }
 
+// What the scheduler resumes a task through.
+//
+// The scheduler holds a kind and a frame and knows nothing else; this is
+// where that becomes a call into whichever tier is running the program.
+// Both go through the one entry point the compiler generates, so neither
+// tier needs a scheduler of its own.
+struct TaskHost {
+  Database* database = nullptr;
+  const ir::Module* module = nullptr;
+  abi::LayoutStore* layouts = nullptr;
+  interp::ForeignCaller* foreign = nullptr;
+  codegen::CompiledModule* compiled = nullptr;
+  Symbol dispatch;
+};
+
+bool ResumeTask(void* context, int32_t kind, void* frame) {
+  auto* host = static_cast<TaskHost*>(context);
+  std::vector<interp::Value> arguments;
+  arguments.reserve(2);
+  arguments.push_back(interp::Value::Int(static_cast<uint64_t>(kind),
+                                         IntWidth::k32, true));
+  arguments.push_back(
+      interp::Value::Int(reinterpret_cast<uint64_t>(frame), IntWidth::k64,
+                         /*is_signed=*/false));
+
+  if (host->compiled != nullptr &&
+      host->compiled->Contains(host->dispatch)) {
+    // The hot path: no boxing, no lookup, no allocation.
+    bool faulted = false;
+    const bool finished =
+        host->compiled->ResumeTask(host->dispatch, kind, frame, &faulted);
+    if (faulted) {
+      std::fprintf(stderr, "wolang: a task faulted\n");
+    }
+    return finished;
+  }
+
+  interp::Outcome outcome;
+  {
+    outcome = interp::RunNamed(host->database->interner(),
+                               host->database->types(), *host->module,
+                               host->dispatch, arguments, {}, nullptr,
+                               host->foreign, host->layouts);
+  }
+  if (!outcome.ok()) {
+    std::fprintf(stderr, "wolang: %s at %s: %s\n",
+                 std::string(interp::TrapKindName(outcome.trap)).c_str(),
+                 outcome.where.c_str(), outcome.message.c_str());
+    // Finished, as far as the scheduler is concerned: a task that faulted
+    // is not one to resume.
+    return true;
+  }
+  return outcome.value.kind() == interp::Value::Kind::kBool &&
+         outcome.value.boolean();
+}
+
 // Every file's IR, for the code generator.
 //
 // All of them at once: lowering is per file, so a call into another file is
@@ -490,6 +547,20 @@ int RunProgram(const Options& options) {
     compiled = codegen::Compile(database.interner(), database.types(), code);
   }
 
+  // The scheduler needs a way back into the program before `main` runs:
+  // `main` may spawn, and running what it spawned is a call into here.
+  abi::LayoutStore program_layouts(database.types(),
+                                   program_file->resolution);
+  TaskHost host;
+  host.database = &database;
+  host.module = &program->module;
+  host.layouts = &program_layouts;
+  host.foreign = foreign.get();
+  host.compiled = compiled.get();
+  host.dispatch = database.interner().Intern("wolang$dispatch");
+  runtime::ResetScheduler();
+  runtime::InstallResume(&ResumeTask, &host);
+
   interp::Output output;
   interp::Outcome outcome;
   if (compiled != nullptr && compiled->Contains(main)) {
@@ -497,10 +568,9 @@ int RunProgram(const Options& options) {
   } else {
     // The interpreter needs the layout to read a value it only has the
     // address of, which a task frame is.
-    abi::LayoutStore layouts(database.types(), program_file->resolution);
     outcome = interp::RunNamed(database.interner(), database.types(),
                                program->module, main, {}, {}, &output,
-                               foreign.get(), &layouts);
+                               foreign.get(), &program_layouts);
   }
 
   std::fputs(output.text.c_str(), stdout);
@@ -724,9 +794,22 @@ int RunBench(const Options& options) {
   int ran = 0;
   for (FileId file : files) {
     const LoweredFile* lowered = database.Lowered(file);
-    if (lowered == nullptr || lowered->benches.empty()) {
+    const CheckedFile* checked = database.Checked(file);
+    if (lowered == nullptr || checked == nullptr ||
+        lowered->benches.empty()) {
       continue;
     }
+
+    // A benchmark may spawn, so the scheduler needs its way back in.
+    abi::LayoutStore layouts(database.types(), checked->resolution);
+    TaskHost host;
+    host.database = &database;
+    host.module = &lowered->module;
+    host.layouts = &layouts;
+    host.compiled = compiled.get();
+    host.dispatch = database.interner().Intern("wolang$dispatch");
+    runtime::InstallResume(&ResumeTask, &host);
+
     for (Symbol name : lowered->benches) {
       const std::string text(database.interner().Text(name));
       ++ran;
@@ -740,10 +823,14 @@ int RunBench(const Options& options) {
       // code can run, and everything noise adds is time it did not spend
       // on that.
       constexpr int kRuns = 5;
+      runtime::ResetScheduler();
       compiled->Run(name, {});
       double ms = 0;
       interp::Outcome outcome;
       for (int run = 0; run < kRuns; ++run) {
+        // Each run starts with nothing scheduled: a benchmark that spawns
+        // would otherwise measure the leftovers of the last one.
+        runtime::ResetScheduler();
         const auto start = std::chrono::steady_clock::now();
         outcome = compiled->Run(name, {});
         const auto finish = std::chrono::steady_clock::now();

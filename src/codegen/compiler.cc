@@ -70,6 +70,18 @@ void ReportTrap(Context* context,
 
 class CompiledModule::Impl {
  public:
+  // Puts a nested run's context back when it ends, however it ends.
+  struct RestoreOnExit {
+    Impl* impl;
+    Context context;
+    jmp_buf* landing;
+
+    ~RestoreOnExit() {
+      impl->context_ = context;
+      std::memcpy(&impl->landing_, landing, sizeof(jmp_buf));
+    }
+  };
+
   Impl(const StringInterner& interner,
        const TypeStore& types,
        std::span<const FileCode> files)
@@ -654,6 +666,15 @@ interp::Outcome CompiledModule::Impl::Run(
   //
   // One run at a time, consequently: a compiled call cannot be re-entered
   // from inside another one.
+  // A run can happen inside a run: the scheduler calls back into the tier
+  // to advance a task, and that task may start another one. The context
+  // and the landing pad are members because they have to outlive a
+  // `longjmp`, so a nested run saves and restores them around itself.
+  const Context outer_context = context_;
+  jmp_buf outer_landing;
+  std::memcpy(&outer_landing, &landing_, sizeof(jmp_buf));
+  const RestoreOnExit restore{this, outer_context, &outer_landing};
+
   context_ = Context();
   context_.landing = &landing_;
   context_.report = &ReportTrap;
@@ -741,6 +762,47 @@ interp::Outcome CompiledModule::Run(
     const std::vector<interp::Value>& arguments,
     std::vector<std::string>* backtrace) const {
   return impl_->Run(name, arguments, backtrace);
+}
+
+bool CompiledModule::ResumeTask(Symbol dispatch,
+                                int32_t kind,
+                                void* frame,
+                                bool* faulted) const {
+  Impl& impl = *impl_;
+  const Impl::Entry* entry = impl.Find(dispatch);
+  if (entry == nullptr || !entry->compiled || !impl.block_.is_installed()) {
+    *faulted = true;
+    return true;
+  }
+
+  // Nothing here allocates: two slots in, one word out, and the stub is
+  // the same one every step.
+  uint64_t slots[2] = {static_cast<uint64_t>(static_cast<int64_t>(kind)),
+                       reinterpret_cast<uint64_t>(frame)};
+  uint64_t result = 0;
+
+  const Context outer_context = impl.context_;
+  jmp_buf outer_landing;
+  std::memcpy(&outer_landing, &impl.landing_, sizeof(jmp_buf));
+  const Impl::RestoreOnExit restore{&impl, outer_context, &outer_landing};
+
+  impl.context_ = Context();
+  impl.context_.landing = &impl.landing_;
+  impl.context_.report = &ReportTrap;
+  impl.context_.code_begin =
+      reinterpret_cast<uint64_t>(impl.block_.AddressOf(0));
+  impl.context_.code_end =
+      impl.context_.code_begin + impl.words_.size() * sizeof(uint32_t);
+
+  const auto stub = reinterpret_cast<EntryPoint>(
+      const_cast<void*>(impl.block_.AddressOf(entry->stub)));
+  if (_setjmp(impl.landing_) != 0) {
+    *faulted = true;
+    return true;
+  }
+  stub(&impl.context_, slots, &result);
+  *faulted = false;
+  return (result & 1) != 0;
 }
 
 std::string CompiledModule::Symbolize(uint32_t offset) const {

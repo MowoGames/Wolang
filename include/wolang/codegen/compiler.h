@@ -64,6 +64,18 @@ class CompiledModule {
   // were emitted.
   std::vector<std::pair<std::string, uint32_t>> Listing() const;
 
+  // Advances one task by one step: calls |dispatch| with a kind and a
+  // frame, and returns whether the task finished.
+  //
+  // Its own entry point rather than a use of `Run`, because this is the
+  // hot path of every program that has tasks in it: a scheduler step must
+  // not allocate, box a value, or look a function up by name. Returns
+  // false and sets |faulted| when the step trapped.
+  bool ResumeTask(Symbol dispatch,
+                  int32_t kind,
+                  void* frame,
+                  bool* faulted) const;
+
   // The machine words of one function, for a dump or a disassembly test.
   std::span<const uint32_t> WordsOf(Symbol name) const;
 

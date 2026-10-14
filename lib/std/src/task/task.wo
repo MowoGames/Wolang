@@ -1,0 +1,47 @@
+// Suspension, and the loop that runs it.
+//
+// A `task` is split into a state machine by the compiler, so what is left
+// for a library is the scheduler's door: start something, give way, wait
+// for a handle, run until nothing can move. The scheduler itself is in the
+// runtime because it has to be the same one whichever tier is executing.
+//
+// `Yield` has no body on purpose: a task declaration with no body is the
+// platform floor for suspension, and the compiler synthesizes the one state
+// machine that suspends once and then finishes. Everything else here is
+// ordinary Wolang.
+
+extern "C" fun wolang_sched_run() -> s64
+extern "C" fun wolang_sched_done(handle: s32) -> bool
+extern "C" fun wolang_sched_pending() -> s32
+
+/// Gives the scheduler a chance to run something else.
+offer task fun Yield()
+
+/// Runs every spawned task until none can make progress. Returns how many
+/// steps that took.
+///
+/// This is where the effect row stops being able to help: what `Run` does
+/// is whatever the tasks do, and the row cannot say so. Keep the spawning
+/// close to the running and the question stays answerable by reading.
+offer fun Run() -> s64 uses unsafe {
+  return wolang_sched_run()
+}
+
+/// Whether the task behind `handle` has finished.
+offer fun Done(handle: s32) -> bool uses unsafe {
+  return wolang_sched_done(handle)
+}
+
+/// How many spawned tasks have not finished.
+offer fun Pending() -> s32 uses unsafe {
+  return wolang_sched_pending()
+}
+
+/// Suspends until the task behind `handle` has finished. Structured
+/// concurrency in its smallest form: whoever spawned something can wait for
+/// it without knowing what it is.
+offer task fun Join(handle: s32) {
+  while !Done(handle) {
+    wait Yield()
+  }
+}

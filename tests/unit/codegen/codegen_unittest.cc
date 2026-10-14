@@ -7,6 +7,7 @@
 
 #include "harness/test.h"
 #include "wolang/codegen/foreign.h"
+#include "wolang/runtime/scheduler.h"
 #include "wolang/abi/layout.h"
 #include "wolang/compiler/database.h"
 
@@ -50,6 +51,7 @@ class Fixture {
       foreign_ = codegen::MakeForeignCaller();
     }
     abi::LayoutStore layouts(db_.types(), *resolution);
+    InstallHost(&layouts, lowered);
     const interp::Outcome reference =
         interp::RunNamed(db_.interner(), db_.types(), lowered->unoptimized,
                          symbol, arguments, {}, nullptr, foreign_.get(),
@@ -67,6 +69,10 @@ class Fixture {
       compiled_ = Compile(db_.interner(), db_.types(), *resolution,
                           lowered->module);
     }
+    // A test may spawn, so the scheduler needs its way back into whichever
+    // tier is running. Both tiers go through the same door.
+    InstallHost(&layouts, lowered);
+    host_.compiled = true;
     if (!compiled_->Contains(symbol)) {
       return "<skipped: " + std::string(compiled_->SkipReason(symbol)) +
              ">";
@@ -111,6 +117,46 @@ class Fixture {
     return std::string(compiled_->SkipReason(symbol));
   }
 
+  // What the scheduler resumes through, for whichever tier is asked.
+  struct Host {
+    Fixture* fixture = nullptr;
+    const LoweredFile* lowered = nullptr;
+    abi::LayoutStore* layouts = nullptr;
+    bool compiled = false;
+  };
+
+  static bool Resume(void* context, int32_t kind, void* frame) {
+    auto* host = static_cast<Host*>(context);
+    Fixture& fixture = *host->fixture;
+    const Symbol dispatch = fixture.db_.interner().Intern("wolang$dispatch");
+    if (host->compiled && fixture.compiled_ != nullptr &&
+        fixture.compiled_->Contains(dispatch)) {
+      bool faulted = false;
+      return fixture.compiled_->ResumeTask(dispatch, kind, frame, &faulted);
+    }
+    std::vector<interp::Value> arguments;
+    arguments.push_back(interp::Value::Int(static_cast<uint64_t>(kind),
+                                           IntWidth::k32, true));
+    arguments.push_back(interp::Value::Int(
+        reinterpret_cast<uint64_t>(frame), IntWidth::k64, false));
+    const interp::Outcome outcome = interp::RunNamed(
+        fixture.db_.interner(), fixture.db_.types(), host->lowered->module,
+        dispatch, arguments, {}, nullptr, fixture.foreign_.get(),
+        host->layouts);
+    return !outcome.ok() ||
+           (outcome.value.kind() == interp::Value::Kind::kBool &&
+            outcome.value.boolean());
+  }
+
+  void InstallHost(abi::LayoutStore* layouts, const LoweredFile* lowered) {
+    host_.fixture = this;
+    host_.lowered = lowered;
+    host_.layouts = layouts;
+    host_.compiled = false;
+    runtime::ResetScheduler();
+    runtime::InstallResume(&Resume, &host_);
+  }
+
   static std::string Describe(const interp::Outcome& outcome) {
     if (outcome.ok()) {
       return outcome.value.Describe();
@@ -149,6 +195,7 @@ class Fixture {
   FileId file_;
   std::unique_ptr<CompiledModule> compiled_;
   std::unique_ptr<interp::ForeignCaller> foreign_;
+  Host host_;
 };
 
 WOLANG_TEST(CodegenTest, RunsArithmetic) {
@@ -626,6 +673,52 @@ task fun Count(n: int) -> int {
   WOLANG_EXPECT_EQ(f.Run("Count", {Fixture::Int(5)}), "10");
   WOLANG_EXPECT_EQ(f.Run("Count", {Fixture::Int(0)}), "0");
   WOLANG_EXPECT_EQ(f.Run("Count", {Fixture::Int(100)}), "4950");
+}
+
+WOLANG_TEST(CodegenTest, SpawnsTasksAndRunsThemToCompletion) {
+  // `spawn` allocates a frame, writes the arguments into it and hands the
+  // pair to the scheduler; the scheduler advances every task one step at a
+  // time through the one entry point the compiler generates. Which is why
+  // this works the same interpreted and compiled.
+  Fixture f(R"(
+extern "C" fun wolang_sched_run() -> s64
+extern "C" fun wolang_sched_pending() -> s32
+
+task fun Yield()
+
+task fun Rounds(n: int) -> int {
+  var done = 0
+  while done < n {
+    wait Yield()
+    done = done + 1
+  }
+  return done
+}
+
+fun Many(count: int) -> s64 uses unsafe {
+  var started = 0
+  while started < count {
+    const _handle = spawn Rounds(2)
+    started = started + 1
+  }
+  return wolang_sched_run()
+}
+
+fun LeftOver(count: int) -> int uses unsafe {
+  var started = 0
+  while started < count {
+    const _handle = spawn Rounds(1)
+    started = started + 1
+  }
+  const _steps = wolang_sched_run()
+  return wolang_sched_pending() as int
+}
+)");
+  // Three steps each: two suspensions and the one that finishes.
+  WOLANG_EXPECT_EQ(f.Run("Many", {Fixture::Int(4)}), "12");
+  WOLANG_EXPECT_EQ(f.Run("Many", {Fixture::Int(0)}), "0");
+  // Nothing is left waiting once the queue drains.
+  WOLANG_EXPECT_EQ(f.Run("LeftOver", {Fixture::Int(10)}), "0");
 }
 
 }  // namespace

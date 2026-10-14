@@ -748,7 +748,12 @@ class Lowerer {
         // `wait f(args)` is a call that suspends. The call itself is
         // lowered as usual and marked; the transform in `ir/tasks.h` turns
         // the mark into a state machine.
-        return LowerWait(expr, type);
+        return LowerWait(expr, type, Opcode::kWaitCall);
+
+      case ExprKind::kSpawn:
+        // `spawn f(args)` starts the work and produces a handle. Marked the
+        // same way, expanded into a frame and a call to the scheduler.
+        return LowerWait(expr, type, Opcode::kSpawnCall);
 
       case ExprKind::kBlock:
         return LowerBlockValue(id, expr, type);
@@ -1106,7 +1111,7 @@ class Lowerer {
     return InstId{};
   }
 
-  InstId LowerWait(const Expr& expr, TypeId type) {
+  InstId LowerWait(const Expr& expr, TypeId type, Opcode mark) {
     if (!ast_.Contains(expr.lhs) ||
         ast_.Get(expr.lhs).kind != ExprKind::kCall) {
       // The checker reports a `wait` on anything but a call (`E0303`).
@@ -1116,8 +1121,12 @@ class Lowerer {
     if (call.is_valid() &&
         module_->functions[current_function_].Get(call).opcode ==
             Opcode::kCall) {
-      module_->functions[current_function_].Get(call).opcode =
-          Opcode::kWaitCall;
+      Inst& inst = module_->functions[current_function_].Get(call);
+      inst.opcode = mark;
+      if (mark == Opcode::kSpawnCall) {
+        // A handle, not the task's result: the work has only started.
+        inst.type = type;
+      }
     }
     return call;
   }

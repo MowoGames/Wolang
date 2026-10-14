@@ -144,6 +144,7 @@ class Printer {
         out_.append(" #");
         out_.append(std::to_string(inst.payload.string));
         break;
+      case Opcode::kSpawnCall:
       case Opcode::kWaitCall:
       case Opcode::kCall: {
         out_.append(" @");
@@ -211,6 +212,7 @@ class Printer {
   // separator.
   static bool NeedsCommaBeforeFirstOperand(Opcode opcode) {
     switch (opcode) {
+      case Opcode::kSpawnCall:
       case Opcode::kWaitCall:
       case Opcode::kCall:
       case Opcode::kExtract:

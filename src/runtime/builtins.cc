@@ -2,6 +2,8 @@
 
 #include "wolang/runtime/builtins.h"
 
+#include "wolang/runtime/scheduler.h"
+
 #include <cstdlib>
 #include <cstring>
 
@@ -37,6 +39,12 @@ void* LookupSymbol(std::string_view name) {
   static const Entry kTable[] = {
       {"wolang_frame_alloc", reinterpret_cast<void*>(&wolang_frame_alloc)},
       {"wolang_frame_free", reinterpret_cast<void*>(&wolang_frame_free)},
+      {"wolang_sched_spawn",
+       reinterpret_cast<void*>(&wolang_sched_spawn)},
+      {"wolang_sched_run", reinterpret_cast<void*>(&wolang_sched_run)},
+      {"wolang_sched_done", reinterpret_cast<void*>(&wolang_sched_done)},
+      {"wolang_sched_pending",
+       reinterpret_cast<void*>(&wolang_sched_pending)},
   };
   for (const Entry& entry : kTable) {
     if (entry.name == name) {

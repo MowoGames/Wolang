@@ -1,0 +1,39 @@
+// How much a waiting task costs.
+//
+// The point of a stackless coroutine is that a task which is waiting costs
+// a frame rather than a stack: a hundred thousand of them should be
+// megabytes, not gigabytes, and resuming one should be a call rather than a
+// context switch. This is the benchmark that says whether that is true.
+//
+// Declared locally rather than imported, because a single file resolves no
+// imports; in a package this comes from `std.task`.
+
+extern "C" fun wolang_sched_run() -> s64
+
+task fun Yield()
+
+task fun Waiter(rounds: s32) -> s32 {
+  var done = 0
+  while done < rounds {
+    wait Yield()
+    done = done + 1
+  }
+  return done
+}
+
+@Bench
+fun BenchManyTasks() -> int uses unsafe {
+  var started = 0
+  while started < 100000 {
+    const _handle = spawn Waiter(4)
+    started = started + 1
+  }
+  // Five steps each: four suspensions and the one that finishes.
+  return wolang_sched_run() as int
+}
+
+@Bench
+fun BenchOneTaskManyRounds() -> int uses unsafe {
+  const _handle = spawn Waiter(1000000)
+  return wolang_sched_run() as int
+}

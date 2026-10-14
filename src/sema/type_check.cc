@@ -1609,6 +1609,12 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       type = Check(expr.lhs, TypeId{});
       started_ = previous;
       spawned_ = previous_spawned;
+      if (expr.kind == ExprKind::kSpawn) {
+        // `spawn` starts the work and hands back a handle to it, not the
+        // result it will have. A handle is an integer until there is a
+        // `Task<T>` to make it a type of its own.
+        type = types_->Int(IntWidth::k32, /*is_signed=*/true);
+      }
       if (expr.kind == ExprKind::kAwait && !wait_allowed_here) {
         Report(kWaitNotWholeExpression,
                "`wait` has to be the whole of the expression it is in",
