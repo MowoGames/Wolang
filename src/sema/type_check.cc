@@ -31,6 +31,7 @@ constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadConversion = "E0124";
 constexpr std::string_view kWaitOutsideTask = "E0301";
 constexpr std::string_view kTaskNotWaited = "E0302";
+constexpr std::string_view kWaitNotWholeExpression = "E0303";
 constexpr std::string_view kNotForeignType = "E0802";
 constexpr std::string_view kForeignWithBody = "E0803";
 constexpr std::string_view kBadAllow = "E0070";
@@ -321,6 +322,10 @@ class Checker {
   bool in_task_ = false;
   ExprId started_;
   bool spawned_ = false;
+  // Whether a `wait` may appear at the expression about to be checked, and
+  // whether the block being entered stands somewhere one may.
+  bool wait_allowed_ = false;
+  bool block_allows_wait_ = false;
   std::vector<Scope> scopes_;
   // The declared return type of the function being checked.
   TypeId return_type_;
@@ -1504,6 +1509,10 @@ TypeId Checker::CheckRange(const Expr& expr) {
 }
 
 TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
+  // A `wait` is only allowed where nothing of the surrounding expression is
+  // still needed afterwards, so the permission does not reach any child.
+  const bool wait_allowed_here = wait_allowed_;
+  wait_allowed_ = false;
   if (!ast_.Contains(id)) {
     return types_->error();
   }
@@ -1600,6 +1609,12 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       type = Check(expr.lhs, TypeId{});
       started_ = previous;
       spawned_ = previous_spawned;
+      if (expr.kind == ExprKind::kAwait && !wait_allowed_here) {
+        Report(kWaitNotWholeExpression,
+               "`wait` has to be the whole of the expression it is in",
+               expr.span,
+               "give it a name first: `const x = wait ...`, then use `x`");
+      }
       if (expr.kind == ExprKind::kAwait) {
         // `wait` is where a function suspends, and `async` in the row is
         // how that becomes checkable: a context that forbids the effect
@@ -1692,6 +1707,7 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
     }
 
     case ExprKind::kBlock:
+      block_allows_wait_ = wait_allowed_here;
       CheckBlock(id, expected);
       return result_.TypeOf(id);
 
@@ -1829,6 +1845,7 @@ void Checker::CheckStmt(StmtId id) {
                                   : TypeId{};
       TypeId value = declared;
       if (stmt.expr.is_valid()) {
+        wait_allowed_ = true;
         value = Check(stmt.expr, declared);
         if (declared.is_valid() && !Accepts(declared, value)) {
           ReportMismatch(declared, value, ast_.Get(stmt.expr).span);
@@ -1846,6 +1863,7 @@ void Checker::CheckStmt(StmtId id) {
     }
 
     case StmtKind::kExpr:
+      wait_allowed_ = true;
       Check(stmt.expr, TypeId{});
       return;
 
@@ -1853,6 +1871,7 @@ void Checker::CheckStmt(StmtId id) {
       if (!stmt.expr.is_valid()) {
         return;
       }
+      wait_allowed_ = true;
       const TypeId found = Check(stmt.expr, return_type_);
       if (return_type_.is_valid() && !Accepts(return_type_, found)) {
         ReportMismatch(return_type_, found, ast_.Get(stmt.expr).span);
@@ -1897,6 +1916,11 @@ bool Checker::Diverges(StmtId id) const {
 void Checker::CheckBlock(ExprId id, TypeId expected) {
   const Expr& block = ast_.Get(id);
   PushScope();
+  // A block's value stands where the block itself stands, so a `wait` is
+  // allowed there exactly when it would have been allowed in place of the
+  // block. `Check` cleared the flag on the way in, so it is restored for
+  // the tail expression only.
+  const bool tail_allows_wait = block_allows_wait_;
 
   const std::span<const StmtId> stmts = ast_.Get(block.stmts);
   TypeId type = types_->void_type();
@@ -1915,6 +1939,7 @@ void Checker::CheckBlock(ExprId id, TypeId expected) {
     // A block's value is its final expression statement, which is what makes
     // `let x = { ... }` and an expression-bodied arm work.
     if (is_last && stmt.kind == StmtKind::kExpr) {
+      wait_allowed_ = tail_allows_wait;
       type = Check(stmt.expr, expected);
       continue;
     }
@@ -2018,11 +2043,15 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
     if (HasFlag(item.flags, ItemFlags::kExpressionBody)) {
       // `fn f() -> T => expr` checks the expression against the return type,
       // with no `return` statement in sight.
+      wait_allowed_ = true;
       const TypeId found = Check(item.body, return_type_);
       if (!Accepts(return_type_, found)) {
         ReportMismatch(return_type_, found, ast_.Get(item.body).span);
       }
     } else {
+      // A function body is a statement position: a `wait` as its last
+      // expression is as safe as one anywhere else in it.
+      wait_allowed_ = true;
       Check(item.body, TypeId{});
     }
   }

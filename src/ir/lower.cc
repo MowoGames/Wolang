@@ -109,6 +109,7 @@ class Lowerer {
           function.source_file = binding->file;
           function.source_item = binding->item;
         }
+        function.is_task = HasFlag(item.flags, ItemFlags::kAsync);
         if (HasFlag(item.flags, ItemFlags::kExtern)) {
           // `extern "C" fun puts(...) = "puts"` names the symbol; without
           // the clause the symbol is the declaration's own name.
@@ -261,6 +262,7 @@ class Lowerer {
     function.effects = EffectsOf(item, &function.effects_known);
     function.source_file = binding->file;
     function.source_item = binding->item;
+    function.is_task = HasFlag(ast_.Get(item).flags, ItemFlags::kAsync);
     const auto index = static_cast<uint32_t>(module_->functions.size());
     module_->functions.push_back(std::move(function));
     specializations_.emplace_back(name, index);
@@ -354,11 +356,21 @@ class Lowerer {
     const BlockId entry = builder.AddBlock("entry");
     builder.SetCurrent(entry);
 
+    in_task_ = module_->functions[index].is_task;
+
     for (ParamId param_id : ast_.Get(item.params)) {
       const Param& param = ast_.Get(param_id);
       const TypeId type =
           ParamTypeOf(module_->functions[index], locals_.size());
       const InstId value = builder.AddParam(entry, type);
+      if (in_task_) {
+        // A parameter outlives every suspension, so in a task it lives in
+        // the frame like everything else.
+        const InstId slot = builder.Add(Opcode::kAlloca, type);
+        builder.Add(Opcode::kStore, TypeId{}, {slot, value});
+        locals_.push_back(Local{param.name, slot, InstId{}, type});
+        continue;
+      }
       locals_.push_back(Local{param.name, InstId{}, value, type});
     }
 
@@ -598,7 +610,12 @@ class Lowerer {
     }
     const InstId value = stmt.expr.is_valid() ? Value(stmt.expr) : InstId{};
 
-    if (!mutable_binding &&
+    // Inside a `task`, even a `const` goes in a slot. The transform that
+    // splits a task into a state machine moves slots into the frame and
+    // leaves values alone, so a value that outlived a suspension would be
+    // one the machine has nowhere to keep. Making every binding a slot is
+    // what makes that impossible rather than merely unlikely.
+    if (!mutable_binding && !in_task_ &&
         !HasFlag(pattern->flags, PatternFlags::kMutable)) {
       locals_.push_back(Local{pattern->name, InstId{}, value, type});
       return;
@@ -726,6 +743,12 @@ class Lowerer {
 
       case ExprKind::kCall:
         return LowerCall(id, expr, type);
+
+      case ExprKind::kAwait:
+        // `wait f(args)` is a call that suspends. The call itself is
+        // lowered as usual and marked; the transform in `ir/tasks.h` turns
+        // the mark into a state machine.
+        return LowerWait(expr, type);
 
       case ExprKind::kBlock:
         return LowerBlockValue(id, expr, type);
@@ -1081,6 +1104,22 @@ class Lowerer {
     }
     // An assignment is a statement, so it produces nothing a caller can use.
     return InstId{};
+  }
+
+  InstId LowerWait(const Expr& expr, TypeId type) {
+    if (!ast_.Contains(expr.lhs) ||
+        ast_.Get(expr.lhs).kind != ExprKind::kCall) {
+      // The checker reports a `wait` on anything but a call (`E0303`).
+      return builder_->Undef(type);
+    }
+    const InstId call = Value(expr.lhs);
+    if (call.is_valid() &&
+        module_->functions[current_function_].Get(call).opcode ==
+            Opcode::kCall) {
+      module_->functions[current_function_].Get(call).opcode =
+          Opcode::kWaitCall;
+    }
+    return call;
   }
 
   InstId LowerCall(ExprId id, const Expr& expr, TypeId type) {
@@ -1539,6 +1578,8 @@ class Lowerer {
   std::vector<std::pair<Symbol, uint32_t>> specializations_;
   std::vector<Pending> pending_;
   std::vector<Deferred> deferred_;
+  // Whether the function being lowered is a `task`.
+  bool in_task_ = false;
   // How many blocks deep lowering is. A `defer` belongs to the block it was
   // written in, and the count of locals cannot say which block that is -- a
   // block that declares nothing does not change it.

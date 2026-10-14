@@ -154,6 +154,10 @@ struct Function {
   // the IR knows only unqualified names, and linking by name would be a
   // guess.
   static constexpr uint32_t kNoSource = 0xFFFFFFFFu;
+  // Whether the declaration was a `task`: it may suspend, so it is not a
+  // function the way the machine means it until the transform in
+  // `ir/tasks.h` has split it into a state machine.
+  bool is_task = false;
   uint32_t source_file = kNoSource;
   uint32_t source_item = kNoSource;
   // Block 0 is the entry, and its parameters are the function's.

@@ -354,6 +354,7 @@ class Verifier {
         }
         break;
 
+      case Opcode::kWaitCall:
       case Opcode::kCall: {
         // A call is the one place the IR refers to something outside the
         // function, so it is the one place the module has to be consulted.

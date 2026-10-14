@@ -85,6 +85,10 @@ WOLANG_IR_OP(OptionalValue, "opt.value", "the value inside; undefined when "
 // ------------------------------------------------------------------ calls ---
 
 WOLANG_IR_OP(Call, "call", "calls a known function")
+WOLANG_IR_OP(WaitCall, "wait.call",
+             "calls a `task` and suspends until it finishes. Not something "
+             "any back end sees: the transform in `ir/tasks.h` splits every "
+             "one of these into a state machine before anything runs")
 WOLANG_IR_OP(CallIndirect, "call.indirect", "calls through a value")
 
 // ------------------------------------------------------------ conversions ---

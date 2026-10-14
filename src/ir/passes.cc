@@ -77,6 +77,7 @@ bool IsPure(Opcode opcode) {
     // Does something, or is something.
     case Opcode::kStore:
     case Opcode::kCall:
+    case Opcode::kWaitCall:
     case Opcode::kCallIndirect:
     case Opcode::kAlloca:
       return false;
