@@ -552,6 +552,16 @@ class Lowerer {
   InstId NewObject(TypeId type, const std::vector<InstId>& fields) {
     const InstId object = builder_->Add(Opcode::kNew, type);
     uint32_t index = 0;
+    // The descriptor first, when the class has one: the token that says
+    // which class this object really is, which is what every virtual call
+    // on it reads (D85).
+    if (HasClassHeader(type)) {
+      const InstId token = ClassToken(type);
+      const InstId address = builder_->FieldAddress(
+          types_->Pointer(types_->u64(), /*is_mutable=*/true), object, 0);
+      builder_->Add(Opcode::kStore, TypeId{}, {address, token});
+      index = 1;
+    }
     for (InstId value : fields) {
       const TypeId field_type = Erase(FieldTypeAt(type, index));
       const InstId address = builder_->FieldAddress(
@@ -560,6 +570,107 @@ class Lowerer {
       ++index;
     }
     return object;
+  }
+
+  // The token for |type|, with the module's table for it built the first
+  // time it is asked for.
+  InstId ClassToken(TypeId type) {
+    uint32_t index = 0;
+    bool found = false;
+    for (uint32_t i = 0; i < module_->classes.size(); ++i) {
+      if (module_->classes[i].type == type) {
+        index = i;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      ClassInfo info;
+      info.type = type;
+      info.token = ClassTokenOf(*types_, type);
+      for (const VirtualSlot& slot : SlotsOf(type)) {
+        info.methods.push_back(slot.function);
+      }
+      index = static_cast<uint32_t>(module_->classes.size());
+      module_->classes.push_back(std::move(info));
+    }
+    const InstId token =
+        builder_->Add(Opcode::kClassTable, types_->u64(), {});
+    module_->functions[current_function_].Get(token).payload.klass = index;
+    return token;
+  }
+
+  // One slot per virtual method visible on |type|, root first. An
+  // `override` takes the slot of what it overrides, matched by name, so
+  // one number means one method everywhere the class is visible.
+  struct VirtualSlot {
+    Symbol name;
+    uint32_t function = 0xFFFFFFFFu;
+  };
+
+  std::vector<VirtualSlot> SlotsOf(TypeId type) {
+    std::vector<TypeId> chain;
+    for (TypeId current = type; current.is_valid();
+         current = resolution().BaseOf(current)) {
+      chain.push_back(current);
+    }
+    std::reverse(chain.begin(), chain.end());
+
+    std::vector<VirtualSlot> slots;
+    for (TypeId current : chain) {
+      for (const Member& member : resolution().MembersOf(current)) {
+        if (member.kind != MemberKind::kMethod ||
+            !(member.is_virtual || member.is_override)) {
+          continue;
+        }
+        const uint32_t body = MethodIndex(current, member);
+        bool replaced = false;
+        for (VirtualSlot& slot : slots) {
+          if (slot.name == member.name) {
+            slot.function = body;
+            replaced = true;
+            break;
+          }
+        }
+        if (!replaced) {
+          slots.push_back(VirtualSlot{member.name, body});
+        }
+      }
+    }
+    return slots;
+  }
+
+  // Which slot |name| occupies on |type|, or -1 when it is not virtual.
+  int SlotOf(TypeId type, Symbol name) {
+    const std::vector<VirtualSlot> slots = SlotsOf(type);
+    for (size_t i = 0; i < slots.size(); ++i) {
+      if (slots[i].name == name) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  }
+
+  // The function implementing |member| of |owner|, declaring it if this
+  // file only knows the signature.
+  uint32_t MethodIndex(TypeId owner, const Member& member) {
+    uint32_t index =
+        IndexOfSource(member.file, member.item, member.slot);
+    if (index != 0xFFFFFFFFu) {
+      return index;
+    }
+    std::vector<TypeId> params;
+    params.push_back(owner);
+    for (TypeId param : types_->ArgumentsOf(member.type)) {
+      params.push_back(Erase(param));
+    }
+    const TypeId signature =
+        types_->Function(params, Erase(types_->ElementOf(member.type)));
+    index = DeclareExternal(MethodName(owner, member.name), signature,
+                            member.file, member.item, /*is_task=*/false,
+                            /*has_body=*/false, member.slot);
+    Remember(member.file, member.item, index, member.slot);
+    return index;
   }
 
   // A method: `self` first, then what was written. The receiver is passed
@@ -1249,6 +1360,17 @@ class Lowerer {
     if (types_->KindOf(target) == TypeKind::kSlice &&
         types_->KindOf(Erase(from)) == TypeKind::kArray) {
       return SliceOf(value, from, to, source);
+    }
+    // A derived handle where its base is wanted. Nothing happens at run
+    // time -- a base's fields are the first fields of what derives from it
+    // (D84), so the address is the same address -- but the IR says so,
+    // because every type in it is exact and a verifier that guessed at
+    // subtyping would be guessing at layout too.
+    const TypeId source_type = Erase(from);
+    if (source_type.is_valid() && source_type != target &&
+        types_->IsHandle(source_type) && types_->IsHandle(target) &&
+        resolution().Satisfies(source_type, target)) {
+      return builder_->Add(Opcode::kCast, target, {value});
     }
     if (types_->KindOf(target) != TypeKind::kOptional) {
       return value;
@@ -2000,9 +2122,10 @@ class Lowerer {
   }
 
   // Which slot of its aggregate a field occupies. Member tables keep
-  // declaration order, so counting the fields before it is the offset.
+  // declaration order, so counting the fields before it is the offset --
+  // and for a class, the fields it inherits are counted first, because
+  // that is where the layout puts them (D84).
   uint32_t FieldIndex(TypeId owner, Symbol name) const {
-    uint32_t index = 0;
     TypeId named = owner;
     // A string's two parts are built in rather than declared, so there is
     // no member table to look them up in.
@@ -2013,16 +2136,58 @@ class Lowerer {
     if (types_->KindOf(named) == TypeKind::kInstance) {
       named = types_->Get(named).base;
     }
-    for (const Member& member : resolution().MembersOf(named)) {
-      if (!HasStorage(member.kind)) {
-        continue;
+
+    // Root first, so a base's field keeps its index in everything that
+    // derives from it.
+    std::vector<TypeId> chain;
+    for (TypeId current = named; current.is_valid();
+         current = resolution().BaseOf(current)) {
+      chain.push_back(current);
+    }
+    std::reverse(chain.begin(), chain.end());
+
+    // The descriptor, when the class has one, is the field before all of
+    // them.
+    uint32_t index = HasClassHeader(named) ? 1u : 0u;
+    for (TypeId current : chain) {
+      for (const Member& member : resolution().MembersOf(current)) {
+        if (!HasStorage(member.kind)) {
+          continue;
+        }
+        if (member.name == name) {
+          return index;
+        }
+        ++index;
       }
-      if (member.name == name) {
-        return index;
-      }
-      ++index;
     }
     return 0;
+  }
+
+  // A member of |owner|, its own or one it inherits.
+  const Member* FindAnyMember(TypeId owner, Symbol name) const {
+    if (const Member* own = resolution().FindMember(owner, name)) {
+      return own;
+    }
+    return resolution().FindInheritedMember(owner, name);
+  }
+
+  // Whether an object of |type| begins with a class descriptor. The same
+  // question the layout answers; asked here because lowering decides the
+  // field indices and both have to agree.
+  bool HasClassHeader(TypeId type) const {
+    if (!types_->IsHandle(type)) {
+      return false;
+    }
+    for (TypeId current = type; current.is_valid();
+         current = resolution().BaseOf(current)) {
+      for (const Member& member : resolution().MembersOf(current)) {
+        if (member.kind == MemberKind::kMethod &&
+            (member.is_virtual || member.is_override)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   // How many elements a sequence has. Static for an array, and the second
@@ -2052,7 +2217,7 @@ class Lowerer {
     // A derived field is computed rather than stored, and kept once it is.
     const TypeId base_type = Erase(TypeOf(expr.lhs));
     if (const Member* member =
-            resolution().FindMember(base_type, expr.name);
+            FindAnyMember(base_type, expr.name);
         member != nullptr && member->kind == MemberKind::kDerived) {
       Place object;
       if (types_->IsHandle(base_type)) {
@@ -2323,6 +2488,11 @@ class Lowerer {
       return place;
     }
     const Member* member = resolution().FindMember(self_type_, name);
+    if (member == nullptr) {
+      // A field the class inherits: declared by a base, stored in this
+      // object, and named without any qualification inside a method.
+      member = resolution().FindInheritedMember(self_type_, name);
+    }
     if (member == nullptr || !HasStorage(member->kind)) {
       return Place{};
     }
@@ -3000,6 +3170,10 @@ class Lowerer {
     }
 
     const Member* member = resolution().FindMember(owner, name);
+    if (member == nullptr) {
+      // A method the class inherits and does not override.
+      member = resolution().FindInheritedMember(owner, name);
+    }
     if (member == nullptr || member->kind != MemberKind::kMethod) {
       return InstId{};
     }
@@ -3039,6 +3213,25 @@ class Lowerer {
     with_receiver.push_back(receiver);
     for (InstId argument : *arguments) {
       with_receiver.push_back(argument);
+    }
+
+    // A virtual method is found through the object rather than through the
+    // name: the receiver's static type says *which slot*, and the token
+    // the object carries says which body is in it. Which is the whole
+    // difference between `virtual` and not.
+    if (member->is_virtual || member->is_override) {
+      const int slot = SlotOf(owner, name);
+      if (slot >= 0) {
+        const InstId call = builder_->Add(Opcode::kVirtualCall, type,
+                                          with_receiver);
+        module_->functions[current_function_].Get(call).field =
+            static_cast<uint32_t>(slot);
+        // The signature to call through, which every tier needs in order
+        // to pass the arguments: taken from the statically known body.
+        module_->functions[current_function_].Get(call).payload.callee =
+            index;
+        return call;
+      }
     }
     return builder_->Call(index, type, std::move(with_receiver));
   }

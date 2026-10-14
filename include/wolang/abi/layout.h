@@ -101,6 +101,15 @@ class LayoutStore {
   TypeId FieldType(TypeId type, uint32_t index) const;
   // How many fields an aggregate has.
   uint32_t FieldCount(TypeId type) const;
+  // Whether an object of |type| begins with a class descriptor: the number
+  // that says which class it really is, which is what a virtual call reads
+  // (D85). True for a class with a virtual method anywhere in its chain.
+  bool HasHeader(TypeId type) const;
+  // How many fields the classes |type| derives from contribute, which is
+  // where its own fields start. The base's fields come first so that a
+  // handle to a derived object is a handle to a base object at the same
+  // address, and an upcast is nothing at run time.
+  uint32_t InheritedFieldCount(TypeId type) const;
   // The distance between two elements of an array, which is the element's
   // size rounded up to its alignment.
   uint32_t StrideOf(TypeId array);

@@ -103,6 +103,7 @@ bool IsPure(Opcode opcode) {
     // Does something, or is something.
     case Opcode::kStore:
     case Opcode::kCall:
+    case Opcode::kVirtualCall:
     case Opcode::kWaitCall:
     case Opcode::kSpawnCall:
     case Opcode::kCallIndirect:
@@ -128,6 +129,7 @@ bool IsRepeatable(Opcode opcode) {
     case Opcode::kWaitCall:
     case Opcode::kSpawnCall:
     case Opcode::kCallIndirect:
+    case Opcode::kVirtualCall:
     case Opcode::kAlloca:
     case Opcode::kNew:
     case Opcode::kSoaNew:

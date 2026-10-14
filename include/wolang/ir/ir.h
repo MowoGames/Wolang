@@ -110,6 +110,8 @@ struct Inst {
     uint32_t callee;
     // Alloca: how many slots, for an array.
     uint32_t slots;
+    // ClassTable: which of the module's classes.
+    uint32_t klass;
   } payload = {0};
 
   // Jump, Branch, Switch: a range into the function's successor pool. Jump
@@ -248,10 +250,48 @@ struct Function {
 
 // ----------------------------------------------------------------- module ---
 
+// What one class is, for the calls that have to find out at run time.
+//
+// A virtual call reads a number out of the object and uses it to pick a
+// body. That number is a *token* rather than an index into anything the
+// IR owns: the compiled tier makes it the address of a table it built,
+// the reference tier makes it a handle into a side table, and an object
+// created in one module keeps working when it is passed to another --
+// because the token travels with the object rather than with the module.
+//
+// Slots are numbered from the root of the chain: the root's virtual
+// methods in declaration order, then each derived class's new ones. An
+// `override` reuses the slot of what it overrides, which is what makes
+// one number mean one method everywhere the class is visible.
+struct ClassInfo {
+  TypeId type;
+  // Which declaration this is: the file it was written in and its index in
+  // that file. Packed into one number, it *is* the token an object
+  // carries -- globally unique without anything having to hand out ids,
+  // and computable by every tier from the type alone.
+  uint64_t token = 0;
+  // The function implementing each slot, as an index into |functions|.
+  std::vector<uint32_t> methods;
+};
+
+// The number an object of |type| carries: its declaration, packed. Every
+// tier computes it the same way, which is what lets an object made in one
+// be dispatched in another.
+inline uint64_t ClassTokenOf(const TypeStore& types, TypeId type) {
+  if (!type.is_valid()) {
+    return 0;
+  }
+  const Type& described = types.Get(type);
+  return (static_cast<uint64_t>(described.declaring_file) << 32) |
+         described.declaring_item;
+}
+
 struct Module {
   std::vector<Function> functions;
   // String literals, shared by every function.
   std::vector<std::string> strings;
+  // Every class a function here creates an object of.
+  std::vector<ClassInfo> classes;
 
   const Function* Find(Symbol name) const;
 };

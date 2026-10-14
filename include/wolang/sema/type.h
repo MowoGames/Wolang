@@ -234,6 +234,11 @@ class TypeStore {
   // What a system asks the world for: `Query<mut Velocity, with Falling>`
   // is an instance of this, and its arguments are the access it declares.
   TypeId query() const { return query_; }
+  // Interned up front so that something holding a const store can still
+  // name them: a layout spelling out a class descriptor, an interpreter
+  // reading a slice's two words.
+  TypeId u32() const { return u32_; }
+  TypeId u64() const { return u64_; }
   TypeId int_literal() const { return int_literal_; }
   TypeId float_literal() const { return float_literal_; }
 
@@ -407,6 +412,8 @@ class TypeStore {
   TypeId string_;
   TypeId str_;
   TypeId query_;
+  TypeId u32_;
+  TypeId u64_;
   TypeId int_literal_;
   TypeId float_literal_;
 

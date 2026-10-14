@@ -779,3 +779,39 @@ skipped rather than compared: it says nothing about the other two.
 Traps are compared rather than avoided. Division by zero, overflow and an
 index past the end are defined outcomes, so a tier that wraps where
 another traps is exactly the bug this is looking for.
+
+**D84. A derived object is a base object at the same address.** A class's
+fields are the fields it inherits, root first, and then its own. So a
+handle to a `Cube` is a handle to a `Square` is a handle to a `Shape`, and
+an upcast is nothing at run time -- the IR says so with a cast because
+every type in it is exact, and the cast emits no instruction.
+
+Everything that asks what a class has now asks along the chain: the
+constructor takes the inherited fields first, a method reads a field its
+base declared without qualification, and a field access through a handle
+reaches an inherited member. Each of those was a separate place that only
+knew about a type's own members, and each one was a separate bug report
+waiting -- `Cube has no member named tag` for a field `Square` declared.
+
+**D85. The number in the object is the class's declaration.** A virtual
+call reads a token out of the object and uses it to find the body. The
+token is `(file << 32) | item` -- which declaration this class is -- and
+not an index into anything a module owns, because an object created in one
+module is dispatched in another and the two have to agree.
+
+Slots are numbered from the root: the root's virtual methods in
+declaration order, then each derived class's new ones, with an `override`
+taking the slot of what it overrides. That makes one number mean one
+method everywhere the class is visible, including a module that only sees
+the declaration.
+
+The tiers differ only in how they get from the token to the body. The
+reference tier looks through the class tables of the modules it holds. The
+compiled tier asks the runtime, which the compiler told where each method
+ended up once the code was placed -- a C call per virtual call, which is
+the price of the number meaning the same thing in both tiers. Inlining
+that lookup is the obvious next step, and it is why the registry is a flat
+array rather than a hash map.
+
+A class gets the header only when something in its chain is virtual, so a
+`class` with no virtual methods costs exactly what it did before.

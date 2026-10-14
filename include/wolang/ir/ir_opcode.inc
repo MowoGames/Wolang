@@ -87,6 +87,13 @@ WOLANG_IR_OP(SoaAddress, "soa.addr",
              "the address of field |index| of element |rhs| in storage "
              "laid out one array per field. What makes `soa []T` a "
              "different *layout* rather than a different type")
+WOLANG_IR_OP(ClassTable, "class.table",
+             "the token that says which class an object is. Written into "
+             "the object when it is created, and read by every virtual "
+             "call on it")
+WOLANG_IR_OP(VirtualCall, "call.virtual",
+             "calls the body slot |field| names, found through the token "
+             "the receiver carries. What `virtual` means")
 WOLANG_IR_OP(IndexCheck, "index.check",
              "traps unless |lhs| is below the length |rhs|. What is left "
              "of an element address once the arithmetic around it has been "

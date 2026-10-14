@@ -61,6 +61,9 @@ struct Options {
   uint64_t fuzz_seed = 1;
   uint64_t fuzz_count = 100;
   bool show_source = false;
+  // `ir` only: print the IR as lowering left it rather than after the
+  // passes.
+  bool unoptimized = false;
   // Smaller programs are the ones a disagreement can be read in.
   int fuzz_depth = 3;
   int fuzz_statements = 5;
@@ -108,6 +111,7 @@ void PrintUsage() {
       "  --seed <n>      the first seed `fuzz` generates from\n"
       "  --count <n>     how many programs `fuzz` generates\n"
       "  --source        print the programs `fuzz` generated\n"
+      "  --unoptimized   `ir`: print what lowering produced, before passes\n"
       "  --no-color      never emit ANSI colors\n"
       "  --trivia        include comments in `tokens` output\n"
       "  --spans         annotate `ast` output with positions\n"
@@ -305,8 +309,13 @@ int RunSyntaxCommand(const Options& options) {
     } else if (options.command == "ir") {
       const LoweredFile* lowered = database.Lowered(file);
       if (lowered != nullptr) {
+        // `--unoptimized` prints the IR as lowering left it, which is what
+        // a verifier complaint prefixed "lowering:" is about -- the
+        // optimized dump may have inlined the instruction away.
         std::fputs(ir::PrintModule(database.interner(), database.types(),
-                                   lowered->module)
+                                   options.unoptimized
+                                       ? lowered->unoptimized
+                                       : lowered->module)
                        .c_str(),
                    stdout);
         // A verifier complaint is a compiler bug, so it goes to stderr with
@@ -1124,7 +1133,9 @@ int Run(int argc, char** argv) {
   Options options;
   for (int i = 1; i < argc; ++i) {
     const std::string_view argument = argv[i];
-    if (argument == "--source") {
+    if (argument == "--unoptimized") {
+      options.unoptimized = true;
+    } else if (argument == "--source") {
       options.show_source = true;
     } else if (argument == "--seed" && i + 1 < argc) {
       options.fuzz_seed = std::strtoull(argv[++i], nullptr, 10);

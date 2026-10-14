@@ -120,6 +120,53 @@ bool LayoutStore::IsSupported(TypeId type) const {
   return true;
 }
 
+bool LayoutStore::HasHeader(TypeId type) const {
+  if (!types_.IsHandle(type)) {
+    return false;
+  }
+  TypeId current = type;
+  while (current.is_valid()) {
+    for (const Member& member : resolution_.MembersOf(current)) {
+      if (member.kind == MemberKind::kMethod &&
+          (member.is_virtual || member.is_override)) {
+        return true;
+      }
+    }
+    current = resolution_.BaseOf(current);
+  }
+  return false;
+}
+
+uint32_t LayoutStore::InheritedFieldCount(TypeId type) const {
+  uint32_t count = 0;
+  TypeId current = resolution_.BaseOf(type);
+  while (current.is_valid()) {
+    for (const Member& member : resolution_.MembersOf(current)) {
+      if (HasStorage(member.kind)) {
+        ++count;
+      }
+    }
+    current = resolution_.BaseOf(current);
+  }
+  return count;
+}
+
+// The classes |type| derives from, root first.
+namespace {
+
+template <typename Resolution>
+std::vector<TypeId> Chain(const Resolution& resolution, TypeId type) {
+  std::vector<TypeId> chain;
+  for (TypeId current = type; current.is_valid();
+       current = resolution.BaseOf(current)) {
+    chain.push_back(current);
+  }
+  std::reverse(chain.begin(), chain.end());
+  return chain;
+}
+
+}  // namespace
+
 uint32_t LayoutStore::FieldCount(TypeId type) const {
   switch (types_.KindOf(type)) {
     case TypeKind::kOptional:
@@ -138,10 +185,14 @@ uint32_t LayoutStore::FieldCount(TypeId type) const {
       if (IsTagOnly(type)) {
         return 1;
       }
-      uint32_t count = 0;
-      for (const Member& member : resolution_.MembersOf(type)) {
-        if (HasStorage(member.kind)) {
-          ++count;
+      // A class's fields are its base's fields and then its own, with the
+      // descriptor first when anything in the chain is virtual.
+      uint32_t count = HasHeader(type) ? 1u : 0u;
+      for (TypeId current : Chain(resolution_, type)) {
+        for (const Member& member : resolution_.MembersOf(current)) {
+          if (HasStorage(member.kind)) {
+            ++count;
+          }
         }
       }
       return count;
@@ -164,14 +215,25 @@ TypeId LayoutStore::FieldType(TypeId type, uint32_t index) const {
     case TypeKind::kInstance:
     case TypeKind::kNamed: {
       uint32_t seen = 0;
-      for (const Member& member : resolution_.MembersOf(type)) {
-        if (!HasStorage(member.kind)) {
-          continue;
+      // The descriptor, when there is one: a number saying which class
+      // this object really is. Its type is not declared by any member, so
+      // it is spelled here.
+      if (HasHeader(type)) {
+        if (index == 0) {
+          return types_.u64();
         }
-        if (seen == index) {
-          return member.type;
+        seen = 1;
+      }
+      for (TypeId current : Chain(resolution_, type)) {
+        for (const Member& member : resolution_.MembersOf(current)) {
+          if (!HasStorage(member.kind)) {
+            continue;
+          }
+          if (seen == index) {
+            return member.type;
+          }
+          ++seen;
         }
-        ++seen;
       }
       return TypeId{};
     }

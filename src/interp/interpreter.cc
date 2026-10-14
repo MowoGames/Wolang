@@ -576,6 +576,51 @@ class Interpreter {
         return Value::Int(reinterpret_cast<uint64_t>(object), IntWidth::k64,
                           /*is_signed=*/false);
       }
+      case ir::Opcode::kClassTable: {
+        // Which declaration this class is. The same number in every tier,
+        // which is what lets an object made here be dispatched in
+        // compiled code and the other way round.
+        const uint32_t index = inst.payload.klass;
+        const uint64_t token =
+            index < frame->module->classes.size()
+                ? frame->module->classes[index].token
+                : 0;
+        return Value::Int(token, IntWidth::k64, /*is_signed=*/false);
+      }
+
+      case ir::Opcode::kVirtualCall: {
+        const Value& receiver = Operand(frame, inst, 0);
+        if (layouts_ == nullptr || receiver.kind() != Value::Kind::kInt) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "a virtual call needs an object at an address");
+        }
+        // The token is the first thing in the object.
+        uint64_t token = 0;
+        std::memcpy(&token, reinterpret_cast<const void*>(
+                                receiver.integer()),
+                    sizeof(token));
+        const ir::Module* home = nullptr;
+        const ir::ClassInfo* klass = FindClass(frame->module, token, &home);
+        if (klass == nullptr || inst.field >= klass->methods.size()) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "a virtual call found no body for its slot");
+        }
+        const uint32_t callee = klass->methods[inst.field];
+        if (callee >= home->functions.size()) {
+          return Trap(outcome, TrapKind::kNoBody, At(function, id),
+                      "a virtual call names a function the module does not "
+                      "have");
+        }
+        std::vector<Value> arguments;
+        for (ir::InstId operand : function.OperandsOf(inst)) {
+          arguments.push_back(operand.index < frame->values.size()
+                                  ? frame->values[operand.index]
+                                  : Value());
+        }
+        return Call(home->functions[callee], home, std::move(arguments),
+                    outcome, frame);
+      }
+
       case ir::Opcode::kLoad: {
         const Value& slot = Operand(frame, inst, 0);
         if (slot.kind() == Value::Kind::kPlace) {
@@ -1650,6 +1695,39 @@ class Interpreter {
   ForeignCaller* foreign_ = nullptr;
   abi::LayoutStore* layouts_ = nullptr;
   std::span<const ir::Module* const> linked_;
+
+  // The class a token names, looked for in the module that is running and
+  // then in everything linked with it: the object may have been made
+  // somewhere else, and the table that says what its methods are lives
+  // with the module that made it.
+  const ir::ClassInfo* FindClass(const ir::Module* current,
+                                 uint64_t token,
+                                 const ir::Module** home) const {
+    const auto search = [&](const ir::Module* module) {
+      if (module == nullptr) {
+        return static_cast<const ir::ClassInfo*>(nullptr);
+      }
+      for (const ir::ClassInfo& klass : module->classes) {
+        if (klass.token == token) {
+          *home = module;
+          return &klass;
+        }
+      }
+      return static_cast<const ir::ClassInfo*>(nullptr);
+    };
+    if (const ir::ClassInfo* found = search(current)) {
+      return found;
+    }
+    if (const ir::ClassInfo* found = search(&module_)) {
+      return found;
+    }
+    for (const ir::Module* other : linked_) {
+      if (const ir::ClassInfo* found = search(other)) {
+        return found;
+      }
+    }
+    return nullptr;
+  }
   // Function values handed to the runtime, by the token it holds instead.
   std::vector<Value> tokens_;
   uint64_t steps_ = 0;

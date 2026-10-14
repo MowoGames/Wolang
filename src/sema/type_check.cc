@@ -461,6 +461,19 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
       types_->KindOf(found) == TypeKind::kString) {
     return true;
   }
+  // A derived class fits where its base is wanted, and a type fits where a
+  // trait it implements is wanted. Both are the same question -- "is this
+  // one of those" -- and the resolution answers it from the `:` and the
+  // `extend ... as ...` it saw.
+  //
+  // This is what makes dynamic dispatch reachable at all: without it a
+  // `Barrel` could not be passed to something that takes an `Actor`, and
+  // `virtual` had nothing to be virtual about.
+  if (resolution_ != nullptr && found != expected &&
+      resolution_->Satisfies(found, expected)) {
+    return true;
+  }
+
   // A slice is a view of an array, so an array fits wherever one is wanted.
   // Without this a slice has nothing to be a view of, and `fun f(xs: [int])`
   // could not be called with `[1, 2, 3]`.
@@ -638,7 +651,14 @@ const Member* Checker::SelfMember(Symbol name) const {
   if (!self_type_.is_valid()) {
     return nullptr;
   }
-  return resolution_->FindMember(types_->StripWrappers(self_type_), name);
+  const TypeId self = types_->StripWrappers(self_type_);
+  if (const Member* own = resolution_->FindMember(self, name)) {
+    return own;
+  }
+  // A field of the class this one derives from is a field of this one: a
+  // method of `Cube` reads `side` because `Square` declared it, which is
+  // what inheritance means and what it is for.
+  return resolution_->FindInheritedMember(self, name);
 }
 
 TypeId Checker::CheckPath(const Expr& expr) {
@@ -1427,12 +1447,25 @@ void Checker::CheckConstructor(const Expr& expr, TypeId type) {
     named = base;
   }
 
+  // The fields a constructor takes, in the order the object lays them
+  // out: what the class inherits first, root first, then its own. A
+  // derived object *is* a base object at the same address (D84), so the
+  // base's fields come first here too.
+  std::vector<TypeId> chain;
+  for (TypeId current = named; current.is_valid();
+       current = resolution_->BaseOf(current)) {
+    chain.push_back(current);
+  }
+  std::reverse(chain.begin(), chain.end());
+
   std::vector<TypeId> fields;
-  for (const Member& member : resolution_->MembersOf(named)) {
-    if (member.kind == MemberKind::kField) {
-      fields.push_back(substitution.empty()
-                           ? member.type
-                           : types_->Substitute(member.type, substitution));
+  for (TypeId current : chain) {
+    for (const Member& member : resolution_->MembersOf(current)) {
+      if (member.kind == MemberKind::kField) {
+        fields.push_back(substitution.empty()
+                             ? member.type
+                             : types_->Substitute(member.type, substitution));
+      }
     }
   }
 
@@ -1493,6 +1526,19 @@ TypeId Checker::CheckField(const Expr& expr) {
       substitution.emplace_back(parameters[i], arguments[i]);
     }
     named = base;
+  }
+
+  // A member of a type parameter is a member of what it is bound to.
+  // `fun Sum<T: Shape>(s: T)` can call `s.Area()` because the bound says
+  // every T has one -- which is what a bound is *for*, and without this it
+  // was a type the checker had nothing to say about.
+  if (types_->KindOf(named) == TypeKind::kParameter) {
+    for (TypeId bound : types_->ArgumentsOf(named)) {
+      if (resolution_->FindMember(bound, expr.name) != nullptr) {
+        named = bound;
+        break;
+      }
+    }
   }
 
   if (types_->IsError(named)) {
@@ -1572,6 +1618,12 @@ TypeId Checker::CheckField(const Expr& expr) {
   }
 
   const Member* member = resolution_->FindMember(named, expr.name);
+  if (member == nullptr) {
+    // What the class inherits: a field or a method of a base is reached
+    // through a handle to the derived class without any qualification,
+    // because the object has it (D84).
+    member = resolution_->FindInheritedMember(named, expr.name);
+  }
   if (member == nullptr) {
     if (!resolution_->MembersOf(named).empty()) {
       std::string message = "`";

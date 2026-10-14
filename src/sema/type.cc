@@ -120,6 +120,9 @@ TypeStore::TypeStore() {
   int_literal_ = simple(TypeKind::kIntLiteral);
   float_literal_ = simple(TypeKind::kFloatLiteral);
 
+  u32_ = Int(IntWidth::k32, /*is_signed=*/false);
+  u64_ = Int(IntWidth::k64, /*is_signed=*/false);
+
   // A named type with no declaration anywhere: what `Query<...>` is an
   // instance of. Interned like everything else, so two queries over the
   // same components are the same type.

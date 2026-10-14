@@ -7,6 +7,7 @@
 
 #include "wolang/base/check.h"
 #include "wolang/codegen/arm64/assembler.h"
+#include "wolang/runtime/classes.h"
 #include "wolang/codegen/reg_alloc.h"
 #include "wolang/codegen/runtime.h"
 #include "wolang/runtime/builtins.h"
@@ -32,8 +33,12 @@ using IWidth = arm64::Width;
 constexpr Register kIntegerPool[] = {
     Register::kX19, Register::kX20, Register::kX21, Register::kX22,
     Register::kX23, Register::kX24, Register::kX25, Register::kX26,
-    Register::kX27,
 };
+// Where a virtual call keeps the body it looked up while it lays out the
+// arguments. Out of the pool because it has to survive both the lookup
+// call and everything the argument setup touches, and callee saved so the
+// lookup itself cannot clobber it.
+constexpr Register kVirtualTarget = Register::kX27;
 constexpr FloatRegister kFloatPool[] = {
     FloatRegister::kV8,  FloatRegister::kV9,  FloatRegister::kV10,
     FloatRegister::kV11, FloatRegister::kV12, FloatRegister::kV13,
@@ -113,6 +118,7 @@ class FunctionEmitter {
       : interner_(interner),
         types_(types),
         layouts_(*layouts),
+        module_(module),
         function_(function),
         compilable_(compilable),
         foreign_(foreign),
@@ -1404,6 +1410,19 @@ class FunctionEmitter {
         return;
       }
 
+      case ir::Opcode::kVirtualCall:
+        EmitVirtualCall(id, inst);
+        return;
+
+      case ir::Opcode::kClassTable: {
+        // The number that says which class an object is: its declaration,
+        // which the module worked out and this bakes in.
+        const Register reg = DestInt(id, 0);
+        assembler_.MovImmediate(IWidth::k64, reg, TokenOf(inst));
+        FinishInt(id, reg);
+        return;
+      }
+
       case ir::Opcode::kCall:
       case ir::Opcode::kCallIndirect:
         EmitCall(id, inst);
@@ -1481,6 +1500,87 @@ class FunctionEmitter {
       return;
     }
     LoadScalar(inst.type, id, base, 0);
+  }
+
+  // The token the module recorded for a `class.table`.
+  uint64_t TokenOf(const ir::Inst& inst) const {
+    const uint32_t index = inst.payload.klass;
+    return index < module_.classes.size() ? module_.classes[index].token
+                                          : 0;
+  }
+
+  // A call through the object rather than through the name.
+  //
+  // The object's first word is its class, and the runtime knows where
+  // each class's methods ended up -- so the body is asked for first, kept
+  // out of the way of the argument registers, and then called. One C call
+  // per virtual call: the price of the number in the object meaning the
+  // same thing in every tier (D85).
+  void EmitVirtualCall(ir::InstId id, const ir::Inst& inst) {
+    const std::span<const ir::InstId> all = function_.OperandsOf(inst);
+    if (all.empty()) {
+      TrapNow(ir::TrapKind::kUndefinedValue, id,
+              "a virtual call with no receiver");
+      return;
+    }
+
+    // The token, then the lookup, before any argument register is written.
+    const Register receiver = UseInt(all[0], 0);
+    assembler_.Ldr(IWidth::k64, kArgumentRegisters[0], receiver, 0);
+    assembler_.MovImmediate(IWidth::k64, kArgumentRegisters[1], inst.field);
+    assembler_.MovImmediate(
+        IWidth::k64, kCallScratch,
+        reinterpret_cast<uint64_t>(&runtime::wolang_class_lookup));
+    assembler_.Blr(kCallScratch);
+    assembler_.Mov(IWidth::k64, kVirtualTarget, Register::kX0);
+    // Nothing registered a body for this slot: the class was compiled by
+    // a tier that is not this one, or the object was never a class at
+    // all. A trap rather than a jump to zero, which is what this was
+    // before the message existed.
+    {
+      const Label missing =
+          TrapLabel(ir::TrapKind::kNoBody, id,
+                    "a virtual call found no compiled body for its slot");
+      assembler_.CmpImm(IWidth::k64, kVirtualTarget, 0);
+      assembler_.BCond(Condition::kEq, missing);
+    }
+
+    const TypeId returned = inst.type;
+    const bool indirect = returned.is_valid() &&
+                          layouts_.ClassOf(returned) ==
+                              abi::ValueClass::kAggregate;
+    if (indirect) {
+      AreaAddress(kIndirectResult, Info(id).area);
+    }
+
+    uint32_t integers = 0;
+    uint32_t floats = 0;
+    for (size_t index = 0; index < all.size(); ++index) {
+      const ir::InstId operand = all[index];
+      const TypeId type = TypeOf(operand);
+      switch (layouts_.ClassOf(type)) {
+        case abi::ValueClass::kFloat: {
+          const FloatRegister source = UseFloat(operand, 0);
+          assembler_.FMov(FWidth::k64, kFloatArgumentRegisters[floats++],
+                          source);
+          break;
+        }
+        case abi::ValueClass::kAggregate:
+          AreaAddress(kArgumentRegisters[integers++], Info(operand).area);
+          break;
+        case abi::ValueClass::kVoid:
+          break;
+        default: {
+          const Register source = UseInt(operand, 0);
+          assembler_.Mov(IWidth::k64, kArgumentRegisters[integers++],
+                         source);
+          break;
+        }
+      }
+    }
+
+    assembler_.Blr(kVirtualTarget);
+    StoreResult(id, returned, indirect);
   }
 
   void EmitCall(ir::InstId id, const ir::Inst& inst) {
@@ -2378,6 +2478,9 @@ class FunctionEmitter {
   const StringInterner& interner_;
   const TypeStore& types_;
   abi::LayoutStore& layouts_;
+  // The module this function is in, for what is shared between its
+  // functions: the string pool and the class tables.
+  const ir::Module& module_;
   const ir::Function& function_;
   const std::vector<bool>& compilable_;
   const std::vector<uint64_t>& foreign_;

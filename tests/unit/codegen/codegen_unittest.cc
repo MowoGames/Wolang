@@ -1328,6 +1328,114 @@ fun Body() -> bool uses unsafe {
   WOLANG_EXPECT_EQ(f.Run("Body", {}), "true");
 }
 
+WOLANG_TEST(CodegenTest, DispatchesAVirtualMethodThroughTheObject) {
+  // What `virtual` is for: the body that runs is the one the object's
+  // class has, not the one the handle's type has. Three levels, because
+  // two would not show a slot being inherited past the class that
+  // overrode it -- `Cube` overrides `Area` again and leaves `Name` to
+  // `Shape`.
+  //
+  // The number in the object is the class's declaration, which is what
+  // lets both tiers agree about it (D85): an object made by compiled code
+  // dispatches in the interpreter and the other way round.
+  Fixture f(R"(
+class Shape {
+  var tag: int = 0
+
+  virtual fun Area() -> int {
+    return 1
+  }
+
+  virtual fun Name() -> int {
+    return 10
+  }
+}
+
+class Square : Shape {
+  var side: int = 2
+
+  override fun Area() -> int {
+    return side * side
+  }
+}
+
+class Cube : Square {
+  override fun Area() -> int {
+    return side * side * side
+  }
+
+  override fun Name() -> int {
+    return 30
+  }
+}
+
+fun Sum(s: Shape) -> int {
+  return s.Area() * 100 + s.Name()
+}
+
+fun Dispatch() -> int {
+  var shape = Shape(0)
+  var square = Square(0, 3)
+  var cube = Cube(0, 2)
+  // 110 + 910 + 830: the base's own, the square's area with the base's
+  // name, and the cube's both.
+  return Sum(shape) + Sum(square) + Sum(cube)
+}
+
+fun Inherited() -> int {
+  // A field declared by a base, read by a derived class's method, and the
+  // constructor taking both in layout order.
+  var cube = Cube(7, 4)
+  return cube.tag * 1000 + cube.side * 10 + cube.Name()
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Dispatch", {}), "1850");
+  WOLANG_EXPECT_EQ(f.Run("Inherited", {}), "7070");
+}
+
+WOLANG_TEST(CodegenTest, CallsAMethodThroughATraitBound) {
+  // Static dispatch: the bound says every `T` has an `Area`, so the body
+  // calls it and one copy of the function is made per type that was
+  // passed. Which is what makes a generic algorithm over a trait cost
+  // nothing at run time.
+  Fixture f(R"(
+trait Shape {
+  fun Area() -> int
+}
+
+struct Circle {
+  var r: int = 1
+}
+
+struct Square {
+  var side: int = 1
+}
+
+extend Circle as Shape {
+  fun Area() -> int {
+    return r * r * 3
+  }
+}
+
+extend Square as Shape {
+  fun Area() -> int {
+    return side * side
+  }
+}
+
+fun Total<T: Shape>(s: T) -> int {
+  return s.Area()
+}
+
+fun Both() -> int {
+  const c = Circle(2)
+  const q = Square(3)
+  return Total(c) * 100 + Total(q)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Both", {}), "1209");
+}
+
 WOLANG_TEST(CodegenTest, BuildsAndComparesStrings) {
   // A string is a pointer and a length in every tier, and what is built
   // from one is built by the runtime both tiers call. Which is what makes

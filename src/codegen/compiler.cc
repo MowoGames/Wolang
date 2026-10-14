@@ -2,6 +2,8 @@
 
 #include "wolang/codegen/compiler.h"
 
+#include "wolang/runtime/classes.h"
+
 #include "wolang/interp/marshal.h"
 
 #include <dlfcn.h>
@@ -98,6 +100,9 @@ class CompiledModule::Impl {
   }
 
   void Compile();
+  // Tells the runtime where every compiled virtual method ended up, which
+  // is what a virtual call in compiled code looks up.
+  void RegisterClasses();
 
   interp::Outcome Run(Symbol name,
                       const std::vector<interp::Value>& arguments,
@@ -424,6 +429,37 @@ void CompiledModule::Impl::Compile() {
           PatchAddress(target_, &bytes_, fixup.at, origin + callee.body);
         }
         block_.Commit(bytes_);
+      }
+    }
+  }
+
+  RegisterClasses();
+}
+
+// Where a virtual call finds its body. The addresses are known only once
+// the code is placed, and the number an object carries is its class's
+// declaration -- so this is the one place that can connect the two.
+void CompiledModule::Impl::RegisterClasses() {
+  if (!block_.is_installed()) {
+    return;
+  }
+  for (const std::unique_ptr<FileState>& file : files_) {
+    if (file == nullptr) {
+      continue;
+    }
+    for (const ir::ClassInfo& klass : file->module.classes) {
+      for (uint32_t slot = 0; slot < klass.methods.size(); ++slot) {
+        const uint32_t local = klass.methods[slot];
+        if (local >= file->global.size()) {
+          continue;
+        }
+        const Entry& entry = entries_[entries_[file->global[local]].link];
+        if (!entry.compiled) {
+          continue;
+        }
+        runtime::wolang_class_register(
+            klass.token, slot,
+            const_cast<void*>(block_.AddressOf(entry.body)));
       }
     }
   }
