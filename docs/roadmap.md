@@ -27,7 +27,7 @@ Dates are not fixed. Scope is.
 |---|---|---|
 | **7** | IR interpreter (the reference semantics), `comptime` evaluation, `wolang run`, first `core` modules written in Wolang | `examples/hello.wo` runs; `@Test` functions execute ✅ |
 | **8** | Dev tier: copy-and-patch code generation (arm64 first, then x64), faults, unwind tables, symbolization | gameplay microbenchmarks within 3x of C++ ✅ (three of four against `-O2`; all four against scalar C++) |
-| **9** | Memory: value semantics, second-class references, `Owned`/`Shared`, `arena` blocks, optional GC; C ABI FFI | a program with no `class` links no collector |
+| **9** | Memory: value semantics, second-class references, `Owned`/`Shared`, `arena` blocks, optional GC; C ABI FFI | a program with no `class` links no collector — vacuously, since nothing allocates through a collector yet. The FFI, raw pointers, `defer` and `E0121`–`E0123` landed; owning types need destructors ⏳ |
 
 ## Phase C — the gamedev core
 
