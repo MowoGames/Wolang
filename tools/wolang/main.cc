@@ -656,9 +656,15 @@ int RunTests(const Options& options) {
       // Run through the unoptimized IR: the reference semantics are what a
       // test is testing.
       const CheckedFile* checked = database.Checked(file);
-      abi::LayoutStore layouts(database.types(),
-                               checked != nullptr ? checked->resolution
-                                                  : FileResolution{});
+      // Bound to something that outlives the layout store: a conditional
+      // whose other arm is a temporary makes the whole expression a value,
+      // and the store would hold a reference to a copy that is already
+      // gone. Which is what it did -- harmlessly until member tables
+      // started being built on demand, and then not harmlessly at all.
+      static const FileResolution kNoResolution;
+      const FileResolution& resolution =
+          checked != nullptr ? checked->resolution : kNoResolution;
+      abi::LayoutStore layouts(database.types(), resolution);
       const interp::Outcome outcome = interp::RunNamed(
           database.interner(), database.types(), lowered->unoptimized, name,
           {}, {}, nullptr, foreign.get(), &layouts, modules);

@@ -1,0 +1,105 @@
+// A million entities, integrated through the component stores.
+//
+// The wave's own question: does the layout pay for itself on the pass a
+// game actually runs? Both benchmarks below do the same work through the
+// same interface -- spawn a million entities, give each a position and a
+// velocity, then integrate -- and differ only in how the rows are laid
+// out underneath.
+
+need game.ecs.{StoreNew, PackedStoreNew, EntitiesNew}
+
+struct Position {
+  var x: float = 0.0
+  var y: float = 0.0
+  var z: float = 0.0
+}
+
+struct Velocity {
+  var dx: float = 1.0
+  var dy: float = 2.0
+  var dz: float = 3.0
+}
+
+const kEntities: int = 1000000
+
+@Bench
+fun BenchEcsIntegrateSoa() -> int uses unsafe {
+  const world = EntitiesNew(kEntities)
+  var positions = StoreNew<Position>(kEntities, kEntities)
+  var velocities = StoreNew<Velocity>(kEntities, kEntities)
+
+  var spawned = 0
+  while spawned < kEntities {
+    const e = world.Spawn()
+    const _p = positions.Add(e)
+    const v = velocities.Add(e)
+    velocities.rows[v].dx = 1.0
+    spawned = spawned + 1
+  }
+
+  // The integration itself. The rows of both stores are dense and in the
+  // same order, because every entity here has both components -- so this
+  // is one pass over two arrays with no lookup per element.
+  //
+  // The views are taken once rather than per element: reading a field of
+  // a handle is a load, and a load cannot be hoisted out of a loop
+  // without knowing what the loop writes. Which is what a system would
+  // write anyway -- the query hands it the rows, not the store.
+  const rows = positions.rows
+  const speeds = velocities.rows
+  const live = positions.count
+  var round = 0
+  while round < 8 {
+    var i = 0
+    while i < live {
+      rows[i].x = rows[i].x + speeds[i].dx
+      i = i + 1
+    }
+    round = round + 1
+  }
+
+  var total = 0.0
+  var i = 0
+  while i < positions.count {
+    total = total + positions.rows[i].x
+    i = i + 1
+  }
+  return total as int
+}
+
+@Bench
+fun BenchEcsIntegrateAos() -> int uses unsafe {
+  const world = EntitiesNew(kEntities)
+  var positions = PackedStoreNew<Position>(kEntities, kEntities)
+  var velocities = PackedStoreNew<Velocity>(kEntities, kEntities)
+
+  var spawned = 0
+  while spawned < kEntities {
+    const e = world.Spawn()
+    const _p = positions.Add(e)
+    const v = velocities.Add(e)
+    velocities.rows[v].dx = 1.0
+    spawned = spawned + 1
+  }
+
+  const rows = positions.rows
+  const speeds = velocities.rows
+  const live = positions.count
+  var round = 0
+  while round < 8 {
+    var i = 0
+    while i < live {
+      rows[i].x = rows[i].x + speeds[i].dx
+      i = i + 1
+    }
+    round = round + 1
+  }
+
+  var total = 0.0
+  var i = 0
+  while i < positions.count {
+    total = total + positions.rows[i].x
+    i = i + 1
+  }
+  return total as int
+}

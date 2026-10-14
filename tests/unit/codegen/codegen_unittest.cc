@@ -1228,6 +1228,106 @@ fun ThroughAHandle() -> int {
   WOLANG_EXPECT_EQ(f.Run("ThroughAHandle", {}), "125");
 }
 
+WOLANG_TEST(CodegenTest, ReadsAndWritesAnAggregateThroughAPointer) {
+  // A class with a slice in it: the field is sixteen bytes rather than a
+  // register's worth, so writing it means writing a pointer and a length
+  // at the offsets the layout gives. Every tier has to agree, and the
+  // reference tier had no way to do it at all -- which is what a store of
+  // a whole aggregate through a pointer was, until an ECS store needed
+  // one.
+  // The storage is allocated rather than a local array: a local lives in
+  // a frame slot, and the reference tier holds a slot as a value rather
+  // than at an address, so there would be no pointer to write.
+  Fixture f(R"(
+offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+
+class Rows {
+  var data: []int
+  var count: int = 0
+}
+
+fun Through() -> int uses unsafe {
+  const buf = ArrayNew<int>(4)
+  buf[0] = 10
+  buf[1] = 20
+  buf[2] = 30
+  var rows = Rows(buf, 0)
+  // Read the whole slice back out of the object, which is the load side.
+  const view = rows.data
+  rows.count = view.len
+  return view[0] + view[1] + view[2] + rows.count
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Through", {}), "64");
+}
+
+WOLANG_TEST(CodegenTest, AGenericStoreOverSoaStorage) {
+  // The shape the ECS library is built out of: a generic class holding
+  // `soa []T` and two plain arrays, with methods that read and write
+  // them. Every piece of this works on its own, and putting them
+  // together is what found the rest.
+  Fixture f(R"(
+offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
+offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+
+struct Point {
+  var x: float = 0.0
+  var y: float = 0.0
+}
+
+class Store<T> {
+  var rows: soa []T
+  var owners: []int
+  var count: int = 0
+
+  fun Add(e: int) -> int {
+    if count >= owners.len {
+      return -1
+    }
+    const row = count
+    owners[row] = e
+    count = count + 1
+    return row
+  }
+}
+
+// Built by a generic function of its own, which is how a library hands
+// one out: the caller never writes the field list.
+fun StoreNew<T>(capacity: int) -> Store<T> uses unsafe {
+  return Store<T>(SoaNew<T>(capacity), ArrayNew<int>(capacity), 0)
+}
+
+fun Build() -> int uses unsafe {
+  var store = StoreNew<Point>(4)
+  const first = store.Add(10)
+  const second = store.Add(20)
+  store.rows[first].x = 1.0
+  store.rows[second].x = 2.0
+  return first + second * 10 + store.count * 100 +
+         store.owners[1] * 1000 + (store.rows[second].x as int) * 100000
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Build", {}), "220210");
+}
+
+WOLANG_TEST(CodegenTest, WritesThroughASliceFieldOfAnObject) {
+  Fixture f(R"(
+offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+
+class Store {
+  var owners: []int
+  var count: int = 0
+}
+
+fun Body() -> bool uses unsafe {
+  var store = Store(ArrayNew<int>(4), 0)
+  store.owners[0] = 7
+  return store.owners[0] == 7 && store.owners.len == 4
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Body", {}), "true");
+}
+
 WOLANG_TEST(CodegenTest, BuildsAndComparesStrings) {
   // A string is a pointer and a length in every tier, and what is built
   // from one is built by the runtime both tiers call. Which is what makes

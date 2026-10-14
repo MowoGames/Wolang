@@ -673,3 +673,50 @@ makes it the simpler half -- by the time a method is called, what its
 type stands for is already decided. And whether a method writes through
 its receiver follows the declaration: an instance of a class is a handle
 exactly when the class is.
+
+**D79. A generic is copied where it is used, with the names of where it
+was written.** The module a generic lives in cannot know what its
+importers will ask for, so the copy is made in the module that asks. What
+makes that work is that the copy borrows the defining file's view for as
+long as it takes to lower: its syntax, its member tables, the types its
+checker recorded. `Store<T>`'s body resolves `SoaNew` in the file that
+wrote it, not in the one that called it.
+
+Lowering therefore has a *current file* rather than one file, and
+everything it looks a name up in is keyed by that file. The bug that said
+so: a table of this module's declarations was searched by syntax id while
+another file's syntax was in force, and a constructor call came out as a
+call to an unrelated constant that happened to sit at the same index.
+
+A specialization has no source identity. It is reached by the name it was
+mangled with -- `Store<Position>.Add` -- because two instantiations of one
+generic would otherwise claim the same (file, declaration) pair, and a
+linker that resolves by that pair binds a call to whichever copy it finds
+first. Which is a call into another type's layout.
+
+**D80. The reference tier reads and writes aggregates through pointers.**
+A class holding a slice has a sixteen-byte field, so writing it means
+writing a pointer and a length at the offsets the layout gives. The
+interpreter had no way to do that at all: it switched on the *value* and
+every aggregate fell through to a trap. It now walks the layout, which is
+the same answer the compiled tiers get from the same store -- and a slice
+is spelled out rather than looked up, because neither of its fields is a
+member anyone declared.
+
+What is still not possible is putting a *local* array into a heap object
+in that tier: a local lives in a frame slot, which the interpreter holds as
+a value rather than at an address, so there is no pointer to write. The
+storage an ECS keeps is allocated, so this has not come up outside a test
+that was written wrong.
+
+**D81. A load is reused until something writes.** Within a block, reading
+the same address twice with nothing stored or called in between gives the
+same answer, so the second read is dropped. A loop that reads a field of
+its object for every use pays for it once instead.
+
+What this does *not* do is move a load out of a loop. That needs to know
+that nothing the loop writes lands where the load reads, which is alias
+analysis -- and without it the base of a store's row and the length it is
+checked against are re-read a million times. It is the largest single
+thing between this and the layout difference showing up as more than a few
+percent, and it waits for the wave that brings the analysis.

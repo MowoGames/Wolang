@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "wolang/base/diagnostic.h"
+#include "wolang/compiler/item_tree.h"
 #include "wolang/ir/builder.h"
 
 namespace wolang {
@@ -40,6 +41,20 @@ struct LoopTarget {
 
 class Lowerer {
  public:
+  // Which file's declarations are being lowered *right now*.
+  //
+  // Usually this file's, and not while a generic from another module is
+  // being instantiated: its body resolves its names in the file it was
+  // written in, so lowering a copy of it means borrowing that file's
+  // syntax, member tables and recorded types for the duration.
+  struct Context {
+    uint32_t file_index = 0;
+    const FileResolution* resolution = nullptr;
+    const Ast* ast = nullptr;
+    const TypedBody* typed = nullptr;
+    std::span<const std::pair<ItemId, EffectRow>> effects;
+  };
+
   Lowerer(StringInterner* interner,
           TypeStore* types,
           uint32_t file_index,
@@ -47,25 +62,28 @@ class Lowerer {
           const Ast& ast,
           const TypedBody& typed,
           std::span<const std::pair<ItemId, EffectRow>> effects,
+          ForeignLookup foreign,
           Module* module)
       : interner_(interner),
         types_(types),
-        file_index_(file_index),
-        resolution_(resolution),
-        ast_(ast),
-        typed_(typed),
-        effects_(effects),
+        here_(Context{file_index, &resolution, &ast, &typed, effects}),
+        foreign_(std::move(foreign)),
         module_(module),
         resolver_(types, interner, &resolution, &discarded_),
         self_name_(interner->Intern("self")) {}
 
+  const Ast& ast() const { return *here_.ast; }
+  const FileResolution& resolution() const { return *here_.resolution; }
+  const TypedBody& typed() const { return *here_.typed; }
+  uint32_t file_index() const { return here_.file_index; }
+
   void Run() {
     // Two passes: every function gets a declaration first, so a call can
     // name one that is defined later in the file.
-    for (ItemId id : ast_.Get(ast_.root())) {
+    for (ItemId id : ast().Get(ast().root())) {
       Declare(id, TypeId{});
     }
-    for (ItemId id : ast_.Get(ast_.root())) {
+    for (ItemId id : ast().Get(ast().root())) {
       Define(id, TypeId{});
     }
 
@@ -78,8 +96,24 @@ class Lowerer {
       pending_.pop_back();
       substitution_ = work.substitution;
       self_type_ = work.owner;
-      if (ast_.Contains(work.item)) {
-        LowerFunction(ast_.Get(work.item), work.index);
+      // A generic from another module is lowered with that module's view:
+      // its own names, its own member tables, its own recorded types.
+      const Context outer = here_;
+      if (work.where.ast != nullptr) {
+        here_ = Context{work.where.file_index, work.where.resolution,
+                        work.where.ast, work.where.typed,
+                        work.where.effects};
+        resolver_ = TypeResolver(types_, interner_, here_.resolution,
+                                 &discarded_);
+      }
+      if (ast().Contains(work.item)) {
+        LowerFunction(ast().Get(work.item), work.index);
+      }
+      if (work.where.ast != nullptr) {
+        here_ = Context{outer.file_index, outer.resolution, outer.ast,
+                        outer.typed, outer.effects};
+        resolver_ = TypeResolver(types_, interner_, here_.resolution,
+                                 &discarded_);
       }
       self_type_ = TypeId{};
       substitution_.clear();
@@ -94,17 +128,17 @@ class Lowerer {
   // is not a file-scope name, so neither its signature nor its identity can
   // be looked up the way a free function's is.
   void Declare(ItemId id, TypeId owner) {
-    if (!ast_.Contains(id)) {
+    if (!ast().Contains(id)) {
       return;
     }
-    const Item& item = ast_.Get(id);
+    const Item& item = ast().Get(id);
     switch (item.kind) {
       case ItemKind::kFunction: {
         if (owner.is_valid()) {
           DeclareMethod(id, item, owner);
           break;
         }
-        const Binding* binding = resolution_.Find(item.name);
+        const Binding* binding = resolution().Find(item.name);
         const TypeId signature =
             binding != nullptr ? binding->type : TypeId{};
         // A generic declaration is not a function: it is a recipe for one.
@@ -134,7 +168,8 @@ class Lowerer {
         }
         Remember(function.source_file, function.source_item,
                  module_->functions.size());
-        indices_.emplace_back(id, module_->functions.size());
+        indices_.push_back(Declared{id, module_->functions.size(),
+                                    ast().Get(id).name, file_index()});
         module_->functions.push_back(std::move(function));
         break;
       }
@@ -157,7 +192,7 @@ class Lowerer {
         if (!item.name.is_valid() || !item.init.is_valid()) {
           break;
         }
-        const Binding* binding = resolution_.Find(item.name);
+        const Binding* binding = resolution().Find(item.name);
         Function function;
         function.name = ConstantName(item.name);
         function.type = types_->Function(
@@ -168,8 +203,10 @@ class Lowerer {
         }
         Remember(function.source_file, function.source_item,
                  module_->functions.size());
-        constants_.emplace_back(item.name, module_->functions.size());
-        indices_.emplace_back(id, module_->functions.size());
+        constants_.push_back(
+            Named{item.name, module_->functions.size(), file_index()});
+        indices_.push_back(Declared{id, module_->functions.size(),
+                                    ast().Get(id).name, file_index()});
         module_->functions.push_back(std::move(function));
         break;
       }
@@ -184,7 +221,7 @@ class Lowerer {
       case ItemKind::kEnum:
       case ItemKind::kExtend:
         // Methods are functions too; their bodies are lowered the same way.
-        for (ItemId member : ast_.Get(item.members)) {
+        for (ItemId member : ast().Get(item.members)) {
           Declare(member, OwnerOf(item));
         }
         break;
@@ -194,9 +231,9 @@ class Lowerer {
   }
 
   // What a declaration does, as the module-wide inference found it. An
-  // absence is not an empty row: see `Function::effects_known`.
+  // absence is not an empty row: see `Function::here_.effectsknown`.
   EffectRow EffectsOf(ItemId id, bool* known) const {
-    for (const auto& [item, row] : effects_) {
+    for (const auto& [item, row] : here_.effects) {
       if (item == id) {
         *known = true;
         return row;
@@ -224,8 +261,44 @@ class Lowerer {
     return ItemId{};
   }
 
+  // Where a generic this file *imported* was written: the file it came
+  // from, and the declaration in it.
+  //
+  // A copy of it is made here rather than there, because the module it was
+  // written in cannot know what every importer will ask for. The copy
+  // borrows the defining file's syntax and member tables for as long as it
+  // takes to lower -- `Store<T>` resolves `SoaNew` in the file that wrote
+  // it, not in the one that called it.
+  struct Imported {
+    uint32_t file = 0;
+    ItemId item;
+    const FileResolution* resolution = nullptr;
+    const Ast* ast = nullptr;
+    const TypedBody* typed = nullptr;
+  };
+
+  Imported FindImportedGeneric(Symbol name) const {
+    const Binding* binding = resolution().Find(name);
+    if (binding == nullptr || binding->kind != BindingKind::kFunction ||
+        binding->file == file_index() || !foreign_ ||
+        !types_->MentionsParameter(binding->type)) {
+      return Imported{};
+    }
+    const ForeignFile other = foreign_(binding->file);
+    if (other.ast == nullptr || other.resolution == nullptr ||
+        other.typed == nullptr) {
+      return Imported{};
+    }
+    const ItemId item = ResolveItem(*other.ast, binding->item);
+    if (!other.ast->Contains(item)) {
+      return Imported{};
+    }
+    return Imported{binding->file, item, other.resolution, other.ast,
+                    other.typed};
+  }
+
   const std::vector<TypeId>* FindInstantiation(ExprId call) const {
-    for (const auto& [id, arguments] : typed_.instantiations) {
+    for (const auto& [id, arguments] : typed().instantiations) {
       if (id == call) {
         return &arguments;
       }
@@ -277,8 +350,17 @@ class Lowerer {
   // instantiated with: two call sites that inferred the same arguments
   // reach the same copy.
   uint32_t Instantiate(ItemId item, ExprId call) {
+    return Instantiate(item, call, Context{});
+  }
+
+  uint32_t Instantiate(ItemId item, ExprId call, const Context& where) {
+    // The arguments come from *this* file -- inference happened at the
+    // call -- and the declaration from wherever it was written.
     const std::vector<TypeId>* arguments = FindInstantiation(call);
-    const Binding* binding = resolution_.Find(ast_.Get(item).name);
+    const Ast& home = where.ast != nullptr ? *where.ast : ast();
+    const FileResolution& names =
+        where.resolution != nullptr ? *where.resolution : resolution();
+    const Binding* binding = names.Find(home.Get(item).name);
     if (arguments == nullptr || binding == nullptr) {
       return 0xFFFFFFFFu;
     }
@@ -305,7 +387,7 @@ class Lowerer {
     }
     suffix.push_back('>');
 
-    std::string mangled(interner_->Text(ast_.Get(item).name));
+    std::string mangled(interner_->Text(home.Get(item).name));
     mangled.append(suffix);
     const Symbol name = interner_->Intern(mangled);
     for (const auto& [existing, index] : specializations_) {
@@ -318,13 +400,19 @@ class Lowerer {
     function.name = name;
     function.type = Erase(types_->Substitute(binding->type, substitution));
     function.effects = EffectsOf(item, &function.effects_known);
-    function.source_file = binding->file;
-    function.source_item = binding->item;
-    function.is_task = HasFlag(ast_.Get(item).flags, ItemFlags::kAsync);
+    // No source identity: a specialization is reached by the name it was
+    // mangled with and never through the declaration it came from. Two
+    // instantiations of one generic would otherwise claim the same (file,
+    // item) pair, and a linker that resolves by that pair binds a call to
+    // whichever copy it finds first -- which is a call into another type's
+    // layout.
+    function.source_file = Function::kNoSource;
+    function.source_item = Function::kNoSource;
+    function.is_task = HasFlag(home.Get(item).flags, ItemFlags::kAsync);
     const auto index = static_cast<uint32_t>(module_->functions.size());
     module_->functions.push_back(std::move(function));
     specializations_.emplace_back(name, index);
-    pending_.push_back(Pending{item, substitution, index, TypeId{}});
+    pending_.push_back(Pending{item, substitution, index, TypeId{}, where});
     return index;
   }
 
@@ -336,7 +424,7 @@ class Lowerer {
   // a method is called, what its type stands for is already decided.
   uint32_t InstantiateMethod(TypeId owner, Symbol name, const Member& member) {
     const TypeId base = types_->Get(owner).base;
-    const std::span<const TypeId> parameters = resolution_.ParametersOf(base);
+    const std::span<const TypeId> parameters = resolution().ParametersOf(base);
     const std::vector<TypeId> arguments = types_->ArgumentsOf(owner);
     if (parameters.empty() || parameters.size() != arguments.size()) {
       return 0xFFFFFFFFu;
@@ -351,14 +439,25 @@ class Lowerer {
       substitution.emplace_back(parameters[i], concrete);
     }
 
-    ItemId body;
-    for (const Recipe& recipe : recipes_) {
-      if (recipe.owner == base && recipe.name == name) {
-        body = recipe.item;
-        break;
+    // Where the body is: the member table says which file and which
+    // declaration, which is all that is needed whether the type was
+    // written here or imported from another module.
+    Context where;
+    if (member.file != file_index()) {
+      if (!foreign_) {
+        return 0xFFFFFFFFu;
       }
+      const ForeignFile other = foreign_(member.file);
+      if (other.ast == nullptr || other.resolution == nullptr ||
+          other.typed == nullptr) {
+        return 0xFFFFFFFFu;
+      }
+      where = Context{member.file, other.resolution, other.ast,
+                      other.typed, {}};
     }
-    if (!ast_.Contains(body)) {
+    const Ast& home = where.ast != nullptr ? *where.ast : ast();
+    const ItemId body = ResolveItem(home, member.item);
+    if (!home.Contains(body)) {
       return 0xFFFFFFFFu;
     }
 
@@ -382,20 +481,21 @@ class Lowerer {
         params,
         Erase(types_->Substitute(types_->ElementOf(member.type),
                                  substitution)));
-    function.source_file = member.file;
-    function.source_item = member.item;
-    function.source_slot = member.slot;
+    // Reached by its mangled name alone, for the reason above.
+    function.source_file = Function::kNoSource;
+    function.source_item = Function::kNoSource;
+    function.self_type = owner;
     const auto index = static_cast<uint32_t>(module_->functions.size());
     module_->functions.push_back(std::move(function));
     specializations_.emplace_back(mangled, index);
-    pending_.push_back(Pending{body, substitution, index, owner});
+    pending_.push_back(Pending{body, substitution, index, owner, where});
     return index;
   }
 
   uint32_t IndexOf(ItemId id) const {
-    for (const auto& [item, index] : indices_) {
-      if (item == id) {
-        return static_cast<uint32_t>(index);
+    for (const Declared& declared : indices_) {
+      if (declared.item == id && declared.file == file_index()) {
+        return static_cast<uint32_t>(declared.index);
       }
     }
     return 0xFFFFFFFFu;
@@ -439,10 +539,10 @@ class Lowerer {
   TypeId OwnerOf(const Item& item) {
     if (item.kind == ItemKind::kExtend) {
       return item.target_type.is_valid()
-                 ? Erase(resolver_.Resolve(ast_, item.target_type))
+                 ? Erase(resolver_.Resolve(ast(), item.target_type))
                  : TypeId{};
     }
-    const Binding* binding = resolution_.Find(item.name);
+    const Binding* binding = resolution().Find(item.name);
     return binding != nullptr ? Erase(binding->type) : TypeId{};
   }
 
@@ -468,7 +568,7 @@ class Lowerer {
   // between a method and a function that happens to be written inside a
   // type.
   void DeclareMethod(ItemId id, const Item& item, TypeId owner) {
-    const Member* member = resolution_.FindMember(owner, item.name);
+    const Member* member = resolution().FindMember(owner, item.name);
     const TypeId declared = member != nullptr ? member->type : TypeId{};
     if (!declared.is_valid() ||
         types_->KindOf(declared) != TypeKind::kFunction) {
@@ -479,12 +579,10 @@ class Lowerer {
     // nothing but integers, because its `self` is not one type.
     if (types_->MentionsParameter(declared) ||
         types_->MentionsParameter(owner) ||
-        !resolution_.ParametersOf(owner).empty()) {
+        !resolution().ParametersOf(owner).empty()) {
       // A generic type's method is a recipe: there is nothing to declare
-      // until something asks for `Box<int>.Get`. Remembered by the type it
-      // is written in and its name, which is what a call on an instance
-      // has to go on.
-      recipes_.push_back(Recipe{owner, item.name, id});
+      // until something asks for `Box<int>.Get`, and where its body is
+      // comes from the member table rather than from anything kept here.
       return;
     }
 
@@ -508,7 +606,8 @@ class Lowerer {
 
     Remember(function.source_file, function.source_item,
              module_->functions.size());
-    indices_.emplace_back(id, module_->functions.size());
+    indices_.push_back(Declared{id, module_->functions.size(),
+                                ast().Get(id).name, file_index()});
     module_->functions.push_back(std::move(function));
   }
 
@@ -542,19 +641,19 @@ class Lowerer {
   }
 
   uint32_t IndexOfName(Symbol name) const {
-    for (const auto& [item, index] : indices_) {
-      if (ast_.Contains(item) && ast_.Get(item).name == name) {
-        return static_cast<uint32_t>(index);
+    for (const Declared& declared : indices_) {
+      if (declared.file == file_index() && declared.name == name) {
+        return static_cast<uint32_t>(declared.index);
       }
     }
     return 0xFFFFFFFFu;
   }
 
   void Define(ItemId id, TypeId owner) {
-    if (!ast_.Contains(id)) {
+    if (!ast().Contains(id)) {
       return;
     }
-    const Item& item = ast_.Get(id);
+    const Item& item = ast().Get(id);
     switch (item.kind) {
       case ItemKind::kFunction:
         self_type_ = owner;
@@ -581,7 +680,7 @@ class Lowerer {
       case ItemKind::kComponent:
       case ItemKind::kEnum:
       case ItemKind::kExtend:
-        for (ItemId member : ast_.Get(item.members)) {
+        for (ItemId member : ast().Get(item.members)) {
           Define(member, OwnerOf(item));
         }
         break;
@@ -611,7 +710,7 @@ class Lowerer {
   // declaration: the transition table is the source, and the methods are
   // what it means.
   void DeclareMachine(ItemId id, const Item& item) {
-    const Binding* binding = resolution_.Find(item.name);
+    const Binding* binding = resolution().Find(item.name);
     if (binding == nullptr) {
       return;
     }
@@ -619,14 +718,14 @@ class Lowerer {
     const TypeId answer = types_->bool_type();
 
     // The blocks first, so an event can call them.
-    for (StateId state_id : ast_.Get(item.states)) {
-      if (!ast_.Contains(state_id)) {
+    for (StateId state_id : ast().Get(item.states)) {
+      if (!ast().Contains(state_id)) {
         continue;
       }
-      const State& state = ast_.Get(state_id);
+      const State& state = ast().Get(state_id);
       for (int which = 0; which < 2; ++which) {
         const ExprId block = which == 0 ? state.enter : state.exit;
-        if (!ast_.Contains(block)) {
+        if (!ast().Contains(block)) {
           continue;
         }
         Function function;
@@ -643,7 +742,7 @@ class Lowerer {
       }
     }
 
-    for (const Member& member : resolution_.MembersOf(machine)) {
+    for (const Member& member : resolution().MembersOf(machine)) {
       if (member.kind != MemberKind::kMethod) {
         continue;
       }
@@ -668,7 +767,7 @@ class Lowerer {
   // state we are in decides what happens, and nothing happens when the
   // current state has no transition for that event.
   void DefineMachine(ItemId id, const Item& item) {
-    const Binding* binding = resolution_.Find(item.name);
+    const Binding* binding = resolution().Find(item.name);
     if (binding == nullptr) {
       return;
     }
@@ -677,8 +776,8 @@ class Lowerer {
     // The states, in the order they were declared: that order is the
     // numbering, and the first one is where a machine starts.
     std::vector<StateId> states;
-    for (StateId state_id : ast_.Get(item.states)) {
-      if (ast_.Contains(state_id)) {
+    for (StateId state_id : ast().Get(item.states)) {
+      if (ast().Contains(state_id)) {
         states.push_back(state_id);
       }
     }
@@ -768,12 +867,12 @@ class Lowerer {
     std::vector<uint32_t> froms;
     std::vector<uint32_t> targets;
     for (uint32_t i = 0; i < states.size(); ++i) {
-      const State& state = ast_.Get(states[i]);
-      for (TransitionId transition_id : ast_.Get(state.transitions)) {
-        if (!ast_.Contains(transition_id)) {
+      const State& state = ast().Get(states[i]);
+      for (TransitionId transition_id : ast().Get(state.transitions)) {
+        if (!ast().Contains(transition_id)) {
           continue;
         }
-        const Transition& transition = ast_.Get(transition_id);
+        const Transition& transition = ast().Get(transition_id);
         if (transition.event != method.name) {
           continue;
         }
@@ -810,14 +909,14 @@ class Lowerer {
       // Out of the old state, into the new one, and through whatever
       // `always` leads from there -- every state on the way gets its
       // blocks run.
-      CallMachineBlock(machine, ast_.Get(states[froms[i]]).name,
+      CallMachineBlock(machine, ast().Get(states[froms[i]]).name,
                        /*is_enter=*/false);
       builder.Add(Opcode::kStore, TypeId{},
                   {state_address,
                    builder.ConstInt(state_type,
                                     static_cast<uint64_t>(targets[i]))});
       for (uint32_t step : PathTo(states, froms[i], method.name)) {
-        CallMachineBlock(machine, ast_.Get(states[step]).name,
+        CallMachineBlock(machine, ast().Get(states[step]).name,
                          /*is_enter=*/true);
       }
       builder.Return(builder.ConstBool(true));
@@ -840,12 +939,12 @@ class Lowerer {
                                uint32_t from,
                                Symbol event) {
     std::vector<uint32_t> path;
-    const State& state = ast_.Get(states[from]);
-    for (TransitionId transition_id : ast_.Get(state.transitions)) {
-      if (!ast_.Contains(transition_id)) {
+    const State& state = ast().Get(states[from]);
+    for (TransitionId transition_id : ast().Get(state.transitions)) {
+      if (!ast().Contains(transition_id)) {
         continue;
       }
-      const Transition& transition = ast_.Get(transition_id);
+      const Transition& transition = ast().Get(transition_id);
       if (transition.event != event) {
         continue;
       }
@@ -873,12 +972,12 @@ class Lowerer {
     if (from >= states.size()) {
       return from;
     }
-    const State& state = ast_.Get(states[from]);
-    for (TransitionId transition_id : ast_.Get(state.transitions)) {
-      if (!ast_.Contains(transition_id)) {
+    const State& state = ast().Get(states[from]);
+    for (TransitionId transition_id : ast().Get(state.transitions)) {
+      if (!ast().Contains(transition_id)) {
         continue;
       }
-      const Transition& transition = ast_.Get(transition_id);
+      const Transition& transition = ast().Get(transition_id);
       if (transition.is_always) {
         return IndexOfState(states, transition.target);
       }
@@ -901,7 +1000,7 @@ class Lowerer {
 
   uint32_t IndexOfState(const std::vector<StateId>& states, Symbol name) {
     for (uint32_t i = 0; i < states.size(); ++i) {
-      if (ast_.Get(states[i]).name == name) {
+      if (ast().Get(states[i]).name == name) {
         return i;
       }
     }
@@ -920,7 +1019,7 @@ class Lowerer {
 
   uint32_t MachineStateIndex(TypeId machine) {
     uint32_t index = 0;
-    for (const Member& member : resolution_.MembersOf(machine)) {
+    for (const Member& member : resolution().MembersOf(machine)) {
       if (!HasStorage(member.kind)) {
         continue;
       }
@@ -949,7 +1048,7 @@ class Lowerer {
         !item.name.is_valid() || !item.init.is_valid()) {
       return;
     }
-    const Member* member = resolution_.FindMember(owner, item.name);
+    const Member* member = resolution().FindMember(owner, item.name);
     if (member == nullptr || member->kind != MemberKind::kDerived) {
       return;
     }
@@ -962,7 +1061,8 @@ class Lowerer {
     function.self_type = owner;
     Remember(function.source_file, function.source_item,
              module_->functions.size());
-    indices_.emplace_back(id, module_->functions.size());
+    indices_.push_back(Declared{id, module_->functions.size(),
+                                ast().Get(id).name, file_index()});
     module_->functions.push_back(std::move(function));
   }
 
@@ -1053,8 +1153,8 @@ class Lowerer {
       locals_.push_back(Local{self_name_, InstId{}, self_, self_type_});
     }
 
-    for (ParamId param_id : ast_.Get(item.params)) {
-      const Param& param = ast_.Get(param_id);
+    for (ParamId param_id : ast().Get(item.params)) {
+      const Param& param = ast().Get(param_id);
       const TypeId type =
           ParamTypeOf(module_->functions[index], locals_.size());
       const InstId value = builder.AddParam(entry, type);
@@ -1178,7 +1278,7 @@ class Lowerer {
   }
 
   TypeId TypeOf(ExprId id) {
-    const TypeId recorded = typed_.TypeOf(id);
+    const TypeId recorded = typed().TypeOf(id);
     return Erase(Apply(recorded.is_valid() ? recorded : types_->error()));
   }
 
@@ -1233,14 +1333,14 @@ class Lowerer {
   // ---------------------------------------------------------- statements --
 
   void Lower(ExprId id) {
-    if (!ast_.Contains(id) || builder_->Terminated()) {
+    if (!ast().Contains(id) || builder_->Terminated()) {
       return;
     }
-    const Expr& expr = ast_.Get(id);
+    const Expr& expr = ast().Get(id);
     if (expr.kind == ExprKind::kBlock) {
       const size_t depth = locals_.size();
       ++scope_depth_;
-      for (StmtId stmt : ast_.Get(expr.stmts)) {
+      for (StmtId stmt : ast().Get(expr.stmts)) {
         LowerStmt(stmt);
       }
       RunDeferred(scope_depth_);
@@ -1253,10 +1353,10 @@ class Lowerer {
   }
 
   void LowerStmt(StmtId id) {
-    if (!ast_.Contains(id) || builder_->Terminated()) {
+    if (!ast().Contains(id) || builder_->Terminated()) {
       return;
     }
-    const Stmt& stmt = ast_.Get(id);
+    const Stmt& stmt = ast().Get(id);
     switch (stmt.kind) {
       case StmtKind::kLet:
         LowerLet(stmt, /*mutable_binding=*/false);
@@ -1326,8 +1426,8 @@ class Lowerer {
   }
 
   void LowerLet(const Stmt& stmt, bool mutable_binding) {
-    const Pattern* pattern = ast_.Contains(stmt.pattern)
-                                 ? &ast_.Get(stmt.pattern)
+    const Pattern* pattern = ast().Contains(stmt.pattern)
+                                 ? &ast().Get(stmt.pattern)
                                  : nullptr;
     if (pattern == nullptr || pattern->kind != PatternKind::kBinding) {
       // Destructuring waits for the pass that knows field offsets; the
@@ -1344,7 +1444,7 @@ class Lowerer {
     // promotion put the value on an edge and the verifier compared it.
     TypeId type = stmt.expr.is_valid() ? TypeOf(stmt.expr) : TypeId{};
     if ((!type.is_valid() || types_->IsError(type)) && stmt.type.is_valid()) {
-      type = Erase(Apply(resolver_.Resolve(ast_, stmt.type)));
+      type = Erase(Apply(resolver_.Resolve(ast(), stmt.type)));
     }
     if (!type.is_valid()) {
       type = types_->error();
@@ -1415,21 +1515,21 @@ class Lowerer {
   // --------------------------------------------------------- expressions --
 
   InstId Value(ExprId id) {
-    if (!ast_.Contains(id) || builder_->Terminated()) {
+    if (!ast().Contains(id) || builder_->Terminated()) {
       return InstId{};
     }
-    const Expr& expr = ast_.Get(id);
+    const Expr& expr = ast().Get(id);
     const TypeId type = TypeOf(id);
 
     switch (expr.kind) {
       case ExprKind::kIntLiteral: {
-        const NumberLiteral& number = ast_.number(expr.aux);
+        const NumberLiteral& number = ast().number(expr.aux);
         const TypeId built = Unwrapped(type);
         return Coerce(builder_->ConstInt(built, number.integer_value),
                       built, type);
       }
       case ExprKind::kFloatLiteral: {
-        const NumberLiteral& number = ast_.number(expr.aux);
+        const NumberLiteral& number = ast().number(expr.aux);
         const TypeId built = Unwrapped(type);
         return Coerce(builder_->ConstFloat(built, number.float_value),
                       built, type);
@@ -1471,7 +1571,7 @@ class Lowerer {
 
       case ExprKind::kArrayLiteral: {
         std::vector<InstId> elements;
-        for (ExprId element : ast_.Get(expr.args)) {
+        for (ExprId element : ast().Get(expr.args)) {
           elements.push_back(Value(element));
         }
         return builder_->Add(Opcode::kMakeArray, type, std::move(elements));
@@ -1548,12 +1648,12 @@ class Lowerer {
   }
 
   InstId LowerString(const Expr& expr, TypeId type) {
-    const std::span<const ExprId> parts = ast_.Get(expr.args);
-    if (parts.size() == 1 && ast_.Contains(parts[0]) &&
-        ast_.Get(parts[0]).kind == ExprKind::kStringText) {
-      const Expr& text = ast_.Get(parts[0]);
+    const std::span<const ExprId> parts = ast().Get(expr.args);
+    if (parts.size() == 1 && ast().Contains(parts[0]) &&
+        ast().Get(parts[0]).kind == ExprKind::kStringText) {
+      const Expr& text = ast().Get(parts[0]);
       return builder_->ConstString(type,
-                                   ast_.string(text.aux));
+                                   ast().string(text.aux));
     }
     // Interpolation builds a string at runtime, by turning each piece into
     // text and concatenating. The conversions are calls into the runtime
@@ -1562,13 +1662,13 @@ class Lowerer {
     const TypeId str = types_->str();
     InstId result;
     for (ExprId part : parts) {
-      if (!ast_.Contains(part)) {
+      if (!ast().Contains(part)) {
         continue;
       }
-      const Expr& piece = ast_.Get(part);
+      const Expr& piece = ast().Get(part);
       InstId text;
       if (piece.kind == ExprKind::kStringText) {
-        text = builder_->ConstString(str, ast_.string(piece.aux));
+        text = builder_->ConstString(str, ast().string(piece.aux));
       } else {
         text = Stringify(Value(part), TypeOf(part));
       }
@@ -1913,7 +2013,7 @@ class Lowerer {
     if (types_->KindOf(named) == TypeKind::kInstance) {
       named = types_->Get(named).base;
     }
-    for (const Member& member : resolution_.MembersOf(named)) {
+    for (const Member& member : resolution().MembersOf(named)) {
       if (!HasStorage(member.kind)) {
         continue;
       }
@@ -1952,7 +2052,7 @@ class Lowerer {
     // A derived field is computed rather than stored, and kept once it is.
     const TypeId base_type = Erase(TypeOf(expr.lhs));
     if (const Member* member =
-            resolution_.FindMember(base_type, expr.name);
+            resolution().FindMember(base_type, expr.name);
         member != nullptr && member->kind == MemberKind::kDerived) {
       Place object;
       if (types_->IsHandle(base_type)) {
@@ -2084,10 +2184,10 @@ class Lowerer {
 
   Place PlaceOf(ExprId id) {
     Place place;
-    if (!ast_.Contains(id)) {
+    if (!ast().Contains(id)) {
       return place;
     }
-    const Expr& expr = ast_.Get(id);
+    const Expr& expr = ast().Get(id);
     switch (expr.kind) {
       case ExprKind::kPath: {
         if (const Local* local = Find(expr.name); local != nullptr) {
@@ -2178,10 +2278,10 @@ class Lowerer {
   // room for the field the caller is about to ask for.
   Place SoaElement(ExprId id) {
     Place place;
-    if (!ast_.Contains(id)) {
+    if (!ast().Contains(id)) {
       return place;
     }
-    const Expr& expr = ast_.Get(id);
+    const Expr& expr = ast().Get(id);
     if (expr.kind != ExprKind::kIndex) {
       return place;
     }
@@ -2222,7 +2322,7 @@ class Lowerer {
     if (!name.is_valid()) {
       return place;
     }
-    const Member* member = resolution_.FindMember(self_type_, name);
+    const Member* member = resolution().FindMember(self_type_, name);
     if (member == nullptr || !HasStorage(member->kind)) {
       return Place{};
     }
@@ -2239,7 +2339,7 @@ class Lowerer {
 
   TypeId FieldTypeAt(TypeId owner, uint32_t field) {
     uint32_t index = 0;
-    for (const Member& member : resolution_.MembersOf(owner)) {
+    for (const Member& member : resolution().MembersOf(owner)) {
       if (!HasStorage(member.kind)) {
         continue;
       }
@@ -2326,7 +2426,7 @@ class Lowerer {
     if (!owner.is_valid()) {
       return;
     }
-    const std::span<const Member> members = resolution_.MembersOf(owner);
+    const std::span<const Member> members = resolution().MembersOf(owner);
     if (members.empty()) {
       return;
     }
@@ -2374,7 +2474,7 @@ class Lowerer {
   // storage terms, and only the fields in between differ.
   uint32_t StorageIndexOf(TypeId owner, uint32_t storage) {
     uint32_t seen = 0;
-    const std::span<const Member> members = resolution_.MembersOf(owner);
+    const std::span<const Member> members = resolution().MembersOf(owner);
     for (uint32_t i = 0; i < members.size(); ++i) {
       if (!HasStorage(members[i].kind)) {
         continue;
@@ -2395,8 +2495,8 @@ class Lowerer {
   }
 
   InstId LowerWait(const Expr& expr, TypeId type, Opcode mark) {
-    if (!ast_.Contains(expr.lhs) ||
-        ast_.Get(expr.lhs).kind != ExprKind::kCall) {
+    if (!ast().Contains(expr.lhs) ||
+        ast().Get(expr.lhs).kind != ExprKind::kCall) {
       // The checker reports a `wait` on anything but a call (`E0303`).
       return builder_->Undef(type);
     }
@@ -2416,14 +2516,14 @@ class Lowerer {
 
   InstId LowerCall(ExprId id, const Expr& expr, TypeId type) {
     const TypeId callee_type =
-        ast_.Contains(expr.lhs) ? TypeOf(expr.lhs) : TypeId{};
+        ast().Contains(expr.lhs) ? TypeOf(expr.lhs) : TypeId{};
     const std::vector<TypeId> params =
         types_->KindOf(callee_type) == TypeKind::kFunction
             ? types_->ArgumentsOf(callee_type)
             : std::vector<TypeId>();
 
     std::vector<InstId> arguments;
-    const std::span<const ExprId> written = ast_.Get(expr.args);
+    const std::span<const ExprId> written = ast().Get(expr.args);
     for (size_t i = 0; i < written.size(); ++i) {
       const InstId value = Value(written[i]);
       arguments.push_back(i < params.size()
@@ -2440,10 +2540,10 @@ class Lowerer {
 
     // `SoaNew<T>(count)` is not a call either: how big that storage is, is
     // a question only a tier can answer.
-    if (ast_.Contains(expr.lhs) &&
-        ast_.Get(expr.lhs).kind == ExprKind::kPath &&
-        (interner_->Text(ast_.Get(expr.lhs).name) == "SoaNew" ||
-         interner_->Text(ast_.Get(expr.lhs).name) == "ArrayNew") &&
+    if (ast().Contains(expr.lhs) &&
+        ast().Get(expr.lhs).kind == ExprKind::kPath &&
+        (interner_->Text(ast().Get(expr.lhs).name) == "SoaNew" ||
+         interner_->Text(ast().Get(expr.lhs).name) == "ArrayNew") &&
         arguments.size() == 1 &&
         types_->KindOf(Erase(type)) == TypeKind::kSlice) {
       const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
@@ -2467,9 +2567,9 @@ class Lowerer {
       return called;
     }
 
-    if (ast_.Contains(expr.lhs) &&
-        ast_.Get(expr.lhs).kind == ExprKind::kPath) {
-      const Symbol name = ast_.Get(expr.lhs).name;
+    if (ast().Contains(expr.lhs) &&
+        ast().Get(expr.lhs).kind == ExprKind::kPath) {
+      const Symbol name = ast().Get(expr.lhs).name;
       const ItemId generic = FindGeneric(name);
       if (generic.is_valid()) {
         const uint32_t specialization = Instantiate(generic, id);
@@ -2482,12 +2582,26 @@ class Lowerer {
         // instantiated. There is nothing to call.
         return builder_->Undef(type);
       }
+      // A generic from another module: the copy is made here, because the
+      // module it was written in cannot know what its importers will ask
+      // for.
+      if (const Imported imported = FindImportedGeneric(name);
+          imported.ast != nullptr) {
+        const uint32_t specialization = Instantiate(
+            imported.item, id,
+            Context{imported.file, imported.resolution, imported.ast,
+                    imported.typed, {}});
+        if (specialization != 0xFFFFFFFFu) {
+          return builder_->Call(specialization, type,
+                                std::move(arguments));
+        }
+      }
       const uint32_t callee = IndexOfName(name);
       if (callee != 0xFFFFFFFFu) {
         return builder_->Call(callee, type, std::move(arguments));
       }
 
-      const Binding* binding = resolution_.Find(name);
+      const Binding* binding = resolution().Find(name);
       // A constructor: the callee is a type, and the arguments are its
       // fields in order.
       if (binding != nullptr && binding->kind == BindingKind::kType) {
@@ -2546,7 +2660,7 @@ class Lowerer {
     }
     uint32_t callee = IndexOfName(name);
     if (callee == 0xFFFFFFFFu) {
-      const Binding* binding = resolution_.Find(name);
+      const Binding* binding = resolution().Find(name);
       if (binding == nullptr || binding->kind != BindingKind::kFunction) {
         return InstId{};
       }
@@ -2619,7 +2733,7 @@ class Lowerer {
     if (local != 0xFFFFFFFFu) {
       return local;
     }
-    if (member.file == file_index_) {
+    if (member.file == file_index()) {
       return 0xFFFFFFFFu;
     }
     return DeclareExternal(DerivedName(owner, member.name),
@@ -2630,7 +2744,7 @@ class Lowerer {
   // Where the bit for |member| sits among the type's storage.
   uint32_t ReadyIndex(TypeId owner, const Member& member) {
     uint32_t index = 0;
-    for (const Member& candidate : resolution_.MembersOf(owner)) {
+    for (const Member& candidate : resolution().MembersOf(owner)) {
       if (!HasStorage(candidate.kind)) {
         continue;
       }
@@ -2646,8 +2760,8 @@ class Lowerer {
   // A module-level constant: a call to the function it became, which the
   // inliner turns back into the value.
   InstId ConstantValue(Symbol name, TypeId type) {
-    for (const auto& [constant, index] : constants_) {
-      if (constant == name) {
+    for (const auto& [constant, index, file] : constants_) {
+      if (constant == name && file == file_index()) {
         return Coerce(builder_->Call(static_cast<uint32_t>(index),
                                      module_->functions[index].type.is_valid()
                                          ? types_->ElementOf(
@@ -2658,7 +2772,7 @@ class Lowerer {
                       type);
       }
     }
-    const Binding* binding = resolution_.Find(name);
+    const Binding* binding = resolution().Find(name);
     if (binding == nullptr || binding->kind != BindingKind::kValue ||
         !binding->type.is_valid()) {
       return InstId{};
@@ -2678,18 +2792,18 @@ class Lowerer {
   InstId LowerBytesFromRaw(const Expr& expr,
                            TypeId type,
                            const std::vector<InstId>& arguments) {
-    if (arguments.size() != 2 || !ast_.Contains(expr.lhs) ||
-        ast_.Get(expr.lhs).kind != ExprKind::kPath) {
+    if (arguments.size() != 2 || !ast().Contains(expr.lhs) ||
+        ast().Get(expr.lhs).kind != ExprKind::kPath) {
       return InstId{};
     }
-    if (interner_->Text(ast_.Get(expr.lhs).name) != "BytesFromRaw") {
+    if (interner_->Text(ast().Get(expr.lhs).name) != "BytesFromRaw") {
       return InstId{};
     }
     const TypeId slice = Erase(type);
     if (types_->KindOf(slice) != TypeKind::kSlice) {
       return InstId{};
     }
-    const Binding* binding = resolution_.Find(ast_.Get(expr.lhs).name);
+    const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
     if (binding != nullptr && binding->has_body) {
       // Somebody wrote their own function of that name, and theirs wins.
       return InstId{};
@@ -2708,10 +2822,10 @@ class Lowerer {
   // handlers is emitted here.
   InstId LowerSignalCall(const Expr& expr,
                          const std::vector<InstId>& arguments) {
-    if (!ast_.Contains(expr.lhs)) {
+    if (!ast().Contains(expr.lhs)) {
       return InstId{};
     }
-    const Expr& callee = ast_.Get(expr.lhs);
+    const Expr& callee = ast().Get(expr.lhs);
     if (callee.kind != ExprKind::kField) {
       return InstId{};
     }
@@ -2794,10 +2908,10 @@ class Lowerer {
   // The storage of the signal |id| names, as a place pointing at it.
   Place SignalList(ExprId id) {
     Place place;
-    if (!ast_.Contains(id)) {
+    if (!ast().Contains(id)) {
       return place;
     }
-    const Expr& expr = ast_.Get(id);
+    const Expr& expr = ast().Get(id);
     TypeId owner;
     Symbol name;
     InstId object;
@@ -2818,7 +2932,7 @@ class Lowerer {
     if (!owner.is_valid() || !object.is_valid()) {
       return place;
     }
-    const Member* signal = resolution_.FindMember(owner, name);
+    const Member* signal = resolution().FindMember(owner, name);
     if (signal == nullptr || signal->kind != MemberKind::kSignal) {
       return place;
     }
@@ -2831,7 +2945,7 @@ class Lowerer {
 
   uint32_t SignalListIndex(TypeId owner, const Member& signal) {
     uint32_t index = 0;
-    for (const Member& candidate : resolution_.MembersOf(owner)) {
+    for (const Member& candidate : resolution().MembersOf(owner)) {
       if (!HasStorage(candidate.kind)) {
         continue;
       }
@@ -2846,7 +2960,7 @@ class Lowerer {
   }
 
   TypeId SignalListType(TypeId owner, const Member& signal) {
-    for (const Member& candidate : resolution_.MembersOf(owner)) {
+    for (const Member& candidate : resolution().MembersOf(owner)) {
       if (candidate.kind == MemberKind::kSignalList &&
           candidate.item == signal.item &&
           candidate.file == signal.file) {
@@ -2861,10 +2975,10 @@ class Lowerer {
   InstId LowerMethodCall(const Expr& expr,
                          TypeId type,
                          std::vector<InstId>* arguments) {
-    if (!ast_.Contains(expr.lhs)) {
+    if (!ast().Contains(expr.lhs)) {
       return InstId{};
     }
-    const Expr& callee = ast_.Get(expr.lhs);
+    const Expr& callee = ast().Get(expr.lhs);
 
     TypeId owner;
     Symbol name;
@@ -2885,7 +2999,7 @@ class Lowerer {
       return InstId{};
     }
 
-    const Member* member = resolution_.FindMember(owner, name);
+    const Member* member = resolution().FindMember(owner, name);
     if (member == nullptr || member->kind != MemberKind::kMethod) {
       return InstId{};
     }
@@ -2900,7 +3014,7 @@ class Lowerer {
       index = InstantiateMethod(owner, name, *member);
     }
     if (index == 0xFFFFFFFFu) {
-      if (member->file == file_index_) {
+      if (member->file == file_index()) {
         // Declared here and not lowered: a generic the interpreter keeps.
         return InstId{};
       }
@@ -2932,13 +3046,13 @@ class Lowerer {
   InstId LowerBlockValue(ExprId id, const Expr& expr, TypeId type) {
     const size_t depth = locals_.size();
     ++scope_depth_;
-    const std::span<const StmtId> stmts = ast_.Get(expr.stmts);
+    const std::span<const StmtId> stmts = ast().Get(expr.stmts);
     InstId result;
     for (size_t i = 0; i < stmts.size(); ++i) {
       const bool last = i + 1 == stmts.size();
-      if (last && ast_.Contains(stmts[i]) &&
-          ast_.Get(stmts[i]).kind == StmtKind::kExpr) {
-        result = Value(ast_.Get(stmts[i]).expr);
+      if (last && ast().Contains(stmts[i]) &&
+          ast().Get(stmts[i]).kind == StmtKind::kExpr) {
+        result = Value(ast().Get(stmts[i]).expr);
         continue;
       }
       LowerStmt(stmts[i]);
@@ -2980,8 +3094,8 @@ class Lowerer {
 
     builder_->SetCurrent(yes);
     const size_t depth = locals_.size();
-    if (subject.is_valid() && ast_.Contains(expr.pattern)) {
-      const Pattern& pattern = ast_.Get(expr.pattern);
+    if (subject.is_valid() && ast().Contains(expr.pattern)) {
+      const Pattern& pattern = ast().Get(expr.pattern);
       if (pattern.kind == PatternKind::kBinding) {
         const TypeId inner = Erase(types_->ElementOf(TypeOf(expr.lhs)));
         const InstId value =
@@ -3044,7 +3158,7 @@ class Lowerer {
       bool catch_all = false;
     };
     std::vector<Arm> arms;
-    const std::span<const MatchArmId> arm_ids = ast_.Get(expr.arms);
+    const std::span<const MatchArmId> arm_ids = ast().Get(expr.arms);
     for (size_t i = 0; i < arm_ids.size(); ++i) {
       Arm arm;
       arm.id = arm_ids[i];
@@ -3060,7 +3174,7 @@ class Lowerer {
     }
 
     for (size_t i = 0; i < arms.size(); ++i) {
-      const MatchArm& arm = ast_.Get(arms[i].id);
+      const MatchArm& arm = ast().Get(arms[i].id);
       const BlockId otherwise = arms[i].next;
 
       if (arms[i].catch_all) {
@@ -3111,15 +3225,15 @@ class Lowerer {
   }
 
   bool IsCatchAll(MatchArmId id) const {
-    const MatchArm& arm = ast_.Get(id);
+    const MatchArm& arm = ast().Get(id);
     if (arm.guard.is_valid()) {
       return false;
     }
-    for (PatternId pattern_id : ast_.Get(arm.patterns)) {
-      if (!ast_.Contains(pattern_id)) {
+    for (PatternId pattern_id : ast().Get(arm.patterns)) {
+      if (!ast().Contains(pattern_id)) {
         continue;
       }
-      const Pattern& pattern = ast_.Get(pattern_id);
+      const Pattern& pattern = ast().Get(pattern_id);
       if (pattern.kind == PatternKind::kWildcard ||
           pattern.kind == PatternKind::kRest) {
         return true;
@@ -3135,12 +3249,12 @@ class Lowerer {
   // What has to be true for |arm| to run. An invalid id means "always".
   InstId ArmTest(const MatchArm& arm, InstId subject, TypeId subject_type) {
     InstId combined;
-    for (PatternId pattern_id : ast_.Get(arm.patterns)) {
-      if (!ast_.Contains(pattern_id)) {
+    for (PatternId pattern_id : ast().Get(arm.patterns)) {
+      if (!ast().Contains(pattern_id)) {
         continue;
       }
       const InstId test =
-          PatternTest(ast_.Get(pattern_id), subject, subject_type);
+          PatternTest(ast().Get(pattern_id), subject, subject_type);
       if (!test.is_valid()) {
         continue;
       }
@@ -3165,10 +3279,10 @@ class Lowerer {
                      TypeId subject_type) {
     switch (pattern.kind) {
       case PatternKind::kLiteral: {
-        if (!ast_.Contains(pattern.literal)) {
+        if (!ast().Contains(pattern.literal)) {
           return InstId{};
         }
-        const Expr& literal = ast_.Get(pattern.literal);
+        const Expr& literal = ast().Get(pattern.literal);
         if (literal.kind == ExprKind::kNullLiteral) {
           const InstId present = builder_->Add(
               Opcode::kOptionalIsPresent, types_->bool_type(), {subject});
@@ -3203,12 +3317,12 @@ class Lowerer {
 
   uint64_t VariantIndex(TypeId owner, const Pattern& pattern) const {
     Symbol name = pattern.name;
-    const std::span<const Symbol> path = ast_.Get(pattern.path);
+    const std::span<const Symbol> path = ast().Get(pattern.path);
     if (!path.empty()) {
       name = path.back();
     }
     uint64_t index = 0;
-    for (const Member& member : resolution_.MembersOf(owner)) {
+    for (const Member& member : resolution().MembersOf(owner)) {
       if (member.kind != MemberKind::kVariant) {
         continue;
       }
@@ -3221,11 +3335,11 @@ class Lowerer {
   }
 
   void BindArm(const MatchArm& arm, InstId subject, TypeId subject_type) {
-    for (PatternId pattern_id : ast_.Get(arm.patterns)) {
-      if (!ast_.Contains(pattern_id)) {
+    for (PatternId pattern_id : ast().Get(arm.patterns)) {
+      if (!ast().Contains(pattern_id)) {
         continue;
       }
-      const Pattern& pattern = ast_.Get(pattern_id);
+      const Pattern& pattern = ast().Get(pattern_id);
       if (pattern.kind == PatternKind::kBinding &&
           !IsVariantName(subject_type, pattern.name)) {
         locals_.push_back(
@@ -3236,11 +3350,11 @@ class Lowerer {
         const TypeId inner = Erase(types_->ElementOf(subject_type));
         const InstId value =
             builder_->Add(Opcode::kOptionalValue, inner, {subject});
-        for (PatternId element : ast_.Get(pattern.elements)) {
-          if (ast_.Contains(element) &&
-              ast_.Get(element).kind == PatternKind::kBinding) {
+        for (PatternId element : ast().Get(pattern.elements)) {
+          if (ast().Contains(element) &&
+              ast().Get(element).kind == PatternKind::kBinding) {
             locals_.push_back(
-                Local{ast_.Get(element).name, InstId{}, value, inner});
+                Local{ast().Get(element).name, InstId{}, value, inner});
           }
         }
       }
@@ -3248,7 +3362,7 @@ class Lowerer {
   }
 
   bool IsVariantName(TypeId owner, Symbol name) const {
-    for (const Member& member : resolution_.MembersOf(owner)) {
+    for (const Member& member : resolution().MembersOf(owner)) {
       if (member.kind == MemberKind::kVariant && member.name == name) {
         return true;
       }
@@ -3265,8 +3379,8 @@ class Lowerer {
   // the IR says so by never giving it an address.
   void LowerForLoop(const Expr& expr) {
     const TypeId sequence_type = Erase(TypeOf(expr.lhs));
-    const bool over_range = ast_.Contains(expr.lhs) &&
-                            ast_.Get(expr.lhs).kind == ExprKind::kRange;
+    const bool over_range = ast().Contains(expr.lhs) &&
+                            ast().Get(expr.lhs).kind == ExprKind::kRange;
 
     // What the index counts in, and what it counts to.
     InstId start;
@@ -3275,7 +3389,7 @@ class Lowerer {
     Place sequence;
     TypeId element;
     if (over_range) {
-      const Expr& range = ast_.Get(expr.lhs);
+      const Expr& range = ast().Get(expr.lhs);
       inclusive = range.op == TokenKind::kDotDotEq;
       element = Erase(TypeOf(expr.lhs));
       if (!element.is_valid() ||
@@ -3344,8 +3458,8 @@ class Lowerer {
       bound = ReadPlace(at);
       bound_type = element;
     }
-    if (ast_.Contains(expr.pattern)) {
-      const Pattern& pattern = ast_.Get(expr.pattern);
+    if (ast().Contains(expr.pattern)) {
+      const Pattern& pattern = ast().Get(expr.pattern);
       if (pattern.kind == PatternKind::kBinding) {
         locals_.push_back(
             Local{pattern.name, InstId{}, bound, bound_type});
@@ -3451,28 +3565,20 @@ class Lowerer {
   }
 
 
-  // A method of a generic type, waiting for something to ask for a copy.
-  struct Recipe {
-    TypeId owner;
-    Symbol name;
-    ItemId item;
-  };
-
   struct Pending {
     ItemId item;
     TypeStore::Substitution substitution;
     uint32_t index = 0;
     // The type the body's `self` is, for a method of a generic type.
     TypeId owner;
+    // The file the body was written in, when it was not this one.
+    Context where;
   };
 
   StringInterner* interner_;
   TypeStore* types_;
-  const uint32_t file_index_ = 0;
-  const FileResolution& resolution_;
-  const Ast& ast_;
-  const TypedBody& typed_;
-  std::span<const std::pair<ItemId, EffectRow>> effects_;
+  Context here_;
+  ForeignLookup foreign_;
   Module* module_;
   // Lowering runs only on a file the checker accepted, so nothing here can
   // report: the engine is where the resolver's complaints go to be
@@ -3484,11 +3590,19 @@ class Lowerer {
   std::vector<std::pair<Symbol, ItemId>> generics_;
   std::vector<std::pair<Symbol, uint32_t>> specializations_;
   // Module-level constants, by the name they were written with.
-  std::vector<std::pair<Symbol, size_t>> constants_;
+  // Name, index, and the file the declaration is in. The file matters:
+  // while a generic from another module is being lowered here, a name in
+  // its body means what it means *there* -- and an entry from this file
+  // that happens to spell the same thing is a different declaration.
+  struct Named {
+    Symbol name;
+    size_t index = 0;
+    uint32_t file = 0;
+  };
+  std::vector<Named> constants_;
   std::vector<MachineBlock> machine_blocks_;
   std::vector<MachineMethod> machine_methods_;
   std::vector<Pending> pending_;
-  std::vector<Recipe> recipes_;
   std::vector<Deferred> deferred_;
   // Whether the function being lowered is a `task`.
   bool in_task_ = false;
@@ -3510,7 +3624,13 @@ class Lowerer {
   const Symbol self_name_;
   std::vector<Local> locals_;
   std::vector<LoopTarget> loops_;
-  std::vector<std::pair<ItemId, size_t>> indices_;
+  struct Declared {
+    ItemId item;
+    size_t index = 0;
+    Symbol name;
+    uint32_t file = 0;
+  };
+  std::vector<Declared> indices_;
   // Every function of this module by the declaration it came from, which is
   // how a method call finds the function: a method has no file-scope name
   // to look up.
@@ -3532,9 +3652,10 @@ void LowerFile(StringInterner* interner,
                const Ast& ast,
                const TypedBody& typed,
                std::span<const std::pair<ItemId, EffectRow>> effects,
+               ForeignLookup foreign,
                Module* module) {
   Lowerer lowerer(interner, types, file_index, resolution, ast, typed,
-                  effects, module);
+                  effects, std::move(foreign), module);
   lowerer.Run();
 }
 

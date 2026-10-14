@@ -11,6 +11,8 @@
 #include "wolang/ir/ir.h"
 #include "wolang/sema/resolution.h"
 #include "wolang/sema/type_check.h"
+#include <functional>
+
 #include "wolang/syntax/ast.h"
 
 namespace wolang {
@@ -38,6 +40,22 @@ namespace ir {
 // |file_index| is which file this is, so that a member declared here can be
 // told from one declared elsewhere: both are reached through the same member
 // table, and only the first has a body in this module.
+// What another file's declaration needs in order to be lowered here.
+//
+// A generic is a recipe, and a copy of it is made where it is *used* --
+// which may be a different module from the one it was written in. The copy
+// still has to resolve its names the way the original did, so it borrows
+// the defining file's syntax, member tables and recorded types.
+struct ForeignFile {
+  const FileResolution* resolution = nullptr;
+  const Ast* ast = nullptr;
+  const TypedBody* typed = nullptr;
+};
+
+// Answers with an empty ForeignFile for a file that cannot be lowered --
+// and then the generic stays a declaration, which the interpreter handles.
+using ForeignLookup = std::function<ForeignFile(uint32_t file)>;
+
 void LowerFile(StringInterner* interner,
                TypeStore* types,
                uint32_t file_index,
@@ -45,6 +63,7 @@ void LowerFile(StringInterner* interner,
                const Ast& ast,
                const TypedBody& typed,
                std::span<const std::pair<ItemId, EffectRow>> effects,
+               ForeignLookup foreign,
                Module* module);
 
 }  // namespace ir

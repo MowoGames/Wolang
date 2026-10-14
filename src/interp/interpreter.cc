@@ -137,6 +137,13 @@ class Interpreter {
   // Reading and writing through a raw pointer. Only a scalar: an aggregate
   // needs the layout the code generator computes, and the interpreter has
   // no reason to grow one until something needs it.
+  // A slice and a `str` are a pointer and a length: two words, and
+  // neither is a member anyone declared, so the layout cannot name their
+  // types and this does.
+  static bool IsPointerAndLength(TypeKind kind) {
+    return kind == TypeKind::kSlice || kind == TypeKind::kStr;
+  }
+
   Value LoadThroughPointer(const ir::Function& function,
                            const Value& pointer,
                            TypeId type,
@@ -180,21 +187,78 @@ class Interpreter {
         return Value::Int(raw, described.int_width, described.is_signed);
       }
       default:
-        return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                    "read a type through a pointer that this tier cannot "
-                    "lay out");
+        break;
     }
+
+    // The same, read back: an aggregate is its fields at their offsets.
+    if (layouts_ != nullptr && layouts_->IsSupported(type) &&
+        layouts_->ClassOf(type) == abi::ValueClass::kAggregate) {
+      const abi::Layout& layout = layouts_->Of(type);
+      std::vector<Value> elements;
+      elements.reserve(layout.offsets.size());
+      for (size_t i = 0; i < layout.offsets.size(); ++i) {
+        const uint64_t at = pointer.integer() + layout.offsets[i];
+        if (IsPointerAndLength(described.kind)) {
+          uint64_t raw = 0;
+          std::memcpy(&raw, reinterpret_cast<const void*>(at), sizeof(raw));
+          elements.push_back(
+              Value::Int(raw, IntWidth::k64, /*is_signed=*/false));
+          continue;
+        }
+        const TypeId field =
+            layouts_->FieldType(type, static_cast<uint32_t>(i));
+        if (!field.is_valid()) {
+          break;
+        }
+        elements.push_back(LoadThroughPointer(
+            function, Value::Int(at, IntWidth::k64, /*is_signed=*/false),
+            field, id, outcome));
+        if (!outcome->ok()) {
+          return elements.back();
+        }
+      }
+      return Value::Aggregate(std::move(elements));
+    }
+    return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                "read a type through a pointer that this tier cannot "
+                "lay out");
   }
 
   Value StoreThroughPointer(const ir::Function& function,
                             const Value& pointer,
                             const Value& value,
                             ir::InstId id,
-                            Outcome* outcome) {
+                            Outcome* outcome,
+                            TypeId type = TypeId{}) {
     const auto address = reinterpret_cast<void*>(pointer.integer());
     if (address == nullptr) {
       return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
                   "wrote through a null pointer");
+    }
+    // A struct, a slice, a tuple: written field by field at the offsets
+    // the layout gives, which is the same answer the compiled tiers get
+    // from the same store. A class with a slice in it is the ordinary case
+    // -- it was only ever unsupported because nothing had one yet.
+    if (value.kind() == Value::Kind::kAggregate && layouts_ != nullptr &&
+        type.is_valid()) {
+      const abi::Layout& layout = layouts_->Of(type);
+      const std::span<const Value> elements = value.elements();
+      for (size_t i = 0; i < elements.size() && i < layout.offsets.size();
+           ++i) {
+        const Value at = Value::Int(
+            pointer.integer() + layout.offsets[i], IntWidth::k64,
+            /*is_signed=*/false);
+        const TypeId field =
+            IsPointerAndLength(types_.KindOf(type))
+                ? TypeId{}
+                : layouts_->FieldType(type, static_cast<uint32_t>(i));
+        const Value written = StoreThroughPointer(function, at, elements[i],
+                                                  id, outcome, field);
+        if (!outcome->ok()) {
+          return written;
+        }
+      }
+      return Value::Void();
     }
     switch (value.kind()) {
       case Value::Kind::kBool: {
@@ -555,8 +619,20 @@ class Interpreter {
           return Value::Void();
         }
         if (slot.kind() == Value::Kind::kInt) {
+          // The type written is the one the pointer points at, which is
+          // what an aggregate needs in order to find its fields.
+          const ir::InstId target = function.OperandsOf(inst)[0];
+          const TypeId pointer = function.Contains(target)
+                                     ? function.Get(target).type
+                                     : TypeId{};
+          const TypeId written =
+              pointer.is_valid() &&
+                      types_.KindOf(pointer) == TypeKind::kPointer
+                  ? types_.ElementOf(pointer)
+                  : TypeId{};
           return StoreThroughPointer(function, slot,
-                                     Operand(frame, inst, 1), id, outcome);
+                                     Operand(frame, inst, 1), id, outcome,
+                                     written);
         }
         if (slot.kind() != Value::Kind::kSlot ||
             slot.slot() >= frame->slots.size()) {

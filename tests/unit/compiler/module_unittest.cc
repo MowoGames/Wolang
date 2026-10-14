@@ -7,12 +7,25 @@
 
 #include "harness/test.h"
 #include "wolang/compiler/database.h"
+#include "wolang/ir/printer.h"
 
 namespace wolang {
 namespace {
 
 // Builds a workspace in memory: no filesystem, so the module graph under test
 // is exactly the one the test wrote down.
+// A lowering problem list as one string, so a failure shows what it said.
+std::string JoinProblems(const std::vector<std::string>& problems) {
+  std::string result;
+  for (const std::string& problem : problems) {
+    if (!result.empty()) {
+      result.push_back('\n');
+    }
+    result.append(problem);
+  }
+  return result;
+}
+
 class Fixture {
  public:
   ModuleId AddModule(std::string name) {
@@ -127,6 +140,52 @@ WOLANG_TEST(ModuleScopeTest, ReportsDuplicateDeclarationsAcrossFiles) {
   WOLANG_EXPECT_EQ(fixture.Codes(first), "E0057");
   WOLANG_EXPECT_EQ(fixture.Codes(second), "E0057");
   WOLANG_EXPECT(fixture.Messages(first).find("declared more than once") !=
+                std::string::npos);
+}
+
+WOLANG_TEST(ModuleScopeTest, InstantiatesAGenericFromAnotherModule) {
+  // A generic is a recipe, and the module it was written in cannot know
+  // what its importers will ask for -- so the copy is made where it is
+  // used, with the defining file's names still meaning what they meant
+  // there. Without this, a standard library of generic containers is a
+  // library nothing outside it can call.
+  Fixture fixture;
+  const ModuleId library = fixture.AddModule("box");
+  fixture.AddFile(library, "box.wo", R"(
+offer struct Holder<T> {
+  var item: T
+
+  fun Item() -> T {
+    return item
+  }
+}
+
+offer fun Wrap<T>(value: T) -> Holder<T> {
+  return Holder<T>(value)
+}
+)");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId main = fixture.AddFile(app, "main.wo", R"(
+need box.{Wrap}
+
+fun Use() -> int {
+  const held = Wrap<int>(7)
+  return held.Item()
+}
+)");
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+
+  const LoweredFile* lowered = fixture.db().Lowered(main);
+  WOLANG_ASSERT_NE(lowered, nullptr);
+  WOLANG_EXPECT_EQ(JoinProblems(lowered->problems), "");
+  const std::string text =
+      ir::PrintModule(fixture.db().interner(), fixture.db().types(),
+                      lowered->module);
+  // The copy is here, with a body, and so is the method of the instance
+  // it returns.
+  WOLANG_EXPECT(text.find("fun @Wrap<s32>") != std::string::npos);
+  WOLANG_EXPECT(text.find("fun @Holder<s32>.Item") != std::string::npos);
+  WOLANG_EXPECT(text.find("fun @Wrap<s32>(s32) -> Holder<s32>\n") ==
                 std::string::npos);
 }
 

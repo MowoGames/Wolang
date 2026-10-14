@@ -113,3 +113,146 @@ offer class Entities {
 offer fun EntitiesNew(limit: int) -> Entities {
   return Entities(0, limit)
 }
+
+/// The components of one type, one record after another.
+///
+/// The same interface as `Store` and the other layout underneath: a pass
+/// that touches most of a record wants this one, and a pass that touches
+/// one field of a wide record wants the other. Which is the whole point of
+/// the layout being a property of the storage (D73) -- the rows are the
+/// only difference between the two, and a system reads them the same way.
+offer class PackedStore<T> {
+  var rows: []T
+  var owners: []int
+  var slots: []int
+  var count: int = 0
+
+  fun Row(e: int) -> int {
+    if e < 0 || e >= slots.len {
+      return -1
+    }
+    return slots[e] - 1
+  }
+
+  fun Has(e: int) -> bool {
+    return Row(e) >= 0
+  }
+
+  fun Add(e: int) -> int {
+    if e < 0 || e >= slots.len {
+      return -1
+    }
+    const existing = slots[e] - 1
+    if existing >= 0 {
+      return existing
+    }
+    if count >= owners.len {
+      return -1
+    }
+    const row = count
+    owners[row] = e
+    slots[e] = row + 1
+    count = count + 1
+    return row
+  }
+
+  fun Remove(e: int) {
+    const row = Row(e)
+    if row < 0 {
+      return
+    }
+    const last = count - 1
+    if row != last {
+      const moved = owners[last]
+      owners[row] = moved
+      slots[moved] = row + 1
+    }
+    slots[e] = 0
+    count = count - 1
+  }
+}
+
+offer fun PackedStoreNew<T>(capacity: int,
+                            entities: int) -> PackedStore<T> uses unsafe {
+  return PackedStore<T>(ArrayNew<T>(capacity), ArrayNew<int>(capacity),
+                        ArrayNew<int>(entities), 0)
+}
+
+// ------------------------------------------------------------- tests ---
+//
+// A test returns whether it passed, which is what `wolang test` reads.
+
+struct TestPoint {
+  var x: float = 0.0
+  var y: float = 0.0
+}
+
+@Test
+fun AStoreKeepsItsRowsDense() -> bool uses unsafe {
+  var points = StoreNew<TestPoint>(4, 8)
+  if points.Add(1) != 0 || points.Add(2) != 1 || points.Add(3) != 2 {
+    return false
+  }
+  if points.count != 3 || !points.Has(2) || points.Has(4) {
+    return false
+  }
+  // Adding the same entity twice is the row it already has.
+  if points.Add(2) != 1 {
+    return false
+  }
+  // Removing moves the last row into the hole, so the rows stay dense.
+  points.Remove(1)
+  if points.count != 2 || points.Has(1) {
+    return false
+  }
+  return points.Row(3) == 0 && points.Row(2) == 1
+}
+
+@Test
+fun AStoreReportsWhenItIsFull() -> bool uses unsafe {
+  var points = StoreNew<TestPoint>(2, 8)
+  if points.Add(0) != 0 || points.Add(1) != 1 {
+    return false
+  }
+  // No room for a third, and nothing at all for an entity outside the
+  // range the store was built for.
+  return points.Add(2) == -1 && points.Add(99) == -1
+}
+
+@Test
+fun BothLayoutsBehaveTheSame() -> bool uses unsafe {
+  // The two stores differ in how the rows are laid out and in nothing
+  // else, which is the claim worth a test.
+  var soa = StoreNew<TestPoint>(4, 4)
+  var packed = PackedStoreNew<TestPoint>(4, 4)
+  var e = 0
+  while e < 3 {
+    const row = soa.Add(e)
+    const other = packed.Add(e)
+    if row != other {
+      return false
+    }
+    soa.rows[row].x = (e + 1) as float
+    packed.rows[other].x = (e + 1) as float
+    e = e + 1
+  }
+  var i = 0
+  while i < soa.count {
+    if soa.rows[i].x != packed.rows[i].x {
+      return false
+    }
+    i = i + 1
+  }
+  soa.Remove(0)
+  packed.Remove(0)
+  return soa.count == packed.count && soa.Row(2) == packed.Row(2)
+}
+
+@Test
+fun EntitiesAreHandedOutUntilTheLimit() -> bool {
+  const world = EntitiesNew(2)
+  if world.Spawn() != 0 || world.Spawn() != 1 {
+    return false
+  }
+  return world.Spawn() == -1 && world.Len() == 2
+}

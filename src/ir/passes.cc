@@ -1098,7 +1098,29 @@ bool EliminateCommonSubexpressions(TypeStore* types, Function* function) {
         continue;
       }
       const Inst& inst = function->Get(id);
-      if (!IsRepeatable(inst.opcode)) {
+      // A write, or a call that might write: nothing read before it can be
+      // reused after it, because what is at an address may have changed.
+      // Everything worked out *from* a value stays valid, so only the
+      // loads are forgotten.
+      if (inst.opcode == Opcode::kStore || inst.opcode == Opcode::kCall ||
+          inst.opcode == Opcode::kCallIndirect ||
+          inst.opcode == Opcode::kWaitCall ||
+          inst.opcode == Opcode::kSpawnCall) {
+        available.erase(
+            std::remove_if(available.begin(), available.end(),
+                           [&](InstId earlier) {
+                             return function->Contains(earlier) &&
+                                    function->Get(earlier).opcode ==
+                                        Opcode::kLoad;
+                           }),
+            available.end());
+        continue;
+      }
+      // A load is repeatable between writes: reading the same address
+      // twice with nothing written in between gives the same answer, and
+      // a loop that reads a field of its object pays for it once instead
+      // of once per use.
+      if (!IsRepeatable(inst.opcode) && inst.opcode != Opcode::kLoad) {
         continue;
       }
       bool replaced = false;

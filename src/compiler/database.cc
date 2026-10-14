@@ -959,9 +959,27 @@ void Database::RegisterQueries() {
           }
         }
 
+        // Where a generic from another module comes from. Asked for
+        // through the engine, so that lowering this file depends on the
+        // files whose generics it instantiates: change the body of a
+        // generic in `std` and every module that used it is rebuilt.
+        const auto foreign = [&db](uint32_t index) -> ir::ForeignFile {
+          const FileId other{index};
+          const auto* other_parsed =
+              db.GetAs<ParsedFile>(ParsedFileKey(other));
+          const auto* other_checked =
+              db.GetAs<CheckedFile>(TypeCheckKey(other));
+          if (other_parsed == nullptr || other_checked == nullptr) {
+            return ir::ForeignFile{};
+          }
+          return ir::ForeignFile{&other_checked->resolution,
+                                 &other_parsed->ast, &other_checked->body};
+        };
+
         LoweredFile result;
         ir::LowerFile(&interner_, &types_, file.index, checked->resolution,
-                      parsed->ast, checked->body, effects, &result.module);
+                      parsed->ast, checked->body, effects, foreign,
+                      &result.module);
 
         // A `task` is not a function the way the machine means it, so it is
         // split into a state machine here -- before the verifier, so the

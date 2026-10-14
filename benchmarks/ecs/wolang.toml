@@ -1,0 +1,7 @@
+[package]
+name = "ecs"
+source = "src"
+
+[dependencies]
+std = { path = "../../lib/std" }
+game = { path = "../../lib/game" }
