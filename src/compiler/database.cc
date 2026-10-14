@@ -962,8 +962,22 @@ void Database::RegisterQueries() {
         // result is checked, and before the passes, so they see ordinary
         // code. Nothing below this point knows what a coroutine is.
         abi::LayoutStore layouts(types_, checked->resolution);
+        const auto span_of = [parsed](uint32_t item) {
+          const ItemId id = ResolveItem(parsed->ast, item);
+          return parsed->ast.Contains(id) ? parsed->ast.Get(id).name_span
+                                          : SourceSpan();
+        };
+        const size_t before_split = result.diagnostics.size();
         ir::SplitTasks(&interner_, &types_, &layouts, &result.module,
-                       &result.diagnostics);
+                       span_of, &result.diagnostics);
+        if (result.diagnostics.size() != before_split) {
+          // The same rule as everywhere else: a file with an error is not
+          // lowered. A machine built around a frame that cannot exist is
+          // worse than no machine.
+          LoweredFile empty;
+          empty.diagnostics = std::move(result.diagnostics);
+          return MakeResult(std::move(empty));
+        }
 
         // Verified on every input rather than on request: the IR is the
         // contract between the front end and every back end, so a violation

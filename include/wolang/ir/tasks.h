@@ -3,6 +3,7 @@
 #ifndef WOLANG_IR_TASKS_H_
 #define WOLANG_IR_TASKS_H_
 
+#include <functional>
 #include <vector>
 
 #include "wolang/abi/layout.h"
@@ -32,10 +33,14 @@ namespace ir {
 // direct call still works where no scheduler is running.
 //
 // Reports a task that waits on itself: its frame would contain itself.
+// |span_of| turns a function's declaration -- the item index it carries --
+// into a position, because the IR holds no source positions of its own
+// (D31) and a diagnostic without one is a diagnostic nobody can act on.
 void SplitTasks(StringInterner* interner,
                 TypeStore* types,
                 abi::LayoutStore* layouts,
                 Module* module,
+                const std::function<SourceSpan(uint32_t)>& span_of,
                 std::vector<Diagnostic>* diagnostics);
 
 }  // namespace ir

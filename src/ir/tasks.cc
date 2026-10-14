@@ -51,11 +51,13 @@ class Splitter {
            TypeStore* types,
            abi::LayoutStore* layouts,
            Module* module,
+           const std::function<SourceSpan(uint32_t)>& span_of,
            std::vector<Diagnostic>* diagnostics)
       : interner_(interner),
         types_(types),
         layouts_(layouts),
         module_(module),
+        span_of_(span_of),
         diagnostics_(diagnostics) {}
 
   void Run() {
@@ -121,6 +123,11 @@ class Splitter {
     diagnostic.severity = Severity::kError;
     diagnostic.code = std::string(kRecursiveTask);
     diagnostic.message = std::move(message);
+    DiagnosticLabel label;
+    label.is_primary = true;
+    label.span = span_of_(module_->functions[index].source_item);
+    label.message = "give it something to wait on that is not itself";
+    diagnostic.labels.push_back(std::move(label));
     diagnostics_->push_back(std::move(diagnostic));
   }
 
@@ -773,6 +780,7 @@ class Splitter {
   TypeStore* types_;
   abi::LayoutStore* layouts_;
   Module* module_;
+  const std::function<SourceSpan(uint32_t)>& span_of_;
   std::vector<Diagnostic>* diagnostics_;
   std::unordered_map<uint32_t, Frame> frames_;
   std::set<uint32_t> reported_;
@@ -784,6 +792,7 @@ void SplitTasks(StringInterner* interner,
                 TypeStore* types,
                 abi::LayoutStore* layouts,
                 Module* module,
+                const std::function<SourceSpan(uint32_t)>& span_of,
                 std::vector<Diagnostic>* diagnostics) {
   bool any = false;
   for (const Function& function : module->functions) {
@@ -792,7 +801,7 @@ void SplitTasks(StringInterner* interner,
   if (!any) {
     return;
   }
-  Splitter splitter(interner, types, layouts, module, diagnostics);
+  Splitter splitter(interner, types, layouts, module, span_of, diagnostics);
   splitter.Run();
 }
 
