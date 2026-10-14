@@ -17,6 +17,7 @@
 #include "wolang/ir/ir.h"
 #include "wolang/query/query_engine.h"
 #include "wolang/sema/resolution.h"
+#include "wolang/sema/systems.h"
 #include "wolang/sema/type.h"
 #include "wolang/sema/type_check.h"
 #include "wolang/syntax/ast.h"
@@ -180,6 +181,9 @@ class Database {
   const ParsedFile* Parse(FileId file);
   const ItemTree* Items(FileId file);
   const ModuleScope* Scope(ModuleId module);
+  // What the systems of |module| do to the components they name, and the
+  // stages those accesses allow them to run in.
+  const AccessGraph* Systems(ModuleId module);
   const ResolvedImports* Imports(FileId file);
   const FileResolution* Resolution(FileId file);
   const CheckedFile* Checked(FileId file);

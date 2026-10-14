@@ -720,3 +720,31 @@ analysis -- and without it the base of a store's row and the length it is
 checked against are re-read a million times. It is the largest single
 thing between this and the layout difference showing up as more than a few
 percent, and it waits for the wave that brings the analysis.
+
+**D82. A system declares its access, and the schedule follows.** `mut T`
+writes, `T` reads, `with T` and `without T` filter -- which is reading
+whether an entity has the component. From the declarations alone the
+compiler lays the systems out in stages: everything in a stage may run at
+once, because nothing in it writes what another touches. Two that would
+share a stage and conflict are rejected rather than ordered arbitrarily
+(`E0127`), because the arbitrary order is the bug a scheduler like this
+exists to prevent.
+
+The access lives in the *syntax*, not in the type: `Query<mut Velocity,
+with Falling>` resolves to one query type over the components it names, and
+the modifiers are read off the declaration by the pass that schedules. One
+exception travels in the type -- whether the component the loop binds is
+written -- because `foreach v in q` has to know whether `v` may be assigned
+to, and that is a checking question rather than a scheduling one.
+
+Why in the compiler rather than in a library: the schedule is a property of
+every declaration at once, and nothing a library can see spans them. The
+graph is a module-level query, so two systems in different files are
+scheduled against each other and an edit to one rebuilds only what depends
+on the answer.
+
+What is not here: a `Query` value built from a world, and therefore running
+a system at all. The storage is a library (`game.ecs`), the schedule is the
+compiler's, and the join between them -- which store a query reads, and how
+a stage is handed to a thread -- is the next piece. Running the stages in
+parallel needs threads in the runtime, which do not exist yet.

@@ -632,6 +632,14 @@ TypeId TypeResolver::ResolvePath(const Ast& ast, const TypeRef& type) {
     return builtin;
   }
 
+  // `Query<mut Velocity, with Falling>` names what a system asks the world
+  // for. Built in rather than declared, because the compiler is what reads
+  // it: the access graph comes from the arguments, so there is nothing for
+  // a library to put in the type.
+  if (interner_->Text(name) == "Query") {
+    return types_->query();
+  }
+
   if (used_ != nullptr) {
     used_->push_back(name);
   }
@@ -682,8 +690,21 @@ TypeId TypeResolver::Resolve(const Ast& ast, TypeRefId id) {
         return base;
       }
       std::vector<TypeId> args;
+      // Whether the component the loop binds is written. The modifiers
+      // themselves stay in the syntax, where the access graph reads them;
+      // this one travels in the type because `foreach v in q` has to know
+      // whether `v` may be assigned to.
+      bool writes = false;
+      bool first = true;
       for (TypeRefId arg : ast.Get(type.args)) {
+        if (first && ast.Contains(arg)) {
+          writes = ast.Get(arg).kind == TypeRefKind::kMut;
+          first = false;
+        }
         args.push_back(Resolve(ast, arg));
+      }
+      if (base == types_->query()) {
+        return types_->Query(args, writes);
       }
       return types_->Instance(base, args);
     }

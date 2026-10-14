@@ -9,6 +9,7 @@
 #include "wolang/ir/passes.h"
 #include "wolang/ir/tasks.h"
 #include "wolang/ir/verifier.h"
+#include "wolang/sema/systems.h"
 #include "wolang/syntax/lexer.h"
 #include "wolang/syntax/parser.h"
 
@@ -67,6 +68,12 @@ QueryKey ModuleEffectsKey(ModuleId module) {
 }
 QueryKey EffectDiagnosticsKey(FileId file) {
   return QueryKey{QueryKind::kEffectDiagnostics, file.index};
+}
+QueryKey ModuleSystemsKey(ModuleId module) {
+  return QueryKey{QueryKind::kModuleSystems, module.index};
+}
+QueryKey SystemDiagnosticsKey(FileId file) {
+  return QueryKey{QueryKind::kSystemDiagnostics, file.index};
 }
 QueryKey MemberTablesKey(FileId file) {
   return QueryKey{QueryKind::kMemberTables, file.index};
@@ -684,6 +691,70 @@ void Database::RegisterQueries() {
       });
 
   // Reporting is its own query so that type checking -- which collects the
+  // What every system of a module does to the components it names, and
+  // the stages those accesses allow. A module question rather than a file
+  // one: two systems that conflict may be written in different files, and
+  // nothing in one file can see that.
+  engine_.Register(
+      QueryKind::kModuleSystems,
+      [this](QueryEngine& db, uint32_t arg) -> QueryResult {
+        const ModuleId module{arg};
+        const auto* files =
+            db.GetAs<std::vector<FileId>>(ModuleFilesKey(module));
+        if (files == nullptr) {
+          return MakeComparableResult(AccessGraph{});
+        }
+        AccessGraph graph;
+        for (FileId file : *files) {
+          if (const auto* parsed =
+                  db.GetAs<ParsedFile>(ParsedFileKey(file))) {
+            CollectSystems(interner_, parsed->ast, file.index, &graph);
+          }
+        }
+        // Reported through the per-file query below, so that a diagnostic
+        // lands on the file that has to change.
+        ScheduleSystems(interner_, &graph, nullptr);
+        return MakeComparableResult(std::move(graph));
+      });
+
+  // The schedule again, this time for its complaints. Split from the graph
+  // itself for the reason every other diagnostics query is: a file that
+  // asks what its systems conflict with should not be rebuilt because
+  // another file's stage numbering moved.
+  engine_.Register(
+      QueryKind::kSystemDiagnostics,
+      [this](QueryEngine& db, uint32_t arg) -> QueryResult {
+        const FileId file{arg};
+        std::vector<Diagnostic> result;
+        const ModuleId module = ModuleOf(file);
+        // A file compiled on its own belongs to no module, and its systems
+        // are still worth scheduling against each other: that is what
+        // trying something in one file looks like.
+        const std::vector<FileId> alone{file};
+        const std::vector<FileId>* files = &alone;
+        if (module.is_valid()) {
+          files = db.GetAs<std::vector<FileId>>(ModuleFilesKey(module));
+        }
+        if (files == nullptr) {
+          return MakeComparableResult(std::move(result));
+        }
+        AccessGraph graph;
+        for (FileId other : *files) {
+          if (const auto* parsed =
+                  db.GetAs<ParsedFile>(ParsedFileKey(other))) {
+            CollectSystems(interner_, parsed->ast, other.index, &graph);
+          }
+        }
+        DiagnosticEngine diagnostics;
+        ScheduleSystems(interner_, &graph, &diagnostics);
+        for (const Diagnostic& diagnostic : diagnostics.diagnostics()) {
+          if (diagnostic.PrimarySpan().file == file) {
+            result.push_back(diagnostic);
+          }
+        }
+        return MakeComparableResult(std::move(result));
+      });
+
   // rows -- does not depend on the module-wide answer it feeds.
   engine_.Register(
       QueryKind::kEffectDiagnostics,
@@ -1145,6 +1216,10 @@ void Database::RegisterQueries() {
                 EffectDiagnosticsKey(file))) {
           all.insert(all.end(), effects->begin(), effects->end());
         }
+        if (const auto* systems = db.GetAs<std::vector<Diagnostic>>(
+                SystemDiagnosticsKey(file))) {
+          all.insert(all.end(), systems->begin(), systems->end());
+        }
         if (const LoweredFile* lowered =
                 db.GetAs<LoweredFile>(LoweredFileKey(file))) {
           all.insert(all.end(), lowered->diagnostics.begin(),
@@ -1430,6 +1505,10 @@ const TokenizedFile* Database::Tokens(FileId file) {
 
 const ModuleScope* Database::Scope(ModuleId module) {
   return engine_.GetAs<ModuleScope>(ModuleScopeKey(module));
+}
+
+const AccessGraph* Database::Systems(ModuleId module) {
+  return engine_.GetAs<AccessGraph>(ModuleSystemsKey(module));
 }
 
 const ResolvedImports* Database::Imports(FileId file) {

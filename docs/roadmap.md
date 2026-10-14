@@ -34,7 +34,7 @@ Dates are not fixed. Scope is.
 | Wave | Content | Exit criterion |
 |---|---|---|
 | **10** | `task` with structured concurrency, signals, `derived`, **state machines**, a minimal HTTP/1.1 server as the design's driver | 100k concurrently waiting coroutines ✅ (48.7 ms for 500k resume steps, 2 MB of frames); the server serves keep-alive traffic ✅ (30k req/s, which is the client's ceiling); signals, `derived` and machines ✅ |
-| **11** | ECS, access graph, parallel scheduler, **AoS/SoA layout polymorphism**, SPMD `foreach` | 1M entity integration benchmark; the SoA variant beats the AoS one |
+| **11** | ECS, access graph, parallel scheduler, **AoS/SoA layout polymorphism**, SPMD `foreach` | 1M entity integration benchmark, the SoA variant ahead ✅ (43.3 ms against 44.7 — narrowly, because the loop is compute-bound); `soa []T`, the optimizer that makes it pay, generics across modules, an ECS library in Wolang, and `system` with the access graph ✅. A `Query` built from a world, the parallel scheduler and SPMD `foreach` are carried forward ⏳ |
 | **12** | LLVM AOT, WASM target, differential fuzzing across interpreter, JIT and AOT | shipping builds need no JIT; within 1.2x of C++ |
 
 ## Phase D — ecosystem and hosts

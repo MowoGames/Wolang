@@ -1,0 +1,30 @@
+// What a frame looks like when the compiler schedules it.
+//
+// Two systems, one ordering, and the stages that follow. Run
+// `wolang systems examples/systems` to see the schedule, and take the
+// `@After` away to see what the compiler says instead.
+
+component Velocity {
+  var x: float = 0.0
+  var y: float = 0.0
+}
+
+component Position {
+  var x: float = 0.0
+  var y: float = 0.0
+}
+
+tag Falling
+
+system ApplyGravity(dt: float, q: Query<mut Velocity, with Falling>) {
+  foreach v in q {
+    v.y = v.y - 9.81 * dt
+  }
+}
+
+@After(ApplyGravity)
+system Integrate(dt: float, q: Query<mut Position, Velocity>) {
+  foreach p in q {
+    p.x = p.x + dt
+  }
+}

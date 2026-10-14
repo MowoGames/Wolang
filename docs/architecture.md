@@ -198,9 +198,12 @@ shape.
 
 | Pass | Does |
 |---|---|
+| `ExpandElementAddresses` | turns `soa.addr` into the arithmetic it is, leaving `index.check` where it was |
 | `InlineCalls` | replaces a call to a small function with the body it calls |
 | `FoldConstants` | arithmetic and comparison on two constants |
 | `PromoteSlots` | turns a slot into values, inserting block parameters where a value depends on the path taken |
+| `EliminateCommonSubexpressions` | one copy of each computation per block, loads included until something writes |
+| `HoistLoopInvariants` | moves what does not change out of the loop that computes it |
 | `SimplifyControlFlow` | a constant branch becomes a jump, a block one block reaches is merged into it, unreachable blocks go |
 | `EliminateDeadCode` | drops what nothing reads and nothing can observe |
 
@@ -220,6 +223,20 @@ every iteration — measured at three times the speed on the benchmarks. It
 declines in one case: a block that needs a parameter whose predecessor ends
 in a branch rather than a jump, because only a jump can carry arguments and
 this pass does not split edges.
+
+The last two are what a loop over a buffer needed. An element address is
+expanded first, so that the pieces of it — the base of a field's array, the
+length it is checked against — are ordinary instructions the other passes
+can see inside; then common subexpressions collapse the repeats and the
+invariants move out. Together they took a million-entity integration from
+107 ms to 25.
+
+Only what cannot trap is hoisted, which is why the arithmetic an address is
+made of is marked as the compiler's own and not checked (D75): moving a
+*checked* multiply out of a loop that never runs would trap where the
+program would not have. A loop is found by a jump backwards in reverse
+postorder **and** dominance, because a resumed task is entered by a jump
+table that lands in the middle of its loops.
 
 ### The verifier
 

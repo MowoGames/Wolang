@@ -81,8 +81,11 @@ offer class Store<T> {
 /// reallocating. A game that knows its budget is the case this serves,
 /// and growth is a copy loop away.
 offer fun StoreNew<T>(capacity: int, entities: int) -> Store<T> uses unsafe {
-  return Store<T>(SoaNew<T>(capacity), ArrayNew<int>(capacity),
-                  ArrayNew<int>(entities), 0)
+  return Store<T>(
+      SoaNew<T>(capacity),
+      ArrayNew<int>(capacity),
+      ArrayNew<int>(entities),
+      0)
 }
 
 /// Hands out entity numbers.
@@ -172,10 +175,12 @@ offer class PackedStore<T> {
   }
 }
 
-offer fun PackedStoreNew<T>(capacity: int,
-                            entities: int) -> PackedStore<T> uses unsafe {
-  return PackedStore<T>(ArrayNew<T>(capacity), ArrayNew<int>(capacity),
-                        ArrayNew<int>(entities), 0)
+offer fun PackedStoreNew<T>(capacity: int, entities: int) -> PackedStore<T> uses unsafe {
+  return PackedStore<T>(
+      ArrayNew<T>(capacity),
+      ArrayNew<int>(capacity),
+      ArrayNew<int>(entities),
+      0)
 }
 
 // ------------------------------------------------------------- tests ---

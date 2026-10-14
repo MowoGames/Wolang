@@ -53,6 +53,14 @@ WOLANG_QUERY(ModuleEffects,
 WOLANG_QUERY(EffectDiagnostics,
              "file",
              "what a file's declarations do against what they declare")
+WOLANG_QUERY(ModuleSystems,
+             "module",
+             "what every system of a module does to the components it "
+             "names, and the stages it can run in")
+WOLANG_QUERY(SystemDiagnostics,
+             "file",
+             "the systems of a file that cannot be scheduled against each "
+             "other")
 WOLANG_QUERY(LoweredFile,
              "file",
              "the IR of a file's declarations, with the verifier's verdict")

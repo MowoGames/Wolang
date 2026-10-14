@@ -89,6 +89,7 @@ void PrintUsage() {
       "  bench <paths>   run and time every function marked `@Bench`\n"
       "  test <paths>    run every function marked `@Test`\n"
       "  modules <dir>   print the module graph of a package\n"
+      "  systems <dir>   print what systems access and when they run\n"
       "  version         print the version and exit\n"
       "  help            print this message\n"
       "\n"
@@ -920,6 +921,69 @@ int RunModules(const Options& options) {
   return Report(database.sources(), diagnostics.diagnostics(), render);
 }
 
+// What every system does and when it can run.
+//
+// The schedule is a property of the declarations, so it can be printed
+// without running anything: each stage is a set of systems that may run at
+// the same time, because nothing in it writes what another reads.
+int RunSystems(const Options& options) {
+  if (options.inputs.size() != 1) {
+    std::fprintf(stderr, "wolang: systems needs exactly one directory\n");
+    return 2;
+  }
+
+  Database database;
+  DiagnosticEngine diagnostics;
+  std::vector<FileId> files;
+  if (!CollectInputs(&database, options, &diagnostics, &files)) {
+    RenderOptions render;
+    render.color = options.color && StderrIsTerminal();
+    return Report(database.sources(), diagnostics.diagnostics(), render);
+  }
+
+  RenderOptions render;
+  render.color = options.color && StderrIsTerminal();
+  std::vector<Diagnostic> all = diagnostics.diagnostics();
+  for (FileId file : files) {
+    if (const std::vector<Diagnostic>* reported =
+            database.Diagnostics(file)) {
+      all.insert(all.end(), reported->begin(), reported->end());
+    }
+  }
+
+  for (size_t i = 0; i < database.modules().size(); ++i) {
+    const ModuleId id{static_cast<uint32_t>(i)};
+    const AccessGraph* graph = database.Systems(id);
+    if (graph == nullptr || graph->systems.empty()) {
+      continue;
+    }
+    const Module* module = database.GetModule(id);
+    std::fprintf(stdout, "module %s\n",
+                 module == nullptr ? "?" : module->name.c_str());
+    for (const SystemAccess& system : graph->systems) {
+      std::string line;
+      for (const ComponentAccess& access : system.components) {
+        line.append(line.empty() ? "" : ", ");
+        line.append(access.access == Access::kWrite ? "mut " : "");
+        line.append(database.interner().Text(access.component));
+      }
+      std::fprintf(stdout, "    system %s(%s)\n",
+                   std::string(database.interner().Text(system.name)).c_str(),
+                   line.c_str());
+    }
+    for (size_t stage = 0; stage < graph->stages.size(); ++stage) {
+      std::string line;
+      for (Symbol name : graph->stages[stage]) {
+        line.append(line.empty() ? "" : ", ");
+        line.append(database.interner().Text(name));
+      }
+      std::fprintf(stdout, "    stage %zu: %s\n", stage + 1, line.c_str());
+    }
+  }
+
+  return Report(database.sources(), all, render);
+}
+
 int Run(int argc, char** argv) {
   Options options;
   for (int i = 1; i < argc; ++i) {
@@ -962,6 +1026,7 @@ int Run(int argc, char** argv) {
       options.command == "check" || options.command == "tokens" ||
       options.command == "ast" || options.command == "fmt" ||
       options.command == "ir" || options.command == "modules" ||
+      options.command == "systems" ||
       options.command == "run" || options.command == "test" ||
       options.command == "asm" || options.command == "bench";
   if (needs_inputs && options.inputs.empty()) {
@@ -994,6 +1059,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "modules") {
     return RunModules(options);
+  }
+  if (options.command == "systems") {
+    return RunSystems(options);
   }
 
   std::fprintf(stderr, "wolang: unknown command '%s'\n",

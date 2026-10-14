@@ -1889,7 +1889,14 @@ TypeId Checker::CheckLoop(const Expr& expr) {
     if (!element.is_valid()) {
       element = types_->IsNumeric(sequence) ? sequence : types_->error();
     }
-    BindPattern(expr.pattern, element);
+    // A query yields the component it was declared over, and `mut` on
+    // that component is what makes the loop's binding assignable: a
+    // system that writes says so in its signature, so the body does not
+    // have to repeat it.
+    const bool writes = types_->KindOf(sequence) == TypeKind::kInstance &&
+                        types_->Get(sequence).base == types_->query() &&
+                        types_->Get(sequence).is_mutable;
+    BindPattern(expr.pattern, element, writes);
   }
 
   // A loop body's value is discarded, so it is a statement position: a

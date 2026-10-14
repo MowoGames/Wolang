@@ -120,6 +120,18 @@ TypeStore::TypeStore() {
   int_literal_ = simple(TypeKind::kIntLiteral);
   float_literal_ = simple(TypeKind::kFloatLiteral);
 
+  // A named type with no declaration anywhere: what `Query<...>` is an
+  // instance of. Interned like everything else, so two queries over the
+  // same components are the same type.
+  {
+    Key key;
+    std::memset(&key.type, 0, sizeof(key.type));
+    key.type.kind = TypeKind::kNamed;
+    key.type.declaring_file = 0xFFFFFFFFu;
+    key.type.declaring_item = 0xFFFFFFFEu;
+    query_ = Intern(std::move(key));
+  }
+
   // The built-in effects occupy the first ids, in BuiltinEffect order, so
   // that testing for one is an index comparison. They are spelled by
   // BuiltinEffectName rather than by a symbol, which is what keeps the type
@@ -228,6 +240,17 @@ TypeId TypeStore::Instance(TypeId base, const std::vector<TypeId>& args) {
   std::memset(&key.type, 0, sizeof(key.type));
   key.type.kind = TypeKind::kInstance;
   key.type.base = base;
+  key.args = args;
+  return Intern(std::move(key));
+}
+
+TypeId TypeStore::Query(const std::vector<TypeId>& args, bool writes) {
+  Key key;
+  std::memset(&key.type, 0, sizeof(key.type));
+  key.type.kind = TypeKind::kInstance;
+  key.type.base = query_;
+  key.type.element = args.empty() ? TypeId{} : args.front();
+  key.type.is_mutable = writes;
   key.args = args;
   return Intern(std::move(key));
 }

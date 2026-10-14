@@ -781,20 +781,53 @@ class Character {
 A `derived` field recomputes when an input changes rather than on every read,
 and never needs manual invalidation.
 
-## 11. Entities and systems — draft
+## 11. Entities and systems — partly draft
 
 ```wolang
-component Velocity { var value: Vec3 }
+component Velocity { var x: float = 0.0 }
 tag Falling
 
 system ApplyGravity(dt: float, q: Query<mut Velocity, with Falling>) {
-  foreach v in q { v.value.y -= 9.81 * dt }
+  foreach v in q { v.x = v.x - 9.81 * dt }
+}
+
+@After(ApplyGravity)
+system Integrate(q: Query<mut Position, Velocity>) {
+  foreach p in q { p.x = p.x + 1.0 }
 }
 ```
 
-The compiler derives an access graph from the queries, schedules
-non-conflicting systems in parallel, and rejects two systems that write the
-same component without an ordering.
+A system declares its access in its signature: `mut T` writes the
+component, `T` reads it, and `with T` / `without T` filter on it, which is
+reading whether an entity has it. From those declarations the compiler
+derives an **access graph** and lays the systems out in stages -- every
+system in a stage may run at the same time as the others, because nothing
+in it writes what another reads or writes. `wolang systems <dir>` prints
+the result:
+
+```
+module game
+    system ApplyGravity(mut Velocity, Falling)
+    system Integrate(mut Position, Velocity)
+    stage 1: ApplyGravity
+    stage 2: Integrate
+```
+
+Two systems that would land in the same stage and touch the same component,
+where one writes it, are rejected (`E0127`): the program has to say which
+runs first with `@After` or `@Before`. An ordering that names nothing is
+`E0128`, and a cycle of orderings is `E0129`.
+
+`mut` in a query is also what makes the loop's binding assignable, so a
+system that writes says so once, in its signature, rather than again in
+its body.
+
+Still draft: where the components *live*. The storage is a library today --
+`game.ecs` offers a dense `Store<T>` over `soa []T` and a `PackedStore<T>`
+over `[]T`, with the same interface over both layouts -- and a `Query`
+value is not yet built from a world, so a `system` body is checked and
+scheduled but not run. Running the stages in parallel needs threads in the
+runtime, which the concurrency section does not have yet either.
 
 ## 12. Compile-time evaluation — draft
 

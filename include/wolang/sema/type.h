@@ -231,6 +231,9 @@ class TypeStore {
   TypeId char_type() const { return char_; }
   TypeId string_type() const { return string_; }
   TypeId str() const { return str_; }
+  // What a system asks the world for: `Query<mut Velocity, with Falling>`
+  // is an instance of this, and its arguments are the access it declares.
+  TypeId query() const { return query_; }
   TypeId int_literal() const { return int_literal_; }
   TypeId float_literal() const { return float_literal_; }
 
@@ -290,6 +293,11 @@ class TypeStore {
                    uint32_t index,
                    const std::vector<TypeId>& bounds = {});
   TypeId Instance(TypeId base, const std::vector<TypeId>& args);
+  // `Query<mut Velocity, with Falling>`: the components it names, and
+  // whether the first of them is written. The flag is what `foreach` over
+  // the query needs -- the rest of the access a system declares is read
+  // off the syntax by the graph that schedules systems.
+  TypeId Query(const std::vector<TypeId>& args, bool writes);
   TypeId Optional(TypeId element);
   TypeId Fallible(TypeId element, TypeId error_set);
   TypeId Slice(TypeId element, bool is_soa);
@@ -398,6 +406,7 @@ class TypeStore {
   TypeId char_;
   TypeId string_;
   TypeId str_;
+  TypeId query_;
   TypeId int_literal_;
   TypeId float_literal_;
 
