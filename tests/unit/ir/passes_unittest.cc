@@ -195,10 +195,11 @@ fun Promoted(n: int) -> int {
   WOLANG_EXPECT(body.find("add %0") != std::string::npos);
 }
 
-WOLANG_TEST(PassTest, LeavesASlotWrittenOnSeveralPathsAlone) {
-  // Promoting this one needs a block parameter on the join, which the pass
-  // does not insert yet. Leaving it is correct; getting it wrong would not
-  // be.
+WOLANG_TEST(PassTest, PromotesASlotWrittenOnSeveralPaths) {
+  // A loop counter is written every iteration, so the value at the top of
+  // the loop depends on which edge arrived -- which is exactly what a block
+  // parameter is. Without this the counter makes a round trip through the
+  // frame every iteration, and the loop runs at a third of its speed.
   Fixture f(R"(
 fun Sum(n: int) -> int {
   var total = 0
@@ -211,7 +212,33 @@ fun Sum(n: int) -> int {
 }
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
-  WOLANG_EXPECT(f.Optimized("Sum").find("alloca") != std::string::npos);
+  WOLANG_EXPECT(f.Lowered("Sum").find("alloca") != std::string::npos);
+
+  const std::string body = f.Optimized("Sum");
+  WOLANG_EXPECT(body.find("alloca") == std::string::npos);
+  WOLANG_EXPECT(body.find("load") == std::string::npos);
+  WOLANG_EXPECT(body.find("store") == std::string::npos);
+  // Two values go round the loop, so the header takes two parameters.
+  WOLANG_EXPECT(body.find("loop.header") != std::string::npos);
+  WOLANG_EXPECT(body.find("^1(") != std::string::npos);
+}
+
+WOLANG_TEST(PassTest, PromotionLeavesAnUnwrittenSlotUndefined) {
+  // Reading a variable before anything is written to it is undefined, and
+  // the promoted form says so in the IR rather than inventing a zero. The
+  // interpreter traps on it either way, which is what keeps the two forms
+  // in agreement.
+  Fixture f(R"(
+fun Unwritten(c: bool) -> int {
+  var x: int
+  if c {
+    x = 1
+  }
+  return x
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Optimized("Unwritten").find("undef") != std::string::npos);
 }
 
 WOLANG_TEST(PassTest, TurnsABranchOnAConstantIntoAJump) {

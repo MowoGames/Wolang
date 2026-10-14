@@ -76,6 +76,9 @@ struct LoweredFile {
   std::vector<std::string> problems;
   // Functions carrying `@Test`, by name, in declaration order.
   std::vector<Symbol> tests;
+  // Functions carrying `@Bench`. A benchmark is a declaration the driver
+  // runs and times, the same way a test is one the driver runs and checks.
+  std::vector<Symbol> benches;
   // What `comptime` evaluation found. User-facing, unlike |problems|.
   std::vector<Diagnostic> diagnostics;
   // The IR as lowering left it, before any pass ran. Kept so that a pass

@@ -1,0 +1,71 @@
+// Gameplay microbenchmarks.
+//
+// Four kernels, each one a shape that turns up in a frame: a recursive call,
+// a counting loop, vector arithmetic over a struct, and an indexed array.
+// `benchmarks/native/gameplay.cc` is the same four in C++, and
+// `benchmarks/run.sh` prints the ratio -- which is the exit criterion of
+// wave 8 rather than a number anyone has to take on trust.
+//
+// Every one returns a checksum, so nothing can be optimized away as unused.
+
+struct Vec3 {
+  var x: float
+  var y: float
+  var z: float
+}
+
+fun Fib(n: int) -> int {
+  if n < 2 {
+    return n
+  }
+  return Fib(n - 1) + Fib(n - 2)
+}
+
+@Bench
+fun BenchFibonacci() -> int {
+  return Fib(27)
+}
+
+@Bench
+fun BenchSumLoop() -> int {
+  var total = 0
+  var i = 0
+  while i < 3000000 {
+    total = total + i % 7
+    i = i + 1
+  }
+  return total
+}
+
+fun Dot(a: Vec3, b: Vec3) -> float {
+  return a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+fun Scale(v: Vec3, k: float) -> Vec3 {
+  return Vec3(v.x * k, v.y * k, v.z * k)
+}
+
+@Bench
+fun BenchVectorDot() -> int {
+  var total = 0.0
+  var i = 0
+  while i < 1000000 {
+    let a = Vec3(1.0, 2.0, 3.0)
+    let b = Scale(a, 0.5)
+    total = total + Dot(a, b)
+    i = i + 1
+  }
+  return total as int
+}
+
+@Bench
+fun BenchArraySum() -> int {
+  let data = [3, 1, 4, 1, 5, 9, 2, 6]
+  var total = 0
+  var i = 0
+  while i < 2000000 {
+    total = total + data[i % 8]
+    i = i + 1
+  }
+  return total
+}

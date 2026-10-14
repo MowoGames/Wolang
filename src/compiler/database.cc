@@ -945,8 +945,14 @@ void Database::RegisterQueries() {
           }
           const Item& item = parsed->ast.Get(id);
           for (AttributeId attribute : parsed->ast.Get(item.attributes)) {
-            if (interner_.Text(parsed->ast.Get(attribute).name) == "Test") {
+            const std::string_view name =
+                interner_.Text(parsed->ast.Get(attribute).name);
+            if (name == "Test") {
               result.tests.push_back(item.name);
+              break;
+            }
+            if (name == "Bench") {
+              result.benches.push_back(item.name);
               break;
             }
           }

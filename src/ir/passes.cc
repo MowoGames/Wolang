@@ -532,8 +532,309 @@ bool InlineCalls(TypeStore* types, const Module& module, Function* function) {
 
 // --------------------------------------------------------- slot promotion ---
 
+namespace {
+
+// Reachable blocks, with a block before everything it reaches except across
+// a back edge.
+std::vector<BlockId> ReversePostOrder(const Function& function) {
+  std::vector<bool> seen(function.blocks.size(), false);
+  std::vector<BlockId> postorder;
+  std::vector<std::pair<BlockId, size_t>> stack;
+  stack.emplace_back(function.entry(), 0);
+  seen[function.entry().index] = true;
+  while (!stack.empty()) {
+    auto& [block, next] = stack.back();
+    const InstId terminator = function.TerminatorOf(block);
+    const std::span<const BlockId> successors =
+        function.Contains(terminator)
+            ? function.SuccessorsOf(function.Get(terminator))
+            : std::span<const BlockId>();
+    if (next < successors.size()) {
+      const BlockId successor = successors[next++];
+      if (function.Contains(successor) && !seen[successor.index] &&
+          !function.Get(successor).instructions.empty()) {
+        seen[successor.index] = true;
+        stack.emplace_back(successor, 0);
+      }
+      continue;
+    }
+    postorder.push_back(block);
+    stack.pop_back();
+  }
+  return std::vector<BlockId>(postorder.rbegin(), postorder.rend());
+}
+
+// Adds |value| to the end of |inst|'s operand list. The list lives in a
+// flat pool, so growing one means moving it -- which is fine, because
+// nothing refers to a range by anything but the instruction that owns it.
+void AppendOperand(Function* function, InstId id, InstId value) {
+  Inst& inst = function->Get(id);
+  const std::vector<InstId> existing(
+      function->operands.begin() + inst.operands_begin,
+      function->operands.begin() + inst.operands_begin +
+          inst.operands_count);
+  inst.operands_begin = static_cast<uint32_t>(function->operands.size());
+  for (InstId operand : existing) {
+    function->operands.push_back(operand);
+  }
+  function->operands.push_back(value);
+  inst.operands_count = static_cast<uint32_t>(existing.size() + 1);
+}
+
+void EraseFromBlock(Function* function, InstId id) {
+  Block& block = function->Get(function->owners[id.index]);
+  const auto position =
+      std::find(block.instructions.begin(), block.instructions.end(), id);
+  if (position != block.instructions.end()) {
+    block.instructions.erase(position);
+  }
+}
+
+// Promotes one slot. Returns false without touching anything when it
+// cannot, which is what keeps a bail-out from leaving half a rewrite
+// behind.
+bool PromoteOne(Function* function,
+                InstId slot,
+                const std::vector<InstId>& loads,
+                const std::vector<InstId>& stores) {
+  const size_t count = function->blocks.size();
+  const std::vector<BlockId> order = ReversePostOrder(*function);
+  std::vector<uint32_t> position(count, 0xFFFFFFFFu);
+  for (uint32_t i = 0; i < order.size(); ++i) {
+    position[order[i].index] = i;
+  }
+
+  // Every access has to be somewhere control reaches, or the value flowing
+  // into it is not a question with an answer.
+  const auto unreachable = [&](InstId access) {
+    const BlockId owner = function->owners[access.index];
+    return !function->Contains(owner) ||
+           position[owner.index] == 0xFFFFFFFFu;
+  };
+  for (InstId access : loads) {
+    if (unreachable(access)) {
+      return false;
+    }
+  }
+  for (InstId access : stores) {
+    if (unreachable(access)) {
+      return false;
+    }
+  }
+
+  std::vector<std::vector<BlockId>> predecessors(count);
+  for (BlockId block : order) {
+    const InstId terminator = function->TerminatorOf(block);
+    if (!function->Contains(terminator)) {
+      continue;
+    }
+    for (BlockId successor :
+         function->SuccessorsOf(function->Get(terminator))) {
+      if (function->Contains(successor) &&
+          position[successor.index] != 0xFFFFFFFFu) {
+        predecessors[successor.index].push_back(block);
+      }
+    }
+  }
+
+  // Which blocks need a value on the way in: one that loads before it
+  // stores, or one that lets a load further on see what came in.
+  std::vector<bool> loads_first(count, false);
+  std::vector<bool> stores_here(count, false);
+  for (BlockId block : order) {
+    bool stored = false;
+    for (InstId id : function->Get(block).instructions) {
+      const Inst& inst = function->Get(id);
+      const std::span<const InstId> operands = function->OperandsOf(inst);
+      const bool touches =
+          !operands.empty() && operands[0] == slot;
+      if (!touches) {
+        continue;
+      }
+      if (inst.opcode == Opcode::kLoad && !stored) {
+        loads_first[block.index] = true;
+      }
+      if (inst.opcode == Opcode::kStore) {
+        stored = true;
+        stores_here[block.index] = true;
+      }
+    }
+  }
+
+  std::vector<bool> needs_in = loads_first;
+  for (int round = 0; round < static_cast<int>(count) + 2; ++round) {
+    bool grew = false;
+    for (auto it = order.rbegin(); it != order.rend(); ++it) {
+      const BlockId block = *it;
+      if (needs_in[block.index] || stores_here[block.index]) {
+        continue;
+      }
+      const InstId terminator = function->TerminatorOf(block);
+      if (!function->Contains(terminator)) {
+        continue;
+      }
+      for (BlockId successor :
+           function->SuccessorsOf(function->Get(terminator))) {
+        if (function->Contains(successor) &&
+            position[successor.index] != 0xFFFFFFFFu &&
+            needs_in[successor.index]) {
+          needs_in[block.index] = true;
+          grew = true;
+          break;
+        }
+      }
+    }
+    if (!grew) {
+      break;
+    }
+  }
+
+  // A block that needs a value and cannot simply take its one
+  // predecessor's gets a parameter. The entry takes `undef` instead: a
+  // load before any store is exactly what an undefined value is.
+  std::vector<bool> wants_param(count, false);
+  for (BlockId block : order) {
+    if (!needs_in[block.index] || block == function->entry()) {
+      continue;
+    }
+    const std::vector<BlockId>& preds = predecessors[block.index];
+    const bool single_earlier =
+        preds.size() == 1 &&
+        position[preds.front().index] < position[block.index];
+    wants_param[block.index] = !single_earlier;
+  }
+
+  // Only a jump can carry arguments. A branch or a switch into a block that
+  // needs a parameter would have to be split first, which this pass does
+  // not do -- so it declines instead of producing IR the verifier rejects.
+  for (BlockId block : order) {
+    if (!wants_param[block.index]) {
+      continue;
+    }
+    for (BlockId pred : predecessors[block.index]) {
+      const InstId terminator = function->TerminatorOf(pred);
+      if (!function->Contains(terminator) ||
+          function->Get(terminator).opcode != Opcode::kJump) {
+        return false;
+      }
+    }
+  }
+
+  const TypeId type = function->Get(slot).type;
+  std::vector<InstId> parameter(count, InstId{});
+  for (BlockId block : order) {
+    if (!wants_param[block.index]) {
+      continue;
+    }
+    Inst param;
+    param.opcode = Opcode::kParam;
+    param.type = type;
+    const InstId id{static_cast<uint32_t>(function->instructions.size())};
+    function->instructions.push_back(param);
+    function->owners.push_back(block);
+    Block& body = function->Get(block);
+    body.instructions.insert(
+        body.instructions.begin() + body.param_count, id);
+    ++body.param_count;
+    parameter[block.index] = id;
+  }
+
+  // The rename walk. `current` is what the slot holds; at the start of a
+  // block it is the parameter, the one predecessor's last value, or an
+  // `undef` for a load that precedes every store.
+  std::vector<InstId> leaving(count, InstId{});
+  InstId undefined;
+  for (BlockId block : order) {
+    InstId current;
+    if (parameter[block.index].is_valid()) {
+      current = parameter[block.index];
+    } else {
+      const std::vector<BlockId>& preds = predecessors[block.index];
+      if (preds.size() == 1) {
+        current = leaving[preds.front().index];
+      }
+    }
+
+    Block& body = function->Get(block);
+    std::vector<InstId> dead;
+    for (InstId id : body.instructions) {
+      const Inst& inst = function->Get(id);
+      const std::span<const InstId> operands = function->OperandsOf(inst);
+      if (operands.empty() || operands[0] != slot) {
+        continue;
+      }
+      if (inst.opcode == Opcode::kStore && operands.size() == 2) {
+        current = operands[1];
+        dead.push_back(id);
+        continue;
+      }
+      if (inst.opcode != Opcode::kLoad) {
+        continue;
+      }
+      if (!current.is_valid()) {
+        if (!undefined.is_valid()) {
+          Inst undef;
+          undef.opcode = Opcode::kUndef;
+          undef.type = type;
+          undefined =
+              InstId{static_cast<uint32_t>(function->instructions.size())};
+          function->instructions.push_back(undef);
+          function->owners.push_back(function->entry());
+          Block& entry = function->Get(function->entry());
+          entry.instructions.insert(
+              entry.instructions.begin() + entry.param_count, undefined);
+        }
+        current = undefined;
+      }
+      ReplaceAllUses(function, id, current);
+      dead.push_back(id);
+    }
+    for (InstId id : dead) {
+      Discard(function, id);
+      EraseFromBlock(function, id);
+    }
+    leaving[block.index] = current;
+  }
+
+  // Every edge into a block that got a parameter now carries the value its
+  // predecessor was left holding.
+  for (BlockId block : order) {
+    if (!parameter[block.index].is_valid()) {
+      continue;
+    }
+    for (BlockId pred : predecessors[block.index]) {
+      const InstId terminator = function->TerminatorOf(pred);
+      InstId value = leaving[pred.index];
+      if (!value.is_valid()) {
+        // Nothing on this path ever wrote the slot.
+        value = undefined.is_valid() ? undefined : InstId{};
+        if (!value.is_valid()) {
+          Inst undef;
+          undef.opcode = Opcode::kUndef;
+          undef.type = type;
+          undefined =
+              InstId{static_cast<uint32_t>(function->instructions.size())};
+          function->instructions.push_back(undef);
+          function->owners.push_back(function->entry());
+          Block& entry = function->Get(function->entry());
+          entry.instructions.insert(
+              entry.instructions.begin() + entry.param_count, undefined);
+          value = undefined;
+        }
+      }
+      AppendOperand(function, terminator, value);
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 bool PromoteSlots(TypeStore* types, Function* function) {
   static_cast<void>(types);
+  if (function->is_declaration()) {
+    return false;
+  }
   bool changed = false;
 
   for (uint32_t i = 0; i < function->instructions.size(); ++i) {
@@ -565,49 +866,18 @@ bool PromoteSlots(TypeStore* types, Function* function) {
         break;
       }
     }
-    if (!only_loads_and_stores) {
+    if (!only_loads_and_stores || (loads.empty() && stores.empty())) {
       continue;
     }
 
-    // One store, and it is in the block that defines the slot: every load
-    // then reads that one value. The general case needs block parameters
-    // inserted on every join, which is the next step for this pass.
-    if (stores.size() != 1) {
-      continue;
+    // The general case: a slot written on several paths becomes a value
+    // passed between blocks, which is what block parameters are for. A loop
+    // counter lives in a register afterwards instead of making a round trip
+    // through the frame every iteration -- the difference between ten
+    // instructions an iteration and three.
+    if (PromoteOne(function, slot, loads, stores)) {
+      changed = true;
     }
-    const InstId store = stores.front();
-    if (function->owners[store.index] != function->owners[slot.index]) {
-      continue;
-    }
-    bool every_load_dominated = true;
-    for (InstId load : loads) {
-      if (function->owners[load.index] != function->owners[slot.index]) {
-        every_load_dominated = false;
-        break;
-      }
-    }
-    if (!every_load_dominated) {
-      continue;
-    }
-
-    const std::span<const InstId> operands =
-        function->OperandsOf(function->Get(store));
-    if (operands.size() != 2) {
-      continue;
-    }
-    const InstId value = operands[1];
-
-    for (InstId load : loads) {
-      ReplaceAllUses(function, load, value);
-      Discard(function, load);
-      Block& block = function->Get(function->owners[load.index]);
-      const auto position = std::find(block.instructions.begin(),
-                                      block.instructions.end(), load);
-      if (position != block.instructions.end()) {
-        block.instructions.erase(position);
-      }
-    }
-    changed = true;
   }
   return changed;
 }

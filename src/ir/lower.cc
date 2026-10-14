@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "wolang/base/diagnostic.h"
 #include "wolang/ir/builder.h"
 
 namespace wolang {
@@ -48,7 +49,8 @@ class Lowerer {
         ast_(ast),
         typed_(typed),
         effects_(effects),
-        module_(module) {}
+        module_(module),
+        resolver_(types, interner, &resolution, &discarded_) {}
 
   void Run() {
     // Two passes: every function gets a declaration first, so a call can
@@ -539,8 +541,17 @@ class Lowerer {
       return;
     }
 
-    const TypeId type = stmt.expr.is_valid() ? TypeOf(stmt.expr)
-                                             : types_->error();
+    // A `var x: int` with no initializer has no expression to read a type
+    // from, so the annotation is the only place it comes from. Before this
+    // the slot was typed `<error>`, which nothing noticed until slot
+    // promotion put the value on an edge and the verifier compared it.
+    TypeId type = stmt.expr.is_valid() ? TypeOf(stmt.expr) : TypeId{};
+    if ((!type.is_valid() || types_->IsError(type)) && stmt.type.is_valid()) {
+      type = Erase(Apply(resolver_.Resolve(ast_, stmt.type)));
+    }
+    if (!type.is_valid()) {
+      type = types_->error();
+    }
     const InstId value = stmt.expr.is_valid() ? Value(stmt.expr) : InstId{};
 
     if (!mutable_binding &&
@@ -1396,6 +1407,11 @@ class Lowerer {
   const TypedBody& typed_;
   std::span<const std::pair<ItemId, EffectRow>> effects_;
   Module* module_;
+  // Lowering runs only on a file the checker accepted, so nothing here can
+  // report: the engine is where the resolver's complaints go to be
+  // dropped.
+  DiagnosticEngine discarded_;
+  TypeResolver resolver_;
 
   // Generic declarations by name: a recipe, not a function.
   std::vector<std::pair<Symbol, ItemId>> generics_;

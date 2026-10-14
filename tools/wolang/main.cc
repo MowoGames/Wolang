@@ -3,6 +3,8 @@
 // The wolang command line driver. Only the commands that the current wave
 // supports are implemented; see docs/roadmap.md for what each wave adds.
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -76,6 +78,7 @@ void PrintUsage() {
       "  asm <files>     print what the dev tier compiled, and what it did "
       "not\n"
       "  run <paths>     run `main`\n"
+      "  bench <paths>   run and time every function marked `@Bench`\n"
       "  test <paths>    run every function marked `@Test`\n"
       "  modules <dir>   print the module graph of a package\n"
       "  version         print the version and exit\n"
@@ -634,6 +637,91 @@ int RunAsm(const Options& options) {
   return 0;
 }
 
+// Runs every function marked `@Bench` through the dev tier and times it.
+//
+// Only the compiled tier: the interpreter is thousands of times slower and
+// has a step budget, so timing it would measure the budget. Whether the two
+// tiers agree is what `wolang test` is for.
+int RunBench(const Options& options) {
+  Database database;
+  DiagnosticEngine load_diagnostics;
+  std::vector<FileId> files;
+  if (!CollectInputs(&database, options, &load_diagnostics, &files)) {
+    return 2;
+  }
+
+  RenderOptions render;
+  render.color = options.color && StderrIsTerminal();
+  std::vector<Diagnostic> all = load_diagnostics.diagnostics();
+  for (FileId file : files) {
+    if (const std::vector<Diagnostic>* diagnostics =
+            database.Diagnostics(file)) {
+      all.insert(all.end(), diagnostics->begin(), diagnostics->end());
+    }
+  }
+  if (const int reported = Report(database.sources(), all, render);
+      reported != 0) {
+    return reported;
+  }
+  if (!codegen::IsSupportedTarget()) {
+    std::fprintf(stderr, "wolang: no code generator for this target\n");
+    return 2;
+  }
+
+  int ran = 0;
+  for (FileId file : files) {
+    const LoweredFile* lowered = database.Lowered(file);
+    const CheckedFile* checked = database.Checked(file);
+    if (lowered == nullptr || checked == nullptr ||
+        lowered->benches.empty()) {
+      continue;
+    }
+    const std::unique_ptr<codegen::CompiledModule> compiled =
+        codegen::Compile(database.interner(), database.types(),
+                         checked->resolution, lowered->module);
+
+    for (Symbol name : lowered->benches) {
+      const std::string text(database.interner().Text(name));
+      ++ran;
+      if (!compiled->Contains(name)) {
+        std::fprintf(stdout, "@%-24s interpreted, %s\n", text.c_str(),
+                     std::string(compiled->SkipReason(name)).c_str());
+        continue;
+      }
+      // Once to warm the caches, then the best of several runs. The best
+      // rather than the mean: the thing being measured is how fast the
+      // code can run, and everything noise adds is time it did not spend
+      // on that.
+      constexpr int kRuns = 5;
+      compiled->Run(name, {});
+      double ms = 0;
+      interp::Outcome outcome;
+      for (int run = 0; run < kRuns; ++run) {
+        const auto start = std::chrono::steady_clock::now();
+        outcome = compiled->Run(name, {});
+        const auto finish = std::chrono::steady_clock::now();
+        const double took =
+            std::chrono::duration<double, std::milli>(finish - start)
+                .count();
+        ms = run == 0 ? took : std::min(ms, took);
+      }
+      if (!outcome.ok()) {
+        std::fprintf(stdout, "@%-24s %s at %s\n", text.c_str(),
+                     std::string(interp::TrapKindName(outcome.trap)).c_str(),
+                     outcome.where.c_str());
+        continue;
+      }
+      std::fprintf(stdout, "@%-24s %10.3f ms   result %s\n", text.c_str(),
+                   ms, outcome.value.Describe().c_str());
+    }
+  }
+  if (ran == 0) {
+    std::fprintf(stderr, "wolang: nothing marked `@Bench`\n");
+    return 2;
+  }
+  return 0;
+}
+
 int RunModules(const Options& options) {
   if (options.inputs.size() != 1) {
     std::fprintf(stderr, "wolang: modules needs exactly one directory\n");
@@ -712,7 +800,7 @@ int Run(int argc, char** argv) {
       options.command == "ast" || options.command == "fmt" ||
       options.command == "ir" || options.command == "modules" ||
       options.command == "run" || options.command == "test" ||
-      options.command == "asm";
+      options.command == "asm" || options.command == "bench";
   if (needs_inputs && options.inputs.empty()) {
     std::fprintf(stderr, "wolang: %s needs at least one path\n",
                  options.command.c_str());
@@ -737,6 +825,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "asm") {
     return RunAsm(options);
+  }
+  if (options.command == "bench") {
+    return RunBench(options);
   }
   if (options.command == "modules") {
     return RunModules(options);
