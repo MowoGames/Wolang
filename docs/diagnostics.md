@@ -205,6 +205,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0403` | a type argument does not satisfy a bound | `Hurt(rock)` where `T: Damageable` |
 | `E0401` | `override` disagrees with the base method | marked `override` with nothing to override |
 | `E0120` | a field holds a reference | `var r: &int` |
+| `E0124` | the conversion is not between numbers | `s as int` where `s: str` |
 | `E0070` | `@allow` is missing a code or a reason | `@allow(W0101)` |
 
 An error type propagates silently: one unknown name produces one message, not
@@ -217,6 +218,12 @@ incomplete — the uncovered enum variants, or `true`/`false`, or `null`/`x?`.
 Only bool, optionals and enums have a value set the compiler can enumerate;
 every other type needs a catch-all arm. An arm with a guard covers nothing,
 because the guard may be false.
+
+`as` converts between numbers and does nothing else. It exists because D33
+removed implicit widening, not as a reinterpretation of bits -- so a
+narrowing conversion that would change the value traps, the same way an
+overflowing add does, and converting anything that is not a number is
+`E0124` rather than a cast that quietly means something.
 
 A type whose members are not known — declared in a file this one cannot see —
 yields an error type without an `E0112`, because the unresolved import is
