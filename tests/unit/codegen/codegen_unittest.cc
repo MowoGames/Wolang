@@ -721,6 +721,126 @@ fun LeftOver(count: int) -> int uses unsafe {
   WOLANG_EXPECT_EQ(f.Run("LeftOver", {Fixture::Int(10)}), "0");
 }
 
+WOLANG_TEST(CodegenTest, CallsMethodsAndWritesFields) {
+  // A method is a function whose first parameter is the receiver, and a
+  // field of a place is read and written where it is -- which before this
+  // wave was an undefined value and an assignment that compiled to
+  // nothing.
+  Fixture f(R"(
+struct Inner {
+  var n: int = 0
+}
+
+struct Outer {
+  var inner: Inner = Inner(0)
+  var count: int = 0
+}
+
+struct Point {
+  var x: int = 0
+  var y: int = 0
+
+  fun Sum() -> int => x + y
+  fun Shifted(by: int) -> Point => Point(x + by, y + by)
+  // A method calling another method of its own type, with the receiver
+  // left implicit.
+  fun Twice() -> int => Sum() + Sum()
+}
+
+fun Reads() -> int {
+  const p = Point(3, 4)
+  return p.Sum()
+}
+
+fun Chains() -> int {
+  const p = Point(1, 2)
+  return p.Shifted(10).Shifted(100).Sum()
+}
+
+fun Implicit() -> int {
+  return Point(5, 6).Twice()
+}
+
+fun WritesAField() -> int {
+  var p = Point(1, 2)
+  p.x = 100
+  p.y = p.y + 1
+  return p.Sum()
+}
+
+fun WritesANestedField() -> int {
+  var o = Outer(Inner(1), 2)
+  o.inner.n = 40
+  o.count = o.count + 1
+  return o.inner.n + o.count
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Reads", {}), "7");
+  // (1, 2) shifted by ten is (11, 12), then by a hundred is
+  // (111, 112), which sums to 223.
+  WOLANG_EXPECT_EQ(f.Run("Chains", {}), "223");
+  WOLANG_EXPECT_EQ(f.Run("Implicit", {}), "22");
+  WOLANG_EXPECT_EQ(f.Run("WritesAField", {}), "103");
+  WOLANG_EXPECT_EQ(f.Run("WritesANestedField", {}), "43");
+}
+
+WOLANG_TEST(CodegenTest, AClassIsAHandleToAHeapObject) {
+  // Which is the whole difference from a struct: the receiver of a method
+  // is the address of the object, so a method that assigns to a field
+  // changes the object it was called on. The handle being `const` freezes
+  // the handle and not what it points at.
+  Fixture f(R"(
+class Counter {
+  var value: int = 0
+  var step: int = 1
+
+  fun Bump() {
+    value = value + step
+  }
+
+  fun Value() -> int => value
+}
+
+fun Mutates() -> int {
+  const c = Counter(10, 5)
+  c.Bump()
+  c.Bump()
+  return c.Value()
+}
+
+fun WritesThroughTheHandle() -> int {
+  const c = Counter(0, 1)
+  c.step = 7
+  c.Bump()
+  return c.value
+}
+
+fun TwoObjectsAreTwoObjects() -> int {
+  const a = Counter(0, 1)
+  const b = Counter(0, 10)
+  a.Bump()
+  b.Bump()
+  return a.value * 100 + b.value
+}
+
+// A handle passed to a function is the same object, not a copy of it.
+fun BumpTwice(c: Counter) {
+  c.Bump()
+  c.Bump()
+}
+
+fun SharesTheObject() -> int {
+  const c = Counter(0, 3)
+  BumpTwice(c)
+  return c.value
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Mutates", {}), "20");
+  WOLANG_EXPECT_EQ(f.Run("WritesThroughTheHandle", {}), "7");
+  WOLANG_EXPECT_EQ(f.Run("TwoObjectsAreTwoObjects", {}), "110");
+  WOLANG_EXPECT_EQ(f.Run("SharesTheObject", {}), "6");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

@@ -1849,5 +1849,59 @@ task fun Started(n: int) uses io {
   WOLANG_EXPECT_EQ(f.Codes(), "E0302");
 }
 
+WOLANG_TEST(TypeCheck, AValueTypeMethodCannotWriteToItsReceiver) {
+  // The receiver of a value type is a copy, so the write would be lost.
+  // Reporting it is the whole point: before this wave it compiled to
+  // nothing at all and the program quietly did the wrong thing.
+  Fixture f(R"(
+struct Point {
+  var x: int = 0
+
+  fun Shift(by: int) {
+    x = x + by
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0125");
+}
+
+WOLANG_TEST(TypeCheck, AClassMethodMayWriteToItsReceiver) {
+  // A class is a handle, so the receiver is the object and the write lands
+  // on it. Which is also why a `const` handle may be written through: what
+  // is constant is the handle, not what it points at.
+  Fixture f(R"(
+class Pawn {
+  var health: int = 100
+
+  fun Hurt(amount: int) {
+    health = health - amount
+  }
+}
+
+fun Use() {
+  const p = Pawn(10)
+  p.health = 5
+  p.Hurt(1)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, WritingAFieldOfAValueNeedsVar) {
+  // A struct is its value, so assigning to a field of it is assigning to
+  // the binding -- and a `const` binding cannot be assigned to.
+  Fixture f(R"(
+struct Point {
+  var x: int = 0
+}
+
+fun Use() {
+  const p = Point(1)
+  p.x = 2
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0105");
+}
+
 }  // namespace
 }  // namespace wolang

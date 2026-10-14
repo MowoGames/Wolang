@@ -158,6 +158,7 @@ class Printer {
       }
       case Opcode::kExtract:
       case Opcode::kInsert:
+      case Opcode::kFieldAddress:
         out_.push_back(' ');
         out_.append(std::to_string(inst.field));
         break;

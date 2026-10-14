@@ -8,6 +8,7 @@
 #include "wolang/base/check.h"
 #include "wolang/codegen/reg_alloc.h"
 #include "wolang/codegen/runtime.h"
+#include "wolang/runtime/builtins.h"
 #include "wolang/codegen/x64/assembler.h"
 
 namespace wolang {
@@ -893,6 +894,24 @@ class FunctionEmitter {
       case ir::Opcode::kAlloca:
         return;
 
+      case ir::Opcode::kNew: {
+        // Storage for one object, of the size this tier works out itself.
+        const uint64_t allocator = reinterpret_cast<uint64_t>(
+            runtime::LookupSymbol("wolang_object_alloc"));
+        assembler_.MovImmediate(IWidth::k64, kArgumentRegisters[0],
+                                layouts_.ObjectOf(inst.type).size);
+        assembler_.MovImmediate(IWidth::k64, kCallScratch, allocator);
+        assembler_.CallRegister(kCallScratch);
+        const Label trap = TrapLabel(ir::TrapKind::kOutOfMemory, id,
+                                     "out of memory");
+        assembler_.Test(IWidth::k64, Register::kRax, Register::kRax);
+        assembler_.Jcc(Condition::kEqual, trap);
+        const Register reg = DestInt(id, 0);
+        assembler_.Mov(IWidth::k64, reg, Register::kRax);
+        FinishInt(id, reg);
+        return;
+      }
+
       case ir::Opcode::kLoad: {
         const ir::InstId slot = function_.OperandsOf(inst)[0];
         const Register base = AddressOf(slot, 1);
@@ -964,8 +983,15 @@ class FunctionEmitter {
 
       case ir::Opcode::kFieldAddress: {
         const ir::InstId base = function_.OperandsOf(inst)[0];
-        const TypeId aggregate = types_.ElementOf(TypeOf(base));
-        const abi::Layout& layout = layouts_.Of(aggregate);
+        // Through a pointer it is what the pointer points at; through a
+        // class handle it is the class's own storage. Taking the wrong one
+        // puts every field at offset zero, which reads as a value that is
+        // wrong rather than as a program that crashes.
+        const TypeId base_type = TypeOf(base);
+        const TypeId aggregate = types_.IsHandle(base_type)
+                                     ? base_type
+                                     : types_.ElementOf(base_type);
+        const abi::Layout& layout = layouts_.ObjectOf(aggregate);
         const uint32_t offset =
             inst.field < layout.offsets.size() ? layout.offsets[inst.field]
                                                : 0;
