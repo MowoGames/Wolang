@@ -282,6 +282,15 @@ class Interpreter {
         std::memcpy(address, &raw, WidthInBytes(value.int_width()));
         return Value::Void();
       }
+      case Value::Kind::kFunction: {
+        // A function value has no address in this tier -- it is a module
+        // and an index -- so what goes into memory is the token a call
+        // through it turns back into the value. The same token the
+        // compiled tier's address would be.
+        const uint64_t token = Token(value);
+        std::memcpy(address, &token, sizeof(token));
+        return Value::Void();
+      }
       default:
         return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
                     "wrote a type through a pointer that this tier cannot "

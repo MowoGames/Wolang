@@ -1,0 +1,146 @@
+// A growable sequence.
+//
+// The first collection, and the one everything else is written against:
+// `[]T` is a view with no allocation and `[N]T` is a fixed array, so a
+// list is what a program reaches for when it does not know how many
+// (D91). Written in Wolang over `ArrayNew` and `Free`, which is what the
+// generics and destructors were for.
+
+need std.mem.{ArrayNew, Free}
+
+/// A sequence that grows.
+///
+/// Doubling, and never shrinking: an append is amortised constant and a
+/// list that was big once stays ready to be big again, which is what a
+/// frame loop wants. `deinit` gives the storage back, so a list that goes
+/// out of scope leaves nothing behind.
+offer class List<T> {
+  var items: []T
+  var count: int = 0
+
+  deinit {
+    Free(items)
+  }
+
+  fun Len() -> int {
+    return count
+  }
+
+  fun Capacity() -> int {
+    return items.len
+  }
+
+  /// The element at `index`, or the first one when the index is outside
+  /// the list. Reading past the end is a mistake the bounds check would
+  /// catch; this is the total function the library offers instead.
+  fun At(index: int) -> T {
+    if index < 0 || index >= count {
+      return items[0]
+    }
+    return items[index]
+  }
+
+  fun Set(index: int, value: T) {
+    if index < 0 || index >= count {
+      return
+    }
+    items[index] = value
+  }
+
+  /// Adds `value` to the end, growing the storage when it is full.
+  fun Push(value: T) uses unsafe {
+    Reserve(count + 1)
+    items[count] = value
+    count = count + 1
+  }
+
+  /// Drops the last element and gives it back, or the first one when the
+  /// list is empty.
+  fun Pop() -> T {
+    if count == 0 {
+      return items[0]
+    }
+    count = count - 1
+    return items[count]
+  }
+
+  fun Clear() {
+    count = 0
+  }
+
+  /// Makes room for at least `wanted` elements.
+  ///
+  /// Doubling rather than growing by one: a push that copies every time
+  /// turns a loop into quadratic work, and the whole reason to have a list
+  /// is that it does not.
+  fun Reserve(wanted: int) uses unsafe {
+    if wanted <= items.len {
+      return
+    }
+    var capacity = items.len * 2
+    if capacity < wanted {
+      capacity = wanted
+    }
+    if capacity < 4 {
+      capacity = 4
+    }
+    const grown = ArrayNew<T>(capacity)
+    var i = 0
+    while i < count {
+      grown[i] = items[i]
+      i = i + 1
+    }
+    Free(items)
+    items = grown
+  }
+}
+
+/// An empty list, with no storage until something is pushed.
+offer fun ListNew<T>() -> List<T> uses unsafe {
+  return List<T>(ArrayNew<T>(0), 0)
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun PushesAndReads() -> bool uses unsafe {
+  var list = ListNew<int>()
+  var i = 0
+  while i < 10 {
+    list.Push(i * i)
+    i = i + 1
+  }
+  if list.Len() != 10 {
+    return false
+  }
+  if list.At(0) != 0 || list.At(3) != 9 || list.At(9) != 81 {
+    return false
+  }
+  // The storage grew by doubling, so it holds at least what was pushed.
+  return list.Capacity() >= 10
+}
+
+@Test
+fun PopsInReverse() -> bool uses unsafe {
+  var list = ListNew<int>()
+  list.Push(1)
+  list.Push(2)
+  list.Push(3)
+  if list.Pop() != 3 || list.Pop() != 2 {
+    return false
+  }
+  if list.Len() != 1 {
+    return false
+  }
+  list.Clear()
+  return list.Len() == 0
+}
+
+@Test
+fun SetsInPlace() -> bool uses unsafe {
+  var list = ListNew<float>()
+  list.Push(1.5)
+  list.Push(2.5)
+  list.Set(1, 9.5)
+  return list.At(0) == 1.5 && list.At(1) == 9.5
+}

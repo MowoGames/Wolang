@@ -917,3 +917,24 @@ undefined value is a trap in two of the three tiers.
 this function's failure, with no value beside it. That is the whole point
 of the operator -- the alternative is a `match` at every call -- and it is
 why a signature's error set is the union of what its body propagates.
+
+**D91. The collections are written in Wolang, and a map takes its hashing
+as values.** `List<T>` and `Map<K, V>` are classes in `std`, over
+`ArrayNew` and `Free`, with a `deinit` that gives the storage back. That
+is the return on generics across modules and destructors: before either,
+a growable container could not be written in the language at all.
+
+A map compares and hashes through `fun(K) -> int` and `fun(K, K) -> bool`
+rather than through a trait. A trait would need a `Self` type to say
+"equal to another one of me", which the language does not have yet -- and
+the shape this leads to is honest rather than apologetic: `MapNew(IntHash,
+IntEquals)` says what it does, and a map keyed by something unusual needs
+no declaration anywhere.
+
+Two things the library ran into first, and both are the language being
+right rather than in the way. A hash cannot be a 32-bit multiply that
+throws the high bits away, because throwing them away *is* the overflow
+trap -- so it is done in sixty-four bits and masked back. And a function
+value in a field had no way into memory in the reference tier until now:
+it is a module and an index there, so what goes into the field is the
+token a call turns back into the value.

@@ -764,6 +764,15 @@ class Lowerer {
   // The function implementing |member| of |owner|, declaring it if this
   // file only knows the signature.
   uint32_t MethodIndex(TypeId owner, const Member& member) {
+    // A method of a generic type is a recipe: ask for the copy for *this*
+    // instantiation rather than for a declaration with no body.
+    if (types_->KindOf(owner) == TypeKind::kInstance) {
+      const uint32_t copy =
+          InstantiateMethod(owner, member.name, member);
+      if (copy != 0xFFFFFFFFu) {
+        return copy;
+      }
+    }
     uint32_t index =
         IndexOfSource(member.file, member.item, member.slot);
     if (index != 0xFFFFFFFFu) {
@@ -3170,6 +3179,25 @@ class Lowerer {
     if (const InstId done = LowerSignalCall(expr, arguments);
         done.is_valid()) {
       return done;
+    }
+
+    // `Free(items)` gives the storage back. Not a call either: what a
+    // view's storage is depends on how the tier laid it out.
+    if (ast().Contains(expr.lhs) &&
+        ast().Get(expr.lhs).kind == ExprKind::kPath &&
+        interner_->Text(ast().Get(expr.lhs).name) == "Free" &&
+        arguments.size() == 1 &&
+        types_->KindOf(Erase(TypeOf(ast().Get(expr.args).empty()
+                                        ? ExprId{}
+                                        : ast().Get(expr.args)[0]))) ==
+            TypeKind::kSlice) {
+      const TypeId word = types_->u64();
+      const InstId data = builder_->Extract(word, arguments[0], 0);
+      const Symbol name = interner_->Intern("wolang_object_free");
+      const uint32_t free = DeclareExternal(
+          name, types_->Function({word}, types_->void_type()));
+      module_->functions[free].foreign_symbol = name;
+      return builder_->Call(free, types_->void_type(), {data});
     }
 
     // `SoaNew<T>(count)` is not a call either: how big that storage is, is

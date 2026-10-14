@@ -32,3 +32,14 @@ offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
 /// that reads well when a pass touches most of a record, and the other is
 /// the one that reads well when it touches one field of it.
 offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+
+/// Gives back storage `ArrayNew` or `SoaNew` handed out.
+///
+/// `unsafe` because nothing here can check that the view is the whole
+/// allocation, or that nothing else is still looking at it. A collection
+/// that owns its storage calls this from its `deinit`, which is where
+/// those two promises are easy to keep.
+///
+/// Like the two above, it has no body: what a view's storage *is* depends
+/// on how the tier laid it out, so the compiler answers at the call.
+offer fun Free<T>(items: []T) uses unsafe

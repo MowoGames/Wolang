@@ -1,0 +1,185 @@
+// A hash map, open addressed.
+//
+// Keys are compared and hashed through function values the map is built
+// with, rather than through a trait with a `Self` type the language does
+// not have yet (D91). That is not a workaround so much as the honest
+// shape: `MapNew(IntHash, IntEquals)` says what it does, and a map keyed
+// by something unusual needs no new declaration anywhere.
+
+need std.mem.{ArrayNew, Free}
+
+/// A map from `K` to `V`.
+///
+/// Open addressing with linear probing and a load factor of a half: one
+/// allocation per table rather than one per entry, which is what makes a
+/// lookup a couple of cache lines instead of a pointer chase. `deinit`
+/// gives the three arrays back.
+offer class Map<K, V> {
+  var keys: []K
+  var values: []V
+  var filled: []bool
+  var count: int = 0
+  var hash: fun(K) -> int
+  var equals: fun(K, K) -> bool
+
+  deinit {
+    Free(keys)
+    Free(values)
+    Free(filled)
+  }
+
+  fun Len() -> int {
+    return count
+  }
+
+  /// Where `key` is, or where it would go. -1 when there is no room,
+  /// which cannot happen while the load factor is kept under one.
+  fun Slot(key: K) -> int {
+    const size = filled.len
+    if size == 0 {
+      return -1
+    }
+    var index = hash(key) % size
+    if index < 0 {
+      index = index + size
+    }
+    var steps = 0
+    while steps < size {
+      if !filled[index] {
+        return index
+      }
+      if equals(keys[index], key) {
+        return index
+      }
+      index = index + 1
+      if index >= size {
+        index = 0
+      }
+      steps = steps + 1
+    }
+    return -1
+  }
+
+  fun Has(key: K) -> bool {
+    const at = Slot(key)
+    if at < 0 {
+      return false
+    }
+    return filled[at]
+  }
+
+  /// The value for `key`, or `fallback` when it is not there. A total
+  /// function rather than an optional, because `V` may be anything and an
+  /// optional of it would be a second allocation shape to lay out.
+  fun Get(key: K, fallback: V) -> V {
+    const at = Slot(key)
+    if at < 0 || !filled[at] {
+      return fallback
+    }
+    return values[at]
+  }
+
+  fun Put(key: K, value: V) uses unsafe {
+    Reserve(count + 1)
+    const at = Slot(key)
+    if at < 0 {
+      return
+    }
+    if !filled[at] {
+      filled[at] = true
+      keys[at] = key
+      count = count + 1
+    }
+    values[at] = value
+  }
+
+  /// Makes room for `wanted` entries, keeping the table at most half
+  /// full: linear probing degrades sharply past that, and the whole
+  /// reason to probe rather than chain is that it does not chase
+  /// pointers.
+  fun Reserve(wanted: int) uses unsafe {
+    if wanted * 2 <= filled.len {
+      return
+    }
+    var size = filled.len * 2
+    if size < 8 {
+      size = 8
+    }
+    while size < wanted * 2 {
+      size = size * 2
+    }
+
+    const old_keys = keys
+    const old_values = values
+    const old_filled = filled
+    keys = ArrayNew<K>(size)
+    values = ArrayNew<V>(size)
+    filled = ArrayNew<bool>(size)
+    count = 0
+
+    var i = 0
+    while i < old_filled.len {
+      if old_filled[i] {
+        // Rehashed rather than copied: where an entry goes depends on the
+        // size of the table it is in.
+        Put(old_keys[i], old_values[i])
+      }
+      i = i + 1
+    }
+    Free(old_keys)
+    Free(old_values)
+    Free(old_filled)
+  }
+}
+
+/// An empty map, with no table until something is put in it.
+offer fun MapNew<K, V>(hash: fun(K) -> int,
+                       equals: fun(K, K) -> bool) -> Map<K, V> uses unsafe {
+  return Map<K, V>(ArrayNew<K>(0), ArrayNew<V>(0), ArrayNew<bool>(0), 0,
+                   hash, equals)
+}
+
+/// Hashing and comparing for `int` keys, which is most of them.
+offer fun IntHash(key: int) -> int {
+  // A multiplicative hash, done wide and masked back.
+  //
+  // Arithmetic traps on overflow in this language, so a hash cannot be
+  // written as a 32-bit multiply that throws the high bits away -- the
+  // throwing away is the trap. Sixty-four bits of room is enough for the
+  // product, and the mask keeps the result positive: a map takes it
+  // modulo the table size, and a negative remainder would index
+  // backwards.
+  const wide = (key as s64) * 2654435761
+  return (wide & 2147483647) as int
+}
+
+offer fun IntEquals(left: int, right: int) -> bool {
+  return left == right
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun PutsAndGets() -> bool uses unsafe {
+  var map = MapNew<int, int>(IntHash, IntEquals)
+  var i = 0
+  while i < 50 {
+    map.Put(i, i * 3)
+    i = i + 1
+  }
+  if map.Len() != 50 {
+    return false
+  }
+  if map.Get(0, -1) != 0 || map.Get(7, -1) != 21 || map.Get(49, -1) != 147 {
+    return false
+  }
+  return map.Get(50, -1) == -1 && !map.Has(50) && map.Has(7)
+}
+
+@Test
+fun OverwritesAKey() -> bool uses unsafe {
+  var map = MapNew<int, int>(IntHash, IntEquals)
+  map.Put(3, 1)
+  map.Put(3, 2)
+  return map.Len() == 1 && map.Get(3, -1) == 2
+}
