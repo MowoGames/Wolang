@@ -130,8 +130,14 @@ InstId Builder::FieldAddress(TypeId pointer, InstId base, uint32_t field) {
   return id;
 }
 
-InstId Builder::IndexAddress(TypeId pointer, InstId base, InstId index) {
-  return Add(Opcode::kIndexAddress, pointer, {base, index});
+InstId Builder::IndexAddress(TypeId pointer,
+                             InstId base,
+                             InstId index,
+                             InstId length) {
+  // The length is an operand rather than a property of the type, because a
+  // slice's length is a value: one bounds check covers an array, a slice
+  // and a borrowed string.
+  return Add(Opcode::kIndexAddress, pointer, {base, index, length});
 }
 
 InstId Builder::Insert(TypeId type,

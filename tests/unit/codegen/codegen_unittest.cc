@@ -375,10 +375,10 @@ fun At(i: int) -> int {
 )");
   WOLANG_EXPECT_EQ(f.Run("At", {Fixture::Int(1)}), "20");
   WOLANG_EXPECT_EQ(f.Run("At", {Fixture::Int(3)}),
-                   "trap: out of bounds at @At:%5: "
+                   "trap: out of bounds at @At:%6: "
                    "index is outside a length of 3");
   WOLANG_EXPECT_EQ(f.Run("At", {Fixture::Int(-1)}),
-                   "trap: out of bounds at @At:%5: "
+                   "trap: out of bounds at @At:%6: "
                    "index is outside a length of 3");
 }
 
@@ -967,6 +967,49 @@ fun NestedLoops(n: int) -> int {
   WOLANG_EXPECT_EQ(f.Run("WritesOneElement", {}), "7");
   WOLANG_EXPECT_EQ(f.Run("BreaksAndContinues", {Fixture::Int(100)}), "8");
   WOLANG_EXPECT_EQ(f.Run("NestedLoops", {Fixture::Int(4)}), "36");
+}
+
+WOLANG_TEST(CodegenTest, PassesArraysAsSlices) {
+  // A slice is a pointer and a length, so an array converts to one and a
+  // function that takes `[]T` reads the caller's elements rather than a
+  // copy of them. Which is also why the bounds check has to come from the
+  // value: the length of a slice is not something its type knows.
+  Fixture f(R"(
+fun Sum(data: []int) -> int {
+  var total = 0
+  for v in data {
+    total = total + v
+  }
+  return total
+}
+
+fun First(data: []int) -> int {
+  return data[0]
+}
+
+fun Length(data: []int) -> int {
+  return data.len
+}
+
+fun Fill() -> int {
+  var buf: [4]int
+  for i in 0..4 {
+    buf[i] = i + 1
+  }
+  return Sum(buf) + First(buf) + Length(buf) + buf.len
+}
+
+fun ReadsThroughTheSlice() -> int {
+  var buf: [3]int
+  buf[0] = 7
+  buf[1] = 8
+  buf[2] = 9
+  return Sum(buf) - First(buf)
+}
+)");
+  // 1 + 2 + 3 + 4, then the first element, then the length twice.
+  WOLANG_EXPECT_EQ(f.Run("Fill", {}), "19");
+  WOLANG_EXPECT_EQ(f.Run("ReadsThroughTheSlice", {}), "17");
 }
 
 }  // namespace

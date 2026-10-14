@@ -17,6 +17,22 @@ namespace interp {
 // deliberately simple rather than compact: an integer is always 64 bits wide
 // with the declared width remembered separately, so that wrapping is a
 // decision taken in one place instead of falling out of the storage.
+// One step of a place: a field of an aggregate, or an element of an array.
+//
+// The two behave differently when another element step follows. A field
+// goes inwards; an element *adds*, because a pointer to element three plus
+// two is a pointer to element five and not an element of an element. The
+// compiled tiers get that for free from arithmetic; here it has to be
+// written down.
+struct PlaceStep {
+  uint32_t index = 0;
+  bool is_element = false;
+
+  friend bool operator==(const PlaceStep& lhs, const PlaceStep& rhs) {
+    return lhs.index == rhs.index && lhs.is_element == rhs.is_element;
+  }
+};
+
 class Value {
  public:
   enum class Kind : uint8_t {
@@ -39,12 +55,14 @@ class Value {
     // matters because lowering is per file, so the same index means
     // different functions in two of them.
     kFunction,
-    // Somewhere inside a slot: the slot, and the steps to walk from it.
+    // Somewhere inside a slot: which frame, which slot, and the steps to
+    // walk from it.
     //
     // The compiled tiers have addresses for this; the interpreter's values
     // carry their shape instead, so a place is a path rather than a
-    // number. It is what `field.addr` and `index.addr` produce when what
-    // they are taken inside of is a frame slot.
+    // number. It names its frame because it may be passed to a callee --
+    // which is what a slice of a local array is -- and the frame is safe
+    // to hold on to because a reference cannot outlive it (`E0121`).
     kPlace,
   };
 
@@ -64,7 +82,9 @@ class Value {
   static Value Absent();
   static Value Slot(uint32_t index);
   static Value Function(uint32_t index, const void* module);
-  static Value Place(uint32_t slot, std::vector<uint32_t> path);
+  static Value Place(const void* frame,
+                     uint32_t slot,
+                     std::vector<PlaceStep> path);
 
   Kind kind() const { return kind_; }
   bool is_undefined() const { return kind_ == Kind::kUndefined; }
@@ -79,7 +99,7 @@ class Value {
   const std::vector<Value>& elements() const { return *elements_; }
   uint32_t slot() const { return integer_ == 0 ? 0 : integer_ - 1; }
   uint32_t function() const { return static_cast<uint32_t>(integer_); }
-  const std::vector<uint32_t>& path() const { return *path_; }
+  const std::vector<PlaceStep>& path() const { return *path_; }
 
   // Element |index|, ready to be written to. The elements are shared so
   // that copying a value is cheap, so writing into one needs a copy of its
@@ -87,6 +107,8 @@ class Value {
   // values rather than one.
   Value* ElementForWriting(uint32_t index);
   const void* module() const { return module_; }
+  // Which frame a place belongs to.
+  const void* frame() const { return module_; }
 
   IntWidth int_width() const { return int_width_; }
   bool is_signed() const { return is_signed_; }
@@ -115,11 +137,12 @@ class Value {
   // Shared so that copying a value is cheap; nothing mutates them in place.
   std::shared_ptr<const std::string> text_;
   std::shared_ptr<const std::vector<Value>> elements_;
-  // Which module a function value belongs to. Not owned: a module outlives
-  // every run over it.
+  // Which module a function value belongs to, or which frame a place is
+  // in. Not owned: a module outlives every run over it, and a reference
+  // cannot outlive the frame it points into.
   const void* module_ = nullptr;
   // The steps of a place, shared so that extending one is cheap.
-  std::shared_ptr<const std::vector<uint32_t>> path_;
+  std::shared_ptr<const std::vector<PlaceStep>> path_;
 };
 
 // Masks |bits| to |width|, which is where wrapping happens and the only

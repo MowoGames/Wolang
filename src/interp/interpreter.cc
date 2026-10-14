@@ -555,8 +555,8 @@ class Interpreter {
         // shape rather than living at addresses.
         const Value& base = Operand(frame, inst, 0);
         const Value& index = Operand(frame, inst, 1);
-        const TypeId array = AddressedType(function, inst, 0);
-        const uint64_t length = types_.Get(array).length;
+        // The length is an operand because a slice's length is a value.
+        const uint64_t length = Operand(frame, inst, 2).integer();
         if (index.integer() >= length) {
           return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
                       "index is outside a length of " +
@@ -564,14 +564,19 @@ class Interpreter {
         }
         if (base.kind() == Value::Kind::kSlot ||
             base.kind() == Value::Kind::kPlace) {
-          return Extend(base, static_cast<uint32_t>(index.integer()));
+          return Extend(frame, base,
+                        static_cast<uint32_t>(index.integer()),
+                        /*is_element=*/true);
         }
         if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
           return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
                       "took an element address without an address to take "
                       "it from");
         }
-        const uint64_t stride = layouts_->StrideOf(array);
+        // The stride is the size of what the result points at: the base
+        // is an array for an index into a slot and the element itself for
+        // one into a slice.
+        const uint64_t stride = layouts_->StrideOf(inst.type);
         return Value::Int(base.integer() + index.integer() * stride,
                           IntWidth::k64, /*is_signed=*/false);
       }
@@ -583,7 +588,7 @@ class Interpreter {
         const Value& base = Operand(frame, inst, 0);
         if (base.kind() == Value::Kind::kSlot ||
             base.kind() == Value::Kind::kPlace) {
-          return Extend(base, inst.field);
+          return Extend(frame, base, inst.field, /*is_element=*/false);
         }
         if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
           return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
@@ -753,19 +758,23 @@ class Interpreter {
   // path does not fit the value -- which the verifier makes impossible and
   // a trap reports rather than a crash.
   static Value* Walk(Frame* frame, const Value& place) {
+    // A place names the frame it is in: a slice of a local array is a
+    // place, and it is read by the callee it was passed to.
+    auto* home = const_cast<Frame*>(static_cast<const Frame*>(
+        place.frame() != nullptr ? place.frame() : frame));
     const uint32_t slot = static_cast<uint32_t>(place.integer());
-    if (slot >= frame->slots.size()) {
+    if (slot >= home->slots.size()) {
       return nullptr;
     }
-    Value* at = &frame->slots[slot];
-    for (uint32_t step : place.path()) {
+    Value* at = &home->slots[slot];
+    for (const PlaceStep& step : place.path()) {
       if (at->kind() != Value::Kind::kAggregate ||
-          step >= at->elements().size()) {
+          step.index >= at->elements().size()) {
         return nullptr;
       }
       // The elements are shared for cheap copying, so writing into one
       // needs a copy of its own first.
-      at = at->ElementForWriting(step);
+      at = at->ElementForWriting(step.index);
       if (at == nullptr) {
         return nullptr;
       }
@@ -774,16 +783,27 @@ class Interpreter {
   }
 
   // One more step along a place. A slot with no path is where it starts.
-  static Value Extend(const Value& base, uint32_t step) {
-    std::vector<uint32_t> path;
+  static Value Extend(Frame* frame,
+                      const Value& base,
+                      uint32_t step,
+                      bool is_element) {
+    std::vector<PlaceStep> path;
     if (base.kind() == Value::Kind::kPlace) {
       path = base.path();
-      path.push_back(step);
-      return Value::Place(static_cast<uint32_t>(base.integer()),
+      // An element step onto an element step adds: a pointer to element
+      // three plus two points at element five. Which is the whole of what
+      // pointer arithmetic means, and the compiled tiers get it for free.
+      if (is_element && !path.empty() && path.back().is_element) {
+        path.back().index += step;
+      } else {
+        path.push_back(PlaceStep{step, is_element});
+      }
+      return Value::Place(base.frame(),
+                          static_cast<uint32_t>(base.integer()),
                           std::move(path));
     }
-    path.push_back(step);
-    return Value::Place(base.slot(), std::move(path));
+    path.push_back(PlaceStep{step, is_element});
+    return Value::Place(frame, base.slot(), std::move(path));
   }
 
   // What an address instruction is taken inside of: a pointer's target, a

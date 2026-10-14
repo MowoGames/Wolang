@@ -351,7 +351,7 @@ class Verifier {
         // itself. And a slot, whose value *is* where it lives -- the same
         // convention a load and a store already rely on.
         const uint32_t operands_wanted =
-            inst.opcode == Opcode::kFieldAddress ? 1u : 2u;
+            inst.opcode == Opcode::kFieldAddress ? 1u : 3u;
         if (arity(operands_wanted) && !IsAddress(operands[0])) {
           Fail(At(id) + " takes an address inside something that is not an "
                         "address");

@@ -60,7 +60,10 @@ class Builder {
   InstId FieldAddress(TypeId pointer, InstId base, uint32_t field);
   // The address of an element, given the address of the array and the
   // index as a value. What writing one element of a buffer goes through.
-  InstId IndexAddress(TypeId pointer, InstId base, InstId index);
+  InstId IndexAddress(TypeId pointer,
+                      InstId base,
+                      InstId index,
+                      InstId length);
   InstId Insert(TypeId type, InstId aggregate, InstId value, uint32_t field);
 
   // Terminators. Each ends the current block; a second one is dropped.

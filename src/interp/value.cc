@@ -109,12 +109,15 @@ Value Value::Function(uint32_t index, const void* module) {
   return value;
 }
 
-Value Value::Place(uint32_t slot, std::vector<uint32_t> path) {
+Value Value::Place(const void* frame,
+                   uint32_t slot,
+                   std::vector<PlaceStep> path) {
   Value value;
   value.kind_ = Kind::kPlace;
   value.integer_ = slot;
+  value.module_ = frame;
   value.path_ =
-      std::make_shared<const std::vector<uint32_t>>(std::move(path));
+      std::make_shared<const std::vector<PlaceStep>>(std::move(path));
   return value;
 }
 
@@ -185,9 +188,12 @@ std::string Value::Describe() const {
       return "function " + std::to_string(function());
     case Kind::kPlace: {
       std::string text = "slot " + std::to_string(integer_);
-      for (uint32_t step : *path_) {
-        text.append(".");
-        text.append(std::to_string(step));
+      for (const PlaceStep& step : *path_) {
+        text.append(step.is_element ? "[" : ".");
+        text.append(std::to_string(step.index));
+        if (step.is_element) {
+          text.append("]");
+        }
       }
       return text;
     }
@@ -218,7 +224,8 @@ bool operator==(const Value& lhs, const Value& rhs) {
       // handlers comparable.
       return lhs.integer_ == rhs.integer_ && lhs.module_ == rhs.module_;
     case Value::Kind::kPlace:
-      return lhs.integer_ == rhs.integer_ && *lhs.path_ == *rhs.path_;
+      return lhs.module_ == rhs.module_ &&
+             lhs.integer_ == rhs.integer_ && *lhs.path_ == *rhs.path_;
     case Value::Kind::kAggregate:
       return *lhs.elements_ == *rhs.elements_;
     case Value::Kind::kOptional:

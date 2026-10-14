@@ -541,11 +541,43 @@ class Lowerer {
   // `Accepts(T?, T)` holds in the checker -- a value fits an optional of
   // itself -- so wherever a value flows into an optional position the IR
   // needs the wrap the source did not write.
+  // An array where a slice is wanted: the pair that views it. The spec
+  // says an array converts to a slice, and this is what that costs --
+  // the address of the first element and the length the type knows.
+  InstId SliceOf(InstId array, TypeId from, TypeId to) {
+    const TypeId element = Erase(types_->ElementOf(to));
+    // The elements have to be somewhere for a view to point at them. A
+    // slot already is somewhere; anything else is a value, and a copy of
+    // it in this frame is what the view then looks at.
+    InstId storage = array;
+    const Function& function = module_->functions[current_function_];
+    if (!function.Contains(array) ||
+        function.Get(array).opcode != Opcode::kAlloca) {
+      storage = builder_->Add(Opcode::kAlloca, Erase(from));
+      builder_->Add(Opcode::kStore, TypeId{}, {storage, array});
+    }
+    const InstId zero = builder_->ConstInt(types_->default_int(), 0);
+    const InstId length = builder_->ConstInt(
+        types_->default_int(),
+        static_cast<uint64_t>(types_->Get(Erase(from)).length));
+    const InstId first = builder_->IndexAddress(
+        types_->Pointer(element, /*is_mutable=*/true), storage, zero,
+        length);
+    const InstId raw = builder_->Add(
+        Opcode::kCast, types_->Int(IntWidth::k64, /*is_signed=*/false),
+        {length});
+    return builder_->Add(Opcode::kMakeStruct, Erase(to), {first, raw});
+  }
+
   InstId Coerce(InstId value, TypeId from, TypeId to) {
     if (!value.is_valid() || !to.is_valid()) {
       return value;
     }
     const TypeId target = Erase(to);
+    if (types_->KindOf(target) == TypeKind::kSlice &&
+        types_->KindOf(Erase(from)) == TypeKind::kArray) {
+      return SliceOf(value, from, to);
+    }
     if (types_->KindOf(target) != TypeKind::kOptional) {
       return value;
     }
@@ -864,6 +896,11 @@ class Lowerer {
       }
 
       case ExprKind::kIndex: {
+        // Through the address when there is one, so that reading one
+        // element of a buffer does not copy the buffer.
+        if (const Place place = PlaceOf(id); place.addressable()) {
+          return Coerce(ReadPlace(place), TypeAt(place), type);
+        }
         const InstId array = Value(expr.lhs);
         const InstId index = Value(expr.rhs);
         return builder_->Add(Opcode::kIndex, type, {array, index});
@@ -1181,7 +1218,37 @@ class Lowerer {
     return 0;
   }
 
+  // How many elements a sequence has. Static for an array, and the second
+  // half of the pair for a view -- a slice or a borrowed string is a
+  // pointer and a length, so the length is where it says it is.
+  InstId LengthOf(ExprId sequence, TypeId sequence_type) {
+    const TypeId counted = Erase(sequence_type);
+    const TypeId length_type = types_->default_int();
+    if (types_->KindOf(counted) == TypeKind::kArray) {
+      return builder_->ConstInt(
+          length_type,
+          static_cast<uint64_t>(types_->Get(counted).length));
+    }
+    const TypeId raw = types_->Int(IntWidth::k64, /*is_signed=*/false);
+    const InstId value = Value(sequence);
+    const InstId length = builder_->Extract(raw, value, 1);
+    return builder_->Add(Opcode::kCast, length_type, {length});
+  }
+
+  bool IsView(TypeId type) {
+    const TypeKind kind = types_->KindOf(Erase(type));
+    return kind == TypeKind::kSlice || kind == TypeKind::kStr ||
+           kind == TypeKind::kString;
+  }
+
   InstId LowerField(ExprId id, const Expr& expr, TypeId type) {
+    if (interner_->Text(expr.name) == "len") {
+      const TypeId owner = Erase(TypeOf(expr.lhs));
+      if (types_->KindOf(owner) == TypeKind::kArray || IsView(owner)) {
+        return Coerce(LengthOf(expr.lhs, owner), types_->default_int(),
+                      type);
+      }
+    }
     // Through an address when there is one, so that the field is read
     // where it lives rather than out of a copy of the whole aggregate.
     if (const Place place = PlaceOf(id); place.addressable()) {
@@ -1255,8 +1322,9 @@ class Lowerer {
   // only be read, and the checker reports an assignment to it (`E0125`).
   struct Step {
     uint32_t field = 0;
-    // Valid for an element: the index, as a value.
+    // Valid for an element: the index, as a value, and how many there are.
     InstId index;
+    InstId length;
     TypeId type;
   };
 
@@ -1311,8 +1379,8 @@ class Lowerer {
           // read and written through it rather than through a copy.
           place.pointer = Value(expr.lhs);
           place.root_type = owner;
-          place.path.push_back(
-              Step{FieldIndex(owner, expr.name), InstId{}, Erase(TypeOf(id))});
+          place.path.push_back(Step{FieldIndex(owner, expr.name), InstId{},
+                                    InstId{}, Erase(TypeOf(id))});
           return place;
         }
         Place base = PlaceOf(expr.lhs);
@@ -1320,16 +1388,33 @@ class Lowerer {
           return place;
         }
         base.path.push_back(Step{FieldIndex(TypeAt(base), expr.name),
-                                 InstId{}, Erase(TypeOf(id))});
+                                 InstId{}, InstId{}, Erase(TypeOf(id))});
         return base;
       }
       case ExprKind::kIndex: {
+        const TypeId sequence = Erase(TypeOf(expr.lhs));
+        if (IsView(sequence)) {
+          // A view is a pointer and a length, so indexing one starts from
+          // the pointer rather than from where the view itself lives.
+          const TypeId element =
+              types_->KindOf(sequence) == TypeKind::kSlice
+                  ? Erase(types_->ElementOf(sequence))
+                  : types_->Int(IntWidth::k8, /*is_signed=*/false);
+          place.pointer = builder_->Extract(
+              types_->Pointer(element, /*is_mutable=*/true),
+              Value(expr.lhs), 0);
+          place.root_type = element;
+          place.path.push_back(Step{0, Value(expr.rhs),
+                                    LengthOf(expr.lhs, sequence), element});
+          return place;
+        }
         Place base = PlaceOf(expr.lhs);
         if (!base.readable()) {
           return place;
         }
-        base.path.push_back(
-            Step{0, Value(expr.rhs), Erase(TypeOf(id))});
+        base.path.push_back(Step{0, Value(expr.rhs),
+                                 LengthOf(expr.lhs, sequence),
+                                 Erase(TypeOf(id))});
         return base;
       }
       default:
@@ -1360,7 +1445,7 @@ class Lowerer {
       return Place{};
     }
     place.path.push_back(Step{FieldIndex(self_type_, name), InstId{},
-                              Erase(member->type)});
+                              InstId{}, Erase(member->type)});
     return place;
   }
 
@@ -1394,7 +1479,8 @@ class Lowerer {
     for (const Step& step : place.path) {
       const TypeId pointer = types_->Pointer(Erase(step.type), true);
       address = step.index.is_valid()
-                    ? builder_->IndexAddress(pointer, address, step.index)
+                    ? builder_->IndexAddress(pointer, address, step.index,
+                                             step.length)
                     : builder_->FieldAddress(pointer, address, step.field);
     }
     return address;
@@ -2002,9 +2088,7 @@ class Lowerer {
         sequence.root_type = sequence_type;
       }
       start = builder_->ConstInt(types_->default_int(), 0);
-      limit = builder_->ConstInt(
-          types_->default_int(),
-          static_cast<uint64_t>(types_->Get(sequence_type).length));
+      limit = LengthOf(expr.lhs, sequence_type);
     }
 
     const TypeId counter_type =
@@ -2037,7 +2121,16 @@ class Lowerer {
     TypeId bound_type = counter_type;
     if (!over_range) {
       Place at = sequence;
-      at.path.push_back(Step{0, current, element});
+      if (IsView(sequence_type)) {
+        // A view is a pointer and a length, so the elements are where the
+        // pointer says and not where the view itself is.
+        at = Place{};
+        at.pointer = builder_->Extract(
+            types_->Pointer(element, /*is_mutable=*/true),
+            ReadPlace(sequence), 0);
+        at.root_type = element;
+      }
+      at.path.push_back(Step{0, current, limit, element});
       bound = ReadPlace(at);
       bound_type = element;
     }

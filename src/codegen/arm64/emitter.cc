@@ -1017,21 +1017,23 @@ class FunctionEmitter {
         // stride, bounds checked the same way reading one is.
         const std::span<const ir::InstId> operands =
             function_.OperandsOf(inst);
-        const TypeId array = AddressedType(operands[0]);
-        const uint64_t length = types_.Get(array).length;
+        // The stride is the size of what the *result* points at, not of
+        // what the base is: the base of an element address is an array
+        // when the index is into a slot and the element itself when it is
+        // into a slice, and only the result is the same either way.
+        const uint32_t stride = layouts_.StrideOf(inst.type);
         const Register index = UseInt(operands[1], 1);
-        const Register limit = Scratch(2);
-        assembler_.MovImmediate(IWidth::k64, limit, length);
+        // The length is an operand, because a slice's length is a value
+        // rather than something the type knows.
+        const Register limit = UseInt(operands[2], 2);
         assembler_.Cmp(IWidth::k64, index, limit);
-        const Label trap = TrapLabel(
-            ir::TrapKind::kOutOfBounds, id,
-            "index is outside a length of " + std::to_string(length));
+        const Label trap = TrapLabel(ir::TrapKind::kOutOfBounds, id,
+                                     "index is outside the length");
         assembler_.BCond(Condition::kHs, trap);
 
         const Register address = AddressOf(operands[0], 3);
         const Register offset = Scratch(2);
-        assembler_.MovImmediate(IWidth::k64, offset,
-                                layouts_.StrideOf(array));
+        assembler_.MovImmediate(IWidth::k64, offset, stride);
         assembler_.Mul(IWidth::k64, offset, index, offset);
         const Register reg = DestInt(id, 0);
         assembler_.Add(IWidth::k64, reg, address, offset);

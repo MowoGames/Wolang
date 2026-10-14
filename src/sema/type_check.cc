@@ -1229,6 +1229,34 @@ TypeId Checker::CheckField(const Expr& expr) {
     }
   }
 
+  // How many elements there are. An `int` rather than an unsigned word,
+  // because it is read in arithmetic and compared with literals far more
+  // often than it is handed to an allocator: `for i in 0..buf.len` is the
+  // reason, and a mixed-width add is an error in this language (D33).
+  if (interner_->Text(expr.name) == "len" &&
+      (types_->KindOf(named) == TypeKind::kArray ||
+       types_->KindOf(named) == TypeKind::kSlice ||
+       types_->KindOf(named) == TypeKind::kStr ||
+       types_->KindOf(named) == TypeKind::kString)) {
+    return types_->default_int();
+  }
+
+  // A type with no members at all: an array, a number, a tuple. Saying so
+  // is the point -- a field access that resolved to nothing used to type
+  // as an error with no diagnostic, and then lowering made something up.
+  if (types_->KindOf(named) != TypeKind::kNamed &&
+      types_->KindOf(named) != TypeKind::kInstance &&
+      types_->KindOf(named) != TypeKind::kParameter &&
+      types_->KindOf(named) != TypeKind::kTuple) {
+    std::string message = "`";
+    message.append(Describe(named));
+    message.append("` has no member named `");
+    message.append(interner_->Text(expr.name));
+    message.append("`");
+    Report(kUnknownMember, std::move(message), expr.span);
+    return types_->error();
+  }
+
   const Member* member = resolution_->FindMember(named, expr.name);
   if (member == nullptr) {
     if (!resolution_->MembersOf(named).empty()) {

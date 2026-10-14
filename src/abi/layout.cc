@@ -32,9 +32,11 @@ ValueClass LayoutStore::ClassOf(TypeId type) const {
     case TypeKind::kTuple:
     case TypeKind::kArray:
     // A borrowed string is a pointer and a length, which is an aggregate
-    // like any other. An owned `String` is not here: owning it means
-    // allocating it, and that needs a heap this tier does not have.
+    // like any other. So is a slice -- a view of elements that are
+    // somewhere else, which is what makes `[]u8` the buffer type and what
+    // makes an array convert to one.
     case TypeKind::kStr:
+    case TypeKind::kSlice:
       return ValueClass::kAggregate;
     case TypeKind::kNamed:
       // A struct, a component or an enum stores its members inline. A
@@ -88,6 +90,10 @@ bool LayoutStore::IsSupported(TypeId type) const {
   if (kind == TypeKind::kStr) {
     return true;
   }
+  if (kind == TypeKind::kSlice) {
+    const TypeId element = types_.ElementOf(type);
+    return element.is_valid() && IsSupported(element);
+  }
   if (kind == TypeKind::kArray || kind == TypeKind::kOptional) {
     const TypeId element = types_.ElementOf(type);
     return element.is_valid() && IsSupported(element);
@@ -119,6 +125,8 @@ uint32_t LayoutStore::FieldCount(TypeId type) const {
     case TypeKind::kTuple:
       return static_cast<uint32_t>(types_.ArgumentsOf(type).size());
     case TypeKind::kStr:
+    case TypeKind::kSlice:
+      // The elements and how many there are.
       return 2;
     case TypeKind::kNamed: {
       if (IsTagOnly(type)) {
@@ -230,7 +238,8 @@ Layout LayoutStore::Compute(TypeId type) {
   // A borrowed string: the bytes and how many there are. Written out here
   // rather than through the field walk, because neither field is a member
   // anyone declared -- `str` is built in.
-  if (types_.KindOf(type) == TypeKind::kStr) {
+  if (types_.KindOf(type) == TypeKind::kStr ||
+      types_.KindOf(type) == TypeKind::kSlice) {
     layout.size = 16;
     layout.align = 8;
     layout.offsets.push_back(0);
