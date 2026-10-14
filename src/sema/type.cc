@@ -171,14 +171,23 @@ TypeId TypeStore::Float(FloatWidth width) {
   return Intern(std::move(key));
 }
 
-TypeId TypeStore::Named(Symbol name, uint32_t file, uint32_t item) {
+TypeId TypeStore::Named(Symbol name,
+                        uint32_t file,
+                        uint32_t item,
+                        bool is_handle) {
   Key key;
   std::memset(&key.type, 0, sizeof(key.type));
   key.type.kind = TypeKind::kNamed;
   key.type.name = name;
   key.type.declaring_file = file;
   key.type.declaring_item = item;
+  key.type.is_handle = is_handle;
   return Intern(std::move(key));
+}
+
+bool TypeStore::IsHandle(TypeId type) const {
+  const TypeId settled = StripWrappers(type);
+  return KindOf(settled) == TypeKind::kNamed && Get(settled).is_handle;
 }
 
 TypeId TypeStore::Parameter(Symbol name,

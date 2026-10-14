@@ -60,6 +60,12 @@ class LayoutStore {
   bool IsSupported(TypeId type) const;
 
   const Layout& Of(TypeId type);
+  // The layout of what a class *points at*: its fields laid out the way a
+  // struct's are. `Of` a class is the handle -- eight bytes -- so this is
+  // the one an allocation and a field offset need.
+  const Layout& ObjectOf(TypeId type);
+  // True when a value of |type| is a handle to a heap object.
+  bool IsHandle(TypeId type) const;
   uint32_t SizeOf(TypeId type) { return Of(type).size; }
   uint32_t AlignOf(TypeId type) { return Of(type).align; }
   // The type of field |index| of an aggregate, or an invalid id -- which
@@ -82,10 +88,13 @@ class LayoutStore {
 
  private:
   Layout Compute(TypeId type);
+  Layout ComputeFields(TypeId type);
 
   const TypeStore& types_;
   const FileResolution& resolution_;
   std::unordered_map<uint32_t, Layout> cache_;
+  // The storage a class points at, kept apart from the handle's layout.
+  std::unordered_map<uint32_t, Layout> objects_;
 };
 
 // Rounds |value| up to a multiple of |align|.

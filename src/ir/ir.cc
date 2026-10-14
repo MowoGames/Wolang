@@ -45,6 +45,7 @@ namespace {
 constexpr std::string_view kTrapNames[] = {
     "none",            "division by zero", "overflow",   "out of bounds",
     "undefined value", "unreachable",      "step limit", "no body",
+    "out of memory",
 };
 
 }  // namespace

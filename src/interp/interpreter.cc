@@ -2,6 +2,8 @@
 
 #include "wolang/interp/interpreter.h"
 
+#include "wolang/runtime/scheduler.h"
+
 #include "wolang/interp/intrinsics.h"
 
 #include <algorithm>
@@ -400,6 +402,25 @@ class Interpreter {
         frame->slots.push_back(Value());
         return Value::Slot(static_cast<uint32_t>(frame->slots.size() - 1));
       }
+      case ir::Opcode::kNew: {
+        // A class is a handle, and this is what it is a handle to. The
+        // address is a real one, so reading and writing a field of an
+        // object is the same code a raw pointer goes through -- which is
+        // why a method of a class mutates the object and a method of a
+        // struct cannot.
+        if (layouts_ == nullptr) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "an object needs a layout to be allocated");
+        }
+        void* object = runtime::wolang_object_alloc(
+            layouts_->ObjectOf(inst.type).size);
+        if (object == nullptr) {
+          return Trap(outcome, TrapKind::kOutOfMemory, At(function, id),
+                      "out of memory");
+        }
+        return Value::Int(reinterpret_cast<uint64_t>(object), IntWidth::k64,
+                          /*is_signed=*/false);
+      }
       case ir::Opcode::kLoad: {
         const Value& slot = Operand(frame, inst, 0);
         if (slot.kind() == Value::Kind::kInt) {
@@ -510,9 +531,13 @@ class Interpreter {
                       "took a field address without an address to take it "
                       "from");
         }
-        const TypeId aggregate =
-            types_.ElementOf(TypeOf(function, inst, 0));
-        const abi::Layout& layout = layouts_->Of(aggregate);
+        // Through a pointer it is what the pointer points at; through a
+        // class handle it is the class itself.
+        const TypeId base_type = TypeOf(function, inst, 0);
+        const TypeId aggregate = types_.IsHandle(base_type)
+                                     ? base_type
+                                     : types_.ElementOf(base_type);
+        const abi::Layout& layout = layouts_->ObjectOf(aggregate);
         const uint64_t offset =
             inst.field < layout.offsets.size() ? layout.offsets[inst.field]
                                                : 0;

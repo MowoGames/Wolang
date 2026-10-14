@@ -433,3 +433,36 @@ punctuation nobody could guess the meaning of.
 The words these replaced -- `let`, `async`, `await`, `region` -- are
 **reserved** rather than free, so writing one gets a diagnostic instead of a
 confusing parse failure.
+
+**D60. Methods come before everything that wants them.** A `fun` inside a
+`struct`, a `class` or an `extend` is a member function with `self` as an
+implicit first parameter, and a bare name in its body is a member of the
+enclosing type -- which section 4.4 of the spec already promised. Until
+this wave none of it was lowered, and worse, none of it was *reported*: a
+method call produced an undefined value and the checker said nothing. So
+methods are built first, and the holes get diagnostics, before signals,
+machines or anything else that would be written on top of them.
+
+**D61. A class is a handle to a heap object, and a destructor is what frees
+it.** Wave 9 deferred `Owned`/`Shared` because both need "a type that frees
+something when it goes out of scope" and `defer` had to exist first. It
+does. So instantiation allocates, a binding that holds a handle drops it at
+scope exit unless it was moved, and `Owned`/`Shared` are then two types
+rather than two mechanisms.
+
+**D62. A signal has both a compile-time and a run-time side.** Connections
+that are known statically expand into direct calls at the `Emit`, which
+costs nothing and covers the engine's own wiring. Run-time `Connect` over a
+list of function values covers mods and anything dynamic, and waits for
+function values to be a thing in the language. One word, two
+implementations, and the fast one is the default rather than an
+optimization.
+
+**D63. A `derived` value caches and is invalidated by a write.** The spec
+says it "recomputes when an input changes rather than on every read", which
+is a claim about *when*, not a figure of speech: the compiler works out
+which fields the expression reads and a write to any of them marks the
+cache dirty. A read of a clean cache is a load. The alternative -- a method
+without parentheses -- would be simpler and would make the spec's sentence
+false, so the sentence stays and the analysis gets written.
+

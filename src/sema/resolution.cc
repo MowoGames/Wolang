@@ -536,8 +536,9 @@ FileResolution ResolveFile(TypeStore* types,
       continue;
     }
     if (DeclaresAType(entry.kind)) {
-      resolution.item_types[index] =
-          types->Named(entry.name, file_index, index);
+      resolution.item_types[index] = types->Named(
+          entry.name, file_index, index,
+          /*is_handle=*/entry.kind == ItemKind::kClass);
     }
   }
 
@@ -962,6 +963,8 @@ void ResolveSignatures(TypeStore* types,
       Member member;
       member.name = member_entry.name;
       member.type = resolution->item_types[child];
+      member.file = file_index;
+      member.item = child;
       member.is_mutable = HasFlag(member_entry.flags, ItemFlags::kMutable);
       member.is_public = !HasFlag(member_entry.flags, ItemFlags::kPriv);
       member.is_virtual = HasFlag(member_entry.flags, ItemFlags::kVirtual);

@@ -37,11 +37,12 @@ ValueClass LayoutStore::ClassOf(TypeId type) const {
     case TypeKind::kStr:
       return ValueClass::kAggregate;
     case TypeKind::kNamed:
-      // A class is a handle to a heap object and there is no heap yet; a
-      // struct, a component or an enum stores its members inline.
-      return resolution_.IsValueType(type)
-                 ? ValueClass::kAggregate
-                 : ValueClass::kUnsupported;
+      // A struct, a component or an enum stores its members inline. A
+      // class is a handle to a heap object, so a value of one is an
+      // address -- which is why it travels in a register and why a method
+      // of a class mutates the object it was called on.
+      return types_.IsHandle(type) ? ValueClass::kInteger
+                                  : ValueClass::kAggregate;
     default:
       // A string, a slice, a function, a `T!`, an unresolved generic: each
       // wants machinery a later wave brings.
@@ -184,6 +185,26 @@ const Layout& LayoutStore::Of(TypeId type) {
   return cache_[type.index];
 }
 
+bool LayoutStore::IsHandle(TypeId type) const {
+  return types_.IsHandle(type);
+}
+
+const Layout& LayoutStore::ObjectOf(TypeId type) {
+  if (!IsHandle(type)) {
+    return Of(type);
+  }
+  const auto found = objects_.find(type.index);
+  if (found != objects_.end()) {
+    return found->second;
+  }
+  // The same field walk a struct gets. Inserted before it for the same
+  // reason `Of` does: a class may contain itself, and that is the whole
+  // point of being a handle.
+  objects_.emplace(type.index, Layout{});
+  objects_[type.index] = ComputeFields(type);
+  return objects_[type.index];
+}
+
 Layout LayoutStore::Compute(TypeId type) {
   Layout layout;
   switch (ClassOf(type)) {
@@ -235,6 +256,13 @@ Layout LayoutStore::Compute(TypeId type) {
     return layout;
   }
 
+  return ComputeFields(type);
+}
+
+// Members laid out in declaration order, each at the next offset its
+// alignment allows.
+Layout LayoutStore::ComputeFields(TypeId type) {
+  Layout layout;
   const uint32_t fields = FieldCount(type);
   uint32_t offset = 0;
   uint32_t align = 1;
@@ -263,6 +291,10 @@ uint32_t LayoutStore::BitsOf(TypeId type) const {
     case TypeKind::kChar:
       return 32;
     case TypeKind::kPointer:
+      return 64;
+    case TypeKind::kNamed:
+      // A class is an address; a value type never reaches here, because
+      // its class is `kAggregate`.
       return 64;
     case TypeKind::kInt:
       switch (types_.Get(type).int_width) {

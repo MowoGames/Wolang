@@ -122,6 +122,14 @@ InstId Builder::Extract(TypeId type, InstId aggregate, uint32_t field) {
   return id;
 }
 
+InstId Builder::FieldAddress(TypeId pointer, InstId base, uint32_t field) {
+  const InstId id = Add(Opcode::kFieldAddress, pointer, {base});
+  if (function().Contains(id)) {
+    function().Get(id).field = field;
+  }
+  return id;
+}
+
 InstId Builder::Insert(TypeId type,
                        InstId aggregate,
                        InstId value,

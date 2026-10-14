@@ -2,6 +2,8 @@
 
 #include "wolang/runtime/scheduler.h"
 
+#include <cstdlib>
+
 #include <cstddef>
 #include <deque>
 #include <vector>
@@ -91,6 +93,18 @@ int64_t wolang_sched_run() {
     }
   }
   return steps;
+}
+
+void* wolang_object_alloc(uint64_t size) {
+  // Zeroed, so that a field the constructor does not write reads as zero
+  // rather than as whatever was there. The interpreter traps on reading an
+  // uninitialized slot and the compiled tier zeroes one; an object is the
+  // third place that has to agree.
+  return std::calloc(size != 0 ? static_cast<size_t>(size) : 1, 1);
+}
+
+void wolang_object_free(void* object) {
+  std::free(object);
 }
 
 int64_t wolang_sched_join(int32_t handle) {

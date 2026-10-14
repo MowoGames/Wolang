@@ -42,6 +42,12 @@ int32_t wolang_sched_spawn(int32_t kind, void* frame);
 // is what a benchmark wants to see.
 int64_t wolang_sched_run();
 
+// Storage for one object, which is what a `class` value points at. The
+// same allocator a frame comes from: there is one heap, and a collector --
+// when there is one -- will want to know about both.
+extern "C" void* wolang_object_alloc(uint64_t size);
+extern "C" void wolang_object_free(void* object);
+
 // Whether the task behind |handle| has finished.
 bool wolang_sched_done(int32_t handle);
 

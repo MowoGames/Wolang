@@ -31,6 +31,9 @@ enum class TrapKind : uint8_t {
   kStepLimit,
   // A call to a function with no body.
   kNoBody,
+  // An allocation failed. A trap rather than a null handle, because a
+  // `class` value is never null and the language has no way to say it is.
+  kOutOfMemory,
 };
 
 std::string_view TrapKindName(TrapKind kind);

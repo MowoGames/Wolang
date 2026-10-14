@@ -94,9 +94,17 @@ enum class MemberKind : uint8_t {
 // resolution that produced them rather than of the type store, so that
 // changing a field's type invalidates everything that reads it.
 struct Member {
+  static constexpr uint32_t kNoSource = 0xFFFFFFFFu;
+
   Symbol name;
   MemberKind kind = MemberKind::kField;
   TypeId type;
+  // Where the member is declared, as a file index and an item tree index.
+  // A method is not a file-scope name, so this is the only way a call site
+  // can reach the function: two types may each have a `Sum`, and looking
+  // one up by name would find either.
+  uint32_t file = kNoSource;
+  uint32_t item = kNoSource;
   // Fields: whether the member may be assigned through.
   bool is_mutable = false;
   // Whether code outside the declaring module may name it.
@@ -108,7 +116,8 @@ struct Member {
 
   friend bool operator==(const Member& lhs, const Member& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
-           lhs.type == rhs.type && lhs.is_mutable == rhs.is_mutable &&
+           lhs.type == rhs.type && lhs.file == rhs.file &&
+           lhs.item == rhs.item && lhs.is_mutable == rhs.is_mutable &&
            lhs.is_public == rhs.is_public &&
            lhs.is_virtual == rhs.is_virtual &&
            lhs.is_override == rhs.is_override;
@@ -127,6 +136,14 @@ struct Type {
   bool is_mutable = false;
   // Slices and arrays: whether the storage keeps one array per field.
   bool is_soa = false;
+  // Named types: whether a value of it is a handle to a heap object, which
+  // is what a `class` is and what a `struct` is not.
+  //
+  // Part of the type rather than of a file's member table, because the
+  // verifier, the interpreter, the layout and both emitters all have to
+  // agree about it and only one of them has a member table. It is also the
+  // honest place: being a handle is what the type *is*.
+  bool is_handle = false;
 
   // Named types and parameters: the declared name.
   Symbol name;
@@ -229,7 +246,11 @@ class TypeStore {
            effect.index < static_cast<uint32_t>(BuiltinEffect::kCount);
   }
 
-  TypeId Named(Symbol name, uint32_t file, uint32_t item);
+  TypeId Named(Symbol name, uint32_t file, uint32_t item,
+               bool is_handle = false);
+  // True when a value of |type| is a handle to a heap object: a `class`,
+  // through any number of aliases.
+  bool IsHandle(TypeId type) const;
   // |bounds| are the traits and base types the argument has to satisfy.
   // Carried by the parameter itself, so a call site can check them without
   // reaching back into the declaring file.

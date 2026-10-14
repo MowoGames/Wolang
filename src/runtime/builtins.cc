@@ -44,6 +44,10 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_sched_run", reinterpret_cast<void*>(&wolang_sched_run)},
       {"wolang_sched_done", reinterpret_cast<void*>(&wolang_sched_done)},
       {"wolang_sched_join", reinterpret_cast<void*>(&wolang_sched_join)},
+      {"wolang_object_alloc",
+       reinterpret_cast<void*>(&wolang_object_alloc)},
+      {"wolang_object_free",
+       reinterpret_cast<void*>(&wolang_object_free)},
       {"wolang_sched_pending",
        reinterpret_cast<void*>(&wolang_sched_pending)},
   };

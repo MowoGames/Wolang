@@ -954,8 +954,8 @@ void Database::RegisterQueries() {
         }
 
         LoweredFile result;
-        ir::LowerFile(&interner_, &types_, checked->resolution, parsed->ast,
-                      checked->body, effects, &result.module);
+        ir::LowerFile(&interner_, &types_, file.index, checked->resolution,
+                      parsed->ast, checked->body, effects, &result.module);
 
         // A `task` is not a function the way the machine means it, so it is
         // split into a state machine here -- before the verifier, so the

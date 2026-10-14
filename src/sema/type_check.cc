@@ -29,6 +29,10 @@ constexpr std::string_view kMissingTraitMethod = "E0402";
 constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadConversion = "E0124";
+// Writing to a field of the receiver, which needs a receiver that is a
+// reference. A method is passed its object by value today, so the write
+// would land on a copy -- and losing it silently is worse than saying so.
+constexpr std::string_view kSelfNotMutable = "E0125";
 constexpr std::string_view kWaitOutsideTask = "E0301";
 constexpr std::string_view kTaskNotWaited = "E0302";
 constexpr std::string_view kWaitNotWholeExpression = "E0303";
@@ -257,6 +261,7 @@ class Checker {
   TypeId CheckUnary(const Expr& expr, TypeId expected);
   TypeId CheckBinary(const Expr& expr);
   TypeId CheckAssign(const Expr& expr);
+  ExprId RootOfPlace(ExprId id) const;
   TypeId CheckCall(ExprId id, const Expr& expr);
   TypeId CheckIndex(const Expr& expr);
   TypeId CheckField(const Expr& expr);
@@ -840,12 +845,68 @@ TypeId Checker::CheckBinary(const Expr& expr) {
   }
 }
 
+// The expression an assignment's target is rooted in: the name, the `self`
+// or the dereference at the bottom of `a.b.c`. What may be written to is a
+// property of the root, not of the field at the end.
+ExprId Checker::RootOfPlace(ExprId id) const {
+  ExprId current = id;
+  while (ast_.Contains(current)) {
+    const Expr& expr = ast_.Get(current);
+    if (expr.kind == ExprKind::kField ||
+        expr.kind == ExprKind::kIndex ||
+        expr.kind == ExprKind::kOptionalField) {
+      current = expr.lhs;
+      continue;
+    }
+    return current;
+  }
+  return id;
+}
+
 TypeId Checker::CheckAssign(const Expr& expr) {
   const TypeId target = Check(expr.lhs, TypeId{});
 
   // Only a name, a field or an element can be assigned to, and a `let`
   // binding cannot be reassigned at all.
   if (ast_.Contains(expr.lhs)) {
+    const ExprId root_id = RootOfPlace(expr.lhs);
+    const bool through_field = root_id != expr.lhs;
+    if (ast_.Contains(root_id)) {
+      const Expr& root = ast_.Get(root_id);
+      const bool is_self =
+          root.kind == ExprKind::kSelf ||
+          (root.kind == ExprKind::kPath && Lookup(root.name) == nullptr &&
+           SelfMember(root.name) != nullptr);
+      const TypeId root_type =
+          is_self ? types_->StripWrappers(self_type_)
+                  : types_->StripWrappers(result_.TypeOf(root_id));
+      // A handle is not what it points at. Assigning to a field of a
+      // class changes the object, which is why `const h` does not freeze
+      // it and why a method of one may write to `self` -- the receiver is
+      // the address, not a copy.
+      const bool through_handle = types_->IsHandle(root_type);
+      if (is_self && !through_handle &&
+          (through_field || root.kind == ExprKind::kPath)) {
+        Report(kSelfNotMutable,
+               "a method of a value type cannot assign to a field of "
+               "`self`",
+               expr.span,
+               "the receiver is a copy, so the write would be lost; return "
+               "a new value, or make the type a `class`");
+      } else if (through_field && !through_handle &&
+                 root.kind == ExprKind::kPath) {
+        // `p.x = v` needs `p` to be a `var`, the same way `p = v` does.
+        const Binding* binding = Lookup(root.name);
+        if (binding != nullptr && !binding->is_mutable &&
+            (binding->kind == BindingKind::kLocal ||
+             binding->kind == BindingKind::kValue)) {
+          std::string message = "cannot assign to a field of `";
+          message.append(interner_->Text(root.name));
+          message.append("`, which is not `var`");
+          Report(kAssignToLet, std::move(message), expr.span);
+        }
+      }
+    }
     const Expr& left = ast_.Get(expr.lhs);
     if (left.kind == ExprKind::kPath) {
       const Binding* binding = Lookup(left.name);

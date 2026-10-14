@@ -54,6 +54,10 @@ class Builder {
   InstId Call(uint32_t callee, TypeId result, std::vector<InstId> arguments);
 
   InstId Extract(TypeId type, InstId aggregate, uint32_t field);
+  // The address of a field, given the address of the aggregate. What a
+  // method's `self` is read and written through: the receiver arrives as a
+  // pointer, so a field of it is an address rather than a copy.
+  InstId FieldAddress(TypeId pointer, InstId base, uint32_t field);
   InstId Insert(TypeId type, InstId aggregate, InstId value, uint32_t field);
 
   // Terminators. Each ends the current block; a second one is dropped.

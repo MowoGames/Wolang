@@ -41,6 +41,7 @@ class Lowerer {
  public:
   Lowerer(StringInterner* interner,
           TypeStore* types,
+          uint32_t file_index,
           const FileResolution& resolution,
           const Ast& ast,
           const TypedBody& typed,
@@ -48,21 +49,23 @@ class Lowerer {
           Module* module)
       : interner_(interner),
         types_(types),
+        file_index_(file_index),
         resolution_(resolution),
         ast_(ast),
         typed_(typed),
         effects_(effects),
         module_(module),
-        resolver_(types, interner, &resolution, &discarded_) {}
+        resolver_(types, interner, &resolution, &discarded_),
+        self_name_(interner->Intern("self")) {}
 
   void Run() {
     // Two passes: every function gets a declaration first, so a call can
     // name one that is defined later in the file.
     for (ItemId id : ast_.Get(ast_.root())) {
-      Declare(id);
+      Declare(id, TypeId{});
     }
     for (ItemId id : ast_.Get(ast_.root())) {
-      Define(id);
+      Define(id, TypeId{});
     }
 
     // A generic function has no code of its own; it gets one copy per
@@ -83,13 +86,21 @@ class Lowerer {
  private:
   // ------------------------------------------------------- declarations --
 
-  void Declare(ItemId id) {
+  // |owner| is the type whose body this declaration is in, or an invalid id
+  // at file scope. A `fun` inside a type is a method: it takes `self` and it
+  // is not a file-scope name, so neither its signature nor its identity can
+  // be looked up the way a free function's is.
+  void Declare(ItemId id, TypeId owner) {
     if (!ast_.Contains(id)) {
       return;
     }
     const Item& item = ast_.Get(id);
     switch (item.kind) {
       case ItemKind::kFunction: {
+        if (owner.is_valid()) {
+          DeclareMethod(id, item, owner);
+          break;
+        }
         const Binding* binding = resolution_.Find(item.name);
         const TypeId signature =
             binding != nullptr ? binding->type : TypeId{};
@@ -118,6 +129,8 @@ class Lowerer {
           function.foreign_symbol =
               item.link_name.is_valid() ? item.link_name : item.name;
         }
+        Remember(function.source_file, function.source_item,
+                 module_->functions.size());
         indices_.emplace_back(id, module_->functions.size());
         module_->functions.push_back(std::move(function));
         break;
@@ -129,7 +142,7 @@ class Lowerer {
       case ItemKind::kExtend:
         // Methods are functions too; their bodies are lowered the same way.
         for (ItemId member : ast_.Get(item.members)) {
-          Declare(member);
+          Declare(member, OwnerOf(item));
         }
         break;
       default:
@@ -312,6 +325,104 @@ class Lowerer {
     return static_cast<uint32_t>(module_->functions.size() - 1);
   }
 
+  // The type a declaration's members belong to: the type it declares, or
+  // for an `extend` block the type being extended.
+  TypeId OwnerOf(const Item& item) {
+    if (item.kind == ItemKind::kExtend) {
+      return item.target_type.is_valid()
+                 ? Erase(resolver_.Resolve(ast_, item.target_type))
+                 : TypeId{};
+    }
+    const Binding* binding = resolution_.Find(item.name);
+    return binding != nullptr ? Erase(binding->type) : TypeId{};
+  }
+
+  // A class is a handle, so constructing one allocates and then writes the
+  // fields through the handle. The size is the tier's answer -- lowering
+  // has no layout -- which is why `new` is an operation.
+  InstId NewObject(TypeId type, const std::vector<InstId>& fields) {
+    const InstId object = builder_->Add(Opcode::kNew, type);
+    uint32_t index = 0;
+    for (InstId value : fields) {
+      const TypeId field_type = Erase(FieldTypeAt(type, index));
+      const InstId address = builder_->FieldAddress(
+          types_->Pointer(field_type, /*is_mutable=*/true), object, index);
+      builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+      ++index;
+    }
+    return object;
+  }
+
+  // A method: `self` first, then what was written. The receiver is passed
+  // by address, so a method that assigns to a field changes the object it
+  // was called on rather than a copy of it -- which is the difference
+  // between a method and a function that happens to be written inside a
+  // type.
+  void DeclareMethod(ItemId id, const Item& item, TypeId owner) {
+    const Member* member = resolution_.FindMember(owner, item.name);
+    const TypeId declared = member != nullptr ? member->type : TypeId{};
+    if (!declared.is_valid() ||
+        types_->KindOf(declared) != TypeKind::kFunction) {
+      return;
+    }
+    if (types_->MentionsParameter(declared) ||
+        types_->MentionsParameter(owner)) {
+      // A generic type's method is a recipe, the same way a generic
+      // function is. Instantiation is wave 8's machinery and this is not
+      // wired into it yet, so the interpreter keeps them.
+      return;
+    }
+
+    std::vector<TypeId> params;
+    params.push_back(owner);
+    for (TypeId param : types_->ArgumentsOf(declared)) {
+      params.push_back(Erase(param));
+    }
+
+    Function function;
+    function.name = MethodName(owner, item.name);
+    function.type = types_->Function(params,
+                                     Erase(types_->ElementOf(declared)));
+    function.effects = EffectsOf(id, &function.effects_known);
+    function.source_file = member->file;
+    function.source_item = member->item;
+    function.is_task = HasFlag(item.flags, ItemFlags::kAsync);
+    function.is_primitive_task =
+        function.is_task && !item.body.is_valid();
+    function.self_type = owner;
+
+    Remember(function.source_file, function.source_item,
+             module_->functions.size());
+    indices_.emplace_back(id, module_->functions.size());
+    module_->functions.push_back(std::move(function));
+  }
+
+  // `Point.Sum`, so that two types may each have a `Sum` and a dump says
+  // which one it is looking at.
+  Symbol MethodName(TypeId owner, Symbol name) {
+    std::string text = types_->Describe(*interner_, owner);
+    text.push_back('.');
+    text.append(interner_->Text(name));
+    return interner_->Intern(text);
+  }
+
+  void Remember(uint32_t file, uint32_t item, size_t index) {
+    if (file == Function::kNoSource || item == Function::kNoSource) {
+      return;
+    }
+    by_source_.emplace_back(std::pair<uint32_t, uint32_t>(file, item),
+                            static_cast<uint32_t>(index));
+  }
+
+  uint32_t IndexOfSource(uint32_t file, uint32_t item) const {
+    for (const auto& [where, index] : by_source_) {
+      if (where.first == file && where.second == item) {
+        return index;
+      }
+    }
+    return 0xFFFFFFFFu;
+  }
+
   uint32_t IndexOfName(Symbol name) const {
     for (const auto& [item, index] : indices_) {
       if (ast_.Contains(item) && ast_.Get(item).name == name) {
@@ -321,14 +432,16 @@ class Lowerer {
     return 0xFFFFFFFFu;
   }
 
-  void Define(ItemId id) {
+  void Define(ItemId id, TypeId owner) {
     if (!ast_.Contains(id)) {
       return;
     }
     const Item& item = ast_.Get(id);
     switch (item.kind) {
       case ItemKind::kFunction:
+        self_type_ = owner;
         LowerFunction(item, IndexOf(id));
+        self_type_ = TypeId{};
         break;
       case ItemKind::kClass:
       case ItemKind::kStruct:
@@ -336,7 +449,7 @@ class Lowerer {
       case ItemKind::kEnum:
       case ItemKind::kExtend:
         for (ItemId member : ast_.Get(item.members)) {
-          Define(member);
+          Define(member, OwnerOf(item));
         }
         break;
       default:
@@ -365,6 +478,18 @@ class Lowerer {
     builder.SetCurrent(entry);
 
     in_task_ = module_->functions[index].is_task;
+
+    self_ = InstId{};
+    if (self_type_.is_valid()) {
+      // The receiver is an ordinary first parameter of the object's own
+      // type. Which means a method of a value type gets a copy -- and
+      // assigning to a field of it is rejected by the checker rather than
+      // silently writing to the copy. A class is a handle, so a method of
+      // one will mutate the object it was called on; that is D61 and it
+      // needs the heap first.
+      self_ = builder.AddParam(entry, self_type_);
+      locals_.push_back(Local{self_name_, InstId{}, self_, self_type_});
+    }
 
     for (ParamId param_id : ast_.Get(item.params)) {
       const Param& param = ast_.Get(param_id);
@@ -744,8 +869,11 @@ class Lowerer {
         return builder_->Add(Opcode::kIndex, type, {array, index});
       }
 
+      case ExprKind::kSelf:
+        return self_.is_valid() ? self_ : builder_->Undef(type);
+
       case ExprKind::kField:
-        return LowerField(expr, type);
+        return LowerField(id, expr, type);
       case ExprKind::kOptionalField:
         return LowerOptionalField(expr, type);
 
@@ -869,6 +997,10 @@ class Lowerer {
   InstId LowerPath(const Expr& expr, TypeId type) {
     const Local* local = Find(expr.name);
     if (local == nullptr) {
+      // A field of the receiver, read from it.
+      if (const Place place = SelfPlace(expr.name); place.readable()) {
+        return Coerce(ReadPlace(place), TypeAt(place), type);
+      }
       return builder_->Undef(type);
     }
     if (local->slot.is_valid()) {
@@ -1039,7 +1171,13 @@ class Lowerer {
     return 0;
   }
 
-  InstId LowerField(const Expr& expr, TypeId type) {
+  InstId LowerField(ExprId id, const Expr& expr, TypeId type) {
+    // Through an address when there is one -- a raw pointer, or the handle
+    // a class value is -- so that the field is read from the object rather
+    // than from a copy of it.
+    if (const Place place = PlaceOf(id); place.pointer.is_valid()) {
+      return Coerce(ReadPlace(place), TypeAt(place), type);
+    }
     const InstId object = Value(expr.lhs);
     const TypeId owner = TypeOf(expr.lhs);
     return builder_->Extract(type, object, FieldIndex(owner, expr.name));
@@ -1096,25 +1234,212 @@ class Lowerer {
     return slot;
   }
 
+  // Where a value lives.
+  //
+  // A root and a path of field indices from it. The root is one of three
+  // things, because they are read and written differently: a local's slot
+  // holds a structured value, so changing a field of it is a read, an
+  // insert and a write back; a pointer addresses memory, so it is an
+  // address computation and a store; and a plain value -- a parameter, a
+  // method's receiver -- can be read from but not written to.
+  //
+  // Keeping the path separate from the root is what makes `a.b.c = v` work
+  // at any depth, which before this wave compiled to nothing at all.
+  struct Place {
+    InstId slot;
+    InstId pointer;
+    InstId value;
+    std::vector<uint32_t> path;
+    TypeId root_type;
+
+    bool readable() const {
+      return slot.is_valid() || pointer.is_valid() || value.is_valid();
+    }
+    bool writable() const {
+      return slot.is_valid() || pointer.is_valid();
+    }
+  };
+
+  Place PlaceOf(ExprId id) {
+    Place place;
+    if (!ast_.Contains(id)) {
+      return place;
+    }
+    const Expr& expr = ast_.Get(id);
+    switch (expr.kind) {
+      case ExprKind::kPath: {
+        if (const Local* local = Find(expr.name); local != nullptr) {
+          place.slot = local->slot;
+          place.value = local->value;
+          place.root_type = local->type;
+          return place;
+        }
+        // Inside a method a bare name may be a field of the enclosing
+        // type: `health` means `self.health`, which is what section 4.4 of
+        // the spec promises and what gameplay code is written in.
+        return SelfPlace(expr.name);
+      }
+      case ExprKind::kSelf:
+        return SelfPlace(Symbol{});
+      case ExprKind::kUnary: {
+        if (expr.op != TokenKind::kStar) {
+          return place;
+        }
+        place.pointer = Value(expr.lhs);
+        place.root_type = Erase(TypeOf(id));
+        return place;
+      }
+      case ExprKind::kField: {
+        const TypeId owner = Erase(TypeOf(expr.lhs));
+        if (types_->IsHandle(owner)) {
+          // The base is a class, so it is already an address: the field is
+          // read and written through it rather than through a copy.
+          place.pointer = Value(expr.lhs);
+          place.root_type = owner;
+          place.path.push_back(FieldIndex(owner, expr.name));
+          return place;
+        }
+        Place base = PlaceOf(expr.lhs);
+        if (!base.readable()) {
+          return place;
+        }
+        base.path.push_back(FieldIndex(TypeAt(base), expr.name));
+        return base;
+      }
+      default:
+        return place;
+    }
+  }
+
+  // The receiver, or the field of it that a bare name stands for. An
+  // invalid name asks for the receiver itself.
+  Place SelfPlace(Symbol name) {
+    Place place;
+    if (!self_.is_valid() || !self_type_.is_valid()) {
+      return place;
+    }
+    place.root_type = self_type_;
+    if (types_->IsHandle(self_type_)) {
+      // A class receiver is the object's address, so a method of one
+      // writes to the object. A value receiver is a copy, and the checker
+      // reports an assignment to a field of it (`E0125`).
+      place.pointer = self_;
+    } else {
+      place.value = self_;
+    }
+    if (!name.is_valid()) {
+      return place;
+    }
+    const Member* member = resolution_.FindMember(self_type_, name);
+    if (member == nullptr || member->kind != MemberKind::kField) {
+      return Place{};
+    }
+    place.path.push_back(FieldIndex(self_type_, name));
+    return place;
+  }
+
+  // The type at the end of a place's path.
+  TypeId TypeAt(const Place& place) {
+    TypeId at = Erase(place.root_type);
+    for (uint32_t field : place.path) {
+      at = Erase(FieldTypeAt(at, field));
+    }
+    return at;
+  }
+
+  TypeId FieldTypeAt(TypeId owner, uint32_t field) {
+    uint32_t index = 0;
+    for (const Member& member : resolution_.MembersOf(owner)) {
+      if (member.kind != MemberKind::kField) {
+        continue;
+      }
+      if (index == field) {
+        return member.type;
+      }
+      ++index;
+    }
+    // A tuple, a string or an optional: built in rather than declared, so
+    // its parts are the type's own arguments.
+    const std::vector<TypeId> parts = types_->ArgumentsOf(owner);
+    return field < parts.size() ? parts[field] : types_->error();
+  }
+
+  // Reads what a place holds.
+  InstId ReadPlace(const Place& place) {
+    TypeId at = Erase(place.root_type);
+    if (place.pointer.is_valid()) {
+      InstId address = place.pointer;
+      for (uint32_t field : place.path) {
+        const TypeId field_type = Erase(FieldTypeAt(at, field));
+        address = builder_->FieldAddress(
+            types_->Pointer(field_type, /*is_mutable=*/true), address,
+            field);
+        at = field_type;
+      }
+      return builder_->Add(Opcode::kLoad, at, {address});
+    }
+    InstId value = place.slot.is_valid()
+                       ? builder_->Add(Opcode::kLoad, at, {place.slot})
+                       : place.value;
+    for (uint32_t field : place.path) {
+      const TypeId field_type = Erase(FieldTypeAt(at, field));
+      value = builder_->Extract(field_type, value, field);
+      at = field_type;
+    }
+    return value;
+  }
+
+  // Writes |value| into a place. Through a pointer it is a store; into a
+  // slot it is a read, an insert and a write back, which is correct because
+  // a local's address cannot escape -- references are second class
+  // (`E0120`), so nothing else can be looking at it meanwhile.
+  void WritePlace(const Place& place, InstId value) {
+    if (!value.is_valid() || !place.writable()) {
+      return;
+    }
+    if (place.pointer.is_valid()) {
+      InstId address = place.pointer;
+      TypeId at = Erase(place.root_type);
+      for (uint32_t field : place.path) {
+        const TypeId field_type = Erase(FieldTypeAt(at, field));
+        address = builder_->FieldAddress(
+            types_->Pointer(field_type, /*is_mutable=*/true), address,
+            field);
+        at = field_type;
+      }
+      builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+      return;
+    }
+    if (place.path.empty()) {
+      builder_->Add(Opcode::kStore, TypeId{}, {place.slot, value});
+      return;
+    }
+    const TypeId root = Erase(place.root_type);
+    const InstId whole = builder_->Add(Opcode::kLoad, root, {place.slot});
+    builder_->Add(Opcode::kStore, TypeId{},
+                  {place.slot, Rebuild(place, 0, root, whole, value)});
+  }
+
+  // The aggregate with one field replaced, at whatever depth the path says.
+  InstId Rebuild(const Place& place,
+                 size_t depth,
+                 TypeId owner,
+                 InstId aggregate,
+                 InstId value) {
+    const uint32_t field = place.path[depth];
+    if (depth + 1 == place.path.size()) {
+      return builder_->Insert(owner, aggregate, value, field);
+    }
+    const TypeId inner = Erase(FieldTypeAt(owner, field));
+    const InstId nested = builder_->Extract(inner, aggregate, field);
+    return builder_->Insert(
+        owner, aggregate,
+        Rebuild(place, depth + 1, inner, nested, value), field);
+  }
+
   InstId LowerAssign(const Expr& expr) {
     const InstId value = Value(expr.rhs);
-    if (!ast_.Contains(expr.lhs)) {
-      return value;
-    }
-    const Expr& target = ast_.Get(expr.lhs);
-    if (target.kind == ExprKind::kPath) {
-      const Local* local = Find(target.name);
-      if (local != nullptr && local->slot.is_valid()) {
-        builder_->Add(Opcode::kStore, TypeId{}, {local->slot, value});
-      }
-    } else if (target.kind == ExprKind::kUnary &&
-               target.op == TokenKind::kStar) {
-      // `*p = v`: the address is what the operand evaluates to.
-      const InstId address = Value(target.lhs);
-      if (address.is_valid()) {
-        builder_->Add(Opcode::kStore, TypeId{}, {address, value});
-      }
-    }
+    WritePlace(PlaceOf(expr.lhs), value);
     // An assignment is a statement, so it produces nothing a caller can use.
     return InstId{};
   }
@@ -1156,6 +1481,13 @@ class Lowerer {
                               : value);
     }
 
+    // `receiver.Method(args)`, and `Method(args)` inside a method -- which
+    // is the same call with the receiver left implicit.
+    if (const InstId called = LowerMethodCall(expr, type, &arguments);
+        called.is_valid()) {
+      return called;
+    }
+
     if (ast_.Contains(expr.lhs) &&
         ast_.Get(expr.lhs).kind == ExprKind::kPath) {
       const Symbol name = ast_.Get(expr.lhs).name;
@@ -1182,8 +1514,11 @@ class Lowerer {
       if (binding != nullptr && binding->kind == BindingKind::kType) {
         // The checker records the type the context wanted, so `type` may
         // already be `Pawn?` for a `Pawn(...)`. What the instruction builds
-        // is the struct, and the wrap is what bridges the two.
+        // is the object, and the wrap is what bridges the two.
         const TypeId built = Erase(binding->type);
+        if (types_->IsHandle(built)) {
+          return Coerce(NewObject(built, arguments), built, type);
+        }
         const InstId value = builder_->Add(
             Opcode::kMakeStruct, built.is_valid() ? built : type,
             std::move(arguments));
@@ -1201,6 +1536,70 @@ class Lowerer {
       }
     }
     return builder_->Undef(type);
+  }
+
+  // A call to a method, when that is what this is. |arguments| holds the
+  // written arguments; the receiver goes in front of them, as an address.
+  InstId LowerMethodCall(const Expr& expr,
+                         TypeId type,
+                         std::vector<InstId>* arguments) {
+    if (!ast_.Contains(expr.lhs)) {
+      return InstId{};
+    }
+    const Expr& callee = ast_.Get(expr.lhs);
+
+    TypeId owner;
+    Symbol name;
+    InstId receiver;
+    if (callee.kind == ExprKind::kField) {
+      owner = Erase(TypeOf(callee.lhs));
+      name = callee.name;
+      receiver = Value(callee.lhs);
+    } else if (callee.kind == ExprKind::kPath && self_.is_valid()) {
+      // A bare name inside a method: its own type's method, if it has one.
+      owner = self_type_;
+      name = callee.name;
+      receiver = self_;
+    } else {
+      return InstId{};
+    }
+    if (!owner.is_valid() || !receiver.is_valid()) {
+      return InstId{};
+    }
+
+    const Member* member = resolution_.FindMember(owner, name);
+    if (member == nullptr || member->kind != MemberKind::kMethod) {
+      return InstId{};
+    }
+
+    uint32_t index = IndexOfSource(member->file, member->item);
+    if (index == 0xFFFFFFFFu) {
+      if (member->file == file_index_) {
+        // Declared here and not lowered: a generic, or a method of a
+        // generic type. The interpreter keeps those for now.
+        return InstId{};
+      }
+      // Declared in another file. Lowering is per file, so it gets a
+      // declaration here with the receiver in its signature, and the
+      // linker resolves it by the declaration it came from.
+      std::vector<TypeId> params;
+      params.push_back(owner);
+      for (TypeId param : types_->ArgumentsOf(member->type)) {
+        params.push_back(Erase(param));
+      }
+      const TypeId signature = types_->Function(
+          params, Erase(types_->ElementOf(member->type)));
+      index = DeclareExternal(MethodName(owner, name), signature,
+                              member->file, member->item);
+      Remember(member->file, member->item, index);
+    }
+
+    std::vector<InstId> with_receiver;
+    with_receiver.push_back(receiver);
+    for (InstId argument : *arguments) {
+      with_receiver.push_back(argument);
+    }
+    return builder_->Call(index, type, std::move(with_receiver));
   }
 
   InstId LowerBlockValue(ExprId id, const Expr& expr, TypeId type) {
@@ -1580,6 +1979,7 @@ class Lowerer {
 
   StringInterner* interner_;
   TypeStore* types_;
+  const uint32_t file_index_ = 0;
   const FileResolution& resolution_;
   const Ast& ast_;
   const TypedBody& typed_;
@@ -1607,21 +2007,31 @@ class Lowerer {
   Builder* builder_ = nullptr;
   uint32_t current_function_ = 0;
   TypeId return_type_;
+  // The type whose method is being lowered, and where its receiver is.
+  TypeId self_type_;
+  InstId self_;
+  const Symbol self_name_;
   std::vector<Local> locals_;
   std::vector<LoopTarget> loops_;
   std::vector<std::pair<ItemId, size_t>> indices_;
+  // Every function of this module by the declaration it came from, which is
+  // how a method call finds the function: a method has no file-scope name
+  // to look up.
+  std::vector<std::pair<std::pair<uint32_t, uint32_t>, uint32_t>> by_source_;
 };
 
 }  // namespace
 
 void LowerFile(StringInterner* interner,
                TypeStore* types,
+               uint32_t file_index,
                const FileResolution& resolution,
                const Ast& ast,
                const TypedBody& typed,
                std::span<const std::pair<ItemId, EffectRow>> effects,
                Module* module) {
-  Lowerer lowerer(interner, types, resolution, ast, typed, effects, module);
+  Lowerer lowerer(interner, types, file_index, resolution, ast, typed,
+                  effects, module);
   lowerer.Run();
 }
 

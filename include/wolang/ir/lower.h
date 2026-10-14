@@ -35,8 +35,12 @@ namespace ir {
 // module-wide fixpoint, prepared by the caller: effects are a module
 // question (D36) and lowering is per file, so lowering is told rather than
 // asking.
+// |file_index| is which file this is, so that a member declared here can be
+// told from one declared elsewhere: both are reached through the same member
+// table, and only the first has a body in this module.
 void LowerFile(StringInterner* interner,
                TypeStore* types,
+               uint32_t file_index,
                const FileResolution& resolution,
                const Ast& ast,
                const TypedBody& typed,

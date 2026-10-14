@@ -343,14 +343,24 @@ class Verifier {
       case Opcode::kFieldAddress:
         // The operand is an address and so is the result: a field address
         // is pointer arithmetic the layout decides, which is why it is an
-        // instruction rather than an add.
-        if (arity(1) &&
-            types_.KindOf(type_of(0)) != TypeKind::kPointer) {
+        // instruction rather than an add. A class is an address too -- a
+        // handle to a heap object -- which is why a method of one reads
+        // and writes the object itself.
+        if (arity(1) && types_.KindOf(type_of(0)) != TypeKind::kPointer &&
+            !types_.IsHandle(type_of(0))) {
           Fail(At(id) + " takes a field address inside something that is "
-                        "not a pointer");
+                        "not an address");
         }
         if (types_.KindOf(inst.type) != TypeKind::kPointer) {
           Fail(At(id) + " produces something that is not a pointer");
+        }
+        break;
+
+      case Opcode::kNew:
+        // The type is what the handle points at, and a handle is what it
+        // produces.
+        if (arity(0) && !types_.IsHandle(inst.type)) {
+          Fail(At(id) + " allocates something that is not a class");
         }
         break;
 
