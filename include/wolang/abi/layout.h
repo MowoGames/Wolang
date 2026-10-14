@@ -113,9 +113,30 @@ class LayoutStore {
   // The distance between two elements of an array, which is the element's
   // size rounded up to its alignment.
   uint32_t StrideOf(TypeId array);
-  // True for an enum: its members are variants, so the value is the tag
+  // True for an enum whose variants carry nothing: the value is the tag
   // lowering reads as field zero and nothing else.
   bool IsTagOnly(TypeId type) const;
+
+  // True for an enum where some variant carries values: the tag, and a
+  // payload area big enough for the largest of them (D89).
+  bool IsTagged(TypeId type) const;
+  // Where the payload area starts, and how big it is.
+  uint32_t PayloadOffsetOf(TypeId type);
+  uint32_t PayloadSizeOf(TypeId type);
+  // How much room one variant's values need. |variant| is the member's
+  // function type: what it takes is what it carries.
+  void MeasurePayload(TypeId variant, uint32_t* size, uint32_t* align);
+  // The type of the |position|-th value variant |index| carries, or an
+  // invalid id when it carries no such value.
+  TypeId VariantFieldType(TypeId type,
+                          uint32_t index,
+                          uint32_t position) const;
+  // Where that value sits in an enum of |type|. Every variant's values
+  // start at the payload offset, which is what lets one site read them
+  // once the tag has been checked.
+  uint32_t VariantFieldOffset(TypeId type,
+                              uint32_t index,
+                              uint32_t position);
 
   // The width a scalar occupies in a register, which is what tells `ldr`
   // from `ldrb` and `fadd s` from `fadd d`.

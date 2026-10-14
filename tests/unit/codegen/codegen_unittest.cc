@@ -1548,6 +1548,108 @@ fun Bump() -> int {
   WOLANG_EXPECT_EQ(f.Run("Bump", {}), "27");
 }
 
+WOLANG_TEST(CodegenTest, BuildsAndMatchesAnEnumWithPayloads) {
+  // An enum is a tag and room for the largest payload beside it (D89).
+  // Which variant it is decides what the payload means, so the payload's
+  // *type* is the instruction's rather than the declaration's -- that is
+  // what `match` is for.
+  Fixture f(R"(
+struct Vec {
+  var x: int = 0
+  var y: int = 0
+}
+
+enum AiState {
+  Idle
+  Chase(target: int, speed: int)
+  Patrol(at: Vec)
+}
+
+fun Describe(s: AiState) -> int {
+  match s {
+    AiState.Idle => { return 1 }
+    AiState.Chase(target, speed) => { return target * 10 + speed }
+    AiState.Patrol(at) => { return at.x * 100 + at.y }
+  }
+}
+
+fun All() -> int {
+  const idle = AiState.Idle
+  const chase = AiState.Chase(7, 2)
+  const patrol = AiState.Patrol(Vec(3, 4))
+  // 1 + 72 + 304: a tag-only variant, two numbers, and a struct.
+  return Describe(idle) + Describe(chase) + Describe(patrol)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("All", {}), "377");
+}
+
+WOLANG_TEST(CodegenTest, CarriesAnErrorThroughAFallible) {
+  // `T!` is which it is and the value when it is a value (D90). An error
+  // tag *is* its number, so the test and the construction agree without
+  // either side knowing about the other -- and `?` hands the failure on
+  // rather than making every caller write a `match`.
+  Fixture f(R"(
+error NotFound, Corrupt
+
+fun Half(n: int) -> int! {
+  if n % 2 != 0 {
+    return Corrupt
+  }
+  return n / 2
+}
+
+fun Quarter(n: int) -> int! {
+  const half = Half(n)?
+  return Half(half)?
+}
+
+fun Use(n: int) -> int {
+  match Quarter(n) {
+    Ok(v) => { return v }
+    Corrupt => { return -1 }
+    NotFound => { return -2 }
+  }
+}
+
+fun All() -> int {
+  // Eight halves twice; six fails on the second half; three on the
+  // first.
+  return Use(8) * 100 + Use(6) * 10 + Use(3)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("All", {}), "189");
+}
+
+WOLANG_TEST(CodegenTest, CarriesAValueThroughAnOptional) {
+  Fixture f(R"(
+struct Pawn {
+  var hp: int = 1
+}
+
+fun Find(id: int) -> Pawn? {
+  if id == 0 {
+    return null
+  }
+  return Pawn(id * 10)
+}
+
+fun All() -> int {
+  const present: int? = 5
+  const absent: int? = null
+  var total = present ?? 0
+  total = total + (absent ?? 7)
+  if const found = Find(2) {
+    total = total + found.hp
+  }
+  // A literal into an optional, a default for an absent one, a binding
+  // that only runs when there is something, and `?.` reaching through.
+  return total + (Find(0)?.hp ?? -1) + (Find(3)?.hp ?? -1)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("All", {}), "61");
+}
+
 WOLANG_TEST(CodegenTest, BuildsAndComparesStrings) {
   // A string is a pointer and a length in every tier, and what is built
   // from one is built by the runtime both tiers call. Which is what makes

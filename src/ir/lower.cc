@@ -1477,6 +1477,25 @@ class Lowerer {
     }
     const TypeId source_type = Erase(from);
 
+    // A `T!`: which it is, and the value when it is a value (D90). Zero
+    // says it is a value; anything else says which error, named by the
+    // tag's own symbol so that one number means one error everywhere.
+    if (types_->KindOf(target) == TypeKind::kFallible &&
+        types_->KindOf(source_type) != TypeKind::kFallible) {
+      const TypeId held = Erase(types_->ElementOf(target));
+      if (types_->KindOf(source_type) == TypeKind::kErrorSet) {
+        // The value *is* the tag, so it travels as it is and the payload
+        // is whatever was there -- a `T!` that failed has no value, and
+        // nothing may read one out of it without matching first.
+        return builder_->Add(Opcode::kMakeStruct, target,
+                             {value, builder_->ConstInt(held, 0)});
+      }
+      return builder_->Add(
+          Opcode::kMakeStruct, target,
+          {builder_->ConstInt(types_->u32(), 0),
+           Coerce(value, from, held, source)});
+    }
+
     // A value where a trait is wanted: the pair that says what it is and
     // which class that is (D86). A class hands over its handle; a value
     // type has to be somewhere first, so it is put in a slot and the
@@ -1980,6 +1999,10 @@ class Lowerer {
       case ExprKind::kCall:
         return LowerCall(id, expr, type);
 
+      case ExprKind::kTry:
+        // `expr?`: hand the error on, or carry on with the value.
+        return LowerTry(expr, type);
+
       case ExprKind::kAwait:
         // `wait f(args)` is a call that suspends. The call itself is
         // lowered as usual and marked; the transform in `ir/tasks.h` turns
@@ -2201,6 +2224,14 @@ class Lowerer {
       if (const InstId function = FunctionValue(expr.name, type);
           function.is_valid()) {
         return function;
+      }
+      // An error tag is its number: `Corrupt` as a value is the tag a
+      // `T!` carries when it failed that way (D90). One number per
+      // declaration, so the test and the construction agree without
+      // either side knowing about the other.
+      if (const Binding* tag = resolution().Find(expr.name);
+          tag != nullptr && tag->kind == BindingKind::kErrorTag) {
+        return builder_->ConstInt(types_->u32(), expr.name.index + 1);
       }
       // A module-level `var`, read from its storage.
       if (const TypeId held = GlobalType(expr.name); held.is_valid()) {
@@ -2619,6 +2650,14 @@ class Lowerer {
 
   InstId LowerField(ExprId id, const Expr& expr, TypeId type) {
     const Borrowing borrowing(this);
+
+    // `Shape.Circle`: a variant of an enum is the tag, and nothing else.
+    // The base is the type's name rather than a value, so there is no
+    // object to read a field out of (D89).
+    if (const InstId variant = VariantValue(expr, type);
+        variant.is_valid()) {
+      return variant;
+    }
     // A derived field is computed rather than stored, and kept once it is.
     const TypeId base_type = Erase(TypeOf(expr.lhs));
     if (const Member* member =
@@ -3118,6 +3157,13 @@ class Lowerer {
                               ? Coerce(value, TypeOf(written[i]), params[i],
                                        written[i])
                               : value);
+    }
+
+    // `AiState.Chase(target)`: a variant that carries values. The tag
+    // says which one and the payload sits beside it (D89).
+    if (const InstId built = LowerVariantCall(expr, type, arguments);
+        built.is_valid()) {
+      return built;
     }
 
     // `s.Connect(handler)` and `s.Emit(args)`: a signal's two operations.
@@ -3794,9 +3840,20 @@ class Lowerer {
     const InstId subject = Value(expr.lhs);
     const TypeId subject_type = TypeOf(expr.lhs);
 
-    const BlockId join = builder_->AddBlock("match.join");
-    const InstId result = produces ? builder_->AddParam(join, type)
-                                   : InstId{};
+    // Made when something needs it rather than up front: a `match` whose
+    // every arm returns has nowhere to come back to, and a block nothing
+    // reaches is a block the verifier is right to complain about.
+    BlockId join;
+    InstId result;
+    const auto join_block = [&]() {
+      if (!join.is_valid()) {
+        join = builder_->AddBlock("match.join");
+        if (produces) {
+          result = builder_->AddParam(join, type);
+        }
+      }
+      return join;
+    };
 
     // Each arm gets a block; the arms are tested in order, so each test
     // needs somewhere to go when it fails.
@@ -3818,7 +3875,7 @@ class Lowerer {
       if (i + 1 < arm_ids.size()) {
         arm.next = builder_->AddBlock("match.test");
       }
-      arm.catch_all = IsCatchAll(arm_ids[i]);
+      arm.catch_all = IsCatchAll(arm_ids[i], subject_type);
       arms.push_back(arm);
     }
 
@@ -3850,12 +3907,12 @@ class Lowerer {
       if (produces) {
         const InstId value = Value(arm.body);
         if (!builder_->Terminated()) {
-          builder_->Jump(join, {value});
+          builder_->Jump(join_block(), {value});
         }
       } else {
         Lower(arm.body);
         if (!builder_->Terminated()) {
-          builder_->Jump(join);
+          builder_->Jump(join_block());
         }
       }
       locals_.resize(depth);
@@ -3866,14 +3923,16 @@ class Lowerer {
     }
 
     if (arms.empty()) {
-      builder_->Jump(join);
+      builder_->Jump(join_block());
     }
 
-    builder_->SetCurrent(join);
+    if (join.is_valid()) {
+      builder_->SetCurrent(join);
+    }
     return result;
   }
 
-  bool IsCatchAll(MatchArmId id) const {
+  bool IsCatchAll(MatchArmId id, TypeId subject_type) const {
     const MatchArm& arm = ast().Get(id);
     if (arm.guard.is_valid()) {
       return false;
@@ -3887,8 +3946,14 @@ class Lowerer {
           pattern.kind == PatternKind::kRest) {
         return true;
       }
-      // A bare name that is not a variant binds everything.
+      // A bare name that is not a variant binds everything -- unless it
+      // names one of the errors a `T!` carries, which is a test and not a
+      // binding (D90).
       if (pattern.kind == PatternKind::kBinding) {
+        if (types_->KindOf(subject_type) == TypeKind::kFallible &&
+            IsErrorName(pattern.name)) {
+          return false;
+        }
         return true;
       }
     }
@@ -3923,6 +3988,29 @@ class Lowerer {
                          {combined, guard});
   }
 
+  // Whether |name| is one of the program's error tags.
+  bool IsErrorName(Symbol name) const {
+    const Binding* binding = resolution().Find(name);
+    return binding != nullptr && binding->kind == BindingKind::kErrorTag;
+  }
+
+  // The test for one arm of a `match` over a `T!`: zero for `Ok`, and the
+  // error's own symbol for an error tag -- the same number the coercion
+  // writes (D90).
+  InstId FallibleTest(const Pattern& pattern, InstId subject) {
+    Symbol name = pattern.name;
+    if (const std::span<const Symbol> path = ast().Get(pattern.path);
+        !path.empty()) {
+      name = path.back();
+    }
+    const bool is_ok = interner_->Text(name) == "Ok";
+    const InstId tag = builder_->Extract(types_->u32(), subject, 0);
+    const InstId expected = builder_->ConstInt(
+        types_->u32(), is_ok ? 0 : name.index + 1);
+    return builder_->Add(Opcode::kEq, types_->bool_type(),
+                         {tag, expected});
+  }
+
   InstId PatternTest(const Pattern& pattern,
                      InstId subject,
                      TypeId subject_type) {
@@ -3949,6 +4037,10 @@ class Lowerer {
 
       case PatternKind::kVariant:
       case PatternKind::kStruct: {
+        // `Ok(x)` on a `T!`: the tag is zero when it is a value (D90).
+        if (types_->KindOf(subject_type) == TypeKind::kFallible) {
+          return FallibleTest(pattern, subject);
+        }
         // A variant is identified by the tag the enum stores first. Reading
         // it as a field keeps the layout decision in one place.
         const InstId tag = builder_->Extract(types_->default_int(), subject,
@@ -3958,6 +4050,15 @@ class Lowerer {
         return builder_->Add(Opcode::kEq, types_->bool_type(),
                              {tag, expected});
       }
+
+      case PatternKind::kBinding:
+        // A bare name that is an error of the set a `T!` carries: not a
+        // binding at all, but a test for that error.
+        if (types_->KindOf(subject_type) == TypeKind::kFallible &&
+            IsErrorName(pattern.name)) {
+          return FallibleTest(pattern, subject);
+        }
+        return InstId{};
 
       default:
         return InstId{};
@@ -3990,9 +4091,54 @@ class Lowerer {
       }
       const Pattern& pattern = ast().Get(pattern_id);
       if (pattern.kind == PatternKind::kBinding &&
+          types_->KindOf(subject_type) == TypeKind::kFallible &&
+          IsErrorName(pattern.name)) {
+        continue;
+      }
+      if (pattern.kind == PatternKind::kBinding &&
           !IsVariantName(subject_type, pattern.name)) {
         locals_.push_back(
             Local{pattern.name, InstId{}, subject, subject_type});
+        continue;
+      }
+      if (pattern.kind == PatternKind::kVariant &&
+          types_->KindOf(subject_type) == TypeKind::kFallible) {
+        // `Ok(value)`: the value is the second half of the pair.
+        const TypeId held = Erase(types_->ElementOf(subject_type));
+        const InstId value = builder_->Extract(held, subject, 1);
+        for (PatternId element : ast().Get(pattern.elements)) {
+          if (ast().Contains(element) &&
+              ast().Get(element).kind == PatternKind::kBinding) {
+            locals_.push_back(
+                Local{ast().Get(element).name, InstId{}, value, held});
+          }
+        }
+        continue;
+      }
+      if (pattern.kind == PatternKind::kVariant) {
+        // What the variant carries, in the order it was declared: each
+        // sub-pattern that is a name binds one of them.
+        const uint32_t index = static_cast<uint32_t>(
+            VariantIndex(subject_type, pattern));
+        const std::span<const PatternId> elements =
+            ast().Get(pattern.elements);
+        uint32_t position = 0;
+        for (PatternId element : elements) {
+          if (!ast().Contains(element) ||
+              ast().Get(element).kind != PatternKind::kBinding) {
+            ++position;
+            continue;
+          }
+          const TypeId carried =
+              VariantFieldType(subject_type, index, position);
+          const InstId payload = builder_->Add(
+              Opcode::kVariantPayload, carried, {subject});
+          builder_->Mutable(payload).field = index;
+          builder_->Mutable(payload).payload.integer = position;
+          locals_.push_back(Local{ast().Get(element).name, InstId{},
+                                  payload, carried});
+          ++position;
+        }
         continue;
       }
       if (pattern.kind == PatternKind::kPresent) {
@@ -4008,6 +4154,130 @@ class Lowerer {
         }
       }
     }
+  }
+
+  // `expr?` on a `T!`: if it failed, return that failure as this
+  // function's; otherwise the value (D90).
+  //
+  // The early return is what makes `?` worth having -- the alternative is
+  // a `match` at every call -- and it is why the error set of a signature
+  // is the union of what its body propagates.
+  InstId LowerTry(const Expr& expr, TypeId type) {
+    const TypeId inner = TypeOf(expr.lhs);
+    const InstId subject = Value(expr.lhs);
+    if (types_->KindOf(inner) != TypeKind::kFallible) {
+      // `?` on an optional, or on something already unwrapped: nothing to
+      // do here yet, and the checker has already said what the type is.
+      return subject;
+    }
+
+    const TypeId held = Erase(types_->ElementOf(inner));
+    const InstId tag = builder_->Extract(types_->u32(), subject, 0);
+    const InstId zero = builder_->ConstInt(types_->u32(), 0);
+    const InstId ok =
+        builder_->Add(Opcode::kEq, types_->bool_type(), {tag, zero});
+
+    const BlockId carry = builder_->AddBlock("try.carry");
+    const BlockId fail = builder_->AddBlock("try.fail");
+    builder_->Branch(ok, carry, fail);
+
+    // The failure, as this function's own: the same tag, and no value.
+    builder_->SetCurrent(fail);
+    const TypeId returned = Erase(return_type_);
+    if (types_->KindOf(returned) == TypeKind::kFallible) {
+      const TypeId mine = Erase(types_->ElementOf(returned));
+      const InstId again = builder_->Add(
+          Opcode::kMakeStruct, returned,
+          {tag, builder_->ConstInt(mine, 0)});
+      RunDeferred(0);
+      builder_->Return(again);
+    } else {
+      builder_->Unreachable();
+    }
+
+    builder_->SetCurrent(carry);
+    return Coerce(builder_->Extract(held, subject, 1), held, type);
+  }
+
+  // `Enum.Variant(values)`, or an invalid id when the call is not one.
+  InstId LowerVariantCall(const Expr& expr,
+                          TypeId type,
+                          const std::vector<InstId>& arguments) {
+    if (!ast().Contains(expr.lhs)) {
+      return InstId{};
+    }
+    const Expr& callee = ast().Get(expr.lhs);
+    if (callee.kind != ExprKind::kField || !ast().Contains(callee.lhs) ||
+        ast().Get(callee.lhs).kind != ExprKind::kPath) {
+      return InstId{};
+    }
+    const Binding* owner_binding =
+        resolution().Find(ast().Get(callee.lhs).name);
+    if (owner_binding == nullptr ||
+        owner_binding->kind != BindingKind::kType) {
+      return InstId{};
+    }
+    const TypeId owner = Erase(owner_binding->type);
+    uint32_t index = 0;
+    for (const Member& member : resolution().MembersOf(owner)) {
+      if (member.kind != MemberKind::kVariant) {
+        continue;
+      }
+      if (member.name == callee.name) {
+        const InstId built =
+            builder_->Add(Opcode::kMakeVariant, owner, arguments);
+        builder_->Mutable(built).field = index;
+        return Coerce(built, owner, type);
+      }
+      ++index;
+    }
+    return InstId{};
+  }
+
+  // The tag for `Enum.Variant`, or an invalid id when this is not one.
+  InstId VariantValue(const Expr& expr, TypeId type) {
+    if (!ast().Contains(expr.lhs) ||
+        ast().Get(expr.lhs).kind != ExprKind::kPath) {
+      return InstId{};
+    }
+    const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+    if (binding == nullptr || binding->kind != BindingKind::kType) {
+      return InstId{};
+    }
+    const TypeId owner = Erase(binding->type);
+    uint64_t index = 0;
+    for (const Member& member : resolution().MembersOf(owner)) {
+      if (member.kind != MemberKind::kVariant) {
+        continue;
+      }
+      if (member.name == expr.name) {
+        // An enum *is* its tag, and lowering reads that tag as field zero
+        // (the layout says so), so the value is a one-field aggregate
+        // rather than a bare number.
+        const InstId tag = builder_->ConstInt(types_->u32(), index);
+        return Coerce(
+            builder_->Add(Opcode::kMakeStruct, owner, {tag}), owner, type);
+      }
+      ++index;
+    }
+    return InstId{};
+  }
+
+  // The type of the |position|-th value variant |index| carries.
+  TypeId VariantFieldType(TypeId owner, uint32_t index, uint32_t position) {
+    uint32_t seen = 0;
+    for (const Member& member : resolution().MembersOf(owner)) {
+      if (member.kind != MemberKind::kVariant) {
+        continue;
+      }
+      if (seen++ != index) {
+        continue;
+      }
+      const std::vector<TypeId> fields = types_->ArgumentsOf(member.type);
+      return position < fields.size() ? Erase(fields[position])
+                                      : types_->error();
+    }
+    return types_->error();
   }
 
   bool IsVariantName(TypeId owner, Symbol name) const {

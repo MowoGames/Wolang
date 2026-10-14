@@ -422,6 +422,21 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
   if (types_->KindOf(found) == TypeKind::kNever) {
     return true;
   }
+  // Anything fits an optional of itself, which is what makes `let x: Pawn?
+  // = pawn` work without a wrapper call. Asked before the literal rules
+  // rather than after: `const n: int? = 5` is a literal against an
+  // optional, and a literal rule that only looks at numbers answers no.
+  if (types_->IsOptional(expected)) {
+    return Accepts(types_->ElementOf(expected), found);
+  }
+
+  // A `T!` takes a `T` or one of the errors it may carry. The set is
+  // inferred from the body (D90), so any error set fits here and the
+  // inference is what works out which ones a signature really carries.
+  if (types_->KindOf(expected) == TypeKind::kFallible) {
+    return types_->KindOf(found) == TypeKind::kErrorSet ||
+           Accepts(types_->ElementOf(expected), found);
+  }
   // A literal adapts to any numeric type of the right family.
   if (types_->KindOf(found) == TypeKind::kIntLiteral) {
     return types_->IsNumeric(expected);
@@ -429,11 +444,6 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
   if (types_->KindOf(found) == TypeKind::kFloatLiteral) {
     return types_->IsFloatingPoint(expected) ||
            types_->KindOf(expected) == TypeKind::kQuantity;
-  }
-  // Anything fits an optional of itself, which is what makes `let x: Pawn? =
-  // pawn` work without a wrapper call.
-  if (types_->IsOptional(expected)) {
-    return Accepts(types_->ElementOf(expected), found);
   }
   // A pointer that may be written fits where one that may not is wanted.
   // The other direction does not: that would hand out permission nobody
@@ -2256,6 +2266,14 @@ void Checker::BindPattern(PatternId id, TypeId type,
   const Pattern& pattern = ast_.Get(id);
   switch (pattern.kind) {
     case PatternKind::kBinding: {
+      // A bare name that is one of the errors a `T!` carries is a test
+      // for that error, not a binding (D90).
+      if (types_->KindOf(type) == TypeKind::kFallible) {
+        const Binding* tag = Lookup(pattern.name);
+        if (tag != nullptr && tag->kind == BindingKind::kErrorTag) {
+          return;
+        }
+      }
       // A bare name that is a variant of the subject's enum is the short
       // form of that variant, not a new binding that would shadow it.
       const Member* member = resolution_->FindMember(
@@ -2295,12 +2313,30 @@ void Checker::BindPattern(PatternId id, TypeId type,
     }
 
     case PatternKind::kVariant:
-    case PatternKind::kStruct:
-      // Variant payloads and field types arrive with member resolution.
+    case PatternKind::kStruct: {
+      // What the variant carries, in the order it was declared: its
+      // member is a function type, and what it takes is what it carries
+      // (D89).
+      Symbol name = pattern.name;
+      if (const std::span<const Symbol> path = ast_.Get(pattern.path);
+          !path.empty()) {
+        name = path.back();
+      }
+      std::vector<TypeId> carried;
+      if (const Member* member = resolution_->FindMember(
+              types_->StripWrappers(type), name);
+          member != nullptr && member->kind == MemberKind::kVariant &&
+          types_->KindOf(member->type) == TypeKind::kFunction) {
+        carried = types_->ArgumentsOf(member->type);
+      }
+      size_t position = 0;
       for (PatternId element : ast_.Get(pattern.elements)) {
-        BindPattern(element, types_->error());
+        BindPattern(element, position < carried.size() ? carried[position]
+                                                      : types_->error());
+        ++position;
       }
       return;
+    }
 
     case PatternKind::kLiteral: {
       if (!pattern.literal.is_valid()) {

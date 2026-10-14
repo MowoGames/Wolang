@@ -1055,6 +1055,39 @@ class FunctionEmitter {
         return;
       }
 
+      case ir::Opcode::kMakeVariant: {
+        // The tag, then what the variant carries at the payload offset
+        // the whole enum was laid out with (D89).
+        const Register area = UseArea(id, 0);
+        const Register tag = Scratch(1);
+        assembler_.MovImmediate(IWidth::k32, tag, inst.field);
+        assembler_.Store(IWidth::k32, Address{area, 0}, tag);
+        uint32_t position = 0;
+        for (ir::InstId operand : function_.OperandsOf(inst)) {
+          const int32_t offset = static_cast<int32_t>(
+              layouts_.VariantFieldOffset(inst.type, inst.field, position));
+          StoreInto(operand, area, offset, 2);
+          ++position;
+        }
+        return;
+      }
+
+      case ir::Opcode::kVariantPayload: {
+        const ir::InstId source = function_.OperandsOf(inst)[0];
+        const Register base = UseArea(source, 1);
+        const int32_t offset = static_cast<int32_t>(
+            layouts_.VariantFieldOffset(
+                TypeOf(source), inst.field,
+                static_cast<uint32_t>(inst.payload.integer)));
+        if (layouts_.ClassOf(inst.type) == abi::ValueClass::kAggregate) {
+          const Register area = UseArea(id, 2);
+          CopyBytes(area, 0, base, offset, layouts_.SizeOf(inst.type), 3);
+          return;
+        }
+        LoadScalar(inst.type, id, base, offset);
+        return;
+      }
+
       case ir::Opcode::kMakeStruct:
       case ir::Opcode::kMakeArray: {
         const Register area = UseArea(id, 0);

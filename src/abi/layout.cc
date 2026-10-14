@@ -23,12 +23,15 @@ ValueClass LayoutStore::ClassOf(TypeId type) const {
     // this tier dereferences one -- only the foreign side does -- so it
     // needs no more than that.
     case TypeKind::kPointer:
+    // An error set is which error it is, and that is a number.
+    case TypeKind::kErrorSet:
       return ValueClass::kInteger;
     case TypeKind::kFloat:
       return ValueClass::kFloat;
     case TypeKind::kVoid:
       return ValueClass::kVoid;
     case TypeKind::kOptional:
+    case TypeKind::kFallible:
     case TypeKind::kTuple:
     case TypeKind::kArray:
     // A borrowed string is a pointer and a length, which is an aggregate
@@ -81,7 +84,114 @@ bool LayoutStore::IsTagOnly(TypeId type) const {
     }
     has_variant = has_variant || member.kind == MemberKind::kVariant;
   }
-  return has_variant;
+  // A variant that carries something makes the enum a tagged union
+  // instead: the tag says which one, and the payload sits beside it.
+  return has_variant && !IsTagged(type);
+}
+
+bool LayoutStore::IsTagged(TypeId type) const {
+  const TypeKind kind = types_.KindOf(type);
+  if (kind != TypeKind::kNamed && kind != TypeKind::kInstance) {
+    return false;
+  }
+  for (const Member& member : resolution_.MembersOf(type)) {
+    // A variant that carries values has a function type: the values it
+    // takes, and the enum it produces.
+    if (member.kind == MemberKind::kVariant &&
+        types_.KindOf(member.type) == TypeKind::kFunction) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// How much room one variant's values need, and how aligned they must be.
+// Walked field by field rather than through a tuple type, because working
+// that out would mean interning one -- and a layout answers questions
+// about types rather than making them.
+void LayoutStore::MeasurePayload(TypeId variant,
+                                 uint32_t* size,
+                                 uint32_t* align) {
+  *size = 0;
+  *align = 1;
+  for (TypeId field : types_.ArgumentsOf(variant)) {
+    if (!field.is_valid()) {
+      continue;
+    }
+    const Layout inner = Of(field);
+    *align = std::max(*align, inner.align);
+    *size = AlignUp(*size, inner.align) + inner.size;
+  }
+  *size = AlignUp(*size, *align);
+}
+
+TypeId LayoutStore::VariantFieldType(TypeId type,
+                                     uint32_t index,
+                                     uint32_t position) const {
+  uint32_t seen = 0;
+  for (const Member& member : resolution_.MembersOf(type)) {
+    if (member.kind != MemberKind::kVariant) {
+      continue;
+    }
+    if (seen++ != index) {
+      continue;
+    }
+    if (types_.KindOf(member.type) != TypeKind::kFunction) {
+      return TypeId{};
+    }
+    const std::vector<TypeId> fields = types_.ArgumentsOf(member.type);
+    return position < fields.size() ? fields[position] : TypeId{};
+  }
+  return TypeId{};
+}
+
+uint32_t LayoutStore::VariantFieldOffset(TypeId type,
+                                         uint32_t index,
+                                         uint32_t position) {
+  uint32_t offset = PayloadOffsetOf(type);
+  for (uint32_t i = 0;; ++i) {
+    const TypeId field = VariantFieldType(type, index, i);
+    if (!field.is_valid()) {
+      break;
+    }
+    const Layout inner = Of(field);
+    offset = AlignUp(offset, inner.align);
+    if (i == position) {
+      break;
+    }
+    offset += inner.size;
+  }
+  return offset;
+}
+
+uint32_t LayoutStore::PayloadOffsetOf(TypeId type) {
+  uint32_t align = 4;
+  for (const Member& member : resolution_.MembersOf(type)) {
+    if (member.kind != MemberKind::kVariant ||
+        types_.KindOf(member.type) != TypeKind::kFunction) {
+      continue;
+    }
+    uint32_t size = 0;
+    uint32_t inner = 1;
+    MeasurePayload(member.type, &size, &inner);
+    align = std::max(align, inner);
+  }
+  return AlignUp(4, align);
+}
+
+uint32_t LayoutStore::PayloadSizeOf(TypeId type) {
+  uint32_t largest = 0;
+  for (const Member& member : resolution_.MembersOf(type)) {
+    if (member.kind != MemberKind::kVariant ||
+        types_.KindOf(member.type) != TypeKind::kFunction) {
+      continue;
+    }
+    uint32_t size = 0;
+    uint32_t align = 1;
+    MeasurePayload(member.type, &size, &align);
+    largest = std::max(largest, size);
+  }
+  return largest;
 }
 
 bool LayoutStore::IsSupported(TypeId type) const {
@@ -103,11 +213,34 @@ bool LayoutStore::IsSupported(TypeId type) const {
     const TypeId element = types_.ElementOf(type);
     return element.is_valid() && IsSupported(element);
   }
-  if (kind == TypeKind::kArray || kind == TypeKind::kOptional) {
+  if (kind == TypeKind::kArray || kind == TypeKind::kOptional ||
+      kind == TypeKind::kFallible) {
     const TypeId element = types_.ElementOf(type);
     return element.is_valid() && IsSupported(element);
   }
   if (IsTagOnly(type)) {
+    return true;
+  }
+  // A tagged union is supported when everything its variants carry is:
+  // the payload's type is per variant, so the generic field walk below
+  // cannot see it (D89).
+  if (IsTagged(type)) {
+    uint32_t index = 0;
+    for (const Member& member : resolution_.MembersOf(type)) {
+      if (member.kind != MemberKind::kVariant) {
+        continue;
+      }
+      for (uint32_t position = 0;; ++position) {
+        const TypeId carried = VariantFieldType(type, index, position);
+        if (!carried.is_valid()) {
+          break;
+        }
+        if (!IsSupported(carried)) {
+          return false;
+        }
+      }
+      ++index;
+    }
     return true;
   }
   const uint32_t fields = FieldCount(type);
@@ -174,6 +307,9 @@ std::vector<TypeId> Chain(const Resolution& resolution, TypeId type) {
 uint32_t LayoutStore::FieldCount(TypeId type) const {
   switch (types_.KindOf(type)) {
     case TypeKind::kOptional:
+    // A `T!` is the same shape: which it is, and the value when it is a
+    // value (D90).
+    case TypeKind::kFallible:
       // A tag and the value it may hold.
       return 2;
     case TypeKind::kArray:
@@ -191,6 +327,12 @@ uint32_t LayoutStore::FieldCount(TypeId type) const {
       }
       if (IsTagOnly(type)) {
         return 1;
+      }
+      if (IsTagged(type)) {
+        // The tag and the payload beside it. The payload's *type* is the
+        // instruction's rather than the declaration's, because which
+        // variant it is is what a `match` is for.
+        return 2;
       }
       // A class's fields are its base's fields and then its own, with the
       // descriptor first when anything in the chain is virtual.
@@ -213,6 +355,10 @@ TypeId LayoutStore::FieldType(TypeId type, uint32_t index) const {
   switch (types_.KindOf(type)) {
     case TypeKind::kOptional:
       return index == 0 ? types_.bool_type() : types_.ElementOf(type);
+    case TypeKind::kFallible:
+      // Which error, or zero for a value. A number rather than a bool,
+      // because a `T!` says *which* way it failed.
+      return index == 0 ? types_.u32() : types_.ElementOf(type);
     case TypeKind::kArray:
       return types_.ElementOf(type);
     case TypeKind::kTuple: {
@@ -224,6 +370,9 @@ TypeId LayoutStore::FieldType(TypeId type, uint32_t index) const {
       if (resolution_.IsTrait(type)) {
         // What it points at, and which class that is.
         return types_.u64();
+      }
+      if (IsTagged(type)) {
+        return index == 0 ? types_.u32() : TypeId{};
       }
       uint32_t seen = 0;
       // The descriptor, when there is one: a number saying which class
@@ -371,6 +520,17 @@ Layout LayoutStore::Compute(TypeId type) {
     return layout;
   }
 
+  // A tagged union: the tag, then room for the largest payload (D89).
+  if (IsTagged(type)) {
+    const uint32_t offset = PayloadOffsetOf(type);
+    const uint32_t payload = PayloadSizeOf(type);
+    layout.align = std::max(4u, offset);
+    layout.size = AlignUp(offset + payload, layout.align);
+    layout.offsets.push_back(0);
+    layout.offsets.push_back(offset);
+    return layout;
+  }
+
   // An array is described by its stride rather than by an offset each, or a
   // large one would cost a vector entry per element.
   if (types_.KindOf(type) == TypeKind::kArray) {
@@ -420,6 +580,8 @@ uint32_t LayoutStore::BitsOf(TypeId type) const {
       return 32;
     case TypeKind::kPointer:
       return 64;
+    case TypeKind::kErrorSet:
+      return 32;
     case TypeKind::kInstance:
     case TypeKind::kNamed:
     case TypeKind::kFunction:

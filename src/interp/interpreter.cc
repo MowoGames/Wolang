@@ -582,6 +582,43 @@ class Interpreter {
         return Value::Int(reinterpret_cast<uint64_t>(object), IntWidth::k64,
                           /*is_signed=*/false);
       }
+      case ir::Opcode::kMakeVariant: {
+        // The tag, and what the variant carries beside it. This tier
+        // keeps the payload as the values themselves rather than as
+        // bytes, which is the same latitude it takes with every
+        // aggregate (D89).
+        std::vector<Value> carried;
+        for (ir::InstId operand : function.OperandsOf(inst)) {
+          carried.push_back(operand.index < frame->values.size()
+                                ? frame->values[operand.index]
+                                : Value());
+        }
+        std::vector<Value> pair;
+        pair.push_back(Value::Int(inst.field, IntWidth::k32,
+                                  /*is_signed=*/false));
+        pair.push_back(Value::Aggregate(std::move(carried)));
+        return Value::Aggregate(std::move(pair));
+      }
+
+      case ir::Opcode::kVariantPayload: {
+        const Value& subject = Operand(frame, inst, 0);
+        if (subject.kind() != Value::Kind::kAggregate ||
+            subject.elements().size() < 2) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "read a variant's payload out of something that is "
+                      "not a variant");
+        }
+        const Value& carried = subject.elements()[1];
+        const auto position =
+            static_cast<size_t>(inst.payload.integer);
+        if (carried.kind() != Value::Kind::kAggregate ||
+            position >= carried.elements().size()) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "read a value the variant does not carry");
+        }
+        return carried.elements()[position];
+      }
+
       case ir::Opcode::kGlobalAddress: {
         // The runtime owns the storage, so the address is the same one
         // compiled code would get (D88).

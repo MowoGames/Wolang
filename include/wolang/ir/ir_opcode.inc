@@ -87,6 +87,13 @@ WOLANG_IR_OP(SoaAddress, "soa.addr",
              "the address of field |index| of element |rhs| in storage "
              "laid out one array per field. What makes `soa []T` a "
              "different *layout* rather than a different type")
+WOLANG_IR_OP(MakeVariant, "variant",
+             "builds the variant |field| of an enum from the values it "
+             "carries: the tag, and the payload beside it")
+WOLANG_IR_OP(VariantPayload, "variant.payload",
+             "what the variant |field| carries, read out of an enum "
+             "value. Undefined when the value is a different variant, "
+             "which a `match` is what stops happening")
 WOLANG_IR_OP(GlobalAddress, "global.addr",
              "where a module-level `var` lives. The runtime owns the "
              "storage, so a global written in one tier is the one read in "

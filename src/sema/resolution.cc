@@ -1178,14 +1178,26 @@ void ResolveSignatures(TypeStore* types,
           resolution->item_types[index] = resolver.Resolve(ast, item.type);
         }
         break;
-      case ItemKind::kVariant:
-        // A variant with fields is constructed like a function returning its
-        // enum; one without is a value of that enum already.
+      case ItemKind::kVariant: {
+        // A variant with fields is constructed like a function returning
+        // its enum; one without is a value of that enum already.
+        const TypeId owner = entry.parent != ItemTreeEntry::kNoParent
+                                 ? resolution->item_types[entry.parent]
+                                 : types->error();
+        std::vector<TypeId> fields;
+        for (ParamId param : ast.Get(item.params)) {
+          if (!ast.Contains(param)) {
+            continue;
+          }
+          const TypeRefId annotation = ast.Get(param).type;
+          fields.push_back(annotation.is_valid()
+                               ? resolver.Resolve(ast, annotation)
+                               : types->error());
+        }
         resolution->item_types[index] =
-            entry.parent != ItemTreeEntry::kNoParent
-                ? resolution->item_types[entry.parent]
-                : types->error();
+            fields.empty() ? owner : types->Function(fields, owner);
         break;
+      }
       default:
         break;
     }

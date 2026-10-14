@@ -886,3 +886,34 @@ The type has to be written (`E0130`). Not a style rule: what a name means
 to another file is worked out from signatures alone, and inferring this one
 from its initializer would make a signature depend on a body -- which is
 the thing the incremental design is built not to do.
+
+**D89. An enum is a tag and room for the largest payload.** A variant that
+carries nothing is the tag alone, which is what an enum was before this; a
+variant that carries values puts them beside the tag, at one offset shared
+by every variant. That is what lets a `match` read them from one place
+once it knows which variant it is looking at.
+
+The payload's *type* is the instruction's rather than the declaration's.
+Nothing else would do: which variant it is is exactly what a `match` is
+for, so the field table cannot name a type for the payload and the
+instructions that build and read it carry the variant instead.
+
+A variant that carries values is typed as a *function* from them to the
+enum, which is how `AiState.Chase(target, speed)` ends up being an
+ordinary call at the use site -- and how the checker knows what a pattern
+binding holds.
+
+**D90. A `T!` is which it is, and the value when it is a value.** The tag
+is zero for a value and otherwise says which error, named by the error
+tag's own symbol -- so the construction and the test agree without either
+side knowing about the other, including across files.
+
+An error tag *is* that number as a value. `return Corrupt` coerces it into
+the pair; `match` compares against it. The alternative -- an undefined
+value standing for the error -- is what the first version did, and an
+undefined value is a trap in two of the three tiers.
+
+`?` is an early return: if the tag is not zero, the same tag goes back as
+this function's failure, with no value beside it. That is the whole point
+of the operator -- the alternative is a `match` at every call -- and it is
+why a signature's error set is the union of what its body propagates.
