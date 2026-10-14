@@ -26,14 +26,14 @@ Dates are not fixed. Scope is.
 | Wave | Content | Exit criterion |
 |---|---|---|
 | **7** | IR interpreter (the reference semantics), `comptime` evaluation, `wolang run`, first `core` modules written in Wolang | `examples/hello.wo` runs; `@Test` functions execute ✅ |
-| **8** | Dev tier: copy-and-patch code generation (arm64 first, then x64), faults, unwind tables, symbolization | gameplay microbenchmarks within 3x of C++ ✅ (three of four against `-O2`; all four against scalar C++) |
+| **8** | Dev tier: copy-and-patch code generation (arm64 first, then x64), faults, unwind tables, symbolization | gameplay microbenchmarks within 3x of C++ ✅ (three of four against `-O2`; all four against scalar C++). x64 landed in wave 10 ✅ |
 | **9** | Memory: value semantics, second-class references, `Owned`/`Shared`, `arena` blocks, optional GC; C ABI FFI | a program with no `class` links no collector — vacuously, since nothing allocates through a collector yet. The FFI, raw pointers, `defer` and `E0121`–`E0123` landed; owning types need destructors ⏳ |
 
 ## Phase C — the gamedev core
 
 | Wave | Content | Exit criterion |
 |---|---|---|
-| **10** | `task` with structured concurrency, signals, `derived`, **state machines**, a minimal HTTP/1.1 server as the design's driver | 100k concurrently waiting coroutines benchmark; the server serves keep-alive traffic |
+| **10** | `task` with structured concurrency, signals, `derived`, **state machines**, a minimal HTTP/1.1 server as the design's driver | 100k concurrently waiting coroutines ✅ (48.7 ms for 500k resume steps, 2 MB of frames); signals, machines and the server still to come ⏳ |
 | **11** | ECS, access graph, parallel scheduler, **AoS/SoA layout polymorphism**, SPMD `foreach` | 1M entity integration benchmark; the SoA variant beats the AoS one |
 | **12** | LLVM AOT, WASM target, differential fuzzing across interpreter, JIT and AOT | shipping builds need no JIT; within 1.2x of C++ |
 
@@ -62,8 +62,10 @@ tier is checked against, and it makes the standard library possible.
 
 ## Platform order
 
-The dev machine is arm64 macOS, so the dev-tier code generator targets **arm64
-first**, then x64. The AOT tier is portable from the start because LLVM handles
+The dev machine is arm64 macOS, so the dev-tier code generator targeted
+**arm64 first**, then x86-64 — both are in, and the second one is tested on
+the first by building the compiler for x86-64 and letting the system's
+translator run it (`cmake --preset x64`). The AOT tier is portable from the start because LLVM handles
 the back end. Consoles, when they come, are AOT only.
 
 ## How the standard library is layered
