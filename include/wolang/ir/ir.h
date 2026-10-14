@@ -158,6 +158,12 @@ struct Function {
   // function the way the machine means it until the transform in
   // `ir/tasks.h` has split it into a state machine.
   bool is_task = false;
+  // A `task` with no body anywhere: the one suspension primitive. The
+  // transform writes its machine -- suspend once, then finish -- because
+  // there is no body to split. A declaration whose body is in another file
+  // is *not* this, and saying so is the difference between a `wait` that
+  // works and one that quietly does nothing.
+  bool is_primitive_task = false;
   uint32_t source_file = kNoSource;
   uint32_t source_item = kNoSource;
   // Block 0 is the entry, and its parameters are the function's.

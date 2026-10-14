@@ -45,6 +45,11 @@ int64_t wolang_sched_run();
 // Whether the task behind |handle| has finished.
 bool wolang_sched_done(int32_t handle);
 
+// Runs until the task behind |handle| has finished, and returns how many
+// steps that took. Everything else ready runs too: a cooperative scheduler
+// has nothing else to do while waiting.
+int64_t wolang_sched_join(int32_t handle);
+
 // How many tasks are not finished.
 int32_t wolang_sched_pending();
 

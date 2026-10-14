@@ -61,6 +61,10 @@ struct Binding {
   // `is_foreign` is -- the call site must not have to read the declaring
   // file.
   bool is_task = false;
+  // Whether the declaration has a body. A `task` without one is a
+  // suspension primitive: it suspends once and then finishes, and the
+  // compiler writes that machine itself.
+  bool has_body = false;
 
   friend bool operator==(const Binding& lhs, const Binding& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
@@ -68,7 +72,8 @@ struct Binding {
            lhs.file == rhs.file && lhs.dimension == rhs.dimension &&
            lhs.factor == rhs.factor && lhs.is_mutable == rhs.is_mutable &&
            lhs.is_public == rhs.is_public &&
-           lhs.is_foreign == rhs.is_foreign && lhs.is_task == rhs.is_task;
+           lhs.is_foreign == rhs.is_foreign &&
+           lhs.is_task == rhs.is_task && lhs.has_body == rhs.has_body;
   }
 };
 

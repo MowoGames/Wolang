@@ -110,6 +110,8 @@ class Lowerer {
           function.source_item = binding->item;
         }
         function.is_task = HasFlag(item.flags, ItemFlags::kAsync);
+        function.is_primitive_task =
+            function.is_task && !item.body.is_valid();
         if (HasFlag(item.flags, ItemFlags::kExtern)) {
           // `extern "C" fun puts(...) = "puts"` names the symbol; without
           // the clause the symbol is the declaration's own name.
@@ -286,7 +288,9 @@ class Lowerer {
   uint32_t DeclareExternal(Symbol name,
                            TypeId type,
                            uint32_t file = Function::kNoSource,
-                           uint32_t item = Function::kNoSource) {
+                           uint32_t item = Function::kNoSource,
+                           bool is_task = false,
+                           bool has_body = false) {
     for (uint32_t i = 0; i < module_->functions.size(); ++i) {
       if (module_->functions[i].name == name) {
         return i;
@@ -300,6 +304,10 @@ class Lowerer {
     // synthesized has no declaration to point at.
     declaration.source_file = file;
     declaration.source_item = item;
+    declaration.is_task = is_task;
+    // A task with no body anywhere is the suspension primitive, and this
+    // file may write its machine; one whose body is elsewhere may not.
+    declaration.is_primitive_task = is_task && !has_body;
     module_->functions.push_back(std::move(declaration));
     return static_cast<uint32_t>(module_->functions.size() - 1);
   }
@@ -1187,7 +1195,8 @@ class Lowerer {
       if (binding != nullptr && binding->kind == BindingKind::kFunction) {
         return builder_->Call(
             DeclareExternal(name, binding->type, binding->file,
-                            binding->item),
+                            binding->item, binding->is_task,
+                            binding->has_body),
             type, std::move(arguments));
       }
     }

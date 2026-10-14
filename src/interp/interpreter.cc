@@ -18,6 +18,9 @@ namespace {
 // "the value of %7" a lookup.
 struct Frame {
   const ir::Function* function = nullptr;
+  // Which module the function came from: a cross-file call lands in
+  // another one, and a string literal is an index into its own module.
+  const ir::Module* module = nullptr;
   std::vector<Value> values;
   // Storage behind every `alloca` in this activation.
   std::vector<Value> slots;
@@ -31,18 +34,21 @@ class Interpreter {
               const Limits& limits,
               Output* output,
               ForeignCaller* foreign,
-              abi::LayoutStore* layouts)
+              abi::LayoutStore* layouts,
+              std::span<const ir::Module* const> linked)
       : interner_(interner),
         types_(types),
         module_(module),
         limits_(limits),
         output_(output),
         foreign_(foreign),
-        layouts_(layouts) {}
+        layouts_(layouts),
+        linked_(linked) {}
 
   Outcome Run(const ir::Function& function, std::vector<Value> arguments) {
     Outcome outcome;
-    const Value result = Call(function, std::move(arguments), &outcome);
+    const Value result =
+        Call(function, &module_, std::move(arguments), &outcome);
     if (outcome.ok()) {
       outcome.value = result;
     }
@@ -71,6 +77,7 @@ class Interpreter {
   }
 
   Value Call(const ir::Function& function,
+             const ir::Module* home,
              std::vector<Value> arguments,
              Outcome* outcome) {
     if (function.is_foreign()) {
@@ -103,6 +110,7 @@ class Interpreter {
 
     Frame frame;
     frame.function = &function;
+    frame.module = home;
     frame.values.assign(function.instructions.size(), Value());
 
     const std::span<const ir::InstId> params =
@@ -377,8 +385,9 @@ class Interpreter {
       case ir::Opcode::kConstNull:
         return Value::Absent();
       case ir::Opcode::kConstString:
-        return inst.payload.string < module_.strings.size()
-                   ? Value::Str(module_.strings[inst.payload.string])
+        return inst.payload.string < frame->module->strings.size()
+                   ? Value::Str(
+                         frame->module->strings[inst.payload.string])
                    : Value::Str("");
 
       case ir::Opcode::kUndef:
@@ -529,7 +538,7 @@ class Interpreter {
       }
 
       case ir::Opcode::kCall: {
-        if (inst.payload.callee >= module_.functions.size()) {
+        if (inst.payload.callee >= frame->module->functions.size()) {
           return Trap(outcome, TrapKind::kNoBody, At(function, id),
                       "calls a function the module does not have");
         }
@@ -539,8 +548,34 @@ class Interpreter {
                                   ? frame->values[operand.index]
                                   : Value());
         }
-        return Call(module_.functions[inst.payload.callee],
-                    std::move(arguments), outcome);
+        const ir::Function* callee =
+            &frame->module->functions[inst.payload.callee];
+        const ir::Module* home = frame->module;
+        if (callee->is_declaration() && callee->has_source() &&
+            !callee->is_foreign()) {
+          // Lowering is per file, so the definition may be in another one.
+          // Resolved by the declaration it came from, which is the same
+          // thing the code generator links by.
+          for (const ir::Module* other : linked_) {
+            if (other == nullptr || other == frame->module) {
+              continue;
+            }
+            for (const ir::Function& candidate : other->functions) {
+              if (candidate.is_declaration() || !candidate.has_source() ||
+                  candidate.source_file != callee->source_file ||
+                  candidate.source_item != callee->source_item) {
+                continue;
+              }
+              callee = &candidate;
+              home = other;
+              break;
+            }
+            if (home != frame->module) {
+              break;
+            }
+          }
+        }
+        return Call(*callee, home, std::move(arguments), outcome);
       }
 
       case ir::Opcode::kCast:
@@ -983,6 +1018,7 @@ class Interpreter {
   Output* output_ = nullptr;
   ForeignCaller* foreign_ = nullptr;
   abi::LayoutStore* layouts_ = nullptr;
+  std::span<const ir::Module* const> linked_;
   uint64_t steps_ = 0;
   uint32_t depth_ = 0;
 };
@@ -997,9 +1033,10 @@ Outcome Run(const StringInterner& interner,
             const Limits& limits,
             Output* output,
             ForeignCaller* foreign,
-            abi::LayoutStore* layouts) {
+            abi::LayoutStore* layouts,
+            std::span<const ir::Module* const> linked) {
   Interpreter interpreter(interner, types, module, limits, output, foreign,
-                          layouts);
+                          layouts, linked);
   return interpreter.Run(function, std::move(arguments));
 }
 
@@ -1011,7 +1048,8 @@ Outcome RunNamed(const StringInterner& interner,
                  const Limits& limits,
                  Output* output,
                  ForeignCaller* foreign,
-                 abi::LayoutStore* layouts) {
+                 abi::LayoutStore* layouts,
+                 std::span<const ir::Module* const> linked) {
   const ir::Function* function = module.Find(name);
   if (function == nullptr) {
     Outcome outcome;
@@ -1021,7 +1059,7 @@ Outcome RunNamed(const StringInterner& interner,
     return outcome;
   }
   return Run(interner, types, module, *function, std::move(arguments),
-             limits, output, foreign, layouts);
+             limits, output, foreign, layouts, linked);
 }
 
 }  // namespace interp

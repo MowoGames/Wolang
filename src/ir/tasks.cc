@@ -15,6 +15,7 @@ namespace ir {
 namespace {
 
 constexpr std::string_view kRecursiveTask = "E0304";
+constexpr std::string_view kForeignTask = "E0305";
 
 // The symbol the frame of a driven task is allocated through. Declared per
 // frame type so that the IR stays typed: one symbol, several declarations,
@@ -342,7 +343,12 @@ class Splitter {
     std::vector<uint32_t> result;
     std::vector<uint8_t> state(count, 0);  // 0 = new, 1 = on the stack, 2 = done
     for (uint32_t i = 0; i < count; ++i) {
-      if (module_->functions[i].is_task) {
+      const Function& function = module_->functions[i];
+      // A task whose body is in another file has its machine there too.
+      // Splitting it here would write a second machine that shares nothing
+      // with the real one.
+      if (function.is_task &&
+          (!function.is_declaration() || function.is_primitive_task)) {
         VisitTask(i, &state, &result);
       }
     }
@@ -372,6 +378,38 @@ class Splitter {
     }
     (*state)[index] = 2;
     result->push_back(index);
+  }
+
+  // A `wait` on a task this file cannot see the inside of. The frame of a
+  // task is built from its body -- its slots and the frames of what it
+  // waits on -- so a declaration is not enough, and lowering is per file.
+  //
+  // The way out is a calling convention: each task would also get
+  // generated `$framesize`, `$start` and `$result` entry points, so a
+  // caller could allocate and fill a frame it cannot lay out. That is the
+  // same whole-program step cross-file monomorphization needs, and it
+  // belongs with it.
+  void ReportUnknownFrame(uint32_t callee) {
+    if (callee >= module_->functions.size() ||
+        !module_->functions[callee].is_task ||
+        reported_.count(callee) != 0) {
+      return;
+    }
+    reported_.insert(callee);
+    std::string message = "`";
+    message.append(interner_->Text(module_->functions[callee].name));
+    message.append("` is a task from another module, and `wait` needs the "
+                   "frame it keeps its state in");
+    Diagnostic diagnostic;
+    diagnostic.severity = Severity::kError;
+    diagnostic.code = std::string(kForeignTask);
+    diagnostic.message = std::move(message);
+    DiagnosticLabel label;
+    label.is_primary = true;
+    label.span = span_of_(module_->functions[callee].source_item);
+    label.message = "spawn it instead, or move the `wait` into its module";
+    diagnostic.labels.push_back(std::move(label));
+    diagnostics_->push_back(std::move(diagnostic));
   }
 
   void ReportRecursion(uint32_t index) {
@@ -863,8 +901,11 @@ class Splitter {
                          std::vector<BlockId>* states) {
     const Frame* callee = FrameOf(inst.payload.callee);
     if (callee == nullptr) {
-      // A recursive task, already reported. Leave the body unreachable
-      // rather than emitting a machine that cannot work.
+      // Either a recursive task -- already reported -- or one defined in
+      // another file, whose frame this file cannot lay out.
+      ReportUnknownFrame(inst.payload.callee);
+      // Leave the body unreachable rather than emitting a machine that
+      // cannot work.
       Inst unreachable;
       unreachable.opcode = Opcode::kUnreachable;
       const InstId stop{static_cast<uint32_t>(target->instructions.size())};

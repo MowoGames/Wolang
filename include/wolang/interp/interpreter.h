@@ -3,6 +3,7 @@
 #ifndef WOLANG_INTERP_INTERPRETER_H_
 #define WOLANG_INTERP_INTERPRETER_H_
 
+#include <span>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,11 @@ struct Limits {
 // Runs on whatever module it is given. The reference semantics are the
 // unoptimized IR; running the optimized one too and comparing is what turns
 // "the passes preserve meaning" into something testable rather than assumed.
+// |linked| is every other module of the program. Lowering is per file, so a
+// call into another file is a declaration with no body; given the other
+// modules the interpreter resolves it the same way the code generator links
+// it -- by the declaration it came from, not by name.
+//
 // |layouts| is how the interpreter answers "where is field three" for a
 // value it only has the address of. Without one, reaching into memory
 // through a pointer traps instead.
@@ -62,7 +68,8 @@ Outcome Run(const StringInterner& interner,
             const Limits& limits = {},
             Output* output = nullptr,
             ForeignCaller* foreign = nullptr,
-            abi::LayoutStore* layouts = nullptr);
+            abi::LayoutStore* layouts = nullptr,
+            std::span<const ir::Module* const> linked = {});
 
 // Convenience: finds |name| in |module| and runs it.
 Outcome RunNamed(const StringInterner& interner,
@@ -73,7 +80,8 @@ Outcome RunNamed(const StringInterner& interner,
                  const Limits& limits = {},
                  Output* output = nullptr,
                  ForeignCaller* foreign = nullptr,
-                 abi::LayoutStore* layouts = nullptr);
+                 abi::LayoutStore* layouts = nullptr,
+                 std::span<const ir::Module* const> linked = {});
 
 }  // namespace interp
 }  // namespace wolang

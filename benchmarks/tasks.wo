@@ -6,7 +6,7 @@
 // context switch. This is the benchmark that says whether that is true.
 //
 // Declared locally rather than imported, because a single file resolves no
-// imports; in a package this comes from `std.task`.
+// imports; in a package this comes from `std.tasks`.
 
 extern "C" fun wolang_sched_run() -> s64
 

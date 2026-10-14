@@ -1240,6 +1240,11 @@ TypeId Checker::CheckIf(const Expr& expr, TypeId expected) {
     NarrowOnNullCheck(expr.lhs);
   }
 
+  // Each branch stands where the `if` itself stands, so a `wait` is
+  // allowed in one exactly when it would have been allowed in place of the
+  // whole expression.
+  const bool branch_allows_wait = block_allows_wait_;
+  wait_allowed_ = branch_allows_wait;
   const TypeId then_type = Check(expr.rhs, expected);
   PopScope();
 
@@ -1248,6 +1253,7 @@ TypeId Checker::CheckIf(const Expr& expr, TypeId expected) {
     // expression is a statement.
     return types_->void_type();
   }
+  wait_allowed_ = branch_allows_wait;
   const TypeId else_type =
       Check(expr.extra, expected.is_valid() ? expected : then_type);
   if (expected.is_valid()) {
@@ -1433,6 +1439,8 @@ TypeId Checker::CheckMatch(const Expr& expr, TypeId expected) {
         ReportMismatch(types_->bool_type(), guard, arm.span);
       }
     }
+    // An arm stands where the `match` stands.
+    wait_allowed_ = block_allows_wait_;
     const TypeId body = Check(arm.body, expected.is_valid() ? expected
                                                             : result);
     PopScope();
@@ -1481,6 +1489,9 @@ TypeId Checker::CheckLoop(const Expr& expr) {
     BindPattern(expr.pattern, element);
   }
 
+  // A loop body's value is discarded, so it is a statement position: a
+  // `wait` as the last thing in it is as fine as one anywhere else.
+  wait_allowed_ = true;
   Check(expr.rhs, TypeId{});
   --loop_depth_;
   PopScope();
@@ -1718,9 +1729,11 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       return result_.TypeOf(id);
 
     case ExprKind::kIf:
+      block_allows_wait_ = wait_allowed_here;
       type = CheckIf(expr, expected);
       break;
     case ExprKind::kMatch:
+      block_allows_wait_ = wait_allowed_here;
       type = CheckMatch(expr, expected);
       break;
     case ExprKind::kLoop:

@@ -614,6 +614,7 @@ FileResolution ResolveFile(TypeStore* types,
     binding.is_public = HasFlag(entry.flags, ItemFlags::kOffer);
     binding.is_foreign = HasFlag(entry.flags, ItemFlags::kExtern);
     binding.is_task = HasFlag(entry.flags, ItemFlags::kAsync);
+    binding.has_body = HasFlag(entry.flags, ItemFlags::kHasBody);
     resolution.scope.push_back(binding);
   }
 

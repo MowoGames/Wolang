@@ -1042,6 +1042,9 @@ ItemId Parser::ParseFunction(Item item, size_t start) {
            "write `{ ... }`, `=> expr`, or nothing for a declaration");
   }
 
+  if (item.body.is_valid()) {
+    item.flags |= ItemFlags::kHasBody;
+  }
   item.span = SpanFrom(start);
   return ast_->Add(std::move(item));
 }

@@ -13,6 +13,7 @@
 extern "C" fun wolang_sched_run() -> s64
 extern "C" fun wolang_sched_done(handle: s32) -> bool
 extern "C" fun wolang_sched_pending() -> s32
+extern "C" fun wolang_sched_join(handle: s32) -> s64
 
 /// Gives the scheduler a chance to run something else.
 offer task fun Yield()
@@ -37,11 +38,13 @@ offer fun Pending() -> s32 uses unsafe {
   return wolang_sched_pending()
 }
 
-/// Suspends until the task behind `handle` has finished. Structured
-/// concurrency in its smallest form: whoever spawned something can wait for
-/// it without knowing what it is.
-offer task fun Join(handle: s32) {
-  while !Done(handle) {
-    wait Yield()
-  }
+/// Runs until the task behind `handle` has finished.
+///
+/// Not a `task` itself, and that is a limitation rather than a design: a
+/// `wait` on a task from another module needs the frame layout that module
+/// computed (`E0305`), so joining is done by running the scheduler rather
+/// than by suspending. Inside a task, prefer `wait` on something in your
+/// own module and keep `Join` for the top level.
+offer fun Join(handle: s32) -> s64 uses unsafe {
+  return wolang_sched_join(handle)
 }

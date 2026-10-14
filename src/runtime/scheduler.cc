@@ -93,6 +93,36 @@ int64_t wolang_sched_run() {
   return steps;
 }
 
+int64_t wolang_sched_join(int32_t handle) {
+  State& state = Current();
+  if (state.resume == nullptr) {
+    return 0;
+  }
+  int64_t steps = 0;
+  while (!wolang_sched_done(handle) && !state.ready.empty()) {
+    const int32_t next = state.ready.front();
+    state.ready.pop_front();
+    Entry& task = state.tasks[static_cast<size_t>(next)];
+    if (task.done) {
+      continue;
+    }
+    ++steps;
+    const bool finished = state.resume(state.context, task.kind,
+                                       task.frame);
+    Entry& after = state.tasks[static_cast<size_t>(next)];
+    if (!finished) {
+      state.ready.push_back(next);
+      continue;
+    }
+    after.done = true;
+    if (after.frame != nullptr) {
+      wolang_frame_free(after.frame);
+      after.frame = nullptr;
+    }
+  }
+  return steps;
+}
+
 bool wolang_sched_done(int32_t handle) {
   State& state = Current();
   if (handle < 0 || static_cast<size_t>(handle) >= state.tasks.size()) {

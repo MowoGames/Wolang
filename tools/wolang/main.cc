@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -407,6 +408,7 @@ struct TaskHost {
   abi::LayoutStore* layouts = nullptr;
   interp::ForeignCaller* foreign = nullptr;
   codegen::CompiledModule* compiled = nullptr;
+  std::span<const ir::Module* const> linked;
   Symbol dispatch;
 };
 
@@ -437,7 +439,7 @@ bool ResumeTask(void* context, int32_t kind, void* frame) {
     outcome = interp::RunNamed(host->database->interner(),
                                host->database->types(), *host->module,
                                host->dispatch, arguments, {}, nullptr,
-                               host->foreign, host->layouts);
+                               host->foreign, host->layouts, host->linked);
   }
   if (!outcome.ok()) {
     std::fprintf(stderr, "wolang: %s at %s: %s\n",
@@ -457,6 +459,19 @@ bool ResumeTask(void* context, int32_t kind, void* frame) {
 // a declaration with no body, and compiling one file at a time would leave
 // every cross-module call to the interpreter. In a package that is most of
 // them.
+std::vector<const ir::Module*> CollectModules(
+    Database* database,
+    const std::vector<FileId>& files) {
+  std::vector<const ir::Module*> modules;
+  for (FileId file : files) {
+    const LoweredFile* lowered = database->Lowered(file);
+    if (lowered != nullptr) {
+      modules.push_back(&lowered->module);
+    }
+  }
+  return modules;
+}
+
 std::vector<codegen::FileCode> CollectCode(Database* database,
                                            const std::vector<FileId>& files) {
   std::vector<codegen::FileCode> code;
@@ -551,12 +566,15 @@ int RunProgram(const Options& options) {
   // `main` may spawn, and running what it spawned is a call into here.
   abi::LayoutStore program_layouts(database.types(),
                                    program_file->resolution);
+  const std::vector<const ir::Module*> modules =
+      CollectModules(&database, files);
   TaskHost host;
   host.database = &database;
   host.module = &program->module;
   host.layouts = &program_layouts;
   host.foreign = foreign.get();
   host.compiled = compiled.get();
+  host.linked = modules;
   host.dispatch = database.interner().Intern("wolang$dispatch");
   runtime::ResetScheduler();
   runtime::InstallResume(&ResumeTask, &host);
@@ -570,7 +588,7 @@ int RunProgram(const Options& options) {
     // address of, which a task frame is.
     outcome = interp::RunNamed(database.interner(), database.types(),
                                program->module, main, {}, {}, &output,
-                               foreign.get(), &program_layouts);
+                               foreign.get(), &program_layouts, modules);
   }
 
   std::fputs(output.text.c_str(), stdout);
@@ -623,6 +641,9 @@ int RunTests(const Options& options) {
     compiled = codegen::Compile(database.interner(), database.types(), code);
   }
 
+  const std::vector<const ir::Module*> modules =
+      CollectModules(&database, files);
+
   int ran = 0;
   int failed = 0;
   for (FileId file : files) {
@@ -640,7 +661,7 @@ int RunTests(const Options& options) {
                                                   : FileResolution{});
       const interp::Outcome outcome = interp::RunNamed(
           database.interner(), database.types(), lowered->unoptimized, name,
-          {}, {}, nullptr, foreign.get(), &layouts);
+          {}, {}, nullptr, foreign.get(), &layouts, modules);
       const bool returned_false =
           outcome.ok() &&
           outcome.value.kind() == interp::Value::Kind::kBool &&

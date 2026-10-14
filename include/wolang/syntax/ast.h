@@ -119,6 +119,11 @@ enum class ItemFlags : uint16_t {
   kTraitImpl = 1 << 11,
   // `need a.b.{c, d}` rather than `need a.b`.
   kNeedList = 1 << 12,
+  // The declaration has a body. Recorded as a flag because the item tree
+  // crosses files and the body does not: another module has to be able to
+  // tell a `task` it may `wait` on -- one with no body, which suspends once
+  // -- from one whose machine lives somewhere it cannot see.
+  kHasBody = 1 << 13,
 };
 
 enum class ExprKind : uint8_t {
