@@ -29,6 +29,7 @@
 #include "wolang/codegen/compiler.h"
 #include "wolang/abi/layout.h"
 #include "wolang/codegen/foreign.h"
+#include "wolang/fuzz/generator.h"
 #include "wolang/runtime/scheduler.h"
 #include "wolang/compiler/workspace.h"
 #include "wolang/format/formatter.h"
@@ -54,6 +55,15 @@ struct Options {
   bool interpret = false;
   bool show_trivia = false;
   bool show_spans = false;
+  // `fuzz` only: which program to start from, how many, and whether to
+  // print what was generated -- which is the first thing wanted when one
+  // of them disagrees.
+  uint64_t fuzz_seed = 1;
+  uint64_t fuzz_count = 100;
+  bool show_source = false;
+  // Smaller programs are the ones a disagreement can be read in.
+  int fuzz_depth = 3;
+  int fuzz_statements = 5;
   // `fmt` only: verify instead of printing, or rewrite the file in place.
   bool check_only = false;
   bool write_in_place = false;
@@ -90,10 +100,14 @@ void PrintUsage() {
       "  test <paths>    run every function marked `@Test`\n"
       "  modules <dir>   print the module graph of a package\n"
       "  systems <dir>   print what systems access and when they run\n"
+      "  fuzz            generate programs and compare the tiers\n"
       "  version         print the version and exit\n"
       "  help            print this message\n"
       "\n"
       "options:\n"
+      "  --seed <n>      the first seed `fuzz` generates from\n"
+      "  --count <n>     how many programs `fuzz` generates\n"
+      "  --source        print the programs `fuzz` generated\n"
       "  --no-color      never emit ANSI colors\n"
       "  --trivia        include comments in `tokens` output\n"
       "  --spans         annotate `ast` output with positions\n"
@@ -921,6 +935,128 @@ int RunModules(const Options& options) {
   return Report(database.sources(), diagnostics.diagnostics(), render);
 }
 
+// Generated programs through every tier, compared.
+//
+// The same check every test in `CodegenTest` makes by hand, with the
+// programs written by a generator instead: the interpreter on the IR as
+// lowering left it is the reference, the interpreter on the optimized IR
+// says whether the passes kept the meaning, and the machine code says
+// whether the back end agrees with both. A seed names one program, so a
+// disagreement can be looked at again.
+int RunFuzz(const Options& options) {
+  const uint64_t first = options.fuzz_seed;
+  const uint64_t count = options.fuzz_count;
+  uint64_t checked = 0;
+  uint64_t failed = 0;
+
+  for (uint64_t seed = first; seed < first + count; ++seed) {
+    fuzz::Options generated;
+    generated.seed = seed;
+    generated.depth = options.fuzz_depth;
+    generated.statements = options.fuzz_statements;
+    generated.functions = options.fuzz_statements <= 2 ? 1 : 3;
+    const std::string source = fuzz::Generate(generated);
+    if (options.show_source) {
+      std::fprintf(stdout, "// seed %llu\n%s\n",
+                   static_cast<unsigned long long>(seed), source.c_str());
+    }
+
+    Database database;
+    const FileId file = database.AddFile("<fuzz>", source);
+    bool rejected = false;
+    if (const std::vector<Diagnostic>* diagnostics =
+            database.Diagnostics(file)) {
+      for (const Diagnostic& diagnostic : *diagnostics) {
+        if (diagnostic.severity == Severity::kError) {
+          std::fprintf(stdout,
+                       "[ failed ] seed %llu: the checker rejected the "
+                       "program: %s %s\n",
+                       static_cast<unsigned long long>(seed),
+                       std::string(diagnostic.code).c_str(),
+                       diagnostic.message.c_str());
+          rejected = true;
+          break;
+        }
+      }
+    }
+    if (rejected) {
+      ++failed;
+      continue;
+    }
+
+    const LoweredFile* lowered = database.Lowered(file);
+    const CheckedFile* checked_file = database.Checked(file);
+    if (lowered == nullptr || checked_file == nullptr) {
+      continue;
+    }
+    if (!lowered->problems.empty()) {
+      std::fprintf(stdout, "[ failed ] seed %llu: %s\n",
+                   static_cast<unsigned long long>(seed),
+                   lowered->problems.front().c_str());
+      ++failed;
+      continue;
+    }
+
+    const Symbol probe = database.interner().Intern("Probe");
+    abi::LayoutStore layouts(database.types(), checked_file->resolution);
+    const std::unique_ptr<interp::ForeignCaller> foreign =
+        codegen::MakeForeignCaller();
+    const interp::Outcome reference = interp::RunNamed(
+        database.interner(), database.types(), lowered->unoptimized, probe,
+        {}, {}, nullptr, foreign.get(), &layouts);
+    // A program the reference tier could not finish says nothing about the
+    // other two, and the compiled tier has no step limit to stop it with.
+    if (!reference.ok() && reference.trap == ir::TrapKind::kStepLimit) {
+      continue;
+    }
+    const interp::Outcome optimized = interp::RunNamed(
+        database.interner(), database.types(), lowered->module, probe, {}, {},
+        nullptr, foreign.get(), &layouts);
+    ++checked;
+
+    const auto describe = [](const interp::Outcome& outcome) {
+      return outcome.ok() ? outcome.value.Describe()
+                          : "trap: " + std::string(
+                                           ir::TrapKindName(outcome.trap));
+    };
+    if (describe(reference) != describe(optimized)) {
+      std::fprintf(stdout,
+                   "[ failed ] seed %llu: the passes changed the meaning: "
+                   "%s then %s\n",
+                   static_cast<unsigned long long>(seed),
+                   describe(reference).c_str(),
+                   describe(optimized).c_str());
+      ++failed;
+      continue;
+    }
+
+    if (!codegen::IsSupportedTarget()) {
+      continue;
+    }
+    std::unique_ptr<codegen::CompiledModule> compiled =
+        codegen::Compile(database.interner(), database.types(),
+                         checked_file->resolution, lowered->module);
+    if (compiled == nullptr || !compiled->Contains(probe)) {
+      continue;
+    }
+    const interp::Outcome machine = compiled->Run(probe, {});
+    if (describe(machine) != describe(reference)) {
+      std::fprintf(stdout,
+                   "[ failed ] seed %llu: the code generator disagrees: "
+                   "interpreter said %s, machine code said %s\n",
+                   static_cast<unsigned long long>(seed),
+                   describe(reference).c_str(), describe(machine).c_str());
+      ++failed;
+    }
+  }
+
+  std::fprintf(stdout, "%llu program%s checked, %llu disagreed\n",
+               static_cast<unsigned long long>(checked),
+               checked == 1 ? "" : "s",
+               static_cast<unsigned long long>(failed));
+  return failed == 0 ? 0 : 1;
+}
+
 // What every system does and when it can run.
 //
 // The schedule is a property of the declarations, so it can be printed
@@ -988,7 +1124,17 @@ int Run(int argc, char** argv) {
   Options options;
   for (int i = 1; i < argc; ++i) {
     const std::string_view argument = argv[i];
-    if (argument == "--no-color") {
+    if (argument == "--source") {
+      options.show_source = true;
+    } else if (argument == "--seed" && i + 1 < argc) {
+      options.fuzz_seed = std::strtoull(argv[++i], nullptr, 10);
+    } else if (argument == "--depth" && i + 1 < argc) {
+      options.fuzz_depth = std::atoi(argv[++i]);
+    } else if (argument == "--statements" && i + 1 < argc) {
+      options.fuzz_statements = std::atoi(argv[++i]);
+    } else if (argument == "--count" && i + 1 < argc) {
+      options.fuzz_count = std::strtoull(argv[++i], nullptr, 10);
+    } else if (argument == "--no-color") {
       options.color = false;
     } else if (argument == "--trivia") {
       options.show_trivia = true;
@@ -1062,6 +1208,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "systems") {
     return RunSystems(options);
+  }
+  if (options.command == "fuzz") {
+    return RunFuzz(options);
   }
 
   std::fprintf(stderr, "wolang: unknown command '%s'\n",

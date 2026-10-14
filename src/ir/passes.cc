@@ -63,6 +63,20 @@ uint32_t EdgesInto(const Function& function, BlockId block) {
 // traps on a field that is not there: the front end builds them from the
 // member table, so an out-of-range field is a compiler bug rather than
 // program behaviour to preserve.
+uint32_t WidthInBits(IntWidth width) {
+  switch (width) {
+    case IntWidth::k8:
+      return 8;
+    case IntWidth::k16:
+      return 16;
+    case IntWidth::k32:
+      return 32;
+    case IntWidth::k64:
+      return 64;
+  }
+  return 32;
+}
+
 bool IsPure(Opcode opcode) {
   switch (opcode) {
     // Can trap.
@@ -75,11 +89,18 @@ bool IsPure(Opcode opcode) {
     case Opcode::kShl:
     case Opcode::kShr:
     case Opcode::kIndex:
+    // An element address is bounds checked, so it can trap -- which makes
+    // it something that may not be moved to a path that would not have
+    // reached it. The fuzzer said so: an `index.addr` inside an `if`
+    // inside a loop was hoisted into the loop's preheader, and a program
+    // that returned nine started trapping instead.
+    case Opcode::kIndexAddress:
+    case Opcode::kSoaAddress:
+    case Opcode::kIndexCheck:
     case Opcode::kOptionalValue:
     case Opcode::kLoad:
     case Opcode::kUndef:
     // Does something, or is something.
-    case Opcode::kIndexCheck:
     case Opcode::kStore:
     case Opcode::kCall:
     case Opcode::kWaitCall:
@@ -177,29 +198,90 @@ bool FoldConstants(TypeStore* types, Function* function) {
       const uint64_t a = left.payload.integer;
       const uint64_t b = right.payload.integer;
 
+      // What these bits mean. A constant is stored sign-extended to
+      // sixty-four bits, but what the *operation* is depends on the type:
+      // `-2 / -10` is zero as a signed division and one as an unsigned
+      // one, and folding it the wrong way is a miscompile the fuzzer
+      // found within six programs.
+      //
+      // The operand type rather than the instruction's: a comparison
+      // produces a bool, and whether it is a signed comparison is a
+      // question about what is being compared.
+      const TypeId operand_type =
+          left.type.is_valid() ? left.type : inst.type;
+      const bool is_signed =
+          operand_type.is_valid() &&
+          types->KindOf(operand_type) == TypeKind::kInt &&
+          types->Get(operand_type).is_signed;
+      const uint32_t bits =
+          operand_type.is_valid() &&
+                  types->KindOf(operand_type) == TypeKind::kInt
+              ? WidthInBits(types->Get(operand_type).int_width)
+              : 64;
+      const auto signed_of = [&](uint64_t raw) {
+        return bits >= 64 ? static_cast<int64_t>(raw)
+                          : static_cast<int64_t>(raw << (64 - bits)) >>
+                                (64 - bits);
+      };
+      const int64_t sa = signed_of(a);
+      const int64_t sb = signed_of(b);
+      // Whether a folded value still fits what it is being folded into.
+      // One that does not would have trapped at run time, so it is left
+      // alone rather than folded into the wrapped answer.
+      const auto fits = [&](int64_t value) {
+        if (bits >= 64) {
+          return true;
+        }
+        if (is_signed) {
+          const int64_t limit = int64_t{1} << (bits - 1);
+          return value >= -limit && value < limit;
+        }
+        return value >= 0 &&
+               static_cast<uint64_t>(value) < (uint64_t{1} << bits);
+      };
+
       bool folded = true;
       uint64_t value = 0;
       bool boolean = false;
       bool produces_bool = false;
       switch (inst.opcode) {
         case Opcode::kAdd:
-          value = a + b;
+          folded = fits(sa + sb);
+          value = static_cast<uint64_t>(sa + sb);
           break;
         case Opcode::kSub:
-          value = a - b;
+          folded = fits(sa - sb);
+          value = static_cast<uint64_t>(sa - sb);
           break;
-        case Opcode::kMul:
-          value = a * b;
+        case Opcode::kMul: {
+          // Checked in a wider place than the result, so that an overflow
+          // is recognised rather than folded into its wrapped answer.
+          const __int128 wide = static_cast<__int128>(sa) * sb;
+          folded = wide == static_cast<__int128>(static_cast<int64_t>(wide)) &&
+                   fits(static_cast<int64_t>(wide));
+          value = static_cast<uint64_t>(static_cast<int64_t>(wide));
           break;
+        }
         case Opcode::kDiv:
           // Division by zero is a runtime fault, not something to fold into
-          // a wrong answer at compile time.
-          folded = b != 0;
-          value = folded ? a / b : 0;
+          // a wrong answer at compile time. Nor is the one division that
+          // overflows: the most negative value over minus one.
+          if (is_signed) {
+            folded = sb != 0 && !(sb == -1 && !fits(-sa));
+            value = folded ? static_cast<uint64_t>(sa / sb) : 0;
+          } else {
+            folded = b != 0;
+            value = folded ? a / b : 0;
+          }
           break;
         case Opcode::kRem:
-          folded = b != 0;
-          value = folded ? a % b : 0;
+          if (is_signed) {
+            folded = sb != 0 && !(sb == -1 && !fits(-sa));
+            value = folded ? static_cast<uint64_t>(sa % sb) : 0;
+          } else {
+            folded = b != 0;
+            value = folded ? a % b : 0;
+          }
           break;
         case Opcode::kBitAnd:
           value = a & b;
@@ -211,27 +293,27 @@ bool FoldConstants(TypeStore* types, Function* function) {
           value = a ^ b;
           break;
         case Opcode::kEq:
-          boolean = a == b;
+          boolean = sa == sb;
           produces_bool = true;
           break;
         case Opcode::kNe:
-          boolean = a != b;
+          boolean = sa != sb;
           produces_bool = true;
           break;
         case Opcode::kLt:
-          boolean = a < b;
+          boolean = is_signed ? sa < sb : a < b;
           produces_bool = true;
           break;
         case Opcode::kLe:
-          boolean = a <= b;
+          boolean = is_signed ? sa <= sb : a <= b;
           produces_bool = true;
           break;
         case Opcode::kGt:
-          boolean = a > b;
+          boolean = is_signed ? sa > sb : a > b;
           produces_bool = true;
           break;
         case Opcode::kGe:
-          boolean = a >= b;
+          boolean = is_signed ? sa >= sb : a >= b;
           produces_bool = true;
           break;
         default:

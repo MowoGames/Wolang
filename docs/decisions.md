@@ -748,3 +748,34 @@ a system at all. The storage is a library (`game.ecs`), the schedule is the
 compiler's, and the join between them -- which store a query reads, and how
 a stage is handed to a thread -- is the next piece. Running the stages in
 parallel needs threads in the runtime, which do not exist yet.
+
+**D83. The programs are generated, and the tiers are compared.** Every
+hand-written codegen test runs one program through all three tiers and
+compares; the fuzzer writes the programs. A seed names one program for
+ever, so a disagreement can be looked at again -- which is the whole
+reason the generator uses its own xorshift rather than anything from the
+standard library, whose engines are free to differ between
+implementations.
+
+It earned its keep in the first two hundred programs, with two
+miscompiles in passes that had been there for three waves:
+
+- **Constant folding was unsigned.** `-2 / -10` folded to one instead of
+  zero, and every signed comparison on two constants was wrong the same
+  way. Overflow was folded into its wrapped answer rather than left for
+  the trap it is at run time.
+- **An element address was treated as pure**, so loop-invariant hoisting
+  moved one out of an `if` inside a loop and into the loop's preheader.
+  The program returned nine before and trapped after: the bounds check is
+  part of what the instruction does, and what can trap cannot be moved to
+  a path that would not have reached it.
+
+What the generator does *not* do is interesting too. It writes loops whose
+counter it keeps out of the body, because a body that may assign to the
+counter is a body that may never end -- and a compiled tier has no step
+limit to stop it with. A program the reference tier could not finish is
+skipped rather than compared: it says nothing about the other two.
+
+Traps are compared rather than avoided. Division by zero, overflow and an
+index past the end are defined outcomes, so a tier that wraps where
+another traps is exactly the bug this is looking for.
