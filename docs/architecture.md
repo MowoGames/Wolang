@@ -383,6 +383,26 @@ off. The second column is the one that measures this tier's code quality; the
 first includes a loop clang turns into vector code, which a scalar tier is
 not trying to be within 3x of.
 
+## The server
+
+`lib/http` is Wolang over eight socket calls. `socket.wo` is the floor --
+the only lines in the package that leave the language -- and it declares
+`uses unsafe` and takes responsibility rather than passing it upwards, the
+same arrangement `std.io` has with `write`. A handler is a function value,
+a request is two views into the buffer it was read from, and a response is
+a string; `examples/server` routes three paths and contains no `unsafe` at
+all.
+
+One connection at a time, keep-alive, and an arena per request. Thirty
+thousand requests a second, which is where the measuring client tops out
+rather than where the server does. What it cannot do yet is serve
+connections concurrently: `accept` and `read` block, so a task per
+connection would stop the scheduler instead of sharing it. That is
+readiness notification, and it is wave 13.
+
+The server earns its place in the repository by being the thing that found
+ten holes elsewhere -- see D69, and the table in `docs/waves/wave-10.md`.
+
 ## Strings and memory
 
 A string is **a pointer and a length**, in every tier. A literal is a view

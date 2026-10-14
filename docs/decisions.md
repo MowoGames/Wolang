@@ -525,3 +525,26 @@ destructors for the workload that matters first. `Owned<T>` and a collector
 are still ahead; what keeps a value from outliving its arena is `E0121`,
 which has been enforced since wave 9.
 
+**D69. A server is a test the language cannot argue with.** D40 put a
+minimal HTTP server in this wave to drive the concurrency design, and it
+did -- but what it mostly drove was everything *else*. Writing it turned up
+ten holes, and every one was a wrong answer rather than a missing feature:
+a buffer that a callee filled and nobody could see, a module-level constant
+that lowered to an undefined value, a frame the dev tier declined so the
+whole request path ran interpreted, a `sub sp, sp, x9` that silently
+allocated nothing.
+
+None of those would have been found by writing another test for a feature
+that exists. The lesson is kept as a decision because it is a rule about
+how to build the rest: build the thing that uses the language end to end,
+and keep it in the repository where it runs on every change.
+
+**D70. The stack pointer is not a register like the others.** In the
+shifted-register form of `add` and `sub` on arm64, register 31 is the
+*zero* register where the stack pointer would be -- so `sub sp, sp, x9`
+allocates nothing and `add x9, sp, x10` reads zero. The assembler now
+refuses that encoding instead of emitting it, because the alternative is
+an afternoon spent in a debugger on generated code. A large frame is
+adjusted with two shifted immediates, which reach sixteen megabytes
+between them and name the stack pointer legally.
+
