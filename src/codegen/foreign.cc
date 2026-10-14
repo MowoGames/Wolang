@@ -9,6 +9,7 @@
 
 #include "wolang/codegen/arm64/assembler.h"
 #include "wolang/codegen/code_block.h"
+#include "wolang/codegen/target.h"
 #include "wolang/runtime/builtins.h"
 
 namespace wolang {
@@ -128,12 +129,18 @@ class Caller : public interp::ForeignCaller {
 
 std::unique_ptr<interp::ForeignCaller> MakeForeignCaller() {
 #if defined(__aarch64__) || defined(_M_ARM64)
+  if (HostTarget() != Target::kArm64) {
+    return nullptr;
+  }
   auto caller = std::make_unique<Caller>();
   if (!caller->Build()) {
     return nullptr;
   }
   return caller;
 #else
+  // One thunk per target, like the emitter. Until there is one for this
+  // machine the interpreter cannot leave the language, and says so by
+  // trapping rather than by guessing.
   return nullptr;
 #endif
 }

@@ -18,17 +18,14 @@
 #include "wolang/codegen/code_block.h"
 #include "wolang/abi/layout.h"
 #include "wolang/codegen/runtime.h"
+#include "wolang/codegen/target.h"
 #include "wolang/runtime/builtins.h"
 
 namespace wolang {
 namespace codegen {
 
 bool IsSupportedTarget() {
-#if defined(__aarch64__) || defined(_M_ARM64)
-  return true;
-#else
-  return false;
-#endif
+  return HasBackend(HostTarget());
 }
 
 void ReportTrap(Context* context,
@@ -149,6 +146,7 @@ class CompiledModule::Impl {
 
   const StringInterner& interner_;
   const TypeStore& types_;
+  const Target target_ = HostTarget();
   std::vector<std::unique_ptr<FileState>> files_;
 
   std::vector<uint32_t> words_;
@@ -314,7 +312,7 @@ void CompiledModule::Impl::Compile() {
     }
     FileState& file = *files_[entry.file];
     const CompiledFunction attempt =
-        EmitFunction(interner_, types_, &file.layouts, file.module, function,
+        EmitFunction(target_, interner_, types_, &file.layouts, file.module, function,
                      file.compilable, file.foreign, file.strings, 0);
     if (!attempt.compiled) {
       compilable[i] = false;
@@ -362,7 +360,7 @@ void CompiledModule::Impl::Compile() {
     FileState& file = *files_[entry.file];
     const auto base = static_cast<uint32_t>(words_.size());
     CompiledFunction compiled =
-        EmitFunction(interner_, types_, &file.layouts, file.module, function,
+        EmitFunction(target_, interner_, types_, &file.layouts, file.module, function,
                      file.compilable, file.foreign, file.strings,
                      static_cast<uint32_t>(traps_.size()));
     WOLANG_CHECK(compiled.compiled);

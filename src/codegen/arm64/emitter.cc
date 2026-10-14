@@ -1938,6 +1938,8 @@ class FunctionEmitter {
 
 }  // namespace
 
+namespace arm64 {
+
 CompiledFunction EmitFunction(const StringInterner& interner,
                               const TypeStore& types,
                               abi::LayoutStore* layouts,
@@ -1952,6 +1954,8 @@ CompiledFunction EmitFunction(const StringInterner& interner,
                           compilable, foreign, strings, trap_site_base);
   return emitter.Run();
 }
+
+}  // namespace arm64
 
 }  // namespace codegen
 }  // namespace wolang

@@ -10,6 +10,7 @@
 
 #include "wolang/base/string_interner.h"
 #include "wolang/abi/layout.h"
+#include "wolang/codegen/target.h"
 #include "wolang/ir/ir.h"
 #include "wolang/ir/trap.h"
 
@@ -49,7 +50,9 @@ struct CompiledFunction {
   std::vector<CallFixup> calls;
 };
 
-// Compiles one function to arm64, or says why it cannot.
+// Compiles one function for |target|, or says why it cannot -- which
+// includes "there is no backend for this machine", because a tier that
+// compiles what it can has to be able to say that too.
 //
 // |compilable| says, per function of the module, whether that callee is
 // itself compiled: a call into something this tier cannot take makes the
@@ -66,6 +69,21 @@ struct CompiledFunction {
 // |strings| holds the address and length of each of the module's string
 // literals. The bytes live with the module, so a literal is a pointer to
 // them rather than a copy -- which is also why a `str` is a borrow.
+CompiledFunction EmitFunction(Target target,
+                              const StringInterner& interner,
+                              const TypeStore& types,
+                              abi::LayoutStore* layouts,
+                              const ir::Module& module,
+                              const ir::Function& function,
+                              const std::vector<bool>& compilable,
+                              const std::vector<uint64_t>& foreign,
+                              const std::vector<std::pair<uint64_t,
+                                                          uint64_t>>& strings,
+                              uint32_t trap_site_base);
+
+namespace arm64 {
+
+// The arm64 emitter. Every target has one of these and nothing else.
 CompiledFunction EmitFunction(const StringInterner& interner,
                               const TypeStore& types,
                               abi::LayoutStore* layouts,
@@ -76,6 +94,8 @@ CompiledFunction EmitFunction(const StringInterner& interner,
                               const std::vector<std::pair<uint64_t,
                                                           uint64_t>>& strings,
                               uint32_t trap_site_base);
+
+}  // namespace arm64
 
 }  // namespace codegen
 }  // namespace wolang
