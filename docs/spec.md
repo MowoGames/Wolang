@@ -983,3 +983,25 @@ whose systems live in several files calls it once per file.
 
 A component's storage is one dense array per component type, so a walk
 over every `Position` is a walk over contiguous memory.
+
+## Closures
+
+```wolang
+fun Apply(f: fun(int) -> int, x: int) -> int => f(x)
+
+fun Use() -> int {
+  const once = Apply(|n| n + 1, 10)
+  const typed = Apply(|n: int| -> int { return n * 3 }, 4)
+  return once + typed
+}
+```
+
+A closure is a function written where it is used. Its parameter types come
+from the type it is being given to, so a closure passed to something that
+takes a `fun(int) -> int` needs no annotation; one written with no such
+context has to say them (`E0134`).
+
+A closure takes nothing with it: naming a local of the function around it
+is an error (`E0135`), because that local has to live somewhere after the
+frame goes away. A type with the state and a method on it says where, and
+costs nothing that is not written down.

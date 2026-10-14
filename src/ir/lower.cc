@@ -55,6 +55,22 @@ class Lowerer {
     std::span<const std::pair<ItemId, EffectRow>> effects;
   };
 
+  // A closure, waiting for its own function to be written.
+  //
+  // A closure is a function with no declaration: it is written where it
+  // is used, and what it becomes is a function of the module with the
+  // body the expression wrote (D106). Queued rather than lowered on the
+  // spot, because lowering it in the middle of another function would
+  // need two builders at once.
+  struct PendingClosure {
+    ExprId expr;
+    uint32_t index = 0;
+    TypeStore::Substitution substitution;
+    TypeId owner;
+    Context where;
+  };
+
+
   Lowerer(StringInterner* interner,
           TypeStore* types,
           uint32_t file_index,
@@ -96,7 +112,15 @@ class Lowerer {
     // instantiation. Lowering a specialization can discover more of them --
     // a generic body calling another generic -- so this is a worklist
     // rather than a second pass.
-    while (!pending_.empty()) {
+    while (!closures_.empty() || !pending_.empty()) {
+      while (!closures_.empty()) {
+        const PendingClosure work = closures_.back();
+        closures_.pop_back();
+        LowerClosureBody(work);
+      }
+      if (pending_.empty()) {
+        break;
+      }
       const Pending work = pending_.back();
       pending_.pop_back();
       substitution_ = work.substitution;
@@ -2137,6 +2161,9 @@ class Lowerer {
       case ExprKind::kForeach:
         LowerForLoop(expr);
         return InstId{};
+
+      case ExprKind::kClosure:
+        return LowerClosure(id, expr);
 
       case ExprKind::kUnsafe:
         // `unsafe` does not change the value; it is checked, not lowered.
@@ -4704,6 +4731,99 @@ class Lowerer {
     return builder_->Call(index, result, std::move(operands));
   }
 
+  // `|n| n + 1`: a function the program wrote where it is used.
+  //
+  // Declared here, with the closure's own type as its signature, and the
+  // body queued -- the value of the expression is the function's address,
+  // which is what a `fun(...)` value is in every tier (D106).
+  InstId LowerClosure(ExprId id, const Expr& expr) {
+    const TypeId signature = Erase(Apply(TypeOf(id)));
+    if (types_->KindOf(signature) != TypeKind::kFunction) {
+      return builder_->Undef(signature);
+    }
+    std::string name = "closure$";
+    name.append(std::to_string(closure_serial_++));
+    Function function;
+    function.name = interner_->Intern(name);
+    function.type = signature;
+    // Nothing observable: a closure that takes nothing with it can only
+    // do what its arguments and the file's names allow, and saying the
+    // row is unknown would stop a call to it being deleted as dead.
+    function.effects_known = false;
+    const uint32_t index = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(function));
+
+    closures_.push_back(PendingClosure{id, index, substitution_, self_type_,
+                                       here_});
+    const InstId address = builder_->Add(Opcode::kFuncAddress, signature);
+    builder_->Mutable(address).payload.callee = index;
+    return address;
+  }
+
+  // The body of one, as an ordinary function of its parameters.
+  void LowerClosureBody(const PendingClosure& work) {
+    const Context outer = here_;
+    const TypeStore::Substitution outer_substitution = substitution_;
+    const TypeId outer_self = self_type_;
+    if (work.where.ast != nullptr) {
+      here_ = Context{work.where.file_index, work.where.resolution,
+                      work.where.ast, work.where.typed, work.where.effects};
+      resolver_ = TypeResolver(types_, interner_, here_.resolution,
+                               &discarded_);
+    }
+    substitution_ = work.substitution;
+    self_type_ = work.owner;
+
+    if (ast().Contains(work.expr) &&
+        work.index < module_->functions.size()) {
+      const Expr& expr = ast().Get(work.expr);
+      Builder builder(module_, FunctionId{work.index});
+      builder.types = types_;
+      current_function_ = work.index;
+      builder_ = &builder;
+      locals_.clear();
+      loops_.clear();
+      deferred_.clear();
+      scope_depth_ = 0;
+      const BlockId entry = builder.AddBlock("entry");
+      builder.SetCurrent(entry);
+
+      const std::vector<TypeId> params =
+          types_->ArgumentsOf(module_->functions[work.index].type);
+      size_t position = 0;
+      for (ParamId param_id : ast().Get(expr.params)) {
+        const Param& param = ast().Get(param_id);
+        const TypeId type =
+            position < params.size() ? params[position] : types_->error();
+        const InstId value = builder.AddParam(entry, type);
+        locals_.push_back(Local{param.name, InstId{}, value, type});
+        ++position;
+      }
+
+      return_type_ = types_->ElementOf(module_->functions[work.index].type);
+      // The body is an expression: its value is what the closure gives
+      // back, the way an expression-bodied function's is.
+      const InstId value = Value(expr.lhs);
+      if (!builder.Terminated()) {
+        if (types_->KindOf(return_type_) == TypeKind::kVoid) {
+          builder.ReturnVoid();
+        } else {
+          builder.Return(Coerce(value, TypeOf(expr.lhs), return_type_));
+        }
+      }
+      builder_ = nullptr;
+    }
+
+    substitution_ = outer_substitution;
+    self_type_ = outer_self;
+    if (work.where.ast != nullptr) {
+      here_ = Context{outer.file_index, outer.resolution, outer.ast,
+                      outer.typed, outer.effects};
+      resolver_ = TypeResolver(types_, interner_, here_.resolution,
+                               &discarded_);
+    }
+  }
+
   // What a `system` becomes: a function of the world and the time step,
   // with its queries opened from that world.
   //
@@ -5249,6 +5369,8 @@ class Lowerer {
   std::vector<Named> constants_;
   std::vector<MachineBlock> machine_blocks_;
   std::vector<MachineMethod> machine_methods_;
+  std::vector<PendingClosure> closures_;
+  uint32_t closure_serial_ = 0;
   std::vector<Pending> pending_;
   std::vector<Deferred> deferred_;
   // Which local owns something, and the flag that says whether it still

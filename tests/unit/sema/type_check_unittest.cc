@@ -367,6 +367,28 @@ WOLANG_TEST(TypeCheck, IfLetNarrowsAnOptional) {
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "Pawn");
 }
 
+WOLANG_TEST(TypeCheck, AClosureTakesItsParameterTypesFromTheContext) {
+  Fixture fixture(
+      "fun Apply(f: fun(int) -> int, x: int) -> int => f(x)\n"
+      "fun Use() -> int => Apply(|n| n + 1, 2)\n");
+  WOLANG_EXPECT(fixture.Codes().empty());
+}
+
+WOLANG_TEST(TypeCheck, AClosureWithNoContextNeedsItsTypesWritten) {
+  Fixture fixture("fun Use() { const f = |n| n + 1 }\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(), "E0134");
+}
+
+WOLANG_TEST(TypeCheck, AClosureCannotSeeTheLocalsAroundIt) {
+  // D106: it takes nothing with it, and the diagnostic says which name
+  // and what to do instead.
+  Fixture fixture(
+      "fun Apply(f: fun(int) -> int, x: int) -> int => f(x)\n"
+      "fun Use() -> int {\n  const k = 10\n"
+      "  return Apply(|n| n + k, 1)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(), "E0135");
+}
+
 WOLANG_TEST(TypeCheck, PresentPatternNarrowsAnOptional) {
   // The `return` is the point of D99: a block gives nothing back by
   // itself, so a function that declares a result says `return`.

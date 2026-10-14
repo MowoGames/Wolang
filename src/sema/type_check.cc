@@ -45,6 +45,10 @@ constexpr std::string_view kNotIterable = "E0131";
 // A function's type parameter that its signature never mentions, so no
 // call can say what it is.
 constexpr std::string_view kUnboundParameter = "E0133";
+// A closure whose parameter type nothing says.
+constexpr std::string_view kClosureNeedsTypes = "E0134";
+// A closure body naming a local of the function around it.
+constexpr std::string_view kClosureCaptures = "E0135";
 constexpr std::string_view kWaitOutsideTask = "E0301";
 constexpr std::string_view kTaskNotWaited = "E0302";
 constexpr std::string_view kWaitNotWholeExpression = "E0303";
@@ -217,6 +221,33 @@ class Checker {
   // -------------------------------------------------------------- scopes --
 
   void PushScope() { scopes_.emplace_back(); }
+
+  // Hides the locals of the function around a closure, and says how many
+  // scopes were hidden.
+  //
+  // A closure takes nothing with it (D106): what it can see is its own
+  // parameters, the file's names and `self` -- so a body that names a
+  // local of the enclosing function gets "no value named x is in scope",
+  // which is the truth. Hidden rather than removed, because the scopes
+  // come back when the closure's body has been checked.
+  size_t HideLocals() {
+    const size_t hidden = hidden_scopes_;
+    hidden_scopes_ = scopes_.size() - 1;
+    return hidden;
+  }
+  void ShowLocals(size_t hidden) { hidden_scopes_ = hidden; }
+
+  // Whether |name| is a local the closure being checked cannot see.
+  bool IsHiddenLocal(Symbol name) const {
+    for (size_t depth = hidden_scopes_; depth > 0; --depth) {
+      for (const LocalBinding& local : scopes_[depth - 1].bindings) {
+        if (local.binding.name == name) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
   void PopScope() {
     if (scopes_.empty()) {
       return;
@@ -252,6 +283,9 @@ class Checker {
   void CheckBinding(const Item& item);
   // Whether the declaration being checked is one another file could name.
   bool at_module_level_ = false;
+  // How many of the innermost scopes are hidden, which is how a closure
+  // sees its own parameters and nothing of the function around it.
+  size_t hidden_scopes_ = 0;
 
   // ---------------------------------------------------------- statements --
 
@@ -385,9 +419,12 @@ void Checker::Bind(Symbol name, TypeId type, bool is_mutable,
 
 const Binding* Checker::Lookup(Symbol name) {
   // Innermost scope first, so a local shadows a field and a field shadows a
-  // module-level name.
-  for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
-    for (auto it = scope->bindings.rbegin(); it != scope->bindings.rend();
+  // module-level name. Inside a closure the scopes below it are hidden: it
+  // takes nothing with it, so a local of the function around it is not
+  // something it can see (D106).
+  for (size_t depth = scopes_.size(); depth > hidden_scopes_; --depth) {
+    Scope& scope = scopes_[depth - 1];
+    for (auto it = scope.bindings.rbegin(); it != scope.bindings.rend();
          ++it) {
       if (it->binding.name == name) {
         it->used = true;
@@ -723,6 +760,18 @@ TypeId Checker::CheckPath(const Expr& expr) {
     // `health` means `self.health`, which is how gameplay code reads.
     if (const Member* member = SelfMember(expr.name); member != nullptr) {
       return member->type;
+    }
+    // A local of the function around a closure: it exists, and the
+    // closure cannot see it. Said as what it is rather than as "no such
+    // name", because the two call for different fixes (D106).
+    if (IsHiddenLocal(expr.name)) {
+      std::string message = "`";
+      message.append(interner_->Text(expr.name));
+      message.append("` belongs to the function around this closure");
+      Report(kClosureCaptures, std::move(message), expr.span,
+             "a closure takes nothing with it: pass it as a parameter, or "
+             "give a type the state and a method");
+      return types_->error();
     }
     std::string message = "no value named `";
     message.append(interner_->Text(expr.name));
@@ -2276,20 +2325,55 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
     }
 
     case ExprKind::kClosure: {
+      // What the context wants, so that `|n| n + 1` where a
+      // `fun(int) -> int` is expected needs no annotation: the parameter
+      // types come from the type the closure is being given to, which is
+      // the only place they can come from (D106).
+      const TypeId wanted =
+          expected.is_valid() && types_->KindOf(expected) ==
+                                     TypeKind::kFunction
+              ? expected
+              : TypeId{};
+      const std::vector<TypeId> from_context =
+          wanted.is_valid() ? types_->ArgumentsOf(wanted)
+                            : std::vector<TypeId>();
+
       PushScope();
+      // A closure sees its own parameters and the file's names, not the
+      // locals of the function around it: what it would take with it has
+      // to be said rather than captured silently, and this is what makes
+      // a use of one a diagnostic rather than a read of a dead frame.
+      const size_t enclosing = HideLocals();
       std::vector<TypeId> params;
+      size_t position = 0;
       for (ParamId param_id : ast_.Get(expr.params)) {
         const Param& param = ast_.Get(param_id);
-        const TypeId param_type = param.type.is_valid()
-                                      ? resolver_.Resolve(ast_, param.type)
-                                      : types_->error();
+        TypeId param_type = param.type.is_valid()
+                                ? resolver_.Resolve(ast_, param.type)
+                                : TypeId{};
+        if (!param_type.is_valid() && position < from_context.size()) {
+          param_type = from_context[position];
+        }
+        if (!param_type.is_valid()) {
+          std::string message = "the type of `";
+          message.append(interner_->Text(param.name));
+          message.append("` cannot be worked out here");
+          Report(kClosureNeedsTypes, std::move(message), param.span,
+                 "write it, or use the closure where a function type says "
+                 "what it is");
+          param_type = types_->error();
+        }
         params.push_back(param_type);
         Bind(param.name, param_type, param.is_mutable, param.span);
+        ++position;
       }
-      const TypeId declared = expr.type.is_valid()
-                                  ? resolver_.Resolve(ast_, expr.type)
-                                  : TypeId{};
+      const TypeId declared =
+          expr.type.is_valid() ? resolver_.Resolve(ast_, expr.type)
+                               : (wanted.is_valid()
+                                      ? types_->ElementOf(wanted)
+                                      : TypeId{});
       const TypeId body = Check(expr.lhs, declared);
+      ShowLocals(enclosing);
       PopScope();
       type = types_->Function(params,
                               declared.is_valid() ? declared : body);

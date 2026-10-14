@@ -1185,3 +1185,27 @@ and the loads -- and the AoS variant now wins the integration benchmark
 (21.1 ms against 25.1), which is the honest answer for a pass that
 touches four fields of six: `soa` is for the ones that touch one or two,
 where it is ahead by a quarter.
+
+**D106. A closure is a function written where it is used, and it takes
+nothing with it.** `|n| n + 1` becomes a function of the module with the
+body the expression wrote, and its value is that function's address --
+which is what a `fun(...)` value already is in every tier. Nothing is
+allocated, nothing is boxed, and a closure crosses the C boundary like
+any other function pointer.
+
+The parameter types come from the type the closure is being given to:
+`Apply(|n| n + 1, 10)` where `Apply` takes a `fun(int) -> int` needs no
+annotation, and one written with no such context says so (`E0134`).
+
+Capturing is a diagnostic rather than a feature (`E0135`), and the message
+names the local and what to do instead. The reason is the same one behind
+the rest of the language: a captured local has to live somewhere after the
+frame goes away, and that somewhere is either an allocation the program
+did not ask for or a lifetime nobody checked. A type with the state and a
+method on it says both, and costs nothing that is not written down.
+
+What a capturing closure *would* cost is worth writing down, because it is
+the next decision here and not a small one: a function value would become
+a pair -- code and environment -- which changes its layout, the indirect
+call in three back ends, what crosses to C, and who frees the
+environment. Said plainly rather than left as "later".

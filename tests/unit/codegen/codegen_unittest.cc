@@ -474,6 +474,37 @@ fun Down(n: int) -> int {
   }
 }
 
+WOLANG_TEST(CodegenTest, RunsClosures) {
+  // A closure is a function the program wrote where it is used, and its
+  // value is that function's address: the parameter types come from the
+  // type it is being given to (D106).
+  Fixture f(R"(
+fun Apply(f: fun(int) -> int, x: int) -> int {
+  return f(x)
+}
+
+fun Fold(f: fun(int, int) -> int, xs: [4]int) -> int {
+  var total = 0
+  var i = 0
+  while i < 4 {
+    total = f(total, xs[i])
+    i = i + 1
+  }
+  return total
+}
+
+fun Probe() -> int {
+  const inferred = Apply(|n| n + 1, 10)
+  const written = Apply(|n: int| -> int { return n * 3 }, 4)
+  const folded = Fold(|a, b| a + b, [1, 2, 3, 4])
+  const nested = Apply(|n| Apply(|m| m * 2, n) + 1, 5)
+  return inferred + written + folded + nested
+}
+)");
+  // Eleven, twelve, ten and eleven.
+  WOLANG_EXPECT_EQ(f.Run("Probe"), "44");
+}
+
 WOLANG_TEST(CodegenTest, SaysWhatItCannotCompile) {
   // A tier that compiles what it can has to say what it did not, or "why
   // is this slow" has no answer.

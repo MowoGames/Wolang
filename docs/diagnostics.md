@@ -227,6 +227,8 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0131` | a `for` over something that cannot be walked | `for x in 5` |
 | `E0132` | a function with a declared result can reach its end without returning one | `fun F() -> int { 42 }` |
 | `E0133` | a type parameter appears nowhere in a signature, so no call can say what it is | `fun F<T>(n: int) -> bool` |
+| `E0134` | a closure parameter whose type nothing says | `const f = \|n\| n + 1` |
+| `E0135` | a closure naming a local of the function around it | `const k = 1` then `\|n\| n + k` |
 | `E0070` | `@allow` is missing a code or a reason | `@allow(W0101)` |
 
 An error type propagates silently: one unknown name produces one message, not
