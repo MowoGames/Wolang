@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "wolang/ir/analysis.h"
 #include "wolang/ir/ir.h"
 
 namespace wolang {
@@ -16,46 +17,19 @@ namespace codegen {
 // memory -- an aggregate -- is kNone and the allocator never sees it.
 enum class RegClass : uint8_t { kNone, kInteger, kFloat };
 
-// The blocks in the order they will be emitted, with every instruction given
-// a position. Everything the allocator does is in terms of these positions:
-// "this value is still needed" is a number comparison and nothing else.
-struct LinearOrder {
-  std::vector<ir::BlockId> blocks;
-  // Indexed by instruction id. Positions start at one, so zero reads as
-  // "not in the order" -- an instruction in an unreachable block.
-  std::vector<uint32_t> positions;
-  // Indexed by block id.
-  std::vector<uint32_t> block_begin;
-  std::vector<uint32_t> block_end;
-
-  bool Reaches(ir::BlockId block) const {
-    return block.is_valid() && block.index < block_begin.size() &&
-           block_begin[block.index] != 0;
-  }
-};
-
-// Reachable blocks in reverse postorder, which puts a block after everything
-// that can jump to it except a back edge.
-LinearOrder Linearize(const ir::Function& function);
-
-// One value's life, as the positions between its definition and its last
-// use. One interval per value rather than a list of ranges with holes: a
-// value that is dead in the middle of its life holds its register anyway,
-// which costs some spilling and removes a whole family of bugs.
+// One value's life, with the register file it belongs in. The positions
+// come from the IR analysis; the class is the only part the allocator adds.
 struct Interval {
   uint32_t value = 0;
   uint32_t start = 0;
-  // Exclusive. A value's interval ends one past its last use so that the
-  // result of an instruction never shares a register with an operand of it:
-  // an overflow check reads its operands again *after* writing the result.
   uint32_t end = 0;
   RegClass reg_class = RegClass::kNone;
 };
 
-// The live interval of every value whose class is not kNone. |classes| is
-// indexed by instruction id.
+// The live ranges of every value whose class is not kNone, as intervals the
+// allocator can walk. |classes| is indexed by instruction id.
 std::vector<Interval> ComputeIntervals(const ir::Function& function,
-                                       const LinearOrder& order,
+                                       const ir::LinearOrder& order,
                                        const std::vector<RegClass>& classes);
 
 // Where the allocator put one value.

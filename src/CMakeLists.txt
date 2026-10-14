@@ -23,6 +23,7 @@ add_library(wolang_core STATIC
     interp/interpreter.cc
     interp/intrinsics.cc
     interp/value.cc
+    ir/analysis.cc
     ir/builder.cc
     ir/ir.cc
     ir/lower.cc
@@ -73,6 +74,7 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/interp/foreign.h
         ${PROJECT_SOURCE_DIR}/include/wolang/interp/intrinsics.h
         ${PROJECT_SOURCE_DIR}/include/wolang/interp/value.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/ir/analysis.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/builder.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/ir.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/lower.h

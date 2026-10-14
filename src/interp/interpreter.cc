@@ -30,13 +30,15 @@ class Interpreter {
               const ir::Module& module,
               const Limits& limits,
               Output* output,
-              ForeignCaller* foreign)
+              ForeignCaller* foreign,
+              abi::LayoutStore* layouts)
       : interner_(interner),
         types_(types),
         module_(module),
         limits_(limits),
         output_(output),
-        foreign_(foreign) {}
+        foreign_(foreign),
+        layouts_(layouts) {}
 
   Outcome Run(const ir::Function& function, std::vector<Value> arguments) {
     Outcome outcome;
@@ -337,6 +339,17 @@ class Interpreter {
     return Value::Void();
   }
 
+  // The declared type of an operand, which an instruction that works on
+  // addresses needs: the value itself is just an integer.
+  static TypeId TypeOf(const ir::Function& function,
+                       const ir::Inst& inst,
+                       size_t index) {
+    const std::span<const ir::InstId> operands = function.OperandsOf(inst);
+    return index < operands.size() && function.Contains(operands[index])
+               ? function.Get(operands[index]).type
+               : TypeId{};
+  }
+
   const Value& Operand(Frame* frame, const ir::Inst& inst, size_t index) {
     static const Value kMissing;
     const std::span<const ir::InstId> operands =
@@ -476,6 +489,26 @@ class Interpreter {
                           std::to_string(array.elements().size()));
         }
         return array.elements()[index.integer()];
+      }
+
+      case ir::Opcode::kFieldAddress: {
+        // The address of a field, which is the layout's answer and nobody
+        // else's -- the interpreter's own values carry their shape, so this
+        // is the one question it cannot answer alone.
+        const Value& base = Operand(frame, inst, 0);
+        if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "took a field address without an address to take it "
+                      "from");
+        }
+        const TypeId aggregate =
+            types_.ElementOf(TypeOf(function, inst, 0));
+        const abi::Layout& layout = layouts_->Of(aggregate);
+        const uint64_t offset =
+            inst.field < layout.offsets.size() ? layout.offsets[inst.field]
+                                               : 0;
+        return Value::Int(base.integer() + offset, IntWidth::k64,
+                          /*is_signed=*/false);
       }
 
       case ir::Opcode::kOptionalWrap:
@@ -942,6 +975,7 @@ class Interpreter {
   Limits limits_;
   Output* output_ = nullptr;
   ForeignCaller* foreign_ = nullptr;
+  abi::LayoutStore* layouts_ = nullptr;
   uint64_t steps_ = 0;
   uint32_t depth_ = 0;
 };
@@ -955,8 +989,10 @@ Outcome Run(const StringInterner& interner,
             std::vector<Value> arguments,
             const Limits& limits,
             Output* output,
-            ForeignCaller* foreign) {
-  Interpreter interpreter(interner, types, module, limits, output, foreign);
+            ForeignCaller* foreign,
+            abi::LayoutStore* layouts) {
+  Interpreter interpreter(interner, types, module, limits, output, foreign,
+                          layouts);
   return interpreter.Run(function, std::move(arguments));
 }
 
@@ -967,7 +1003,8 @@ Outcome RunNamed(const StringInterner& interner,
                  std::vector<Value> arguments,
                  const Limits& limits,
                  Output* output,
-                 ForeignCaller* foreign) {
+                 ForeignCaller* foreign,
+                 abi::LayoutStore* layouts) {
   const ir::Function* function = module.Find(name);
   if (function == nullptr) {
     Outcome outcome;
@@ -977,7 +1014,7 @@ Outcome RunNamed(const StringInterner& interner,
     return outcome;
   }
   return Run(interner, types, module, *function, std::move(arguments),
-             limits, output, foreign);
+             limits, output, foreign, layouts);
 }
 
 }  // namespace interp

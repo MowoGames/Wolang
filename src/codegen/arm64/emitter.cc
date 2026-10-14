@@ -251,7 +251,7 @@ class FunctionEmitter {
       }
     }
 
-    order_ = Linearize(function_);
+    order_ = ir::Linearize(function_);
     intervals_ = ComputeIntervals(function_, order_, classes);
     allocation_ = AllocateRegisters(
         intervals_, static_cast<uint32_t>(std::size(kIntegerPool)),
@@ -929,6 +929,23 @@ class FunctionEmitter {
       }
       case ir::Opcode::kIndex: {
         EmitIndex(id, inst);
+        return;
+      }
+
+      case ir::Opcode::kFieldAddress: {
+        // An address plus what the layout says, which is the same `add` a
+        // field access already emits -- the difference is that the result
+        // is the address rather than what is at it.
+        const ir::InstId base = function_.OperandsOf(inst)[0];
+        const TypeId aggregate = types_.ElementOf(TypeOf(base));
+        const abi::Layout& layout = layouts_.Of(aggregate);
+        const uint32_t offset =
+            inst.field < layout.offsets.size() ? layout.offsets[inst.field]
+                                               : 0;
+        const Register address = UseInt(base, 1);
+        const Register reg = DestInt(id, 0);
+        assembler_.AddImm(IWidth::k64, reg, address, offset);
+        FinishInt(id, reg);
         return;
       }
 
@@ -1895,7 +1912,7 @@ class FunctionEmitter {
 
   Assembler assembler_;
   std::vector<ValueInfo> values_;
-  LinearOrder order_;
+  ir::LinearOrder order_;
   std::vector<Interval> intervals_;
   AllocationResult allocation_;
 

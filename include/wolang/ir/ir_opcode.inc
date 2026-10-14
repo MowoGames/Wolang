@@ -70,6 +70,9 @@ WOLANG_IR_OP(Insert, "insert", "a copy of an aggregate with one field "
                                "replaced")
 WOLANG_IR_OP(MakeArray, "array", "builds an array from its elements")
 WOLANG_IR_OP(Index, "index", "reads element |rhs| of an array or slice")
+WOLANG_IR_OP(FieldAddress, "field.addr",
+             "the address of field |index| of the aggregate at an address. "
+             "What a frame that outlives its function is read through")
 
 // -------------------------------------------------------------- optionals ---
 

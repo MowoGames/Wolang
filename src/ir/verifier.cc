@@ -340,6 +340,20 @@ class Verifier {
         arity(2);
         break;
 
+      case Opcode::kFieldAddress:
+        // The operand is an address and so is the result: a field address
+        // is pointer arithmetic the layout decides, which is why it is an
+        // instruction rather than an add.
+        if (arity(1) &&
+            types_.KindOf(type_of(0)) != TypeKind::kPointer) {
+          Fail(At(id) + " takes a field address inside something that is "
+                        "not a pointer");
+        }
+        if (types_.KindOf(inst.type) != TypeKind::kPointer) {
+          Fail(At(id) + " produces something that is not a pointer");
+        }
+        break;
+
       case Opcode::kCall: {
         // A call is the one place the IR refers to something outside the
         // function, so it is the one place the module has to be consulted.
