@@ -33,6 +33,14 @@
       }
     },
     {
+      "name": "x64",
+      "displayName": "Debug, built for x86-64",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "x86_64"
+      }
+    },
+    {
       "name": "release",
       "displayName": "Release",
       "inherits": "base",
@@ -45,6 +53,7 @@
   "buildPresets": [
     { "name": "debug", "configurePreset": "debug" },
     { "name": "asan", "configurePreset": "asan" },
+    { "name": "x64", "configurePreset": "x64" },
     { "name": "release", "configurePreset": "release" }
   ],
   "testPresets": [
@@ -56,6 +65,11 @@
     {
       "name": "asan",
       "configurePreset": "asan",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "x64",
+      "configurePreset": "x64",
       "output": { "outputOnFailure": true }
     },
     {

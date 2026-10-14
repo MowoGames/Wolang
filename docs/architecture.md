@@ -285,17 +285,48 @@ names them.
 
 ## The dev tier
 
-Copy-and-patch code generation for arm64 (D5). Every A64 instruction is four
-bytes, so "a stencil with holes for the operands" is a word and a bit field —
-which is what the assembler in `codegen/arm64` is. Its encodings are checked
-against a system assembler's, because an encoder that is almost right
-produces code that almost works and nothing further up can tell.
+Copy-and-patch code generation (D5), for **arm64 and x86-64**. Each is an
+assembler and an emitter and nothing else: the IR, the passes, the layout,
+the trap table and the transform that splits a `task` into a state machine
+are all above the seam in `codegen/target.h`. Both assemblers' encodings are
+checked against a system assembler's, because an encoder that is almost right
+produces code that almost works and nothing further up can tell. That check
+has now caught four wrong expectations and no wrong encodings, which says
+something about where to put the trust.
+
+What differs between the two is mostly the shape of an instruction. Every A64
+instruction is four bytes, so "a stencil with holes for the operands" is a
+word and a bit field; an x86-64 instruction is one to fifteen bytes of
+prefix, opcode, ModRM, SIB and displacement, so the seam counts in bytes and
+each target patches a call displacement its own way.
 
 **Linear scan from the start** (D39), not accumulator stencils. The allocator
-hands out **callee-saved registers only** — nine integer and eight floating
-point. That is what makes a call need no spilling around it: every value the
-allocator placed survives a call because the callee is obliged to restore it.
-The prologue saves the ones a function used.
+hands out **callee-saved registers only**. That is what makes a call need no
+spilling around it: every value the allocator placed survives a call because
+the callee is obliged to restore it. The prologue saves the ones a function
+used.
+
+How many registers that leaves is a fact about the platform, not a choice:
+
+| | integer | floating point |
+| --- | --- | --- |
+| arm64 | 9 | 8 |
+| x86-64 | 4 | **0** |
+
+There are no callee-saved floating point registers in the x86-64 ABI at all,
+so on that machine every float value lives in a frame slot and is loaded
+around each use. It is slower and it is correct, which is the right order to
+do these in; spilling only the values that are live across a call is what
+would fix it, and that is a change to the allocator rather than to either
+emitter. x86-64 also reserves two registers rather than fighting over them: a
+variable shift needs its amount in `cl` and a division needs `rdx:rax`.
+
+Two things that tier declines on x86-64 and takes on arm64: a conversion
+between a float and a 64-bit *unsigned* integer, because both of the
+machine's conversion instructions are signed and the correction sequence is
+not written yet; and a call with more than six integer arguments, because
+that is how many this ABI passes in registers. Both leave the function to the
+interpreter, which is always there and always right.
 
 An aggregate never gets a register: a struct, a tuple, an array and an
 optional each live in a frame area, and the value of such an SSA name is its
@@ -312,6 +343,20 @@ a landing pad — so the path that does not fault pays for nothing but the
 untaken branch. The checks are the answer to this wave's open question:
 portable and predictable, with the plan to remove them where range analysis
 proves them unnecessary, which is the same analysis dead arithmetic needs.
+
+**How a second backend is tested on a machine that is not one.** The
+`x64` preset builds the whole compiler for x86-64; on an arm64 Mac the
+result runs under the system's translator, which translates the code the
+dev tier generates at run time along with everything else. So the full
+suite — including the differential tests that run every program three
+ways — exercises the x86-64 emitter on this hardware, and that is how it
+was verified. What that cannot measure is speed: a benchmark there times
+the translator, not the backend.
+
+```sh
+cmake --preset x64 && cmake --build build/x64 -j8
+./build/x64/tests/wolang_tests
+```
 
 Every compiled function builds a frame record whether it needs one or not,
 which is the whole unwind information this tier needs: a trap walks the chain
@@ -453,7 +498,7 @@ keeps that complexity out of the core.
 | `include/wolang/interp`, `src/interp` | the interpreter, values, intrinsics |
 | `include/wolang/sema/flow.h`, `src/sema/flow.cc` | definite assignment, moves and reference escape -- one walk, three rules |
 | `include/wolang/abi`, `src/abi` | how a value is laid out in memory: what the emitter, the C boundary and the interpreter all have to agree on |
-| `include/wolang/codegen`, `src/codegen` | register allocation, the target seam, the arm64 assembler and emitter, the runtime a trap reports through |
+| `include/wolang/codegen`, `src/codegen` | register allocation, the target seam, the arm64 and x86-64 assemblers and emitters, the runtime a trap reports through |
 | `include/wolang/runtime`, `src/runtime` | what a running program needs from the host: task frames and the scheduler |
 | `benchmarks` | the gameplay kernels, their C++ counterparts, and the script that compares them |
 | `lib/core`, `lib/std` | the standard library, written in Wolang |
