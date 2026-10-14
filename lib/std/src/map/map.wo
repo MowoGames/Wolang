@@ -22,7 +22,7 @@ offer class Map<K, V> {
   var hash: fun(K) -> int
   var equals: fun(K, K) -> bool
 
-  deinit {
+  deinit  {
     Free(keys)
     Free(values)
     Free(filled)
@@ -133,10 +133,14 @@ offer class Map<K, V> {
 }
 
 /// An empty map, with no table until something is put in it.
-offer fun MapNew<K, V>(hash: fun(K) -> int,
-                       equals: fun(K, K) -> bool) -> Map<K, V> uses unsafe {
-  return Map<K, V>(ArrayNew<K>(0), ArrayNew<V>(0), ArrayNew<bool>(0), 0,
-                   hash, equals)
+offer fun MapNew<K, V>(hash: fun(K) -> int, equals: fun(K, K) -> bool) -> Map<K, V> uses unsafe {
+  return Map<K, V>(
+      ArrayNew<K>(0),
+      ArrayNew<V>(0),
+      ArrayNew<bool>(0),
+      0,
+      hash,
+      equals)
 }
 
 /// Hashing and comparing for `int` keys, which is most of them.
@@ -149,7 +153,7 @@ offer fun IntHash(key: int) -> int {
   // product, and the mask keeps the result positive: a map takes it
   // modulo the table size, and a negative remainder would index
   // backwards.
-  const wide = (key as s64) * 2654435761
+  const wide = key as s64 * 2654435761
   return (wide & 2147483647) as int
 }
 
