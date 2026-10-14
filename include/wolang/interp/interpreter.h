@@ -10,31 +10,17 @@
 #include "wolang/interp/intrinsics.h"
 #include "wolang/interp/value.h"
 #include "wolang/ir/ir.h"
+#include "wolang/ir/trap.h"
 #include "wolang/sema/type.h"
 
 namespace wolang {
 namespace interp {
 
-// Why execution stopped. A trap is a defined outcome, not a crash: the
-// interpreter is the reference semantics, so "this program divides by zero"
-// has to be something every other tier can be checked against.
-enum class TrapKind : uint8_t {
-  kNone,
-  kDivisionByZero,
-  kOverflow,
-  kOutOfBounds,
-  // An optional was read while absent, or an `undef` was used. Both mean the
-  // program reached somewhere the front end proved it could not.
-  kUndefinedValue,
-  kUnreachable,
-  // The step budget ran out. Not a property of the program but of this run,
-  // and what keeps a `comptime` loop from hanging the compiler.
-  kStepLimit,
-  // A call to a function with no body.
-  kNoBody,
-};
-
-std::string_view TrapKindName(TrapKind kind);
+// The trap vocabulary is the IR's, not this tier's: the code generator has
+// to report the same kinds or the differential check between the two would
+// be comparing two vocabularies. See `wolang/ir/trap.h`.
+using TrapKind = ir::TrapKind;
+using ir::TrapKindName;
 
 struct Outcome {
   TrapKind trap = TrapKind::kNone;

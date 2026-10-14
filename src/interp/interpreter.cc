@@ -12,10 +12,6 @@ namespace wolang {
 namespace interp {
 namespace {
 
-constexpr std::string_view kTrapNames[] = {
-    "none",        "division by zero", "overflow",  "out of bounds",
-    "undefined value", "unreachable",  "step limit", "no body",
-};
 
 // One activation. Values are indexed by instruction, which is what makes
 // "the value of %7" a lookup.
@@ -262,9 +258,12 @@ class Interpreter {
                       "indexed something that is not an array");
         }
         if (index.integer() >= array.elements().size()) {
+          // The message says what both tiers know. The offending index is
+          // a runtime value, and a code generator cannot put it in a
+          // string it built while compiling -- so keeping it out is what
+          // makes the two tiers' outcomes comparable in full.
           return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
-                      "index " + std::to_string(index.integer()) +
-                          " is outside a length of " +
+                      "index is outside a length of " +
                           std::to_string(array.elements().size()));
         }
         return array.elements()[index.integer()];
@@ -352,7 +351,12 @@ class Interpreter {
         return Trap(outcome, TrapKind::kOverflow, At(function, id),
                     "the value does not fit the integer it was cast to");
       }
-      return Value::Int(source.integer(), width, is_signed);
+      // The sign extended value, not the stored pattern: a negative `i32`
+      // widened to `i64` is the same number, and its bits are not.
+      return Value::Int(source.is_signed()
+                            ? static_cast<uint64_t>(source.signed_integer())
+                            : source.integer(),
+                        width, is_signed);
     }
 
     if (target.kind == TypeKind::kFloat) {
@@ -733,12 +737,6 @@ class Interpreter {
 };
 
 }  // namespace
-
-std::string_view TrapKindName(TrapKind kind) {
-  const auto index = static_cast<size_t>(kind);
-  return index < std::size(kTrapNames) ? kTrapNames[index]
-                                       : std::string_view("?");
-}
 
 Outcome Run(const StringInterner& interner,
             const TypeStore& types,

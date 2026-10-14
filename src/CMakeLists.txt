@@ -12,6 +12,11 @@ add_library(wolang_core STATIC
     compiler/module.cc
     compiler/workspace.cc
     codegen/arm64/assembler.cc
+    codegen/code_block.cc
+    codegen/layout.cc
+    codegen/reg_alloc.cc
+    codegen/compiler.cc
+    codegen/arm64/emitter.cc
     format/formatter.cc
     query/query_engine.cc
     interp/interpreter.cc
@@ -53,6 +58,12 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/compiler/module.h
         ${PROJECT_SOURCE_DIR}/include/wolang/compiler/workspace.h
         ${PROJECT_SOURCE_DIR}/include/wolang/codegen/arm64/assembler.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/codegen/code_block.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/codegen/layout.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/codegen/reg_alloc.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/codegen/compiler.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/codegen/emitter.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/codegen/runtime.h
         ${PROJECT_SOURCE_DIR}/include/wolang/format/formatter.h
         ${PROJECT_SOURCE_DIR}/include/wolang/query/query_engine.h
         ${PROJECT_SOURCE_DIR}/include/wolang/interp/interpreter.h
@@ -63,6 +74,7 @@ target_sources(wolang_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/lower.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/passes.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/printer.h
+        ${PROJECT_SOURCE_DIR}/include/wolang/ir/trap.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/verifier.h
         ${PROJECT_SOURCE_DIR}/include/wolang/ir/ir_opcode.inc
         ${PROJECT_SOURCE_DIR}/include/wolang/sema/dimension.h

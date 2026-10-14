@@ -2,6 +2,8 @@
 
 #include "wolang/ir/ir.h"
 
+#include "wolang/ir/trap.h"
+
 namespace wolang {
 namespace ir {
 namespace {
@@ -36,6 +38,21 @@ bool IsTerminator(Opcode opcode) {
 
 bool ProducesValue(Opcode opcode) {
   return !IsTerminator(opcode) && opcode != Opcode::kStore;
+}
+
+namespace {
+
+constexpr std::string_view kTrapNames[] = {
+    "none",            "division by zero", "overflow",   "out of bounds",
+    "undefined value", "unreachable",      "step limit", "no body",
+};
+
+}  // namespace
+
+std::string_view TrapKindName(TrapKind kind) {
+  const auto index = static_cast<size_t>(kind);
+  return index < std::size(kTrapNames) ? kTrapNames[index]
+                                       : std::string_view("?");
 }
 
 const Function* Module::Find(Symbol name) const {

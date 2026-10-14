@@ -184,6 +184,11 @@ class Assembler {
   // --------------------------------------------------------- branches ---
 
   void B(Label label);
+  void Bl(Label label);
+  // A call whose target is not in this buffer. The word is emitted with a
+  // zero displacement for a later pass to patch, which is what linking a
+  // module's functions together comes down to.
+  void BlPlaceholder();
   void BCond(Condition condition, Label label);
   void Cbz(Width width, Register rn, Label label);
   void Cbnz(Width width, Register rn, Label label);

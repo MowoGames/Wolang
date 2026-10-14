@@ -491,6 +491,12 @@ void Assembler::Ldp(Register rt1,
 void Assembler::B(Label label) {
   EmitBranch(0x14000000u, label, FixupKind::kBranch26);
 }
+void Assembler::Bl(Label label) {
+  EmitBranch(0x94000000u, label, FixupKind::kBranch26);
+}
+void Assembler::BlPlaceholder() {
+  Emit(0x94000000u);
+}
 void Assembler::BCond(Condition condition, Label label) {
   EmitBranch(0x54000000u | static_cast<uint32_t>(condition), label,
              FixupKind::kBranch19);
