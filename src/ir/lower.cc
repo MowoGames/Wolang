@@ -897,8 +897,11 @@ class Lowerer {
 
       case ExprKind::kIndex: {
         // Through the address when there is one, so that reading one
-        // element of a buffer does not copy the buffer.
-        if (const Place place = PlaceOf(id); place.addressable()) {
+        // element of a buffer does not copy the buffer. A place that is
+        // only readable -- an aggregate that is a value and not anywhere
+        // -- reads out of the value, and either way the operands are
+        // lowered once: asking twice would evaluate the index twice.
+        if (const Place place = PlaceOf(id); place.readable()) {
           return Coerce(ReadPlace(place), TypeAt(place), type);
         }
         const InstId array = Value(expr.lhs);
@@ -1251,7 +1254,9 @@ class Lowerer {
     }
     // Through an address when there is one, so that the field is read
     // where it lives rather than out of a copy of the whole aggregate.
-    if (const Place place = PlaceOf(id); place.addressable()) {
+    // A place that is only readable reads out of the value instead, and
+    // either way the base is lowered once.
+    if (const Place place = PlaceOf(id); place.readable()) {
       return Coerce(ReadPlace(place), TypeAt(place), type);
     }
     const InstId object = Value(expr.lhs);

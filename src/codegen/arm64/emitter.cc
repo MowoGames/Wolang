@@ -400,6 +400,31 @@ class FunctionEmitter {
     return target;
   }
 
+  static constexpr uint64_t kNotConstant = ~uint64_t{0};
+  static constexpr unsigned kNotAPower = 64;
+
+  // The value of an operand that is a constant, or `kNotConstant`.
+  uint64_t ConstantOperand(ir::InstId id) const {
+    if (!function_.Contains(id)) {
+      return kNotConstant;
+    }
+    const ir::Inst& inst = function_.Get(id);
+    return inst.opcode == ir::Opcode::kConstInt ? inst.payload.integer
+                                                : kNotConstant;
+  }
+
+  // Which power of two |value| is, or `kNotAPower`.
+  static unsigned PowerOfTwo(uint32_t value) {
+    if (value == 0 || (value & (value - 1)) != 0) {
+      return kNotAPower;
+    }
+    unsigned shift = 0;
+    while ((value >> shift) != 1) {
+      ++shift;
+    }
+    return shift;
+  }
+
   // What an address instruction is taken inside of: a pointer's target, a
   // class's own storage, or -- for a slot, whose value is where it lives --
   // the slot's own type. Taking the wrong one puts every field at offset
@@ -1024,17 +1049,30 @@ class FunctionEmitter {
         const uint32_t stride = layouts_.StrideOf(inst.type);
         const Register index = UseInt(operands[1], 1);
         // The length is an operand, because a slice's length is a value
-        // rather than something the type knows.
-        const Register limit = UseInt(operands[2], 2);
-        assembler_.Cmp(IWidth::k64, index, limit);
+        // rather than something the type knows. An array's is a constant
+        // all the same, and comparing against one costs no register.
         const Label trap = TrapLabel(ir::TrapKind::kOutOfBounds, id,
                                      "index is outside the length");
+        if (const uint64_t known = ConstantOperand(operands[2]);
+            known != kNotConstant && known <= 0xFFFu) {
+          assembler_.CmpImm(IWidth::k64, index,
+                            static_cast<uint32_t>(known));
+        } else {
+          assembler_.Cmp(IWidth::k64, index, UseInt(operands[2], 2));
+        }
         assembler_.BCond(Condition::kHs, trap);
 
         const Register address = AddressOf(operands[0], 3);
         const Register offset = Scratch(2);
-        assembler_.MovImmediate(IWidth::k64, offset, stride);
-        assembler_.Mul(IWidth::k64, offset, index, offset);
+        // A stride that is a power of two is a shift. Which every stride
+        // in practice is, and the loop this sits in is the hot one.
+        const unsigned shift = PowerOfTwo(stride);
+        if (shift != kNotAPower) {
+          assembler_.Lsl(IWidth::k64, offset, index, shift);
+        } else {
+          assembler_.MovImmediate(IWidth::k64, offset, stride);
+          assembler_.Mul(IWidth::k64, offset, index, offset);
+        }
         const Register reg = DestInt(id, 0);
         assembler_.Add(IWidth::k64, reg, address, offset);
         FinishInt(id, reg);

@@ -1012,6 +1012,42 @@ fun ReadsThroughTheSlice() -> int {
   WOLANG_EXPECT_EQ(f.Run("ReadsThroughTheSlice", {}), "17");
 }
 
+WOLANG_TEST(CodegenTest, EvaluatesAnIndexOnce) {
+  // Asking where a value lives and then reading it are one question, not
+  // two: when they were two, the index expression was lowered twice. The
+  // dead copy cost a quarter of the array benchmark, and a side effect in
+  // an index would have happened twice -- which is the part a benchmark
+  // would never have told us.
+  Fixture f(R"(
+class Counter {
+  var n: int = 0
+
+  fun Next() -> int {
+    n = n + 1
+    return n
+  }
+}
+
+fun Once() -> int {
+  const data = [10, 20, 30, 40]
+  const c = Counter(0)
+  const value = data[c.Next()]
+  // The index ran once, so the counter is one and the element is the
+  // second.
+  return value * 10 + c.n
+}
+
+fun OnceIntoABuffer() -> int {
+  var buf: [4]int
+  const c = Counter(0)
+  buf[c.Next()] = 7
+  return buf[1] * 10 + c.n
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Once", {}), "201");
+  WOLANG_EXPECT_EQ(f.Run("OnceIntoABuffer", {}), "71");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang
