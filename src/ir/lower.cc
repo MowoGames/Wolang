@@ -32,6 +32,9 @@ struct LoopTarget {
   Symbol label;
   BlockId break_to;
   BlockId continue_to;
+  // How deep the scope stack was when the loop started, so a `break` knows
+  // which deferred statements it is leaving behind.
+  size_t scope = 0;
 };
 
 class Lowerer {
@@ -345,6 +348,8 @@ class Lowerer {
     builder_ = &builder;
     locals_.clear();
     loops_.clear();
+    deferred_.clear();
+    scope_depth_ = 0;
 
     const BlockId entry = builder.AddBlock("entry");
     builder.SetCurrent(entry);
@@ -485,9 +490,13 @@ class Lowerer {
     const Expr& expr = ast_.Get(id);
     if (expr.kind == ExprKind::kBlock) {
       const size_t depth = locals_.size();
+      ++scope_depth_;
       for (StmtId stmt : ast_.Get(expr.stmts)) {
         LowerStmt(stmt);
       }
+      RunDeferred(scope_depth_);
+      ForgetDeferred(scope_depth_);
+      --scope_depth_;
       locals_.resize(depth);
       return;
     }
@@ -512,14 +521,28 @@ class Lowerer {
         Value(stmt.expr);
         return;
 
-      case StmtKind::kReturn:
+      case StmtKind::kDefer:
         if (stmt.expr.is_valid()) {
-          builder_->Return(Coerce(Value(stmt.expr), TypeOf(stmt.expr),
-                                  return_type_));
+          deferred_.push_back(Deferred{scope_depth_, stmt.expr});
+        }
+        return;
+
+      case StmtKind::kReturn: {
+        // The value is computed before the deferred statements run, because
+        // a `defer` that touches what is being returned must not change the
+        // answer.
+        const InstId value =
+            stmt.expr.is_valid()
+                ? Coerce(Value(stmt.expr), TypeOf(stmt.expr), return_type_)
+                : InstId{};
+        RunDeferred(0);
+        if (stmt.expr.is_valid()) {
+          builder_->Return(value);
         } else {
           builder_->ReturnVoid();
         }
         return;
+      }
 
       case StmtKind::kBreak:
       case StmtKind::kContinue: {
@@ -529,6 +552,7 @@ class Lowerer {
           builder_->Unreachable();
           return;
         }
+        RunDeferred(target->scope);
         if (stmt.kind == StmtKind::kContinue) {
           builder_->Jump(target->continue_to);
           return;
@@ -587,6 +611,38 @@ class Lowerer {
       builder_->Add(Opcode::kStore, TypeId{}, {slot, value});
     }
     locals_.push_back(Local{pattern->name, slot, InstId{}, type});
+  }
+
+  // Everything a scope has to run on the way out, innermost last. A `defer`
+  // is the one statement whose position in the source is not where it runs,
+  // so lowering is where it becomes ordinary code -- emitted at every exit
+  // from the scope that deferred it, which includes the ones a `return` or
+  // a `break` take.
+  struct Deferred {
+    size_t scope = 0;
+    ExprId expr;
+  };
+
+  // Runs everything deferred at or below |scope|, innermost first, without
+  // forgetting it: an early exit leaves the list alone for the paths that
+  // have not run yet.
+  void RunDeferred(size_t scope) {
+    for (size_t i = deferred_.size(); i > 0; --i) {
+      if (deferred_[i - 1].scope < scope) {
+        break;
+      }
+      if (builder_->Terminated()) {
+        return;
+      }
+      Value(deferred_[i - 1].expr);
+    }
+  }
+
+  // Drops the entries a scope owned, after its exit has been emitted.
+  void ForgetDeferred(size_t scope) {
+    while (!deferred_.empty() && deferred_.back().scope >= scope) {
+      deferred_.pop_back();
+    }
   }
 
   LoopTarget* FindLoop(Symbol label) {
@@ -1092,6 +1148,7 @@ class Lowerer {
 
   InstId LowerBlockValue(ExprId id, const Expr& expr, TypeId type) {
     const size_t depth = locals_.size();
+    ++scope_depth_;
     const std::span<const StmtId> stmts = ast_.Get(expr.stmts);
     InstId result;
     for (size_t i = 0; i < stmts.size(); ++i) {
@@ -1103,6 +1160,9 @@ class Lowerer {
       }
       LowerStmt(stmts[i]);
     }
+    RunDeferred(scope_depth_);
+    ForgetDeferred(scope_depth_);
+    --scope_depth_;
     locals_.resize(depth);
     if (result.is_valid() || types_->KindOf(type) == TypeKind::kVoid) {
       return result;
@@ -1432,7 +1492,8 @@ class Lowerer {
       builder_->Jump(body);
     }
 
-    loops_.push_back(LoopTarget{expr.name, exit, header});
+    loops_.push_back(LoopTarget{expr.name, exit, header,
+                                scope_depth_ + 1});
     builder_->SetCurrent(body);
     // Both forms keep the body in `rhs`; a `while` also has its condition
     // in `lhs`.
@@ -1477,6 +1538,11 @@ class Lowerer {
   std::vector<std::pair<Symbol, ItemId>> generics_;
   std::vector<std::pair<Symbol, uint32_t>> specializations_;
   std::vector<Pending> pending_;
+  std::vector<Deferred> deferred_;
+  // How many blocks deep lowering is. A `defer` belongs to the block it was
+  // written in, and the count of locals cannot say which block that is -- a
+  // block that declares nothing does not change it.
+  size_t scope_depth_ = 0;
   TypeStore::Substitution substitution_;
 
   Builder* builder_ = nullptr;

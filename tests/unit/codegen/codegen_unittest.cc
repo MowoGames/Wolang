@@ -513,6 +513,68 @@ fun Length(message: text) -> int => 0
   WOLANG_EXPECT_EQ(f.Skipped("Length"), "");
 }
 
+WOLANG_TEST(CodegenTest, RunsDeferredStatementsOnEveryExit) {
+  // A `defer` is the one statement whose position in the source is not
+  // where it runs. Lowering is where that stops being true: it becomes
+  // ordinary code at every exit from the scope that deferred it.
+  Fixture f(R"(
+fun Order() -> int {
+  var total = 0
+  {
+    defer total = total * 2
+    defer total = total + 3
+    total = 1
+  }
+  return total
+}
+
+fun EarlyOut(c: bool) -> int {
+  var seen = 0
+  {
+    defer seen = seen + 10
+    if c {
+      return seen + 1
+    }
+  }
+  return seen
+}
+
+fun PerIteration(n: int) -> int {
+  var total = 0
+  var i = 0
+  while i < n {
+    defer total = total + 1
+    i = i + 1
+  }
+  return total
+}
+)");
+  // Innermost first, so `+ 3` runs before `* 2`.
+  WOLANG_EXPECT_EQ(f.Run("Order"), "8");
+  // The returned value is computed before the deferred statements run, so a
+  // `defer` cannot change the answer -- only what is left behind.
+  WOLANG_EXPECT_EQ(f.Run("EarlyOut", {Fixture::Bool(true)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("EarlyOut", {Fixture::Bool(false)}), "10");
+  WOLANG_EXPECT_EQ(f.Run("PerIteration", {Fixture::Int(5)}), "5");
+}
+
+WOLANG_TEST(CodegenTest, DeferIsWhatMakesTheHeapUsable) {
+  // Until there is an owning type, this is memory management: allocate,
+  // defer the release, and the release happens on every path out.
+  Fixture f(R"(
+extern "C" fun malloc(size: u64) -> *s32
+extern "C" fun free(block: *s32)
+
+fun Scoped(n: int) -> int {
+  const block = malloc(4)
+  defer free(block)
+  *block = n + 1
+  return *block
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Scoped", {Fixture::Int(41)}), "42");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

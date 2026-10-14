@@ -250,6 +250,12 @@ branch is gone at the join, while a value written on one branch is not
 written. A loop body is walked twice, because the second iteration moving
 what the first one moved is the mistake worth reporting.
 
+A deferred statement is analysed where it is written rather than where it
+runs, so a `defer` that uses something moved after it is not reported. The
+alternative is to analyse the deferred statement at every exit, which is
+what lowering already does with it; the check will follow when `defer` has a
+reason to be part of the move rules.
+
 `E0123` is definite assignment: a variable is reported when *any* path to a
 use fails to write it, which is why a loop body does not count -- it may not
 run. It is also what makes the two execution tiers agree, because the
