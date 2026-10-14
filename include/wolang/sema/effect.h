@@ -36,6 +36,11 @@ enum class BuiltinEffect : uint32_t {
   kGpu,
   kUnsafe,
   kPanic,
+  // The function may suspend. `wait` is where it does and `task` is how a
+  // signature says so, which makes suspension both visible at the call site
+  // and checkable in the row: a `@Deterministic` or `@Hot` context can
+  // forbid it the same way it forbids `rand`.
+  kAsync,
   kCount,
 };
 

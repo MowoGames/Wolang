@@ -29,6 +29,8 @@ constexpr std::string_view kMissingTraitMethod = "E0402";
 constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadConversion = "E0124";
+constexpr std::string_view kWaitOutsideTask = "E0301";
+constexpr std::string_view kTaskNotWaited = "E0302";
 constexpr std::string_view kNotForeignType = "E0802";
 constexpr std::string_view kForeignWithBody = "E0803";
 constexpr std::string_view kBadAllow = "E0070";
@@ -261,7 +263,7 @@ class Checker {
 
   // Notes what calling |callee| does: its declared row if it has one, and
   // otherwise who to ask once the module-wide rows are known.
-  void RecordCallEffects(ExprId callee);
+  void RecordCallEffects(ExprId callee, ExprId call);
 
   // The member of the enclosing type named |name|, or null when there is no
   // enclosing type or it has no such member.
@@ -313,6 +315,12 @@ class Checker {
   // same owner the signature pass used.
   const ItemIndexMap* item_indices_ = nullptr;
   TypedBody result_;
+  // Whether the declaration being checked is a `task`, and which expression
+  // is currently the operand of a `wait` or a `spawn`. Both are about where
+  // suspension is allowed to happen.
+  bool in_task_ = false;
+  ExprId started_;
+  bool spawned_ = false;
   std::vector<Scope> scopes_;
   // The declared return type of the function being checked.
   TypeId return_type_;
@@ -878,7 +886,7 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
     }
   }
 
-  RecordCallEffects(expr.lhs);
+  RecordCallEffects(expr.lhs, id);
 
   const TypeId callee = Check(expr.lhs, TypeId{});
   const std::span<const ExprId> args = ast_.Get(expr.args);
@@ -984,7 +992,7 @@ TypeId Checker::CheckIndex(const Expr& expr) {
   return types_->error();
 }
 
-void Checker::RecordCallEffects(ExprId callee) {
+void Checker::RecordCallEffects(ExprId callee, ExprId call) {
   if (!ast_.Contains(callee)) {
     return;
   }
@@ -1004,6 +1012,15 @@ void Checker::RecordCallEffects(ExprId callee) {
   if (binding == nullptr || binding->item == Binding::kNoItem) {
     return;
   }
+  if (binding->is_task && call != started_) {
+    std::string message = "`";
+    message.append(interner_->Text(name));
+    message.append("` is a `task`, so calling it starts work rather than "
+                   "doing it");
+    Report(kTaskNotWaited, std::move(message), ast_.Get(callee).span,
+           "write `wait` to suspend until it finishes, or `spawn` to let it "
+           "run alongside");
+  }
   if (binding->is_foreign) {
     // Calling out of the language is the `unsafe` effect, which is how the
     // rules already in place apply to the FFI: a caller has to state it,
@@ -1012,6 +1029,12 @@ void Checker::RecordCallEffects(ExprId callee) {
     result_.direct_effects.Add(
         types_->BuiltinEffectId(BuiltinEffect::kUnsafe));
   }
+  // `spawn` starts the work without waiting for it, so the spawner does not
+  // suspend -- but it is still responsible for what it started, which is
+  // why every other effect carries over. A sandboxed package cannot spawn
+  // its way to the network.
+  const bool drop_async = spawned_ && call == started_;
+
   if (const EffectRow* declared =
           resolution_->DeclaredRow(binding->file, binding->item);
       declared != nullptr) {
@@ -1025,15 +1048,28 @@ void Checker::RecordCallEffects(ExprId callee) {
     // program that prints an unsafe one.
     const EffectId unsafe_effect =
         types_->BuiltinEffectId(BuiltinEffect::kUnsafe);
+    const EffectId async_effect =
+        types_->BuiltinEffectId(BuiltinEffect::kAsync);
     for (EffectId effect : declared->effects()) {
-      if (effect != unsafe_effect) {
-        result_.direct_effects.Add(effect);
+      if (effect == unsafe_effect) {
+        continue;
       }
+      if (drop_async && effect == async_effect) {
+        continue;
+      }
+      result_.direct_effects.Add(effect);
     }
     return;
   }
   // Not stated here, so the row has to come from the module-wide fixpoint.
   result_.callees.emplace_back(binding->file, binding->item);
+  if (drop_async) {
+    // The fixpoint unions whole rows, so a spawn of an undeclared task is
+    // recorded as a plain call and the `async` it brings in is accepted
+    // here. Declaring the task's row is what makes the distinction exact,
+    // which is one more reason an `offer`ed task states its effects.
+    result_.spawned_callees.emplace_back(binding->file, binding->item);
+  }
 }
 
 // `Vec3(x, y, z)` fills the type's fields in declaration order. A type with
@@ -1554,9 +1590,30 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
     }
 
     case ExprKind::kAwait:
-    case ExprKind::kSpawn:
+    case ExprKind::kSpawn: {
+      // A call under `wait` or `spawn` is the one place a task may be
+      // called, so the operand is checked knowing that.
+      const ExprId previous = started_;
+      const bool previous_spawned = spawned_;
+      started_ = expr.lhs;
+      spawned_ = expr.kind == ExprKind::kSpawn;
       type = Check(expr.lhs, TypeId{});
+      started_ = previous;
+      spawned_ = previous_spawned;
+      if (expr.kind == ExprKind::kAwait) {
+        // `wait` is where a function suspends, and `async` in the row is
+        // how that becomes checkable: a context that forbids the effect
+        // forbids suspending, the same way it forbids `rand`.
+        result_.direct_effects.Add(
+            types_->BuiltinEffectId(BuiltinEffect::kAsync));
+        if (!in_task_) {
+          Report(kWaitOutsideTask,
+                 "`wait` suspends, and only a `task fun` may suspend",
+                 expr.span, "mark the function `task`");
+        }
+      }
       break;
+    }
 
     case ExprKind::kStructLiteral:
       Check(expr.lhs, TypeId{});
@@ -1946,6 +2003,8 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   }
 
   const TypeId previous_return = return_type_;
+  const bool previous_task = in_task_;
+  in_task_ = HasFlag(item.flags, ItemFlags::kAsync);
   return_type_ = item.type.is_valid() ? resolver_.Resolve(ast_, item.type)
                                       : types_->void_type();
   if (is_foreign) {
@@ -1969,6 +2028,7 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   }
 
   return_type_ = previous_return;
+  in_task_ = previous_task;
   resolver_.PopTypeParameters(pushed);
   PopScope();
 }

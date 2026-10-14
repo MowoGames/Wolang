@@ -34,6 +34,10 @@ struct TypedBody {
   // pairs. The module-wide fixpoint needs these: a row cannot be inferred
   // from one body alone.
   std::vector<std::pair<uint32_t, uint32_t>> callees;
+  // The ones reached through `spawn`. Everything they do carries over --
+  // starting work is being responsible for it -- except `async`: the
+  // spawner does not suspend.
+  std::vector<std::pair<uint32_t, uint32_t>> spawned_callees;
   // Expressions that were accepted as an implicit borrow: an owned
   // `String` where a `str` was wanted (D15b). Recorded because it is the
   // difference between a use that moves and a use that does not, and only

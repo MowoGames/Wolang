@@ -145,5 +145,64 @@ fun Magnitude(n: s32) -> s32 uses unsafe {
   WOLANG_EXPECT_EQ(PackageCodes(&db), "E0801");
 }
 
+WOLANG_TEST(EffectRowTest, SuspensionIsAnEffectAHotPathForbids) {
+  // The payoff of putting `async` in the row: a hot path that suspends is
+  // caught by the same check that catches an allocation, and says so in the
+  // same words.
+  testing::TempTree tree("async-hot");
+  tree.Write("wolang.toml", "[package]\nname = \"game\"\nversion = \"1\"\n");
+  tree.Write("src/main.wo", R"(
+offer task fun Sleep(ms: int) uses io
+
+@Hot
+task fun Frame(n: int) -> int uses io {
+  wait Sleep(1)
+  return n
+}
+)");
+  Database db;
+  DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(LoadPackage(&db, tree.path(), &diagnostics));
+  WOLANG_EXPECT_EQ(PackageCodes(&db), "E0702");
+}
+
+WOLANG_TEST(EffectRowTest, SpawningIsNotSuspending) {
+  // Starting work is being responsible for what it does -- so `io` carries
+  // over -- but the spawner does not wait, so `async` does not.
+  testing::TempTree tree("async-spawn");
+  tree.Write("wolang.toml", "[package]\nname = \"game\"\nversion = \"1\"\n");
+  tree.Write("src/main.wo", R"(
+offer task fun Sleep(ms: int) uses io
+
+offer fun Starter() uses io {
+  const _handle = spawn Sleep(1)
+}
+)");
+  Database db;
+  DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(LoadPackage(&db, tree.path(), &diagnostics));
+  // `uses io` is enough: no `async` is missing from the row.
+  WOLANG_EXPECT_EQ(PackageCodes(&db), "");
+}
+
+WOLANG_TEST(EffectRowTest, TaskStatesTheEffectWithoutAUsesClause) {
+  // `task` is part of the signature, so a caller sees `async` whether or
+  // not there is a clause to put it in -- and the author does not have to
+  // write the same thing twice.
+  testing::TempTree tree("async-stated");
+  tree.Write("wolang.toml", "[package]\nname = \"game\"\nversion = \"1\"\n");
+  tree.Write("src/main.wo", R"(
+offer task fun Yield() {
+  wait Nothing()
+}
+
+task fun Nothing() {}
+)");
+  Database db;
+  DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(LoadPackage(&db, tree.path(), &diagnostics));
+  WOLANG_EXPECT_EQ(PackageCodes(&db), "");
+}
+
 }  // namespace
 }  // namespace wolang

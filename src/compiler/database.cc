@@ -615,6 +615,7 @@ void Database::RegisterQueries() {
           uint32_t item = 0;
           EffectRow row;
           std::vector<std::pair<uint32_t, uint32_t>> callees;
+          std::vector<std::pair<uint32_t, uint32_t>> spawned;
         };
         std::vector<Node> nodes;
         for (FileId file : *files) {
@@ -627,7 +628,8 @@ void Database::RegisterQueries() {
               continue;
             }
             nodes.push_back(Node{file.index, body.item_index,
-                                 body.direct_effects, body.callees});
+                                 body.direct_effects, body.callees,
+                                 body.spawned_callees});
           }
         }
 
@@ -643,7 +645,23 @@ void Database::RegisterQueries() {
                 if (other.file != file || other.item != item) {
                   continue;
                 }
-                grew |= node.row.Merge(other.row);
+                const bool spawned =
+                    std::find(node.spawned.begin(), node.spawned.end(),
+                              std::pair<uint32_t, uint32_t>(file, item)) !=
+                    node.spawned.end();
+                if (!spawned) {
+                  grew |= node.row.Merge(other.row);
+                  break;
+                }
+                // Everything the spawned task does carries over except the
+                // suspension itself: starting work is being responsible
+                // for it, but the spawner does not wait.
+                for (EffectId effect : other.row.effects()) {
+                  if (effect.index !=
+                      static_cast<uint32_t>(BuiltinEffect::kAsync)) {
+                    grew |= node.row.Add(effect);
+                  }
+                }
                 break;
               }
             }
@@ -731,6 +749,8 @@ void Database::RegisterQueries() {
             add(BuiltinEffect::kNet);
             add(BuiltinEffect::kGpu);
             add(BuiltinEffect::kUnsafe);
+            // There is nothing to suspend into at compile time.
+            add(BuiltinEffect::kAsync);
           }
 
           for (AttributeId id : ast.Get(item.attributes)) {
@@ -744,6 +764,10 @@ void Database::RegisterQueries() {
               add(BuiltinEffect::kNet);
             } else if (name == "Hot") {
               add(BuiltinEffect::kAlloc);
+              // A hot path does not suspend: a frame that yields is a frame
+              // that missed. This is what putting `async` in the row buys --
+              // the check is the same one that catches an allocation.
+              add(BuiltinEffect::kAsync);
             }
           }
           return row;
@@ -816,6 +840,21 @@ void Database::RegisterQueries() {
           }
 
           const EffectRow* declared = resolved->DeclaredRow(arg, index);
+
+          // `task` is part of the signature: it says the function may
+          // suspend, so `async` counts as declared whether or not there is
+          // a `uses` clause to put it in.
+          EffectRow stated;
+          if (declared != nullptr) {
+            stated = *declared;
+          }
+          const bool is_task =
+              HasFlag(tree->entries[index].flags, ItemFlags::kAsync);
+          if (is_task) {
+            stated.Add(EffectId{
+                static_cast<uint32_t>(BuiltinEffect::kAsync)});
+            declared = &stated;
+          }
 
           if (declared == nullptr) {
             // Inference stops at the module boundary, so a name other

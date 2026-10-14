@@ -22,7 +22,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0117`–`E0119` | sizes, cyclic declarations, parameters | implemented (wave 5) |
 | `E0120`–`E0124` | memory, references and conversions | `E0120` (wave 5), `E0123`, `E0124` (waves 8–9) |
 | `E0201` | pattern matching | implemented (wave 4) |
-| `E03xx` | coroutines | wave 10 |
+| `E0301`–`E0302` | suspension | implemented (wave 10) |
 | `E0401`–`E0403` | inheritance, traits, bounds | implemented (waves 4–5) |
 | `E05xx` | entities and systems | wave 11 |
 | `E06xx` | networking | wave 16 |
@@ -148,6 +148,8 @@ unused.
 | `E0703` | the package was not granted the capability | `uses net` under `capabilities = "io"` |
 | `E0704` | an offered signature does not state its effects | `offer fun f()` whose body does `io` |
 | `E0801` | `unsafe` where the package forbids it | `unsafe { }` under `unsafe = "deny"` |
+| `E0301` | `wait` outside a `task` function | `fun f() { wait g() }` |
+| `E0302` | a `task` called without `wait` or `spawn` | `fun f() { g() }` where `g` is a task |
 | `E0802` | a type with no C representation crosses the `extern` boundary | `extern "C" fun f(s: text)` |
 | `E0803` | an `extern` function has a body | `extern "C" fun f() { }` |
 
@@ -224,6 +226,16 @@ Only bool, optionals and enums have a value set the compiler can enumerate;
 every other type needs a catch-all arm. An arm with a guard covers nothing,
 because the guard may be false.
 
+Suspension is both a word and an effect. `wait` is where a function
+suspends and `task` is how a signature says it may, which keeps the
+suspension point visible at the call site; `async` in the effect row is what
+makes it *checkable*, so a `comptime` or `@Hot` context forbids suspending
+with the same machinery that forbids allocating. `task` counts as stating
+the effect, so nobody writes it twice. `spawn` starts work without waiting
+for it: everything the task does carries over to the spawner -- starting
+work is being responsible for it -- except `async`, because the spawner does
+not suspend.
+
 Calling an `extern` function is the **`unsafe` effect**, which is how every
 rule already in place applies to the FFI with nothing new to write: a
 declaration that calls out has to state `uses unsafe` when it is `offer`ed,
@@ -290,8 +302,6 @@ in use appear in the implemented tables above, not here.
 
 | Code | Catches |
 |---|---|
-| `E0301` | `wait` outside a `task` function |
-| `E0302` | a `task` function called without `wait` or `spawn` |
 | `E0501` | two systems write the same component without an ordering |
 | `E0502` | cycle in system ordering |
 | `E0601` | server-only function called from a client context |

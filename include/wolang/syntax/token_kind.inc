@@ -172,7 +172,6 @@ WOLANG_CONTEXTUAL(Without, "without")
 
 WOLANG_RESERVED("abstract")
 WOLANG_RESERVED("actor")
-WOLANG_RESERVED("async")
 WOLANG_RESERVED("await")
 WOLANG_RESERVED("case")
 WOLANG_RESERVED("catch")

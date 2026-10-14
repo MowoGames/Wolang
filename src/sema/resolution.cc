@@ -613,6 +613,7 @@ FileResolution ResolveFile(TypeStore* types,
     binding.is_mutable = HasFlag(entry.flags, ItemFlags::kMutable);
     binding.is_public = HasFlag(entry.flags, ItemFlags::kOffer);
     binding.is_foreign = HasFlag(entry.flags, ItemFlags::kExtern);
+    binding.is_task = HasFlag(entry.flags, ItemFlags::kAsync);
     resolution.scope.push_back(binding);
   }
 
@@ -897,8 +898,17 @@ void ResolveSignatures(TypeStore* types,
 
     // `uses io, Telemetry`. Resolved here because an effect name may be
     // imported, exactly like a type name.
+    //
+    // `task` counts as part of the clause: the keyword is how a signature
+    // says "this may suspend", so a declared row has to carry `async` or a
+    // caller would not see it. A `task fun` with no clause at all keeps no
+    // row -- an absent row is not an empty one (D38), and inference will
+    // find `async` in the body.
     if (!item.effects.empty()) {
       EffectRow row;
+      if (HasFlag(item.flags, ItemFlags::kAsync)) {
+        row.Add(EffectId{static_cast<uint32_t>(BuiltinEffect::kAsync)});
+      }
       for (TypeRefId effect_id : ast.Get(item.effects)) {
         if (!ast.Contains(effect_id)) {
           continue;

@@ -56,6 +56,11 @@ struct Binding {
   // reached through the C ABI. Carried here so a call site knows without
   // reading the declaring file -- calling one is the `unsafe` effect.
   bool is_foreign = false;
+  // Whether the declaration is a `task`: it may suspend, so a call to it
+  // has to be under a `wait` or a `spawn`. Carried here for the same reason
+  // `is_foreign` is -- the call site must not have to read the declaring
+  // file.
+  bool is_task = false;
 
   friend bool operator==(const Binding& lhs, const Binding& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
@@ -63,7 +68,7 @@ struct Binding {
            lhs.file == rhs.file && lhs.dimension == rhs.dimension &&
            lhs.factor == rhs.factor && lhs.is_mutable == rhs.is_mutable &&
            lhs.is_public == rhs.is_public &&
-           lhs.is_foreign == rhs.is_foreign;
+           lhs.is_foreign == rhs.is_foreign && lhs.is_task == rhs.is_task;
   }
 };
 

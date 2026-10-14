@@ -1808,5 +1808,46 @@ fun Local() -> int {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheckTest, OnlyATaskMaySuspend) {
+  // `wait` is where a function suspends, and `task` is the signature's way
+  // of saying it can. Keeping the word at the call site is what makes a
+  // suspension point visible; putting `async` in the effect row is what
+  // makes it checkable.
+  Fixture f(R"(
+task fun Fetch(n: int) -> int uses io
+
+task fun Load(n: int) -> int uses io {
+  const value = wait Fetch(n)
+  return value + 1
+}
+
+fun Sync(n: int) -> int uses io {
+  return wait Fetch(n)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0301");
+}
+
+WOLANG_TEST(TypeCheckTest, ATaskHasToBeWaitedForOrSpawned) {
+  // Calling a task starts work rather than doing it, so a bare call is
+  // almost always a mistake -- and the one that is hardest to see.
+  Fixture f(R"(
+task fun Fetch(n: int) -> int uses io
+
+fun Forgot(n: int) -> int uses io {
+  return Fetch(n)
+}
+
+task fun Waited(n: int) -> int uses io {
+  return wait Fetch(n)
+}
+
+task fun Started(n: int) uses io {
+  const _handle = spawn Fetch(n)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0302");
+}
+
 }  // namespace
 }  // namespace wolang

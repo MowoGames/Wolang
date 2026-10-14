@@ -729,6 +729,17 @@ task fun OpenDoor() {
 Both are shorter than the words most languages use for this, and `wait` says
 what the machine is doing rather than naming a protocol.
 
+Suspension is also an **effect**: a `task` signature states `async` whether
+or not it has a `uses` clause, so a caller sees it, and a context that
+forbids the effect forbids suspending -- `comptime` because there is nothing
+to suspend into, `@Hot` because a frame that yields is a frame that missed.
+`wait` outside a `task` is `E0301`; calling a task without `wait` or `spawn`
+is `E0302`, because calling one starts work rather than doing it.
+
+`spawn` starts a task alongside the caller. Everything the task does carries
+over to whoever started it -- a sandboxed package cannot spawn its way to
+the network -- except `async`, because the spawner does not wait.
+
 Coroutines are stackless and scheduled by the host's tick groups or by the
 runtime's own scheduler. Concurrency is structured: a task belongs to the
 scope that spawned it and is cancelled with it.

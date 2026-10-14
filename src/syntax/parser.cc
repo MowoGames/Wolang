@@ -651,6 +651,19 @@ ItemFlags Parser::ParseModifiers(Symbol* abi) {
       default:
         break;
     }
+    // `async fun` is what most other languages call this, and `async` is an
+    // ordinary identifier here because it is also the name of an effect. A
+    // reader who writes it gets told the word rather than a parse failure.
+    if (At(TokenKind::kIdentifier) && PeekKind(1) == TokenKind::kKwFun &&
+        TextOf(Peek()) == "async") {
+      Report(kExpectedDeclaration,
+             "`async fun` is spelled `task fun`; suspension is `wait`",
+             CurrentSpan(), "write `task`");
+      Advance();
+      add(ItemFlags::kAsync, "task");
+      continue;
+    }
+
     // `derived` is contextual: only a `derived var` or `derived let` counts.
     if (AtContextual(ContextualKeyword::kDerived) &&
         (PeekKind(1) == TokenKind::kKwVar ||
