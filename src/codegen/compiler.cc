@@ -115,6 +115,9 @@ class CompiledModule::Impl {
   std::vector<TrapSite> traps_;
   std::unordered_map<uint32_t, uint32_t> by_name_;
   CodeBlock block_;
+  // See Run: both have to outlive a `longjmp` through generated frames.
+  Context context_;
+  jmp_buf landing_ = {};
   uint32_t compiled_count_ = 0;
   uint32_t skipped_count_ = 0;
 
@@ -438,19 +441,29 @@ interp::Outcome CompiledModule::Impl::Run(
   std::vector<uint8_t> result(
       std::max(returned.is_valid() ? layouts_.SizeOf(returned) : 0u, 16u), 0);
 
-  Context context;
-  jmp_buf landing;
-  context.landing = &landing;
-  context.report = &ReportTrap;
-  context.code_begin =
-      reinterpret_cast<uint64_t>(block_.AddressOf(0));
-  context.code_end = context.code_begin + words_.size() * sizeof(uint32_t);
+  // The context and the landing pad are members rather than locals, and
+  // that is not a style choice: an object of automatic storage that is
+  // changed between `setjmp` and `longjmp` has an indeterminate value
+  // afterwards unless it is volatile. A local context is changed exactly
+  // that way -- by generated code, through a pointer -- so the optimizer is
+  // entitled to fold the trap kind back to the zero it was initialized
+  // with. The release build did, and every trap came back as no trap at
+  // all. Members live in the heap object, where the rule does not apply.
+  //
+  // One run at a time, consequently: a compiled call cannot be re-entered
+  // from inside another one.
+  context_ = Context();
+  context_.landing = &landing_;
+  context_.report = &ReportTrap;
+  context_.code_begin = reinterpret_cast<uint64_t>(block_.AddressOf(0));
+  context_.code_end =
+      context_.code_begin + words_.size() * sizeof(uint32_t);
 
   const auto stub = reinterpret_cast<EntryPoint>(
       const_cast<void*>(block_.AddressOf(entry->stub)));
 
-  if (_setjmp(landing) == 0) {
-    stub(&context, slots.data(), result.data());
+  if (_setjmp(landing_) == 0) {
+    stub(&context_, slots.data(), result.data());
     if (returned.is_valid()) {
       outcome.value = Decode(result.data(), returned);
     } else {
@@ -459,15 +472,15 @@ interp::Outcome CompiledModule::Impl::Run(
     return outcome;
   }
 
-  outcome.trap = static_cast<ir::TrapKind>(context.trap_kind);
-  if (context.trap_site < traps_.size()) {
-    outcome.where = traps_[context.trap_site].where;
-    outcome.message = traps_[context.trap_site].message;
+  outcome.trap = static_cast<ir::TrapKind>(context_.trap_kind);
+  if (context_.trap_site < traps_.size()) {
+    outcome.where = traps_[context_.trap_site].where;
+    outcome.message = traps_[context_.trap_site].message;
   }
   if (backtrace != nullptr) {
-    for (uint32_t i = 0; i < context.frame_count; ++i) {
+    for (uint32_t i = 0; i < context_.frame_count; ++i) {
       const std::string frame =
-          Symbolize(context.frames[i] - context.code_begin);
+          Symbolize(context_.frames[i] - context_.code_begin);
       // An empty name is the trampoline, which is where the host entered
       // compiled code: there is nothing above it worth naming.
       if (frame.empty()) {

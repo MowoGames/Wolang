@@ -134,17 +134,48 @@ fun Kept(n: int) -> int {
 }
 
 WOLANG_TEST(PassTest, KeepsACallWithEffects) {
-  // The effect row is in the IR for exactly this: a call that does something
-  // cannot be removed just because its result is unused.
+  // The effect row is in the IR for exactly this: a call that does
+  // something cannot be removed just because its result is unused. The
+  // callee here has no body, so inlining cannot make the question go away.
   Fixture f(R"(
-fun Log() uses io {}
-
 fun Run() {
   Log()
 }
+
+offer fun Log() uses io
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   WOLANG_EXPECT(f.Optimized("Run").find("call @Log") != std::string::npos);
+}
+
+WOLANG_TEST(PassTest, InlinesASmallCall) {
+  // The rewrite needs no renumbering: the call instruction becomes the
+  // parameter of the block control comes back to, so `%1` still names the
+  // result and nothing that used it was touched.
+  Fixture f(R"(
+fun Double(n: int) -> int => n + n
+
+fun Use(n: int) -> int => Double(n) + 1
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Lowered("Use").find("call @Double") != std::string::npos);
+  WOLANG_EXPECT(f.Optimized("Use").find("call") == std::string::npos);
+  WOLANG_EXPECT(f.Optimized("Use").find("add") != std::string::npos);
+}
+
+WOLANG_TEST(PassTest, LeavesRecursionAlone) {
+  // A function that calls itself would inline forever.
+  Fixture f(R"(
+fun Countdown(n: int) -> int {
+  if n == 0 {
+    return 0
+  }
+  return Countdown(n - 1)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Optimized("Countdown").find("call @Countdown") !=
+                std::string::npos);
 }
 
 WOLANG_TEST(PassTest, PromotesASlotAndRemovesIt) {
@@ -195,9 +226,45 @@ fun Always() -> int {
   WOLANG_EXPECT_EQ(f.Problems(), "");
   const std::string body = f.Optimized("Always");
   WOLANG_EXPECT(body.find("br ") == std::string::npos);
-  WOLANG_EXPECT(body.find("jmp ^1") != std::string::npos);
+  // And then the jump itself goes: a block only one block reaches is part
+  // of that block, so what is left is the one line that runs.
+  WOLANG_EXPECT(body.find("jmp") == std::string::npos);
   // The arm that can no longer be reached is gone from the dump.
   WOLANG_EXPECT(body.find("if.else") == std::string::npos);
+}
+
+WOLANG_TEST(PassTest, MergesABlockOnlyOneBlockReaches) {
+  // An early return leaves the else arm jumping straight to what follows
+  // the `if`, and a block one block reaches is part of that block.
+  Fixture f(R"(
+fun Early(c: bool) -> int {
+  if c {
+    return 1
+  }
+  return 2
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Lowered("Early").find("if.join") != std::string::npos);
+  WOLANG_EXPECT(f.Optimized("Early").find("if.join") == std::string::npos);
+  WOLANG_EXPECT(f.Optimized("Early").find("jmp") == std::string::npos);
+}
+
+WOLANG_TEST(PassTest, MergingSubstitutesTheBlockParameters) {
+  // The parameters of a merged block are replaced by the values the jump
+  // carried. Without that, a block with parameters could never be merged --
+  // and an inlined body always comes back through one.
+  Fixture f(R"(
+fun Double(n: int) -> int => n + n
+
+fun Use() -> int => Double(21)
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string body = f.Optimized("Use");
+  WOLANG_EXPECT(body.find("call") == std::string::npos);
+  WOLANG_EXPECT(body.find("jmp") == std::string::npos);
+  // Folded, because after substitution both operands are the constant.
+  WOLANG_EXPECT(body.find("42") != std::string::npos);
 }
 
 WOLANG_TEST(PassTest, EveryPassLeavesTheFunctionVerifiable) {

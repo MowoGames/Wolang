@@ -30,6 +30,15 @@ bool EliminateDeadCode(TypeStore* types,
 // lets lowering put every `var` in an `alloca` without paying for it.
 bool PromoteSlots(TypeStore* types, Function* function);
 
+// Replaces a call to a small function with the body it calls.
+//
+// Inlines one call per invocation, so a driver can run it to a fixpoint
+// alongside everything else. The rewrite needs no renumbering: the call
+// instruction *becomes* the parameter of the block control returns to, so
+// every operand that read the call's result reads the parameter instead
+// without being touched.
+bool InlineCalls(TypeStore* types, const Module& module, Function* function);
+
 // Replaces a jump to a block with one predecessor by that block's contents,
 // and drops blocks nothing reaches.
 bool SimplifyControlFlow(TypeStore* types, Function* function);

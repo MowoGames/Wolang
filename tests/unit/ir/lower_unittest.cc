@@ -22,14 +22,15 @@ class Fixture {
     file_ = db_.AddFile("<test>", std::string(code));
   }
 
-  // The IR of the whole file. Empty when the file did not type check, which
-  // is deliberate: lowering trusts the checker.
+  // The IR as lowering left it, before any pass ran. What a lowering test
+  // is about is what lowering produced; the passes have their own suite.
   std::string Ir() {
     const LoweredFile* lowered = db_.Lowered(file_);
     if (lowered == nullptr) {
       return "<none>";
     }
-    return ir::PrintModule(db_.interner(), db_.types(), lowered->module);
+    return ir::PrintModule(db_.interner(), db_.types(),
+                           lowered->unoptimized);
   }
 
   // Whatever the verifier found. The only acceptable answer is nothing.

@@ -30,6 +30,23 @@ bool ReplaceAllUses(Function* function, InstId from, InstId to) {
   return changed;
 }
 
+// How many edges arrive at |block|. A block with one is a candidate for
+// being merged into the block that jumps to it.
+uint32_t EdgesInto(const Function& function, BlockId block) {
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < function.blocks.size(); ++i) {
+    const InstId terminator = function.TerminatorOf(BlockId{i});
+    if (!function.Contains(terminator)) {
+      continue;
+    }
+    for (BlockId successor :
+         function.SuccessorsOf(function.Get(terminator))) {
+      count += successor == block ? 1 : 0;
+    }
+  }
+  return count;
+}
+
 // True when removing the operation cannot change what the program does.
 //
 // Arithmetic is *not* pure in this language. Overflow and division by zero
@@ -292,6 +309,227 @@ bool EliminateDeadCode(TypeStore* types,
   return changed;
 }
 
+// ---------------------------------------------------------------- inlining ---
+
+namespace {
+
+constexpr uint32_t kNoBlock = 0xFFFFFFFFu;
+
+// What a call has to look like to be worth replacing with the body it
+// calls. The dev tier wants the small ones -- an accessor, a comparison, a
+// wrapper around another call -- which are exactly the calls that cost more
+// than they do. Anything larger is a decision for the optimizing tier,
+// which will have a cost model to make it with.
+bool WorthInlining(const Module& module,
+                   const Function& caller,
+                   const Inst& call) {
+  constexpr size_t kMaxInstructions = 24;
+  constexpr size_t kMaxBlocks = 4;
+
+  if (call.opcode != Opcode::kCall ||
+      call.payload.callee >= module.functions.size()) {
+    return false;
+  }
+  const Function& callee = module.functions[call.payload.callee];
+  if (callee.is_declaration() || &callee == &caller) {
+    // A declaration has no body, and a function that calls itself would
+    // inline forever. Mutual recursion is bounded by the driver's rounds.
+    return false;
+  }
+  if (callee.instructions.size() > kMaxInstructions ||
+      callee.blocks.size() > kMaxBlocks) {
+    return false;
+  }
+  // A call the verifier would reject is not one to rewrite.
+  return callee.ParamsOf(callee.entry()).size() == call.operands_count;
+}
+
+// Appends |inst| to |function| in |block|, returning its id.
+InstId Append(Function* function, Inst inst, BlockId block) {
+  const InstId id{static_cast<uint32_t>(function->instructions.size())};
+  function->instructions.push_back(inst);
+  function->owners.push_back(block);
+  function->Get(block).instructions.push_back(id);
+  return id;
+}
+
+}  // namespace
+
+bool InlineCalls(TypeStore* types, const Module& module, Function* function) {
+  if (function->is_declaration()) {
+    return false;
+  }
+
+  // One call per invocation: the rewrite moves instructions between blocks,
+  // and finding the next one on a fresh walk is cheaper than reasoning
+  // about what the last one invalidated.
+  InstId call_id;
+  BlockId host_id;
+  size_t position = 0;
+  for (uint32_t b = 0; b < function->blocks.size() && !call_id.is_valid();
+       ++b) {
+    const Block& block = function->blocks[b];
+    for (size_t i = 0; i < block.instructions.size(); ++i) {
+      const InstId id = block.instructions[i];
+      if (!WorthInlining(module, *function, function->Get(id))) {
+        continue;
+      }
+      call_id = id;
+      host_id = BlockId{b};
+      position = i;
+      break;
+    }
+  }
+  if (!call_id.is_valid()) {
+    return false;
+  }
+
+  const Inst call = function->Get(call_id);
+  const Function& callee = module.functions[call.payload.callee];
+  const bool returns_value =
+      call.type.is_valid() && types->KindOf(call.type) != TypeKind::kVoid;
+
+  // The continuation: whatever followed the call in its block. The call
+  // instruction becomes its parameter, so nothing that used the result has
+  // to be rewritten.
+  const BlockId continuation{
+      static_cast<uint32_t>(function->blocks.size())};
+  Block tail;
+  tail.label = "inline.continue";
+  {
+    Block& host = function->Get(host_id);
+    const std::vector<InstId> rest(host.instructions.begin() +
+                                       static_cast<long>(position) + 1,
+                                   host.instructions.end());
+    host.instructions.resize(position);
+    if (returns_value) {
+      Inst& repurposed = function->Get(call_id);
+      repurposed.opcode = Opcode::kParam;
+      repurposed.operands_count = 0;
+      repurposed.successors_count = 0;
+      repurposed.cases_count = 0;
+      tail.instructions.push_back(call_id);
+      tail.param_count = 1;
+      function->owners[call_id.index] = continuation;
+    } else {
+      Discard(function, call_id);
+    }
+    for (InstId id : rest) {
+      tail.instructions.push_back(id);
+      function->owners[id.index] = continuation;
+    }
+  }
+  function->blocks.push_back(std::move(tail));
+
+  // A block the callee had emptied is a deleted block, and nothing in it
+  // needs a copy.
+  std::vector<uint32_t> block_map(callee.blocks.size(), kNoBlock);
+  for (uint32_t b = 0; b < callee.blocks.size(); ++b) {
+    if (callee.blocks[b].instructions.empty()) {
+      continue;
+    }
+    block_map[b] = static_cast<uint32_t>(function->blocks.size());
+    Block copy;
+    copy.label = "inline." + callee.blocks[b].label;
+    copy.param_count = callee.blocks[b].param_count;
+    function->blocks.push_back(std::move(copy));
+  }
+  if (block_map[callee.entry().index] == kNoBlock) {
+    return false;
+  }
+
+  // Ids first, bodies second: an operand may name an instruction that
+  // comes later in the numbering.
+  std::vector<InstId> value_map(callee.instructions.size(), InstId{});
+  for (uint32_t b = 0; b < callee.blocks.size(); ++b) {
+    if (block_map[b] == kNoBlock) {
+      continue;
+    }
+    for (InstId id : callee.blocks[b].instructions) {
+      value_map[id.index] =
+          InstId{static_cast<uint32_t>(function->instructions.size())};
+      function->instructions.push_back(Inst{});
+      function->owners.push_back(BlockId{block_map[b]});
+      function->Get(BlockId{block_map[b]}).instructions.push_back(
+          value_map[id.index]);
+    }
+  }
+
+  const auto map_value = [&value_map](InstId id) {
+    return id.is_valid() && id.index < value_map.size() ? value_map[id.index]
+                                                        : InstId{};
+  };
+
+  for (uint32_t b = 0; b < callee.blocks.size(); ++b) {
+    if (block_map[b] == kNoBlock) {
+      continue;
+    }
+    for (InstId id : callee.blocks[b].instructions) {
+      const Inst& source = callee.Get(id);
+      Inst copy;
+      copy.opcode = source.opcode;
+      copy.type = source.type;
+      copy.field = source.field;
+      copy.payload = source.payload;
+
+      // A return leaves the callee, and what it leaves to is the
+      // continuation.
+      if (source.opcode == Opcode::kReturn) {
+        copy.opcode = Opcode::kJump;
+        if (returns_value && source.operands_count != 0) {
+          copy.operands_begin =
+              static_cast<uint32_t>(function->operands.size());
+          copy.operands_count = 1;
+          function->operands.push_back(
+              map_value(callee.OperandsOf(source)[0]));
+        }
+        copy.successors_begin =
+            static_cast<uint32_t>(function->successors.size());
+        copy.successors_count = 1;
+        function->successors.push_back(continuation);
+        function->instructions[value_map[id.index].index] = copy;
+        continue;
+      }
+
+      copy.operands_begin =
+          static_cast<uint32_t>(function->operands.size());
+      copy.operands_count = source.operands_count;
+      for (InstId operand : callee.OperandsOf(source)) {
+        function->operands.push_back(map_value(operand));
+      }
+      copy.successors_begin =
+          static_cast<uint32_t>(function->successors.size());
+      copy.successors_count = source.successors_count;
+      for (BlockId successor : callee.SuccessorsOf(source)) {
+        const uint32_t mapped =
+            successor.index < block_map.size() ? block_map[successor.index]
+                                              : kNoBlock;
+        function->successors.push_back(BlockId{mapped});
+      }
+      copy.cases_begin = static_cast<uint32_t>(function->cases.size());
+      copy.cases_count = source.cases_count;
+      for (uint64_t value : callee.CasesOf(source)) {
+        function->cases.push_back(value);
+      }
+      function->instructions[value_map[id.index].index] = copy;
+    }
+  }
+
+  // The host block now jumps into the copied body, passing the arguments
+  // the call carried. The callee's entry keeps its parameters, so the
+  // arguments arrive exactly the way they do on any other edge -- which is
+  // the second thing block parameters make easy.
+  Inst jump;
+  jump.opcode = Opcode::kJump;
+  jump.operands_begin = call.operands_begin;
+  jump.operands_count = call.operands_count;
+  jump.successors_begin = static_cast<uint32_t>(function->successors.size());
+  jump.successors_count = 1;
+  function->successors.push_back(BlockId{block_map[callee.entry().index]});
+  Append(function, jump, host_id);
+  return true;
+}
+
 // --------------------------------------------------------- slot promotion ---
 
 bool PromoteSlots(TypeStore* types, Function* function) {
@@ -409,6 +647,69 @@ bool SimplifyControlFlow(TypeStore* types, Function* function) {
     changed = true;
   }
 
+  // A jump to a block only this block reaches is not a branch at all: the
+  // two are one straight line. Merging them is what makes inlining pay --
+  // the splice leaves a jump into the body and a jump back out, and both
+  // disappear here.
+  for (int round = 0; round < 16; ++round) {
+    bool merged = false;
+    for (uint32_t i = 0; i < function->blocks.size() && !merged; ++i) {
+      const BlockId host{i};
+      if (function->Get(host).instructions.empty()) {
+        continue;
+      }
+      const InstId terminator = function->TerminatorOf(host);
+      if (!function->Contains(terminator)) {
+        continue;
+      }
+      const Inst jump = function->Get(terminator);
+      if (jump.opcode != Opcode::kJump || jump.successors_count != 1) {
+        continue;
+      }
+      const BlockId target = function->successors[jump.successors_begin];
+      if (!function->Contains(target) || target == host ||
+          target == function->entry() ||
+          function->Get(target).instructions.empty()) {
+        continue;
+      }
+      if (EdgesInto(*function, target) != 1) {
+        continue;
+      }
+
+      // The arguments the jump carried become the values the parameters
+      // stood for. Substituting them is what lets a block with parameters
+      // be merged at all.
+      const std::span<const InstId> params = function->ParamsOf(target);
+      if (params.size() != jump.operands_count) {
+        continue;
+      }
+      for (size_t p = 0; p < params.size(); ++p) {
+        ReplaceAllUses(function, params[p],
+                       function->operands[jump.operands_begin + p]);
+        Discard(function, params[p]);
+      }
+
+      Block& into = function->Get(host);
+      into.instructions.pop_back();
+      Discard(function, terminator);
+      const std::vector<InstId> moved(
+          function->Get(target).instructions.begin() +
+              static_cast<long>(params.size()),
+          function->Get(target).instructions.end());
+      for (InstId id : moved) {
+        into.instructions.push_back(id);
+        function->owners[id.index] = host;
+      }
+      function->Get(target).instructions.clear();
+      function->Get(target).param_count = 0;
+      merged = true;
+      changed = true;
+    }
+    if (!merged) {
+      break;
+    }
+  }
+
   // Blocks nothing reaches any more are removed. Their instructions stay in
   // the pool, which is what keeps every other index meaningful.
   std::vector<bool> reachable(function->blocks.size(), false);
@@ -457,6 +758,7 @@ void Optimize(TypeStore* types, const Module& module, Function* function) {
   // cannot hang the compiler.
   for (int round = 0; round < 8; ++round) {
     bool changed = false;
+    changed |= InlineCalls(types, module, function);
     changed |= FoldConstants(types, function);
     changed |= SimplifyControlFlow(types, function);
     changed |= PromoteSlots(types, function);
