@@ -548,3 +548,29 @@ an afternoon spent in a debugger on generated code. A large frame is
 adjusted with two shifted immediates, which reach sixteen megabytes
 between them and name the stack pointer legally.
 
+**D71. A machine is a type, and its methods are what the table means.**
+`machine Door { state Closed { on Interact -> Opening } ... }` declares a
+type whose value is which state it is in. From the table the compiler
+generates one method per event, one predicate per state, and the `enter`
+and `exit` blocks as methods of their own -- so `door.Interact()` and
+`door.IsOpen()` resolve with no special case above the member table, and a
+machine from another module works for the same reason a class does.
+
+A machine is a *handle*, like a class: an event changes which state it is
+in, and a method that changes its object has to be given the object rather
+than a copy. `always` is resolved when the table is lowered rather than at
+run time -- entering a state that always leads on enters both, and every
+state on the way runs its `enter`. A cycle of `always` stops at the state
+it has already been through.
+
+What is not here: `on Interact after 3s`, which needs a clock the language
+does not have yet, and a `wait` inside `enter`, which would make a
+transition suspend. Both are in the syntax and neither is lowered; the
+spec marks the section a draft and this is the part that is still draft.
+
+**D72. A synthesized member needs an identity of its own.** A machine is
+one declaration and many functions, so (file, item) does not tell them
+apart -- and a call that cannot tell two methods apart calls whichever came
+first, which is what happened. Members and IR functions carry a `slot`
+beside the item now, and the linker matches on all three.
+

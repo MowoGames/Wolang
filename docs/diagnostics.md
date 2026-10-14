@@ -339,6 +339,12 @@ in use appear in the implemented tables above, not here.
 | `W0104` | ignored result of a `@MustUse` function |
 | `W0105` | floats compared with `==` |
 | `W0106` | overflow or division by zero in a constant expression |
+| `W0109` | a state nothing leads to | `state Stuck` with no transition to it |
+
+A machine is a table, so it is checked as one: `E0206` for a transition to
+a state that is not there, and `W0109` for a state nothing leads to. Both
+are mistakes somebody makes while editing a table, which is why the spec
+asks for them.
 | `W0107` | reference held across an `wait` |
 | `W0108` | `loop` in a `task` function with a path that never waits |
 | `W0109` | signal subscription that outlives the subscriber |
