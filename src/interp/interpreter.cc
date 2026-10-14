@@ -5,6 +5,7 @@
 #include "wolang/interp/intrinsics.h"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace wolang {
@@ -301,6 +302,9 @@ class Interpreter {
                     std::move(arguments), outcome);
       }
 
+      case ir::Opcode::kCast:
+        return Convert(frame, id, inst, outcome);
+
       case ir::Opcode::kLogicalNot: {
         const Value& operand = Operand(frame, inst, 0);
         return Value::Bool(!operand.boolean());
@@ -309,6 +313,67 @@ class Interpreter {
       default:
         return Arithmetic(frame, id, inst, outcome);
     }
+  }
+
+  // A numeric conversion written with `as`. The target type is the
+  // instruction's, not the operand's -- which is why a cast has to be an
+  // instruction rather than something read off a recorded type.
+  Value Convert(Frame* frame,
+                ir::InstId id,
+                const ir::Inst& inst,
+                Outcome* outcome) {
+    const ir::Function& function = *frame->function;
+    const Value& source = Operand(frame, inst, 0);
+    const Type& target = types_.Get(inst.type);
+
+    if (target.kind == TypeKind::kInt) {
+      const IntWidth width = target.int_width;
+      const bool is_signed = target.is_signed;
+      if (source.kind() == Value::Kind::kFloat) {
+        const double number = std::trunc(source.floating());
+        if (!std::isfinite(number) ||
+            !FitsAsInteger(number, width, is_signed)) {
+          return Trap(outcome, TrapKind::kOverflow, At(function, id),
+                      "the value does not fit the integer it was cast to");
+        }
+        return Value::Int(is_signed ? static_cast<uint64_t>(
+                                          static_cast<int64_t>(number))
+                                    : static_cast<uint64_t>(number),
+                          width, is_signed);
+      }
+      if (source.kind() != Value::Kind::kInt) {
+        return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                    "cast of " + source.Describe());
+      }
+      // A narrowing cast traps rather than truncating. Overflow is a trap
+      // everywhere else in this language, and `as` is a conversion, not a
+      // request for the low bits.
+      if (!FitsAsInt(source, width, is_signed)) {
+        return Trap(outcome, TrapKind::kOverflow, At(function, id),
+                    "the value does not fit the integer it was cast to");
+      }
+      return Value::Int(source.integer(), width, is_signed);
+    }
+
+    if (target.kind == TypeKind::kFloat) {
+      const FloatWidth width = target.float_width;
+      if (source.kind() == Value::Kind::kFloat) {
+        return Value::Float(source.floating(), width);
+      }
+      if (source.kind() == Value::Kind::kInt) {
+        return Value::Float(source.is_signed()
+                                ? static_cast<double>(
+                                      source.signed_integer())
+                                : static_cast<double>(source.integer()),
+                            width);
+      }
+      return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                  "cast of " + source.Describe());
+    }
+
+    // A cast the IR does not distinguish -- a quantity to its own numeric
+    // type, or a type to itself.
+    return source;
   }
 
   Value Arithmetic(Frame* frame,
@@ -458,9 +523,6 @@ class Interpreter {
                                      right.signed_integer()
                                : a >= b);
 
-      case ir::Opcode::kCast:
-        return left;
-
       default:
         return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
                     std::string(ir::OpcodeMnemonic(inst.opcode)) +
@@ -499,8 +561,6 @@ class Interpreter {
         return Value::Bool(a > b);
       case ir::Opcode::kGe:
         return Value::Bool(a >= b);
-      case ir::Opcode::kCast:
-        return left;
       default:
         return Value();
     }
@@ -605,6 +665,47 @@ class Interpreter {
     }
     const int64_t limit = int64_t{1} << (bits - 1);
     return value >= -limit && value < limit;
+  }
+
+  // Whether |source| survives a conversion to |width| and |is_signed|
+  // unchanged. Both ends of the range matter: `-1 as u8` has no answer any
+  // more than `300 as u8` does.
+  static bool FitsAsInt(const Value& source, IntWidth width, bool is_signed) {
+    const uint32_t bits = BitsOfWidth(width);
+    if (source.is_signed()) {
+      const int64_t value = source.signed_integer();
+      if (is_signed) {
+        return FitsSigned(value, width);
+      }
+      if (value < 0) {
+        return false;
+      }
+      return bits >= 64 ||
+             static_cast<uint64_t>(value) < (uint64_t{1} << bits);
+    }
+    const uint64_t value = source.integer();
+    if (!is_signed) {
+      return bits >= 64 || value < (uint64_t{1} << bits);
+    }
+    if (bits >= 64) {
+      return value <= static_cast<uint64_t>(INT64_MAX);
+    }
+    return value < (uint64_t{1} << (bits - 1));
+  }
+
+  // Whether a truncated float lands inside an integer type. Written with
+  // powers of two so the comparison is exact at every width, including the
+  // 64-bit one where the limit is not representable as an integer.
+  static bool FitsAsInteger(double truncated,
+                            IntWidth width,
+                            bool is_signed) {
+    const uint32_t bits = BitsOfWidth(width);
+    if (is_signed) {
+      const double limit = std::ldexp(1.0, static_cast<int>(bits) - 1);
+      return truncated >= -limit && truncated < limit;
+    }
+    const double limit = std::ldexp(1.0, static_cast<int>(bits));
+    return truncated >= 0.0 && truncated < limit;
   }
 
   IntWidth WidthOf(TypeId type) const {

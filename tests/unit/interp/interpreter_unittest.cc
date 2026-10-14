@@ -60,6 +60,14 @@ class Fixture {
                               true);
   }
 
+  static interp::Value Float(double value) {
+    return interp::Value::Float(value, FloatWidth::k32);
+  }
+
+  static interp::Value Double(double value) {
+    return interp::Value::Float(value, FloatWidth::k64);
+  }
+
  private:
   Database db_;
   FileId file_;
@@ -269,6 +277,48 @@ fun Wide() -> f64 {
   WOLANG_EXPECT_EQ(f.Run("Wide"), "0.333333");
   // The two differ in their bits even though both print rounded, which is
   // what the width is for; the check that matters is that neither traps.
+}
+
+WOLANG_TEST(InterpreterTest, ConvertsBetweenNumbersWithAs) {
+  // `as` is the only numeric conversion the language has, so it has to do
+  // something: before this it was lowered to nothing and the width never
+  // changed.
+  Fixture f(R"(
+fun Widen(n: i32) -> i64 {
+  return n as i64
+}
+
+fun ToFloat(n: int) -> float {
+  return n as float
+}
+
+fun Truncate(x: float) -> int {
+  return x as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Widen", {Fixture::Int(7)}), "7");
+  WOLANG_EXPECT_EQ(f.Run("ToFloat", {Fixture::Int(3)}), "3");
+  WOLANG_EXPECT_EQ(f.Run("Truncate", {Fixture::Float(2.75)}), "2");
+  WOLANG_EXPECT_EQ(f.Run("Truncate", {Fixture::Float(-2.75)}), "-2");
+}
+
+WOLANG_TEST(InterpreterTest, ANarrowingCastTrapsRatherThanTruncating) {
+  // Overflow traps everywhere else in this language; a cast that quietly
+  // kept the low bits would be the one place a number changes silently.
+  Fixture f(R"(
+fun Narrow(n: i32) -> u8 {
+  return n as u8
+}
+
+fun Huge(x: f64) -> i32 {
+  return x as i32
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::Int(200)}), "200");
+  WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::Int(300)}), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::Int(-1)}), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("Huge", {Fixture::Double(1e18)}),
+                   "trap: overflow");
 }
 
 WOLANG_TEST(InterpreterTest, UnitsHaveNoRuntimeCost) {

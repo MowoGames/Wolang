@@ -1526,5 +1526,31 @@ fun take<A: Show, B: A>(a: A, b: B) {}
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheckTest, AcceptsANumericConversion) {
+  Fixture f(R"(
+fun F(n: i32, x: f64) {
+  let _a = n as i64
+  let _b = n as f32
+  let _c = x as u8
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheckTest, RejectsAConversionThatIsNotNumeric) {
+  // `as` is the escape hatch D33 left when it removed implicit widening,
+  // not a reinterpretation of arbitrary bits.
+  Fixture f(R"(
+struct Vec2 { var x: float }
+
+fun F(s: str, v: Vec2, b: bool) {
+  let _a = s as int
+  let _b = v as float
+  let _c = b as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0124,E0124,E0124");
+}
+
 }  // namespace
 }  // namespace wolang

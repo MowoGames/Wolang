@@ -441,6 +441,17 @@ class Lowerer {
       case ExprKind::kPath:
         return LowerPath(expr, type);
 
+      case ExprKind::kCast: {
+        // `as` is the only numeric conversion there is (D33), so it has to
+        // reach the IR rather than being read off the recorded type: the
+        // operand's type and the result's differ, and that difference is
+        // the whole instruction.
+        const InstId operand = Value(expr.lhs);
+        const TypeId built = Unwrapped(type);
+        return Coerce(builder_->Add(Opcode::kCast, built, {operand}), built,
+                      type);
+      }
+
       case ExprKind::kUnary:
         return LowerUnary(expr, type);
       case ExprKind::kBinary:

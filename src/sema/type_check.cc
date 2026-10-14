@@ -26,6 +26,7 @@ constexpr std::string_view kBadOverride = "E0401";
 constexpr std::string_view kMissingTraitMethod = "E0402";
 constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
+constexpr std::string_view kBadConversion = "E0124";
 constexpr std::string_view kBadAllow = "E0070";
 constexpr std::string_view kUnusedName = "W0101";
 constexpr std::string_view kUnreachableCode = "W0102";
@@ -1450,10 +1451,25 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       type = CheckRange(expr);
       break;
 
-    case ExprKind::kCast:
-      Check(expr.lhs, TypeId{});
+    case ExprKind::kCast: {
+      const TypeId source = Check(expr.lhs, TypeId{});
       type = resolver_.Resolve(ast_, expr.type);
+      // `as` is a numeric conversion and nothing else. It is the escape
+      // hatch D33 left open by removing implicit widening, not a
+      // reinterpretation of arbitrary bits -- that is what `unsafe` is for.
+      if (type.is_valid() && source.is_valid() &&
+          !types_->IsError(source) && !types_->IsError(type) &&
+          types_->KindOf(source) != TypeKind::kNever && source != type &&
+          !(types_->IsNumeric(source) && types_->IsNumeric(type))) {
+        std::string message = "cannot convert `";
+        message.append(Describe(source));
+        message.append("` to `");
+        message.append(Describe(type));
+        message.append("` with `as`");
+        Report(kBadConversion, std::move(message), expr.span);
+      }
       break;
+    }
 
     case ExprKind::kCall:
       type = CheckCall(expr);
