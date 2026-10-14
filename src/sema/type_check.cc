@@ -2,6 +2,8 @@
 
 #include "wolang/sema/type_check.h"
 
+#include "wolang/sema/initialization.h"
+
 #include <functional>
 #include <string>
 #include <string_view>
@@ -2297,7 +2299,17 @@ TypedBody TypeCheckItem(TypeStore* types,
                         uint32_t item_index,
                         const ItemIndexMap* item_indices) {
   Checker checker(types, interner, resolution, ast, item_indices);
-  return checker.Run(item, item_index);
+  TypedBody body = checker.Run(item, item_index);
+
+  // Definite assignment is a separate walk: it needs no types, only names
+  // and the shape of the control flow, and keeping it apart is what keeps
+  // the type checker from growing a second analysis inside it.
+  DiagnosticEngine initialization;
+  CheckInitialization(ast, *interner, item, &initialization);
+  for (const Diagnostic& diagnostic : initialization.diagnostics()) {
+    body.diagnostics.push_back(diagnostic);
+  }
+  return body;
 }
 
 }  // namespace wolang

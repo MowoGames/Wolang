@@ -20,7 +20,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0070` | diagnostic suppression | implemented (wave 5) |
 | `E0101`–`E0119` | types and name resolution | implemented (wave 4) |
 | `E0117`–`E0119` | sizes, cyclic declarations, parameters | implemented (wave 5) |
-| `E0120`–`E0123` | memory and references | `E0120` implemented (wave 5) |
+| `E0120`–`E0124` | memory, references and conversions | `E0120` (wave 5), `E0123`, `E0124` (waves 8–9) |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E03xx` | coroutines | wave 10 |
 | `E0401`–`E0403` | inheritance, traits, bounds | implemented (waves 4–5) |
@@ -205,6 +205,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0403` | a type argument does not satisfy a bound | `Hurt(rock)` where `T: Damageable` |
 | `E0401` | `override` disagrees with the base method | marked `override` with nothing to override |
 | `E0120` | a field holds a reference | `var r: &int` |
+| `E0123` | a variable is used before anything is written to it | `var x: int` then `return x` |
 | `E0124` | the conversion is not between numbers | `s as int` where `s: str` |
 | `E0070` | `@allow` is missing a code or a reason | `@allow(W0101)` |
 
@@ -218,6 +219,13 @@ incomplete — the uncovered enum variants, or `true`/`false`, or `null`/`x?`.
 Only bool, optionals and enums have a value set the compiler can enumerate;
 every other type needs a catch-all arm. An arm with a guard covers nothing,
 because the guard may be false.
+
+`E0123` is definite assignment: a variable is reported when *any* path to a
+use fails to write it, which is why a loop body does not count -- it may not
+run. It is also what makes the two execution tiers agree, because the
+interpreter traps on reading a slot nothing wrote and compiled code reads the
+zero its prologue left. A variable is initialized as a whole: writing one
+field of an uninitialized struct is still a use of the struct.
 
 `as` converts between numbers and does nothing else. It exists because D33
 removed implicit widening, not as a reinterpretation of bits -- so a
@@ -248,7 +256,6 @@ in use appear in the implemented tables above, not here.
 |---|---|
 | `E0121` | value escapes its `region` |
 | `E0122` | use after move of a `Box<T>` |
-| `E0123` | use of an uninitialized variable |
 | `E0301` | `await` outside an `async` function |
 | `E0302` | `async` function called without `await` or `spawn` |
 | `E0501` | two systems write the same component without an ordering |

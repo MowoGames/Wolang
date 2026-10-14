@@ -223,24 +223,6 @@ fun Sum(n: int) -> int {
   WOLANG_EXPECT(body.find("^1(") != std::string::npos);
 }
 
-WOLANG_TEST(PassTest, PromotionLeavesAnUnwrittenSlotUndefined) {
-  // Reading a variable before anything is written to it is undefined, and
-  // the promoted form says so in the IR rather than inventing a zero. The
-  // interpreter traps on it either way, which is what keeps the two forms
-  // in agreement.
-  Fixture f(R"(
-fun Unwritten(c: bool) -> int {
-  var x: int
-  if c {
-    x = 1
-  }
-  return x
-}
-)");
-  WOLANG_EXPECT_EQ(f.Problems(), "");
-  WOLANG_EXPECT(f.Optimized("Unwritten").find("undef") != std::string::npos);
-}
-
 WOLANG_TEST(PassTest, TurnsABranchOnAConstantIntoAJump) {
   Fixture f(R"(
 fun Always() -> int {

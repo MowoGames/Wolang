@@ -1552,5 +1552,115 @@ fun F(s: str, v: Vec2, b: bool) {
   WOLANG_EXPECT_EQ(f.Codes(), "E0124,E0124,E0124");
 }
 
+WOLANG_TEST(TypeCheckTest, RejectsAVariableUsedBeforeItIsWritten) {
+  // This is also what makes the two execution tiers agree: the interpreter
+  // traps on reading a slot nothing wrote, and compiled code reads the zero
+  // its prologue left. Making the program impossible settles it.
+  Fixture f(R"(
+fun F() -> int {
+  var x: int
+  return x
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0123");
+}
+
+WOLANG_TEST(TypeCheckTest, ReportsAVariableUsedBeforeWrittenOnce) {
+  // Three uses of one unwritten variable are one mistake.
+  Fixture f(R"(
+fun F() -> int {
+  var x: int
+  return x + x + x
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0123");
+}
+
+WOLANG_TEST(TypeCheckTest, AcceptsAVariableWrittenOnEveryPath) {
+  Fixture f(R"(
+fun F(c: bool) -> int {
+  var x: int
+  if c {
+    x = 1
+  } else {
+    x = 2
+  }
+  return x
+}
+
+fun G(c: bool) -> int {
+  var y: int
+  if c {
+    return 0
+  } else {
+    y = 3
+  }
+  return y
+}
+
+fun H(c: bool) -> int {
+  var z: int
+  if c {
+    return 0
+  }
+  z = 4
+  return z
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheckTest, RejectsAVariableWrittenOnOnlyOnePath) {
+  Fixture f(R"(
+fun F(c: bool) -> int {
+  var x: int
+  if c {
+    x = 1
+  }
+  return x
+}
+
+fun Loop(n: int) -> int {
+  var y: int
+  while n > 0 {
+    y = n
+  }
+  return y
+}
+)");
+  // A branch that may not run, and a loop body that may not run either.
+  WOLANG_EXPECT_EQ(f.Codes(), "E0123,E0123");
+}
+
+WOLANG_TEST(TypeCheckTest, AVariableReadsItselfBeforeItIsWritten) {
+  Fixture f(R"(
+fun F() -> int {
+  var x: int
+  x = x + 1
+  return x
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0123");
+}
+
+WOLANG_TEST(TypeCheckTest, AMatchHasToWriteOnEveryArm) {
+  Fixture f(R"(
+enum Shape {
+  Circle
+  Square
+}
+
+fun Sides(s: Shape) -> int {
+  var n: int
+  match s {
+    Circle => n = 0
+    Square => n = 4
+  }
+  return n
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang
