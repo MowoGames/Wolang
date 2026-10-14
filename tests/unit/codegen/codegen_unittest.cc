@@ -841,6 +841,59 @@ fun SharesTheObject() -> int {
   WOLANG_EXPECT_EQ(f.Run("SharesTheObject", {}), "6");
 }
 
+WOLANG_TEST(CodegenTest, CallsThroughAFunctionValue) {
+  // A function used as a value: a comparator, a route's handler, a
+  // signal's subscriber. Compiled code can only reach compiled code, so
+  // the address is one this tier produced -- and because it is an absolute
+  // address rather than a displacement, the block is placed before the
+  // code is finished.
+  Fixture f(R"(
+fun Double(n: int) -> int => n * 2
+fun Negate(n: int) -> int => 0 - n
+
+fun Apply(f: fun(int) -> int, n: int) -> int {
+  return f(n)
+}
+
+fun Twice(f: fun(int) -> int, n: int) -> int {
+  return f(f(n))
+}
+
+fun Pick(which: bool) -> fun(int) -> int {
+  if which {
+    return Double
+  }
+  return Negate
+}
+
+fun Direct() -> int {
+  return Apply(Double, 21)
+}
+
+fun Nested() -> int {
+  return Twice(Double, 3)
+}
+
+fun Returned(which: bool) -> int {
+  const chosen = Pick(which)
+  return chosen(5)
+}
+
+fun StoredInASlot() -> int {
+  var f = Double
+  var total = f(1)
+  f = Negate
+  total = total + f(10)
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Direct", {}), "42");
+  WOLANG_EXPECT_EQ(f.Run("Nested", {}), "12");
+  WOLANG_EXPECT_EQ(f.Run("Returned", {Fixture::Bool(true)}), "10");
+  WOLANG_EXPECT_EQ(f.Run("Returned", {Fixture::Bool(false)}), "-5");
+  WOLANG_EXPECT_EQ(f.Run("StoredInASlot", {}), "-8");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

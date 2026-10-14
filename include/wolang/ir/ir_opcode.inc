@@ -59,6 +59,9 @@ WOLANG_IR_OP(LogicalNot, "lnot", "negates a bool")
 WOLANG_IR_OP(Alloca, "alloca", "a slot for a mutable local. Lowering puts "
                                "every mutable binding in one; SROA promotes "
                                "the ones whose address never escapes")
+WOLANG_IR_OP(FuncAddress, "func.addr",
+             "a function as a value. What a callback, a router's handler "
+             "and a signal's subscriber are; |callee| says which function")
 WOLANG_IR_OP(New, "new", "storage for one object of the type, on the heap. "
                          "What a `class` value is a handle to. The size is "
                          "the tier's own answer, which is why this is an "

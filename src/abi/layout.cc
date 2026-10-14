@@ -43,9 +43,12 @@ ValueClass LayoutStore::ClassOf(TypeId type) const {
       // of a class mutates the object it was called on.
       return types_.IsHandle(type) ? ValueClass::kInteger
                                   : ValueClass::kAggregate;
+    case TypeKind::kFunction:
+      // A function as a value is its address.
+      return ValueClass::kInteger;
     default:
-      // A string, a slice, a function, a `T!`, an unresolved generic: each
-      // wants machinery a later wave brings.
+      // A string, a slice, a `T!`, an unresolved generic: each wants
+      // machinery a later wave brings.
       return ValueClass::kUnsupported;
   }
 }
@@ -293,8 +296,9 @@ uint32_t LayoutStore::BitsOf(TypeId type) const {
     case TypeKind::kPointer:
       return 64;
     case TypeKind::kNamed:
-      // A class is an address; a value type never reaches here, because
-      // its class is `kAggregate`.
+    case TypeKind::kFunction:
+      // A class and a function are both addresses; a value type never
+      // reaches here, because its class is `kAggregate`.
       return 64;
     case TypeKind::kInt:
       switch (types_.Get(type).int_width) {

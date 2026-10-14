@@ -75,6 +75,35 @@ void CodeBlock::Release() {
   }
 }
 
+const void* CodeBlock::Reserve(size_t size) {
+  Release();
+  if (size == 0) {
+    return nullptr;
+  }
+  const size_t rounded = RoundUpToPage(size);
+  void* memory = ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (memory == MAP_FAILED) {
+    return nullptr;
+  }
+  base_ = memory;
+  size_ = rounded;
+  return base_;
+}
+
+bool CodeBlock::Commit(const std::vector<uint8_t>& code) {
+  if (base_ == nullptr || code.size() > size_) {
+    return false;
+  }
+  std::memcpy(base_, code.data(), code.size());
+  if (::mprotect(base_, size_, PROT_READ | PROT_EXEC) != 0) {
+    Release();
+    return false;
+  }
+  SynchronizeCaches(base_, code.size());
+  return true;
+}
+
 bool CodeBlock::Install(const std::vector<uint8_t>& code) {
   Release();
   if (code.empty()) {

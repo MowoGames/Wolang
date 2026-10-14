@@ -5,6 +5,8 @@
 #include <cstring>
 #include <string>
 
+#include "wolang/codegen/arm64/assembler.h"
+
 namespace wolang {
 namespace codegen {
 
@@ -63,6 +65,36 @@ void PatchCall(Target target,
       std::memcpy(code->data() + at + 1, &raw, sizeof(uint32_t));
       return;
     }
+    case Target::kUnknown:
+      return;
+  }
+}
+
+void PatchAddress(Target target,
+                  std::vector<uint8_t>* code,
+                  uint32_t at,
+                  uint64_t address) {
+  switch (target) {
+    case Target::kArm64: {
+      // Four instructions, rebuilt rather than edited: the assembler
+      // already knows how to write this sequence and an encoder written
+      // twice is an encoder that disagrees with itself. Which register to
+      // write into comes from the placeholder, so the emitter stays free
+      // to choose it.
+      uint32_t first = 0;
+      std::memcpy(&first, code->data() + at, sizeof(first));
+      arm64::Assembler patch;
+      patch.MovAddress(static_cast<arm64::Register>(first & 0x1Fu),
+                       address);
+      const std::vector<uint32_t>& words = patch.words();
+      std::memcpy(code->data() + at, words.data(),
+                  words.size() * sizeof(uint32_t));
+      return;
+    }
+    case Target::kX64:
+      // `movabs`: two bytes of opcode, then the value.
+      std::memcpy(code->data() + at + 2, &address, sizeof(address));
+      return;
     case Target::kUnknown:
       return;
   }

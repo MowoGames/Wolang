@@ -101,6 +101,14 @@ Value Value::Slot(uint32_t index) {
   return value;
 }
 
+Value Value::Function(uint32_t index, const void* module) {
+  Value value;
+  value.kind_ = Kind::kFunction;
+  value.integer_ = index;
+  value.module_ = module;
+  return value;
+}
+
 int64_t Value::signed_integer() const {
   const uint32_t count = BitsOf(int_width_);
   if (count >= 64) {
@@ -147,6 +155,8 @@ std::string Value::Describe() const {
       return boolean_ ? inside().Describe() : "null";
     case Kind::kSlot:
       return "slot " + std::to_string(slot());
+    case Kind::kFunction:
+      return "function " + std::to_string(function());
   }
   return "?";
 }
@@ -169,6 +179,10 @@ bool operator==(const Value& lhs, const Value& rhs) {
       return *lhs.text_ == *rhs.text_;
     case Value::Kind::kSlot:
       return lhs.integer_ == rhs.integer_;
+    case Value::Kind::kFunction:
+      // The same function of the same module, which is what makes two
+      // handlers comparable.
+      return lhs.integer_ == rhs.integer_ && lhs.module_ == rhs.module_;
     case Value::Kind::kAggregate:
       return *lhs.elements_ == *rhs.elements_;
     case Value::Kind::kOptional:

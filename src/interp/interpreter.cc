@@ -402,6 +402,11 @@ class Interpreter {
         frame->slots.push_back(Value());
         return Value::Slot(static_cast<uint32_t>(frame->slots.size() - 1));
       }
+      case ir::Opcode::kFuncAddress:
+        // Which function, and which module it belongs to: an index alone
+        // would mean a different function in another file.
+        return Value::Function(inst.payload.callee, frame->module);
+
       case ir::Opcode::kNew: {
         // A class is a handle, and this is what it is a handle to. The
         // address is a real one, so reading and writing a field of an
@@ -560,6 +565,30 @@ class Interpreter {
                       "read the value of an optional that is absent");
         }
         return optional.inside();
+      }
+
+      case ir::Opcode::kCallIndirect: {
+        const Value& target = Operand(frame, inst, 0);
+        if (target.kind() != Value::Kind::kFunction) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "called " + target.Describe() +
+                          ", which is not a function");
+        }
+        const auto* home = static_cast<const ir::Module*>(target.module());
+        if (home == nullptr || target.function() >= home->functions.size()) {
+          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+                      "called a function that is not in its module");
+        }
+        std::vector<Value> arguments;
+        const std::span<const ir::InstId> operands =
+            function.OperandsOf(inst);
+        for (size_t i = 1; i < operands.size(); ++i) {
+          arguments.push_back(operands[i].index < frame->values.size()
+                                  ? frame->values[operands[i].index]
+                                  : Value());
+        }
+        return Call(home->functions[target.function()], home,
+                    std::move(arguments), outcome);
       }
 
       case ir::Opcode::kCall: {

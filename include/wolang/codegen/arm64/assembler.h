@@ -95,6 +95,12 @@ class Assembler {
   // Up to four words, which is the cost of an arbitrary 64-bit constant on
   // a fixed width encoding.
   void MovImmediate(Width width, Register rd, uint64_t value);
+  // A full 64-bit value in exactly four instructions, so that the room it
+  // takes does not depend on the value. What an address that is patched
+  // later needs.
+  void MovAddress(Register rd, uint64_t value);
+  // How many bytes `MovAddress` takes, for a patch to find its way.
+  static constexpr uint32_t kMovAddressBytes = 16;
 
   // --------------------------------------------------------- arithmetic ---
 

@@ -36,6 +36,14 @@ struct CallFixup {
   uint32_t callee = 0;
 };
 
+// Where a function's own address has to be written, for a function used as
+// a value. Unlike a call this is an absolute address, so it cannot be
+// resolved by placement alone: the block has to know where it will live.
+struct AddressFixup {
+  uint32_t at = 0;
+  uint32_t callee = 0;
+};
+
 struct CompiledFunction {
   bool compiled = false;
   // Why the dev tier left this function to the interpreter. The tier
@@ -53,6 +61,7 @@ struct CompiledFunction {
   uint32_t body = 0;
   std::vector<TrapSite> traps;
   std::vector<CallFixup> calls;
+  std::vector<AddressFixup> addresses;
 };
 
 // Compiles one function for |target|, or says why it cannot -- which
@@ -94,6 +103,13 @@ void PatchCall(Target target,
                std::vector<uint8_t>* code,
                uint32_t at,
                uint32_t callee);
+
+// Writes an absolute address into |code|, where a function value was left
+// as a placeholder.
+void PatchAddress(Target target,
+                  std::vector<uint8_t>* code,
+                  uint32_t at,
+                  uint64_t address);
 
 namespace arm64 {
 

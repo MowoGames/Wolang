@@ -35,6 +35,10 @@ class Value {
     // A slot produced by `alloca`, identified by index into the frame's
     // storage.
     kSlot,
+    // A function as a value: which function, in which module. The module
+    // matters because lowering is per file, so the same index means
+    // different functions in two of them.
+    kFunction,
   };
 
   Value() = default;
@@ -52,6 +56,7 @@ class Value {
   static Value Present(Value inside);
   static Value Absent();
   static Value Slot(uint32_t index);
+  static Value Function(uint32_t index, const void* module);
 
   Kind kind() const { return kind_; }
   bool is_undefined() const { return kind_ == Kind::kUndefined; }
@@ -65,6 +70,8 @@ class Value {
   const std::string& text() const { return *text_; }
   const std::vector<Value>& elements() const { return *elements_; }
   uint32_t slot() const { return integer_ == 0 ? 0 : integer_ - 1; }
+  uint32_t function() const { return static_cast<uint32_t>(integer_); }
+  const void* module() const { return module_; }
 
   IntWidth int_width() const { return int_width_; }
   bool is_signed() const { return is_signed_; }
@@ -93,6 +100,9 @@ class Value {
   // Shared so that copying a value is cheap; nothing mutates them in place.
   std::shared_ptr<const std::string> text_;
   std::shared_ptr<const std::vector<Value>> elements_;
+  // Which module a function value belongs to. Not owned: a module outlives
+  // every run over it.
+  const void* module_ = nullptr;
 };
 
 // Masks |bits| to |width|, which is where wrapping happens and the only

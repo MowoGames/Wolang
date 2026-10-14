@@ -360,6 +360,7 @@ void CompiledModule::Impl::Compile() {
   refresh();
 
   std::vector<std::pair<uint32_t, CallFixup>> fixups;
+  std::vector<std::pair<uint32_t, AddressFixup>> addresses;
   for (uint32_t i = 0; i < entries_.size(); ++i) {
     Entry& entry = entries_[i];
     const ir::Function& function = FunctionOf(entry);
@@ -393,6 +394,10 @@ void CompiledModule::Impl::Compile() {
       fixups.emplace_back(entry.file,
                           CallFixup{base + fixup.at, fixup.callee});
     }
+    for (const AddressFixup& fixup : compiled.addresses) {
+      addresses.emplace_back(entry.file,
+                             AddressFixup{base + fixup.at, fixup.callee});
+    }
     ++compiled_count_;
   }
 
@@ -409,7 +414,27 @@ void CompiledModule::Impl::Compile() {
   }
 
   if (!bytes_.empty()) {
-    block_.Install(bytes_);
+    if (addresses.empty()) {
+      block_.Install(bytes_);
+    } else {
+      // A function used as a value needs its own address, so the block has
+      // to be placed before the code is finished: reserve, patch, then
+      // commit. The pages are writable in between and executable only
+      // after, which is the same bargain `Install` makes in one step.
+      const auto origin =
+          reinterpret_cast<uint64_t>(block_.Reserve(bytes_.size()));
+      if (origin != 0) {
+        for (const auto& [file_index, fixup] : addresses) {
+          const FileState& file = *files_[file_index];
+          WOLANG_CHECK(fixup.callee < file.global.size());
+          const Entry& callee =
+              entries_[entries_[file.global[fixup.callee]].link];
+          WOLANG_CHECK(callee.compiled);
+          PatchAddress(target_, &bytes_, fixup.at, origin + callee.body);
+        }
+        block_.Commit(bytes_);
+      }
+    }
   }
 }
 

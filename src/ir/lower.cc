@@ -1001,6 +1001,11 @@ class Lowerer {
       if (const Place place = SelfPlace(expr.name); place.readable()) {
         return Coerce(ReadPlace(place), TypeAt(place), type);
       }
+      // A function used as a value: a callback, a handler, a comparator.
+      if (const InstId function = FunctionValue(expr.name, type);
+          function.is_valid()) {
+        return function;
+      }
       return builder_->Undef(type);
     }
     if (local->slot.is_valid()) {
@@ -1535,7 +1540,42 @@ class Lowerer {
             type, std::move(arguments));
       }
     }
+    // Through a value: the callee is whatever the expression evaluated to.
+    if (types_->KindOf(callee_type) == TypeKind::kFunction) {
+      const InstId target = Value(expr.lhs);
+      if (target.is_valid()) {
+        std::vector<InstId> operands;
+        operands.push_back(target);
+        for (InstId argument : arguments) {
+          operands.push_back(argument);
+        }
+        return builder_->Add(Opcode::kCallIndirect, type,
+                             std::move(operands));
+      }
+    }
     return builder_->Undef(type);
+  }
+
+  // A function named where a value is wanted. Not a call: the value is the
+  // function itself, which is what makes a router, a comparator and a
+  // signal's subscriber possible.
+  InstId FunctionValue(Symbol name, TypeId type) {
+    if (types_->KindOf(type) != TypeKind::kFunction) {
+      return InstId{};
+    }
+    uint32_t callee = IndexOfName(name);
+    if (callee == 0xFFFFFFFFu) {
+      const Binding* binding = resolution_.Find(name);
+      if (binding == nullptr || binding->kind != BindingKind::kFunction) {
+        return InstId{};
+      }
+      callee = DeclareExternal(name, binding->type, binding->file,
+                               binding->item, binding->is_task,
+                               binding->has_body);
+    }
+    const InstId value = builder_->Add(Opcode::kFuncAddress, type);
+    module_->functions[current_function_].Get(value).payload.callee = callee;
+    return value;
   }
 
   // A call to a method, when that is what this is. |arguments| holds the

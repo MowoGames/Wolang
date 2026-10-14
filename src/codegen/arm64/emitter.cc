@@ -137,6 +137,7 @@ class FunctionEmitter {
     result.body = body_offset_;
     result.traps = std::move(traps_);
     result.calls = std::move(calls_);
+    result.addresses = std::move(addresses_);
     return result;
   }
 
@@ -185,8 +186,20 @@ class FunctionEmitter {
             return "names a string literal that is not in the module";
           }
           break;
-        case ir::Opcode::kCallIndirect:
-          return "calls through a value";
+        case ir::Opcode::kFuncAddress: {
+          // Compiled code can only reach compiled code: there is no way
+          // back into the interpreter mid-frame, so a function value has
+          // to be one this tier produced.
+          const uint32_t callee = inst.payload.callee;
+          if (callee < foreign_.size() && foreign_[callee] != 0) {
+            break;
+          }
+          if (callee >= compilable_.size() || !compilable_[callee]) {
+            return "takes the address of something this tier cannot "
+                   "compile";
+          }
+          break;
+        }
         case ir::Opcode::kCall: {
           const uint32_t callee = inst.payload.callee;
           if (callee < foreign_.size() && foreign_[callee] != 0) {
@@ -865,6 +878,19 @@ class FunctionEmitter {
         // The area is the frame slot the layout already reserved.
         return;
 
+      case ir::Opcode::kFuncAddress: {
+        // The function's own address, left as a placeholder: where the
+        // code will live is not known until every function is placed.
+        const Register reg = DestInt(id, 0);
+        addresses_.push_back(AddressFixup{
+            static_cast<uint32_t>(assembler_.words().size() *
+                                  sizeof(uint32_t)),
+            inst.payload.callee});
+        assembler_.MovAddress(reg, 0);
+        FinishInt(id, reg);
+        return;
+      }
+
       case ir::Opcode::kNew: {
         // Storage for one object. The size is this tier's own answer --
         // which is why `new` is an operation and not a call lowering
@@ -1024,6 +1050,7 @@ class FunctionEmitter {
       }
 
       case ir::Opcode::kCall:
+      case ir::Opcode::kCallIndirect:
         EmitCall(id, inst);
         return;
 
@@ -1102,6 +1129,15 @@ class FunctionEmitter {
   }
 
   void EmitCall(ir::InstId id, const ir::Inst& inst) {
+    const bool indirect_callee = inst.opcode == ir::Opcode::kCallIndirect;
+    const std::span<const ir::InstId> all = function_.OperandsOf(inst);
+    // Through a value the first operand is the function; the rest are the
+    // arguments. Loaded before any argument register is written, because
+    // the value may well be in one.
+    const Register target = kCallScratch;
+    if (indirect_callee && !all.empty()) {
+      assembler_.Mov(IWidth::k64, kCallScratch, UseInt(all[0], 0));
+    }
     const TypeId returned = inst.type;
     const bool indirect = returned.is_valid() &&
                           layouts_.ClassOf(returned) ==
@@ -1113,7 +1149,9 @@ class FunctionEmitter {
 
     uint32_t integers = 0;
     uint32_t floats = 0;
-    for (ir::InstId operand : function_.OperandsOf(inst)) {
+    for (size_t index = indirect_callee ? 1 : 0; index < all.size();
+         ++index) {
+      const ir::InstId operand = all[index];
       const TypeId type = TypeOf(operand);
       switch (layouts_.ClassOf(type)) {
         case abi::ValueClass::kFloat: {
@@ -1137,6 +1175,11 @@ class FunctionEmitter {
       }
     }
 
+    if (indirect_callee) {
+      assembler_.Blr(target);
+      StoreResult(id, returned, indirect);
+      return;
+    }
     const uint64_t address = inst.payload.callee < foreign_.size()
                                  ? foreign_[inst.payload.callee]
                                  : 0;
@@ -1156,6 +1199,12 @@ class FunctionEmitter {
       assembler_.BlPlaceholder();
     }
 
+    StoreResult(id, returned, indirect);
+  }
+
+  // Where a call's result goes. An aggregate was written through the
+  // indirect result register, so there is nothing to move.
+  void StoreResult(ir::InstId id, TypeId returned, bool indirect) {
     if (indirect || !returned.is_valid()) {
       return;
     }
@@ -1976,6 +2025,7 @@ class FunctionEmitter {
   std::vector<TrapSite> traps_;
   std::vector<PendingTrap> pending_traps_;
   std::vector<CallFixup> calls_;
+  std::vector<AddressFixup> addresses_;
 };
 
 }  // namespace

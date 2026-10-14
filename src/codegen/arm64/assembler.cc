@@ -119,6 +119,16 @@ void Assembler::Mov(Width width, Register rd, Register rn) {
   Orr(width, rd, Register::kZr, rn);
 }
 
+void Assembler::MovAddress(Register rd, uint64_t value) {
+  // Always four instructions, whatever the value: the address is patched in
+  // once the code knows where it will live, and a patch cannot change how
+  // much room it needs.
+  Movz(Width::k64, rd, static_cast<uint16_t>(value & 0xFFFF), 0);
+  Movk(Width::k64, rd, static_cast<uint16_t>((value >> 16) & 0xFFFF), 16);
+  Movk(Width::k64, rd, static_cast<uint16_t>((value >> 32) & 0xFFFF), 32);
+  Movk(Width::k64, rd, static_cast<uint16_t>((value >> 48) & 0xFFFF), 48);
+}
+
 void Assembler::MovImmediate(Width width, Register rd, uint64_t value) {
   const unsigned chunks = width == Width::k64 ? 4u : 2u;
   if (width == Width::k32) {

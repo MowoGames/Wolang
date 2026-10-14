@@ -31,6 +31,13 @@ class CodeBlock {
   // falls back to the interpreter rather than failing the build.
   bool Install(const std::vector<uint8_t>& code);
 
+  // Install in two steps, for code that has to know where it will live: a
+  // function used as a value needs its own address, and an address is not
+  // a displacement. `Reserve` hands back where the code will be, the
+  // caller patches, and `Commit` copies it in and makes it executable.
+  const void* Reserve(size_t size);
+  bool Commit(const std::vector<uint8_t>& code);
+
   bool is_installed() const { return base_ != nullptr; }
   size_t size() const { return size_; }
 
