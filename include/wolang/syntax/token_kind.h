@@ -32,6 +32,16 @@ std::string_view TokenKindName(TokenKind kind);
 std::string_view TokenKindSpelling(TokenKind kind);
 
 bool IsKeyword(TokenKind kind);
+
+// Whether a keyword may stand where a name is wanted.
+//
+// Most keywords can only begin a declaration or a clause of one, so in a
+// pattern, a parameter list or the middle of an expression there is
+// nothing else they could be -- and a language that refuses `const after
+// = x` or a field called `tag` makes its users rename their data. The
+// exceptions are the keywords that begin an expression of their own
+// (`if`, `match`, `self`, `true`, ...): those stay keywords everywhere.
+bool CanBeName(TokenKind kind);
 bool IsPunctuation(TokenKind kind);
 bool IsLiteral(TokenKind kind);
 

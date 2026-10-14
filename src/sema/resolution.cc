@@ -231,6 +231,95 @@ const Binding* FileResolution::Find(Symbol name) const {
 
 namespace {
 
+// Which of |members| the expression of the derived field declared at
+// |item| reads, as indices into that list.
+//
+// A bare name or `self.name` that matches a field counts; a call counts as
+// reading everything, because what it reads is not something this walk can
+// see. Conservative in the direction that recomputes too often rather than
+// too rarely -- a stale value is a wrong answer and an extra computation
+// is not.
+std::vector<uint32_t> DerivedDependencies(const Ast& ast,
+                                          const ItemTree& tree,
+                                          const std::vector<Member>& members,
+                                          uint32_t item) {
+  std::vector<uint32_t> depends;
+  const ItemId id = ResolveItem(ast, item);
+  if (!ast.Contains(id)) {
+    return depends;
+  }
+  const ExprId root = ast.Get(id).init;
+  if (!ast.Contains(root)) {
+    return depends;
+  }
+
+  const auto add = [&members, &depends](Symbol name) {
+    for (uint32_t i = 0; i < members.size(); ++i) {
+      if (members[i].name != name) {
+        continue;
+      }
+      if (members[i].kind != MemberKind::kField &&
+          members[i].kind != MemberKind::kDerived) {
+        continue;
+      }
+      if (std::find(depends.begin(), depends.end(), i) == depends.end()) {
+        depends.push_back(i);
+      }
+      return;
+    }
+  };
+  const auto everything = [&members, &depends]() {
+    depends.clear();
+    for (uint32_t i = 0; i < members.size(); ++i) {
+      if (members[i].kind == MemberKind::kField ||
+          members[i].kind == MemberKind::kDerived) {
+        depends.push_back(i);
+      }
+    }
+  };
+
+  std::vector<ExprId> work{root};
+  bool opaque = false;
+  while (!work.empty() && !opaque) {
+    const ExprId current = work.back();
+    work.pop_back();
+    if (!ast.Contains(current)) {
+      continue;
+    }
+    const Expr& expr = ast.Get(current);
+    switch (expr.kind) {
+      case ExprKind::kPath:
+        add(expr.name);
+        break;
+      case ExprKind::kField:
+      case ExprKind::kOptionalField:
+        add(expr.name);
+        break;
+      case ExprKind::kCall:
+      case ExprKind::kAwait:
+      case ExprKind::kSpawn:
+        // A call may read anything of its own.
+        opaque = true;
+        break;
+      default:
+        break;
+    }
+    for (ExprId child : {expr.lhs, expr.rhs, expr.extra}) {
+      if (child.is_valid()) {
+        work.push_back(child);
+      }
+    }
+    for (ExprId argument : ast.Get(expr.args)) {
+      work.push_back(argument);
+    }
+  }
+  if (opaque) {
+    everything();
+  }
+  (void)tree;
+  return depends;
+}
+
 bool EvaluateDimensionProduct(const Ast& ast,
                               const FileResolution& resolution,
                               const StringInterner& interner,
@@ -981,10 +1070,44 @@ void ResolveSignatures(TypeStore* types,
           member.kind = MemberKind::kSignal;
           break;
         default:
-          member.kind = MemberKind::kField;
+          member.kind =
+              HasFlag(member_entry.flags, ItemFlags::kDerived)
+                  ? MemberKind::kDerived
+                  : MemberKind::kField;
           break;
       }
       members.push_back(member);
+    }
+
+    // What each derived field reads, and the bit that says whether it has
+    // been computed.
+    //
+    // The dependencies are worked out here rather than at the use, because
+    // the code that writes a field may be in another module and a member
+    // table is what crosses files. The bit is a member for the same
+    // reason: it is part of what the type holds, and every tier has to
+    // agree about that.
+    std::vector<Member> ready;
+    for (uint32_t i = 0; i < members.size(); ++i) {
+      if (members[i].kind != MemberKind::kDerived) {
+        continue;
+      }
+      members[i].depends_on =
+          DerivedDependencies(ast, tree, members, members[i].item);
+      Member bit;
+      // No name: nothing in the source can refer to it, and leaving it
+      // nameless is what guarantees that. It is found by the declaration
+      // it belongs to, which is also what makes it work across files.
+      bit.kind = MemberKind::kReadyBit;
+      bit.type = types->bool_type();
+      bit.file = file_index;
+      bit.item = members[i].item;
+      bit.is_mutable = true;
+      bit.is_public = false;
+      ready.push_back(std::move(bit));
+    }
+    for (Member& bit : ready) {
+      members.push_back(std::move(bit));
     }
     return members;
   };

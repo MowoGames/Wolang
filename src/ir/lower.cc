@@ -136,6 +136,13 @@ class Lowerer {
         break;
       }
       case ItemKind::kBinding: {
+        if (owner.is_valid()) {
+          // A `derived var` inside a type becomes a method that computes
+          // it: the expression lives in the owner's file, and a read from
+          // another one has to be able to reach it.
+          DeclareDerived(id, item, owner);
+          break;
+        }
         // A module-level `const` becomes a function that returns it, and a
         // use becomes a call the inliner removes. Two reasons for that
         // shape: the value may be in another file, where only a function
@@ -144,8 +151,7 @@ class Lowerer {
         //
         // Reading one used to lower to an undefined value, which is to say
         // a program that named a constant computed with nothing.
-        if (owner.is_valid() || !item.name.is_valid() ||
-            !item.init.is_valid()) {
+        if (!item.name.is_valid() || !item.init.is_valid()) {
           break;
         }
         const Binding* binding = resolution_.Find(item.name);
@@ -474,7 +480,13 @@ class Lowerer {
         self_type_ = TypeId{};
         break;
       case ItemKind::kBinding:
-        if (!owner.is_valid()) {
+        if (owner.is_valid()) {
+          // The body of a derived field's computation, with `self` bound
+          // the way a method's is.
+          self_type_ = owner;
+          LowerConstant(item, IndexOf(id));
+          self_type_ = TypeId{};
+        } else {
           LowerConstant(item, IndexOf(id));
         }
         break;
@@ -490,6 +502,39 @@ class Lowerer {
       default:
         break;
     }
+  }
+
+  // A derived field's computation, as a method of the type: `self` in,
+  // the value out. Declared even when the field is read from another file,
+  // because the linker resolves it by the declaration it came from.
+  void DeclareDerived(ItemId id, const Item& item, TypeId owner) {
+    if (!HasFlag(item.flags, ItemFlags::kDerived) ||
+        !item.name.is_valid() || !item.init.is_valid()) {
+      return;
+    }
+    const Member* member = resolution_.FindMember(owner, item.name);
+    if (member == nullptr || member->kind != MemberKind::kDerived) {
+      return;
+    }
+    Function function;
+    function.name = DerivedName(owner, item.name);
+    function.type = types_->Function({owner}, Erase(member->type));
+    function.effects = EffectsOf(id, &function.effects_known);
+    function.source_file = member->file;
+    function.source_item = member->item;
+    function.self_type = owner;
+    Remember(function.source_file, function.source_item,
+             module_->functions.size());
+    indices_.emplace_back(id, module_->functions.size());
+    module_->functions.push_back(std::move(function));
+  }
+
+  Symbol DerivedName(TypeId owner, Symbol name) {
+    std::string text = types_->Describe(*interner_, owner);
+    text.push_back('.');
+    text.append(interner_->Text(name));
+    text.append("$compute");
+    return interner_->Intern(text);
   }
 
   // `K$name`, so that a constant and a function of the same name cannot
@@ -514,12 +559,19 @@ class Lowerer {
     deferred_.clear();
     arenas_.clear();
     scope_depth_ = 0;
-    self_type_ = TypeId{};
-    self_ = InstId{};
     in_task_ = false;
 
     const BlockId entry = builder.AddBlock("entry");
     builder.SetCurrent(entry);
+
+    // A derived field's computation is a method: the receiver comes in
+    // first, and the expression reads its fields through it.
+    self_ = InstId{};
+    if (self_type_.is_valid()) {
+      self_ = builder.AddParam(entry, self_type_);
+      locals_.push_back(Local{self_name_, InstId{}, self_, self_type_});
+    }
+
     return_type_ = types_->ElementOf(module_->functions[index].type);
     const InstId value = Value(item.init);
     if (types_->KindOf(return_type_) == TypeKind::kVoid) {
@@ -1425,7 +1477,7 @@ class Lowerer {
       named = types_->Get(named).base;
     }
     for (const Member& member : resolution_.MembersOf(named)) {
-      if (member.kind != MemberKind::kField) {
+      if (!HasStorage(member.kind)) {
         continue;
       }
       if (member.name == name) {
@@ -1460,6 +1512,25 @@ class Lowerer {
   }
 
   InstId LowerField(ExprId id, const Expr& expr, TypeId type) {
+    // A derived field is computed rather than stored, and kept once it is.
+    const TypeId base_type = Erase(TypeOf(expr.lhs));
+    if (const Member* member =
+            resolution_.FindMember(base_type, expr.name);
+        member != nullptr && member->kind == MemberKind::kDerived) {
+      Place object;
+      if (types_->IsHandle(base_type)) {
+        object.pointer = Value(expr.lhs);
+        object.root_type = base_type;
+      } else {
+        object = PlaceOf(expr.lhs);
+        if (!object.readable()) {
+          object.value = Value(expr.lhs);
+          object.root_type = base_type;
+        }
+      }
+      return LowerDerived(object, base_type, *member, type);
+    }
+
     // The two halves of a view, which are its two fields.
     if (interner_->Text(expr.name) == "data" &&
         IsView(TypeOf(expr.lhs))) {
@@ -1550,6 +1621,8 @@ class Lowerer {
     InstId index;
     InstId length;
     TypeId type;
+
+    bool index_is_element() const { return index.is_valid(); }
   };
 
   struct Place {
@@ -1665,7 +1738,7 @@ class Lowerer {
       return place;
     }
     const Member* member = resolution_.FindMember(self_type_, name);
-    if (member == nullptr || member->kind != MemberKind::kField) {
+    if (member == nullptr || !HasStorage(member->kind)) {
       return Place{};
     }
     place.path.push_back(Step{FieldIndex(self_type_, name), InstId{},
@@ -1682,7 +1755,7 @@ class Lowerer {
   TypeId FieldTypeAt(TypeId owner, uint32_t field) {
     uint32_t index = 0;
     for (const Member& member : resolution_.MembersOf(owner)) {
-      if (member.kind != MemberKind::kField) {
+      if (!HasStorage(member.kind)) {
         continue;
       }
       if (index == field) {
@@ -1741,6 +1814,81 @@ class Lowerer {
     }
     builder_->Add(Opcode::kStore, TypeId{},
                   {AddressOfPlace(place), value});
+    InvalidateDerived(place);
+  }
+
+  // A write to a field makes every derived field that reads it stale.
+  //
+  // Which ones those are comes from the member table rather than from this
+  // file, because the type may be declared in another one -- a write here
+  // has to invalidate a derived field whose expression it has never seen.
+  void InvalidateDerived(const Place& place) {
+    if (place.path.empty() || place.path.back().index_is_element()) {
+      return;
+    }
+    const TypeId owner = OwnerOfLastStep(place);
+    if (!owner.is_valid()) {
+      return;
+    }
+    const std::span<const Member> members = resolution_.MembersOf(owner);
+    if (members.empty()) {
+      return;
+    }
+    const uint32_t written = place.path.back().field;
+
+    InstId base;
+    for (const Member& member : members) {
+      if (member.kind != MemberKind::kDerived) {
+        continue;
+      }
+      if (std::find(member.depends_on.begin(), member.depends_on.end(),
+                    StorageIndexOf(owner, written)) ==
+          member.depends_on.end()) {
+        continue;
+      }
+      if (!base.is_valid()) {
+        Place holder = place;
+        holder.path.pop_back();
+        base = holder.path.empty() && !holder.pointer.is_valid()
+                   ? holder.slot
+                   : AddressOfPlace(holder);
+      }
+      if (!base.is_valid()) {
+        return;
+      }
+      const InstId bit = builder_->FieldAddress(
+          types_->Pointer(types_->bool_type(), true), base,
+          ReadyIndex(owner, member));
+      builder_->Add(Opcode::kStore, TypeId{},
+                    {bit, builder_->ConstBool(false)});
+    }
+  }
+
+  // The type whose field the last step of |place| names.
+  TypeId OwnerOfLastStep(const Place& place) {
+    TypeId at = Erase(place.root_type);
+    for (size_t i = 0; i + 1 < place.path.size(); ++i) {
+      at = Erase(place.path[i].type);
+    }
+    return at;
+  }
+
+  // Which member a storage index refers to, as an index into the member
+  // table: the dependency list is in table terms and a field address is in
+  // storage terms, and only the fields in between differ.
+  uint32_t StorageIndexOf(TypeId owner, uint32_t storage) {
+    uint32_t seen = 0;
+    const std::span<const Member> members = resolution_.MembersOf(owner);
+    for (uint32_t i = 0; i < members.size(); ++i) {
+      if (!HasStorage(members[i].kind)) {
+        continue;
+      }
+      if (seen == storage) {
+        return i;
+      }
+      ++seen;
+    }
+    return 0xFFFFFFFFu;
   }
 
   InstId LowerAssign(const Expr& expr) {
@@ -1887,6 +2035,90 @@ class Lowerer {
     const InstId value = builder_->Add(Opcode::kFuncAddress, type);
     module_->functions[current_function_].Get(value).payload.callee = callee;
     return value;
+  }
+
+  // Reading a derived field: compute it if the cache is not current, keep
+  // the answer, and hand back the cache. "Recomputes when an input
+  // changes rather than on every read" is a claim about *when*, and this
+  // is the when (D63).
+  //
+  // A value with no address has nowhere to keep a cache, so there the
+  // computation happens on every read -- the same answer, paid for more
+  // often.
+  InstId LowerDerived(const Place& object,
+                      TypeId owner,
+                      const Member& member,
+                      TypeId type) {
+    const uint32_t compute = DerivedCompute(owner, member);
+    if (compute == 0xFFFFFFFFu) {
+      return builder_->Undef(type);
+    }
+    const InstId receiver = object.addressable()
+                                ? AddressOfPlace(object)
+                                : object.value;
+    if (!receiver.is_valid()) {
+      return builder_->Undef(type);
+    }
+    if (!object.addressable()) {
+      return builder_->Call(compute, Erase(member.type), {receiver});
+    }
+
+    const uint32_t cache_field = FieldIndex(owner, member.name);
+    const uint32_t ready_field = ReadyIndex(owner, member);
+    const TypeId cached = Erase(member.type);
+    const InstId ready_address = builder_->FieldAddress(
+        types_->Pointer(types_->bool_type(), true), receiver, ready_field);
+    const InstId cache_address = builder_->FieldAddress(
+        types_->Pointer(cached, true), receiver, cache_field);
+
+    const BlockId stale = builder_->AddBlock("derived.stale");
+    const BlockId join = builder_->AddBlock("derived.join");
+    const InstId ready =
+        builder_->Add(Opcode::kLoad, types_->bool_type(), {ready_address});
+    builder_->Branch(ready, join, stale);
+
+    builder_->SetCurrent(stale);
+    const InstId value =
+        builder_->Call(compute, cached, {receiver});
+    builder_->Add(Opcode::kStore, TypeId{}, {cache_address, value});
+    builder_->Add(Opcode::kStore, TypeId{},
+                  {ready_address, builder_->ConstBool(true)});
+    builder_->Jump(join);
+
+    builder_->SetCurrent(join);
+    return Coerce(builder_->Add(Opcode::kLoad, cached, {cache_address}),
+                  cached, type);
+  }
+
+  // Which function computes |member|, declaring it when it is in another
+  // file.
+  uint32_t DerivedCompute(TypeId owner, const Member& member) {
+    const uint32_t local = IndexOfSource(member.file, member.item);
+    if (local != 0xFFFFFFFFu) {
+      return local;
+    }
+    if (member.file == file_index_) {
+      return 0xFFFFFFFFu;
+    }
+    return DeclareExternal(DerivedName(owner, member.name),
+                           types_->Function({owner}, Erase(member.type)),
+                           member.file, member.item);
+  }
+
+  // Where the bit for |member| sits among the type's storage.
+  uint32_t ReadyIndex(TypeId owner, const Member& member) {
+    uint32_t index = 0;
+    for (const Member& candidate : resolution_.MembersOf(owner)) {
+      if (!HasStorage(candidate.kind)) {
+        continue;
+      }
+      if (candidate.kind == MemberKind::kReadyBit &&
+          candidate.item == member.item && candidate.file == member.file) {
+        return index;
+      }
+      ++index;
+    }
+    return 0;
   }
 
   // A module-level constant: a call to the function it became, which the

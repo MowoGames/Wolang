@@ -1326,6 +1326,59 @@ fun ReadBeforeWriting() -> int {
   WOLANG_EXPECT_EQ(f.Run("ReadBeforeWriting", {}), "8");
 }
 
+WOLANG_TEST(CodegenTest, ADerivedFieldRecomputesWhenAnInputChanges) {
+  // "Recomputes when an input changes rather than on every read" is a
+  // claim about *when*, so this is what it costs: a cached value, a bit
+  // that says whether the cache is current, and a write to any field the
+  // expression reads clearing that bit (D63).
+  //
+  // Which fields those are comes from the member table, not from this
+  // file: the write may be in a module that has never seen the
+  // expression.
+  Fixture f(R"(
+class Fighter {
+  var hp: int = 10
+  var buff: int = 2
+
+  derived var power: int => hp * buff
+
+  fun Hurt(amount: int) {
+    hp = hp - amount
+  }
+}
+
+fun FirstRead() -> int {
+  const fighter = Fighter(10, 2)
+  return fighter.power
+}
+
+fun AfterAWrite() -> int {
+  const fighter = Fighter(10, 2)
+  const before = fighter.power
+  fighter.hp = 20
+  return before * 100 + fighter.power
+}
+
+fun AfterAMethod() -> int {
+  const fighter = Fighter(10, 2)
+  const before = fighter.power
+  fighter.Hurt(5)
+  return before * 100 + fighter.power
+}
+
+fun ReadTwice() -> int {
+  const fighter = Fighter(3, 4)
+  // The second read is a load of the cache; both answer the same.
+  return fighter.power + fighter.power
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("FirstRead", {}), "20");
+  WOLANG_EXPECT_EQ(f.Run("AfterAWrite", {}), "2040");
+  // Ten hit for five is five, and five times two is ten.
+  WOLANG_EXPECT_EQ(f.Run("AfterAMethod", {}), "2010");
+  WOLANG_EXPECT_EQ(f.Run("ReadTwice", {}), "24");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

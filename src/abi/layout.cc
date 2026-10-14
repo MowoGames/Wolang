@@ -67,7 +67,7 @@ bool LayoutStore::IsTagOnly(TypeId type) const {
   }
   bool has_variant = false;
   for (const Member& member : resolution_.MembersOf(type)) {
-    if (member.kind == MemberKind::kField) {
+    if (HasStorage(member.kind)) {
       return false;
     }
     has_variant = has_variant || member.kind == MemberKind::kVariant;
@@ -134,7 +134,7 @@ uint32_t LayoutStore::FieldCount(TypeId type) const {
       }
       uint32_t count = 0;
       for (const Member& member : resolution_.MembersOf(type)) {
-        if (member.kind == MemberKind::kField) {
+        if (HasStorage(member.kind)) {
           ++count;
         }
       }
@@ -158,7 +158,7 @@ TypeId LayoutStore::FieldType(TypeId type, uint32_t index) const {
     case TypeKind::kNamed: {
       uint32_t seen = 0;
       for (const Member& member : resolution_.MembersOf(type)) {
-        if (member.kind != MemberKind::kField) {
+        if (!HasStorage(member.kind)) {
           continue;
         }
         if (seen == index) {

@@ -880,7 +880,7 @@ AstRange<ParamId> Parser::ParseParameterList(bool types_required) {
         ast_->AddRange(std::span<const AttributeId>(attributes));
 
     param.is_mutable = Eat(TokenKind::kKwMut);
-    param.name = ExpectIdentifier();
+    param.name = ExpectName();
     if (!param.name.is_valid()) {
       SkipBalancedTo(TokenKind::kRightParen);
       break;
@@ -920,7 +920,7 @@ AstRange<GenericParamId> Parser::ParseGenericParameters() {
   while (!AtEnd() && !AtAngleClose()) {
     const size_t start = pos_;
     GenericParam param;
-    param.name = ExpectIdentifier();
+    param.name = ExpectName();
     if (!param.name.is_valid()) {
       break;
     }
@@ -2131,7 +2131,7 @@ ExprId Parser::ParseClosure() {
       const size_t param_start = pos_;
       Param param;
       param.is_mutable = Eat(TokenKind::kKwMut);
-      param.name = ExpectIdentifier();
+      param.name = ExpectName();
       if (!param.name.is_valid()) {
         break;
       }
@@ -2361,12 +2361,22 @@ ExprId Parser::ParsePrimary() {
       break;
   }
 
-  if (At(TokenKind::kIdentifier)) {
-    const Token& token = Advance();
+  // A name, or a keyword that cannot begin an expression -- which in this
+  // position is a name and nothing else, so a variable called `after` or a
+  // field called `tag` reads the way it was written.
+  //
+  // Unless it begins a line: statements are separated by line breaks in
+  // this language, so a keyword there is the next statement and not the
+  // rest of this expression. Without that, a half-written expression
+  // swallowed the declaration after it and the error came out somewhere
+  // else entirely.
+  if (At(TokenKind::kIdentifier) ||
+      (CanBeName(PeekKind()) && !Peek().starts_line())) {
+    const SourceSpan span = CurrentSpan();
     Expr expr;
     expr.kind = ExprKind::kPath;
-    expr.name = tokens_.IdentifierOf(token);
-    expr.span = SpanOf(token);
+    expr.name = ExpectName();
+    expr.span = span;
     return ast_->Add(std::move(expr));
   }
 
@@ -2500,7 +2510,7 @@ PatternId Parser::ParsePattern() {
       Advance();
       pattern.kind = PatternKind::kBinding;
       pattern.flags |= PatternFlags::kMutable;
-      pattern.name = ExpectIdentifier();
+      pattern.name = ExpectName();
       pattern.span = SpanFrom(start);
       return ast_->Add(pattern);
     }
@@ -2509,6 +2519,15 @@ PatternId Parser::ParsePattern() {
       break;
 
     default: {
+      // A keyword that cannot begin an expression is a name here: there
+      // is nothing else it could be, and `const after = x` should mean
+      // what it looks like.
+      if (CanBeName(PeekKind())) {
+        pattern.kind = PatternKind::kBinding;
+        pattern.name = ExpectName();
+        pattern.span = SpanFrom(start);
+        return ast_->Add(pattern);
+      }
       std::string message = "expected a pattern, found ";
       message.append(DescribeCurrent());
       Report(kExpectedPattern, std::move(message), CurrentSpan());

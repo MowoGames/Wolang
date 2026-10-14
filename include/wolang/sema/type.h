@@ -88,7 +88,20 @@ enum class MemberKind : uint8_t {
   // A state of a `machine`.
   kState,
   kSignal,
+  // `derived var x: T => expr`: a field whose value is computed from other
+  // fields and kept until one of them changes.
+  kDerived,
+  // The bit that says whether a derived field has been computed. Written
+  // by the compiler, not by the source: a member table is the one place
+  // every tier agrees about what a type holds, so the bit lives here
+  // rather than in a layout of its own.
+  kReadyBit,
 };
+
+// Whether a member takes space in the type: a field, a derived field's
+// cached value, or the bit that says whether that cache is current.
+// Everything else -- a method, a variant, a signal -- is code or a tag.
+bool HasStorage(MemberKind kind);
 
 // One name declared inside a named type. Member tables are part of the file
 // resolution that produced them rather than of the type store, so that
@@ -113,6 +126,10 @@ struct Member {
   // already replaces a base method.
   bool is_virtual = false;
   bool is_override = false;
+  // Derived fields: which fields the expression reads, as indices into the
+  // same table. A write to any of them is what makes the value stale, and
+  // the list is here because the writer may be in another file.
+  std::vector<uint32_t> depends_on;
 
   friend bool operator==(const Member& lhs, const Member& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
@@ -120,7 +137,8 @@ struct Member {
            lhs.item == rhs.item && lhs.is_mutable == rhs.is_mutable &&
            lhs.is_public == rhs.is_public &&
            lhs.is_virtual == rhs.is_virtual &&
-           lhs.is_override == rhs.is_override;
+           lhs.is_override == rhs.is_override &&
+           lhs.depends_on == rhs.depends_on;
   }
 };
 

@@ -85,6 +85,44 @@ bool IsKeyword(TokenKind kind) {
   return InRange(kind) && kIsKeywordTable[static_cast<size_t>(kind)];
 }
 
+bool CanBeName(TokenKind kind) {
+  if (!IsKeyword(kind)) {
+    return false;
+  }
+  switch (kind) {
+    // These begin an expression, so a name is not what they could be.
+    case TokenKind::kKwIf:
+    case TokenKind::kKwMatch:
+    case TokenKind::kKwLoop:
+    case TokenKind::kKwWhile:
+    case TokenKind::kKwFor:
+    case TokenKind::kKwForeach:
+    case TokenKind::kKwUnsafe:
+    case TokenKind::kKwArena:
+    case TokenKind::kKwSpawn:
+    case TokenKind::kKwWait:
+    case TokenKind::kKwSelf:
+    case TokenKind::kKwTrue:
+    case TokenKind::kKwFalse:
+    case TokenKind::kKwNull:
+    case TokenKind::kKwComptime:
+    case TokenKind::kKwReturn:
+    case TokenKind::kKwBreak:
+    case TokenKind::kKwContinue:
+    case TokenKind::kKwDefer:
+    // These join an expression to what follows it.
+    case TokenKind::kKwAs:
+    case TokenKind::kKwIn:
+    case TokenKind::kKwElse:
+    case TokenKind::kKwUses:
+    case TokenKind::kKwWhere:
+    case TokenKind::kKwMut:
+      return false;
+    default:
+      return true;
+  }
+}
+
 bool IsPunctuation(TokenKind kind) {
   return InRange(kind) && kIsPunctuationTable[static_cast<size_t>(kind)];
 }

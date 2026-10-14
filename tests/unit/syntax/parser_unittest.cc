@@ -988,6 +988,32 @@ WOLANG_TEST(Parser, EffectListAcceptsTheUnsafeKeyword) {
                    "    (block)))\n");
 }
 
+WOLANG_TEST(Parser, AKeywordMayBeALocalAName) {
+  // A keyword that cannot begin an expression is a name wherever a name is
+  // what the grammar wants: a binding, a parameter, or the middle of an
+  // expression. `after` and `before` order systems and nothing else, so a
+  // variable called one of them reads the way it was written.
+  //
+  // It still has to continue the line it is on. Statements are separated
+  // by line breaks here, so a keyword at the start of one is the next
+  // statement -- and without that rule a half-written expression swallowed
+  // the declaration after it.
+  const std::string source = R"(
+struct Thing {
+  var tag: int = 0
+  var after: int = 2
+}
+
+fun Use(t: Thing, tag: int) -> int {
+  const after = t.after
+  const before = t.tag
+  return after + before + tag
+}
+)";
+  Fixture f(source);
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 WOLANG_TEST(Parser, AKeywordMayBeAName) {
   // Where only a name can appear -- after a `.`, or as what a declaration
   // calls itself -- a keyword is a name. A language whose keywords are off

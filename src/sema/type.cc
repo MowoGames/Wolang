@@ -171,6 +171,11 @@ TypeId TypeStore::Float(FloatWidth width) {
   return Intern(std::move(key));
 }
 
+bool HasStorage(MemberKind kind) {
+  return kind == MemberKind::kField || kind == MemberKind::kDerived ||
+         kind == MemberKind::kReadyBit;
+}
+
 TypeId TypeStore::Named(Symbol name,
                         uint32_t file,
                         uint32_t item,
