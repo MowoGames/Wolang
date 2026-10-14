@@ -441,6 +441,10 @@ class FunctionEmitter {
     }
     assembler_.Bind(stub);
     assembler_.Mov(IWidth::k64, Register::kX0, kContextRegister);
+    // The frame pointer, so the host can walk the chain of callers. It is
+    // the only part of the machine state a trap needs that the host cannot
+    // work out for itself.
+    assembler_.Mov(IWidth::k64, Register::kX3, Register::kX29);
     assembler_.Ldr(IWidth::k64, kCallScratch, kContextRegister,
                    static_cast<int32_t>(kContextReportOffset));
     assembler_.Blr(kCallScratch);

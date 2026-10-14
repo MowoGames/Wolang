@@ -4,6 +4,7 @@
 
 #include <setjmp.h>
 
+#include <cstdio>
 #include <cstring>
 #include <unordered_map>
 #include <utility>
@@ -25,9 +26,39 @@ bool IsSupportedTarget() {
 #endif
 }
 
-void ReportTrap(Context* context, uint32_t kind, uint32_t site) {
+void ReportTrap(Context* context,
+                uint32_t kind,
+                uint32_t site,
+                uint64_t frame) {
   context->trap_kind = kind;
   context->trap_site = site;
+  context->frame_count = 0;
+
+  // Walk the frame records. Every compiled function has one, so each step
+  // is two loads: the caller's frame pointer and its return address. The
+  // walk stops at the first address that is not in the compiled block,
+  // which is the trampoline the host called through.
+  uint64_t current = frame;
+  while (current != 0 && context->frame_count < Context::kMaxFrames) {
+    uint64_t next = 0;
+    uint64_t link = 0;
+    std::memcpy(&next, reinterpret_cast<const void*>(current),
+                sizeof(next));
+    std::memcpy(&link,
+                reinterpret_cast<const void*>(current + sizeof(uint64_t)),
+                sizeof(link));
+    if (link < context->code_begin || link >= context->code_end) {
+      break;
+    }
+    context->frames[context->frame_count++] = link;
+    // A frame pointer that does not move forward is a corrupt chain, and
+    // following it would loop.
+    if (next <= current) {
+      break;
+    }
+    current = next;
+  }
+
   // The non-local exit a trap is. Nothing between here and the landing pad
   // holds an object that needs unwinding -- a generated frame holds machine
   // values and nothing else -- which is what makes a trap free on the path
@@ -49,7 +80,13 @@ class CompiledModule::Impl {
   void Compile();
 
   interp::Outcome Run(Symbol name,
-                      const std::vector<interp::Value>& arguments);
+                      const std::vector<interp::Value>& arguments,
+                      std::vector<std::string>* backtrace);
+
+  // Which function an address belongs to, as a name and an offset. What
+  // makes a trap from compiled code readable, and what a profiler needs to
+  // label a sample.
+  std::string Symbolize(uint64_t offset) const;
 
   struct Entry {
     bool compiled = false;
@@ -360,7 +397,8 @@ interp::Value CompiledModule::Impl::Decode(const uint8_t* source,
 
 interp::Outcome CompiledModule::Impl::Run(
     Symbol name,
-    const std::vector<interp::Value>& arguments) {
+    const std::vector<interp::Value>& arguments,
+    std::vector<std::string>* backtrace) {
   interp::Outcome outcome;
   const Entry* entry = Find(name);
   if (entry == nullptr || !entry->compiled || !block_.is_installed()) {
@@ -404,6 +442,9 @@ interp::Outcome CompiledModule::Impl::Run(
   jmp_buf landing;
   context.landing = &landing;
   context.report = &ReportTrap;
+  context.code_begin =
+      reinterpret_cast<uint64_t>(block_.AddressOf(0));
+  context.code_end = context.code_begin + words_.size() * sizeof(uint32_t);
 
   const auto stub = reinterpret_cast<EntryPoint>(
       const_cast<void*>(block_.AddressOf(entry->stub)));
@@ -423,7 +464,46 @@ interp::Outcome CompiledModule::Impl::Run(
     outcome.where = traps_[context.trap_site].where;
     outcome.message = traps_[context.trap_site].message;
   }
+  if (backtrace != nullptr) {
+    for (uint32_t i = 0; i < context.frame_count; ++i) {
+      const std::string frame =
+          Symbolize(context.frames[i] - context.code_begin);
+      // An empty name is the trampoline, which is where the host entered
+      // compiled code: there is nothing above it worth naming.
+      if (frame.empty()) {
+        break;
+      }
+      backtrace->push_back(frame);
+    }
+  }
   return outcome;
+}
+
+std::string CompiledModule::Impl::Symbolize(uint64_t offset) const {
+  const uint32_t word = static_cast<uint32_t>(offset / sizeof(uint32_t));
+  for (size_t i = 0; i < entries_.size(); ++i) {
+    const Entry& entry = entries_[i];
+    if (!entry.compiled || word < entry.first_word ||
+        word >= entry.first_word + entry.word_count) {
+      continue;
+    }
+    if (word < entry.body_word) {
+      // The entry trampoline, which belongs to the host side of the call
+      // rather than to the function.
+      return {};
+    }
+    std::string text = "@";
+    text.append(interner_.Text(module_.functions[i].name));
+    text.append("+0x");
+    char buffer[16] = {};
+    std::snprintf(buffer, sizeof(buffer), "%x",
+                  static_cast<unsigned>(offset -
+                                        entry.first_word *
+                                            sizeof(uint32_t)));
+    text.append(buffer);
+    return text;
+  }
+  return "<outside the compiled code>";
 }
 
 // ------------------------------------------------------- the interface ---
@@ -444,8 +524,28 @@ std::string_view CompiledModule::SkipReason(Symbol name) const {
 
 interp::Outcome CompiledModule::Run(
     Symbol name,
-    const std::vector<interp::Value>& arguments) const {
-  return impl_->Run(name, arguments);
+    const std::vector<interp::Value>& arguments,
+    std::vector<std::string>* backtrace) const {
+  return impl_->Run(name, arguments, backtrace);
+}
+
+std::string CompiledModule::Symbolize(uint32_t offset) const {
+  return impl_->Symbolize(offset);
+}
+
+std::vector<std::pair<std::string, uint32_t>> CompiledModule::Listing()
+    const {
+  std::vector<std::pair<std::string, uint32_t>> listing;
+  for (size_t i = 0; i < impl_->entries_.size(); ++i) {
+    const Impl::Entry& entry = impl_->entries_[i];
+    if (!entry.compiled) {
+      continue;
+    }
+    listing.push_back(std::pair<std::string, uint32_t>(
+        std::string(impl_->interner_.Text(impl_->module_.functions[i].name)),
+        entry.word_count * static_cast<uint32_t>(sizeof(uint32_t))));
+  }
+  return listing;
 }
 
 std::span<const uint32_t> CompiledModule::WordsOf(Symbol name) const {

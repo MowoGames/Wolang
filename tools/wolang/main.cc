@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,6 +23,7 @@
 #include "wolang/base/string_interner.h"
 #include "wolang/compiler/cache.h"
 #include "wolang/compiler/database.h"
+#include "wolang/codegen/compiler.h"
 #include "wolang/compiler/workspace.h"
 #include "wolang/format/formatter.h"
 #include "wolang/interp/interpreter.h"
@@ -70,6 +72,11 @@ void PrintUsage() {
       "  fmt <files>     format files; prints to stdout by default\n"
       "  tokens <files>  print the token stream of the given files\n"
       "  ast <files>     print the syntax tree of the given files\n"
+      "  ir <files>      print the intermediate representation\n"
+      "  asm <files>     print what the dev tier compiled, and what it did "
+      "not\n"
+      "  run <paths>     run `main`\n"
+      "  test <paths>    run every function marked `@Test`\n"
       "  modules <dir>   print the module graph of a package\n"
       "  version         print the version and exit\n"
       "  help            print this message\n"
@@ -499,6 +506,17 @@ int RunTests(const Options& options) {
     if (lowered == nullptr) {
       continue;
     }
+    // Every test is also a differential check between the tiers: the same
+    // function, compiled and interpreted, has to reach the same answer.
+    // Tests are the one place a program is known to terminate, which is
+    // what makes running it twice safe.
+    std::unique_ptr<codegen::CompiledModule> compiled;
+    const CheckedFile* checked = database.Checked(file);
+    if (checked != nullptr && codegen::IsSupportedTarget()) {
+      compiled = codegen::Compile(database.interner(), database.types(),
+                                  checked->resolution, lowered->module);
+    }
+
     for (Symbol name : lowered->tests) {
       ++ran;
       // Run through the unoptimized IR: the reference semantics are what a
@@ -509,9 +527,29 @@ int RunTests(const Options& options) {
           outcome.ok() &&
           outcome.value.kind() == interp::Value::Kind::kBool &&
           !outcome.value.boolean();
+
+      if (compiled != nullptr && compiled->Contains(name)) {
+        const interp::Outcome machine = compiled->Run(name, {});
+        if (machine.trap != outcome.trap ||
+            machine.where != outcome.where ||
+            (outcome.ok() && machine.value != outcome.value)) {
+          ++failed;
+          std::fprintf(stdout,
+                       "[ failed ] %s: the tiers disagree\n"
+                       "           interpreter: %s\n"
+                       "           machine code: %s\n",
+                       std::string(database.interner().Text(name)).c_str(),
+                       Describe(outcome).c_str(), Describe(machine).c_str());
+          continue;
+        }
+      }
+
       if (outcome.ok() && !returned_false) {
-        std::fprintf(stdout, "[     ok ] %s\n",
-                     std::string(database.interner().Text(name)).c_str());
+        std::fprintf(stdout, "[     ok ] %s%s\n",
+                     std::string(database.interner().Text(name)).c_str(),
+                     compiled != nullptr && compiled->Contains(name)
+                         ? " (both tiers)"
+                         : "");
         continue;
       }
       ++failed;
@@ -530,6 +568,70 @@ int RunTests(const Options& options) {
   std::fprintf(stdout, "\n%d test%s run, %d failed\n", ran,
                ran == 1 ? "" : "s", failed);
   return failed == 0 ? 0 : 1;
+}
+
+// Prints what the dev tier made of each function: how much code, and for
+// the ones it left alone, why. A tier that compiles what it can has to be
+// able to say what it did not.
+int RunAsm(const Options& options) {
+  Database database;
+  DiagnosticEngine load_diagnostics;
+  std::vector<FileId> files;
+  if (!CollectInputs(&database, options, &load_diagnostics, &files)) {
+    return 2;
+  }
+
+  RenderOptions render;
+  render.color = options.color && StderrIsTerminal();
+  std::vector<Diagnostic> all = load_diagnostics.diagnostics();
+  for (FileId file : files) {
+    if (const std::vector<Diagnostic>* diagnostics =
+            database.Diagnostics(file)) {
+      all.insert(all.end(), diagnostics->begin(), diagnostics->end());
+    }
+  }
+  if (const int reported = Report(database.sources(), all, render);
+      reported != 0) {
+    return reported;
+  }
+
+  if (!codegen::IsSupportedTarget()) {
+    std::fprintf(stderr, "wolang: no code generator for this target\n");
+    return 2;
+  }
+
+  for (FileId file : files) {
+    const LoweredFile* lowered = database.Lowered(file);
+    const CheckedFile* checked = database.Checked(file);
+    if (lowered == nullptr || checked == nullptr) {
+      continue;
+    }
+    const std::unique_ptr<codegen::CompiledModule> compiled =
+        codegen::Compile(database.interner(), database.types(),
+                         checked->resolution, lowered->module);
+    std::fprintf(stdout, "// %s: %u compiled, %u left to the interpreter, "
+                         "%zu bytes\n",
+                 std::string(database.sources().Path(file)).c_str(),
+                 compiled->compiled_count(), compiled->skipped_count(),
+                 compiled->size());
+    for (const ir::Function& function : lowered->module.functions) {
+      const std::string name(database.interner().Text(function.name));
+      if (compiled->Contains(function.name)) {
+        uint32_t bytes = 0;
+        for (const std::pair<std::string, uint32_t>& entry :
+             compiled->Listing()) {
+          if (entry.first == name) {
+            bytes = entry.second;
+          }
+        }
+        std::fprintf(stdout, "@%s: %u bytes\n", name.c_str(), bytes);
+        continue;
+      }
+      std::fprintf(stdout, "@%s: interpreted, %s\n", name.c_str(),
+                   std::string(compiled->SkipReason(function.name)).c_str());
+    }
+  }
+  return 0;
 }
 
 int RunModules(const Options& options) {
@@ -609,7 +711,8 @@ int Run(int argc, char** argv) {
       options.command == "check" || options.command == "tokens" ||
       options.command == "ast" || options.command == "fmt" ||
       options.command == "ir" || options.command == "modules" ||
-      options.command == "run" || options.command == "test";
+      options.command == "run" || options.command == "test" ||
+      options.command == "asm";
   if (needs_inputs && options.inputs.empty()) {
     std::fprintf(stderr, "wolang: %s needs at least one path\n",
                  options.command.c_str());
@@ -631,6 +734,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "test") {
     return RunTests(options);
+  }
+  if (options.command == "asm") {
+    return RunAsm(options);
   }
   if (options.command == "modules") {
     return RunModules(options);

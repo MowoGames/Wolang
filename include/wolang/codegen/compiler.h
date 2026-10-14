@@ -6,6 +6,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <string_view>
 #include <vector>
 
@@ -43,8 +44,19 @@ class CompiledModule {
   // so that the two tiers' outcomes compare directly -- which is the whole
   // reason this returns an interpreter outcome rather than a type of its
   // own.
+  //
+  // |backtrace| receives the compiled callers at the moment of a trap,
+  // innermost first, when one is asked for.
   interp::Outcome Run(Symbol name,
-                      const std::vector<interp::Value>& arguments) const;
+                      const std::vector<interp::Value>& arguments,
+                      std::vector<std::string>* backtrace = nullptr) const;
+
+  // Which function an offset into the code belongs to, as `@Name+0x1c`.
+  std::string Symbolize(uint32_t offset) const;
+
+  // Every compiled function and how many bytes it took, in the order they
+  // were emitted.
+  std::vector<std::pair<std::string, uint32_t>> Listing() const;
 
   // The machine words of one function, for a dump or a disassembly test.
   std::span<const uint32_t> WordsOf(Symbol name) const;

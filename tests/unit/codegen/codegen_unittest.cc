@@ -72,6 +72,20 @@ class Fixture {
     return Describe(machine);
   }
 
+  // The same as Run, with the callers a trap walked back through.
+  std::string RunWithBacktrace(std::string_view name,
+                               std::vector<interp::Value> arguments,
+                               std::vector<std::string>* backtrace) {
+    const std::string first = Run(name, arguments);
+    if (compiled_ == nullptr) {
+      return first;
+    }
+    const Symbol symbol = db_.interner().Intern(name);
+    const interp::Outcome outcome =
+        compiled_->Run(symbol, arguments, backtrace);
+    return Describe(outcome);
+  }
+
   // Why the dev tier left a function alone, which is as much a part of its
   // behaviour as what it compiles.
   std::string Skipped(std::string_view name) {
@@ -325,6 +339,28 @@ fun Unwrap(p: int?) -> int {
                                         Fixture::Int(7))}),
                    "7");
   WOLANG_EXPECT_EQ(f.Run("Unwrap", {interp::Value::Absent()}), "0");
+}
+
+WOLANG_TEST(CodegenTest, NamesTheCallersOfATrap) {
+  // A frame record in every compiled function, including the leaf, is what
+  // makes this possible: the walk is two loads per frame and needs no table
+  // at all.
+  Fixture f(R"(
+fun Down(n: int) -> int {
+  if n == 0 {
+    return 1 / n
+  }
+  return Down(n - 1)
+}
+)");
+  std::vector<std::string> frames;
+  WOLANG_EXPECT_EQ(f.RunWithBacktrace("Down", {Fixture::Int(3)}, &frames),
+                   "trap: division by zero at @Down:%5: divided by zero");
+  // Three callers, each of them `Down`, and nothing above the trampoline.
+  WOLANG_EXPECT_EQ(frames.size(), 3u);
+  for (const std::string& frame : frames) {
+    WOLANG_EXPECT_EQ(frame.substr(0, 6), "@Down+");
+  }
 }
 
 WOLANG_TEST(CodegenTest, SaysWhatItCannotCompile) {
