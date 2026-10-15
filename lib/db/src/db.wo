@@ -1,0 +1,581 @@
+// A store on a disk: keys, values, and what survives the power going
+// out.
+//
+// The shape is a log and an index. Every write appends a record -- key,
+// value, a checksum -- and the index in memory says where the newest
+// record for each key is. Opening reads the log once and rebuilds the
+// index; a torn record at the end is dropped, because a machine that
+// lost power in the middle of a write left exactly that (D181).
+//
+// Why not a B-tree: a tree is the right answer when the index does not
+// fit in memory, and it is a month of work to get the page splitting,
+// the free list and the crash recovery right. A log is a day's work,
+// survives a crash by construction, and is what a store for a game's
+// save data, a tool's cache or a service's small state actually needs.
+// The index is sorted, so ordered walks and ranges work -- which is the
+// one thing a log-structured store usually gives up.
+//
+// What it is not: concurrent from several processes, or a query
+// language. One process at a time, and the questions are `Get`, `Has`,
+// `Range` and `Walk`.
+
+need std.compress.{Crc32}
+need std.list.{List, ListNew}
+need std.fs.{Remove, Rename, SizeOf, TempName}
+need std.mem.{ArrayNew, Free}
+need std.text.{Builder, Bytes, BuilderNew, Length, TextFromRaw}
+
+extern "C" fun wolang_file_open(path: *u8, length: u64,
+                                writable: s32) -> s32
+extern "C" fun wolang_file_read_at(handle: s32, offset: s64,
+                                   into: *mut u8, count: u64) -> s64
+extern "C" fun wolang_file_append(handle: s32, bytes: *u8,
+                                  count: u64) -> s64
+extern "C" fun wolang_file_size(handle: s32) -> s64
+extern "C" fun wolang_file_sync(handle: s32) -> s32
+extern "C" fun wolang_file_truncate(handle: s32, size: s64) -> s32
+extern "C" fun wolang_file_close(handle: s32) -> s32
+
+/// What a store that cannot be opened or read answers with.
+offer error Unreadable
+
+/// Where the newest record for a key is.
+struct Entry {
+  var key: text
+  var offset: s64 = 0
+  var length: int = 0
+  /// A key that was deleted keeps its place in the index until the
+  /// store is compacted, because the log still holds the record that
+  /// says so.
+  var gone: bool = false
+}
+
+/// A key-value store backed by one file.
+offer class Store {
+  var handle: s32 = -1
+  var path: text = ""
+  // Sorted by key, so a walk is in order and a lookup is a binary
+  // search rather than a scan.
+  var index: List<Entry>
+  var live: int = 0
+  var dead: int = 0
+  var at_end: s64 = 0
+
+  deinit {
+    if handle >= 0 {
+      const _closed = wolang_file_close(handle)
+    }
+  }
+
+  fun IsOpen() -> bool {
+    return handle >= 0
+  }
+
+  /// How many keys there are.
+  fun Len() -> int {
+    return live
+  }
+
+  /// How many records the log holds that nothing points at any more.
+  /// `Compact` is worth calling when this is most of the file.
+  fun Wasted() -> int {
+    return dead
+  }
+
+  /// Whether `key` is there.
+  fun Has(key: text) -> bool uses unsafe {
+    const at = Find(key)
+    return at >= 0 && !index.At(at).gone
+  }
+
+  /// What `key` holds, or nothing.
+  fun Get(key: text) -> text? uses unsafe {
+    const at = Find(key)
+    if at < 0 {
+      return null
+    }
+    const entry = index.At(at)
+    if entry.gone {
+      return null
+    }
+    return ReadValue(entry)
+  }
+
+  /// Puts `value` under `key`, replacing what was there.
+  ///
+  /// The record is on the disk when this answers true -- `fsync`, not
+  /// "the system will get to it", because a store that loses the last
+  /// write is a store nobody can use for what a store is for.
+  fun Put(key: text, value: text) -> bool uses unsafe {
+    if handle < 0 {
+      return false
+    }
+    const record = Written(key, value, false)
+    const offset = at_end
+    const bytes = Bytes(record)
+    if wolang_file_append(handle, &bytes[0], bytes.len as u64) !=
+       bytes.len as s64 {
+      return false
+    }
+    if wolang_file_sync(handle) != 0 {
+      return false
+    }
+    at_end = at_end + bytes.len as s64
+    Remember(key, offset + HeaderSize(key) as s64, Length(value), false)
+    return true
+  }
+
+  /// Takes `key` away. True when it was there.
+  fun Delete(key: text) -> bool uses unsafe {
+    if handle < 0 {
+      return false
+    }
+    const at = Find(key)
+    if at < 0 || index.At(at).gone {
+      return false
+    }
+    const record = Written(key, "", true)
+    const bytes = Bytes(record)
+    if wolang_file_append(handle, &bytes[0], bytes.len as u64) !=
+       bytes.len as s64 {
+      return false
+    }
+    if wolang_file_sync(handle) != 0 {
+      return false
+    }
+    at_end = at_end + bytes.len as s64
+    var entry = index.At(at)
+    entry.gone = true
+    index.Set(at, entry)
+    live = live - 1
+    dead = dead + 2
+    return true
+  }
+
+  /// Every key, in order.
+  fun Keys() -> List<text> uses unsafe {
+    var out = ListNew<text>()
+    var i = 0
+    while i < index.Len() {
+      if !index.At(i).gone {
+        out.Push(index.At(i).key)
+      }
+      i = i + 1
+    }
+    return out
+  }
+
+  /// Every key from `from` up to but not including `to`, in order.
+  ///
+  /// What a sorted index is for: `Range("user:", "user;")` is every
+  /// user, and a log-structured store usually cannot answer it.
+  fun Range(from: text, to: text) -> List<text> uses unsafe {
+    var out = ListNew<text>()
+    var i = LowerBound(from)
+    while i < index.Len() {
+      const entry = index.At(i)
+      if Length(to) != 0 && !(entry.key < to) {
+        break
+      }
+      if !entry.gone {
+        out.Push(entry.key)
+      }
+      i = i + 1
+    }
+    return out
+  }
+
+  /// Writes the live records to a new file and swaps it in.
+  ///
+  /// What reclaims the space a replaced or deleted record still takes.
+  /// Safe to interrupt: the new file is written whole and renamed, so
+  /// either the old store or the new one is there, never half of one.
+  fun Compact() -> bool uses unsafe {
+    if handle < 0 {
+      return false
+    }
+    const fresh = path + ".compacting"
+    const bytes = Bytes(fresh)
+    const target = wolang_file_open(&bytes[0], bytes.len as u64, 1)
+    if target < 0 {
+      return false
+    }
+    const _emptied = wolang_file_truncate(target, 0)
+
+    var rebuilt = ListNew<Entry>()
+    var written: s64 = 0
+    var i = 0
+    while i < index.Len() {
+      const entry = index.At(i)
+      if entry.gone {
+        i = i + 1
+        continue
+      }
+      const value = ReadValue(entry) ?? ""
+      const record = Written(entry.key, value, false)
+      const record_bytes = Bytes(record)
+      if wolang_file_append(target, &record_bytes[0],
+                            record_bytes.len as u64) !=
+         record_bytes.len as s64 {
+        const _closed = wolang_file_close(target)
+        return false
+      }
+      rebuilt.Push(Entry(entry.key,
+                         written + HeaderSize(entry.key) as s64,
+                         Length(value), false))
+      written = written + record_bytes.len as s64
+      i = i + 1
+    }
+    const _synced = wolang_file_sync(target)
+    const _shut = wolang_file_close(target)
+    const _old = wolang_file_close(handle)
+    handle = -1
+    if !Rename(fresh, path) {
+      return false
+    }
+
+    const again = Bytes(path)
+    handle = wolang_file_open(&again[0], again.len as u64, 1)
+    if handle < 0 {
+      return false
+    }
+    index = rebuilt
+    live = index.Len()
+    dead = 0
+    at_end = written
+    return true
+  }
+
+  // ------------------------------------------------------- the inside ---
+
+  // Where `key` is in the index, or -1. A binary search, because the
+  // index is sorted and a store with a hundred thousand keys should not
+  // walk them.
+  fun Find(key: text) -> int uses unsafe {
+    const at = LowerBound(key)
+    if at < index.Len() && index.At(at).key == key {
+      return at
+    }
+    return -1
+  }
+
+  // The first place a key not less than `key` could be.
+  fun LowerBound(key: text) -> int uses unsafe {
+    var low = 0
+    var high = index.Len()
+    while low < high {
+      const middle = low + (high - low) / 2
+      if index.At(middle).key < key {
+        low = middle + 1
+      } else {
+        high = middle
+      }
+    }
+    return low
+  }
+
+  fun Remember(key: text, offset: s64, length: int, gone: bool)
+      uses unsafe {
+    const at = LowerBound(key)
+    if at < index.Len() && index.At(at).key == key {
+      if index.At(at).gone && !gone {
+        live = live + 1
+      }
+      dead = dead + 1
+      index.Set(at, Entry(key, offset, length, gone))
+      return
+    }
+    // Sorted: everything from `at` on moves up one.
+    index.Push(Entry(key, offset, length, gone))
+    var i = index.Len() - 1
+    while i > at {
+      index.Set(i, index.At(i - 1))
+      i = i - 1
+    }
+    index.Set(at, Entry(key, offset, length, gone))
+    live = live + 1
+  }
+
+  fun ReadValue(entry: Entry) -> text? uses unsafe {
+    if entry.length == 0 {
+      return ""
+    }
+    var room = ArrayNew<u8>(entry.length)
+    const read = wolang_file_read_at(handle, entry.offset, &mut room[0],
+                                     entry.length as u64)
+    if read != entry.length as s64 {
+      Free(room)
+      return null
+    }
+    const held = TextFromRaw(&room[0], entry.length)
+    var builder = BuilderNew()
+    builder.Append(held)
+    Free(room)
+    return builder.Release()
+  }
+}
+
+// ---------------------------------------------------------- the record ---
+//
+// `W` `O` version, key length, value length, a flag, a checksum of
+// everything after it, then the key and the value. Fixed width numbers,
+// least significant byte first, because a reader that has to parse a
+// number before it knows how long a record is cannot skip a broken one.
+
+const kHeader: int = 22
+
+fun HeaderSize(key: text) -> int uses unsafe {
+  return kHeader + Length(key)
+}
+
+fun PutNumber(builder: &mut Builder, value: s64, width: int) uses unsafe {
+  var i = 0
+  while i < width {
+    builder.AppendByte(((value >> (i * 8) as s64) % 256) as u8)
+    i = i + 1
+  }
+}
+
+fun TakeNumber(bytes: []u8, at: int, width: int) -> s64 {
+  var value: s64 = 0
+  var i = width - 1
+  while i >= 0 {
+    value = value * 256 + bytes[at + i] as s64
+    i = i - 1
+  }
+  return value
+}
+
+/// The bytes of one record.
+fun Written(key: text, value: text, gone: bool) -> text uses unsafe {
+  var body = BuilderNew()
+  body.Append(key)
+  body.Append(value)
+  const payload = body.Release()
+
+  var builder = BuilderNew()
+  builder.AppendByte(87)
+  builder.AppendByte(79)
+  builder.AppendByte(1)
+  if gone {
+    builder.AppendByte(1)
+  } else {
+    builder.AppendByte(0)
+  }
+  PutNumber(&mut builder, Length(key) as s64, 4)
+  PutNumber(&mut builder, Length(value) as s64, 4)
+  PutNumber(&mut builder, Crc32(Bytes(payload)) as s64, 4)
+  // Six bytes kept back, so that a later version of this format can say
+  // something without moving what is already here.
+  PutNumber(&mut builder, 0, 6)
+  builder.Append(payload)
+  return builder.Release()
+}
+
+/// Opens the store at `path`, making it when it is not there.
+offer fun Open(path: text) -> Store! uses unsafe {
+  const bytes = Bytes(path)
+  if bytes.len == 0 {
+    return Unreadable
+  }
+  const handle = wolang_file_open(&bytes[0], bytes.len as u64, 1)
+  if handle < 0 {
+    return Unreadable
+  }
+  var store = Store(handle, path, ListNew<Entry>(), 0, 0, 0)
+  if !Replay(&mut store) {
+    const _closed = wolang_file_close(handle)
+    return Unreadable
+  }
+  return store
+}
+
+/// Reads the log and rebuilds the index.
+///
+/// A record whose checksum does not match, or that the file ends in the
+/// middle of, is where the log stops: a machine that lost power during
+/// an append left exactly that, and everything before it is still good.
+/// The file is truncated there, so the next append is not written after
+/// a hole.
+fun Replay(store: &mut Store) -> bool uses unsafe {
+  const size = wolang_file_size(store.handle)
+  if size < 0 {
+    return false
+  }
+  var at: s64 = 0
+  var head = ArrayNew<u8>(kHeader)
+  loop {
+    if at + kHeader as s64 > size {
+      break
+    }
+    if wolang_file_read_at(store.handle, at, &mut head[0],
+                           kHeader as u64) != kHeader as s64 {
+      break
+    }
+    if head[0] != 87 || head[1] != 79 || head[2] != 1 {
+      break
+    }
+    const gone = head[3] == 1
+    const key_length = TakeNumber(head, 4, 4) as int
+    const value_length = TakeNumber(head, 8, 4) as int
+    const check = TakeNumber(head, 12, 4) as u32
+    if key_length < 0 || value_length < 0 {
+      break
+    }
+    const total = kHeader as s64 + key_length as s64 +
+                  value_length as s64
+    if at + total > size {
+      break
+    }
+    var payload = ArrayNew<u8>(key_length + value_length)
+    if wolang_file_read_at(store.handle, at + kHeader as s64,
+                           &mut payload[0],
+                           (key_length + value_length) as u64) !=
+       (key_length + value_length) as s64 {
+      Free(payload)
+      break
+    }
+    if Crc32(payload) != check {
+      Free(payload)
+      break
+    }
+    const key = TextFromRaw(&payload[0], key_length)
+    var holder = BuilderNew()
+    holder.Append(key)
+    const held = holder.Release()
+    Free(payload)
+
+    if gone {
+      const at_key = store.Find(held)
+      if at_key >= 0 {
+        var entry = store.index.At(at_key)
+        if !entry.gone {
+          store.live = store.live - 1
+        }
+        entry.gone = true
+        store.index.Set(at_key, entry)
+      }
+      store.dead = store.dead + 1
+    } else {
+      store.Remember(held, at + kHeader as s64 + key_length as s64,
+                     value_length, false)
+    }
+    at = at + total
+  }
+  Free(head)
+  store.at_end = at
+  if at < size {
+    // Whatever is past the last good record is what a crash left.
+    const _trimmed = wolang_file_truncate(store.handle, at)
+  }
+  return true
+}
+
+/// Closes the store. Reading or writing after this answers nothing.
+offer fun Close(store: &mut Store) uses unsafe {
+  if store.handle >= 0 {
+    const _closed = wolang_file_close(store.handle)
+    store.handle = -1
+  }
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun KeepsWhatItWasGiven() -> bool uses unsafe {
+  const path = TempName("wolang-store") + ".db"
+  match Open(path) {
+    Ok(store) => {
+      var held = store
+      const put = held.Put("alpha", "one") && held.Put("beta", "two") &&
+                  held.Put("gamma", "three")
+      const read = (held.Get("beta") ?? "") == "two" &&
+                   held.Has("alpha") && !held.Has("missing") &&
+                   held.Get("missing") == null
+      // A key written twice is the newer one.
+      const again = held.Put("beta", "second") &&
+                    (held.Get("beta") ?? "") == "second"
+      const counted = held.Len() == 3
+      const taken = held.Delete("alpha") && !held.Has("alpha") &&
+                    held.Len() == 2 && !held.Delete("alpha")
+      Close(&mut held)
+      const _gone = Remove(path)
+      return put && read && again && counted && taken
+    },
+    Unreadable => { return false },
+  }
+}
+
+@Test
+fun SurvivesBeingClosedAndOpened() -> bool uses unsafe {
+  const path = TempName("wolang-store") + ".db"
+  match Open(path) {
+    Ok(store) => {
+      var held = store
+      const _a = held.Put("key", "value")
+      const _b = held.Put("other", "thing")
+      const _c = held.Delete("other")
+      Close(&mut held)
+    },
+    Unreadable => { return false },
+  }
+  match Open(path) {
+    Ok(again) => {
+      var held = again
+      const answer = (held.Get("key") ?? "") == "value" &&
+                     !held.Has("other") && held.Len() == 1
+      Close(&mut held)
+      const _gone = Remove(path)
+      return answer
+    },
+    Unreadable => { return false },
+  }
+}
+
+@Test
+fun WalksInOrder() -> bool uses unsafe {
+  const path = TempName("wolang-store") + ".db"
+  match Open(path) {
+    Ok(store) => {
+      var held = store
+      const _a = held.Put("user:3", "c")
+      const _b = held.Put("user:1", "a")
+      const _c = held.Put("zebra", "z")
+      const _d = held.Put("user:2", "b")
+      const keys = held.Keys()
+      const users = held.Range("user:", "user;")
+      const answer = keys.Len() == 4 && keys.At(0) == "user:1" &&
+                     keys.At(3) == "zebra" && users.Len() == 3 &&
+                     users.At(2) == "user:3"
+      Close(&mut held)
+      const _gone = Remove(path)
+      return answer
+    },
+    Unreadable => { return false },
+  }
+}
+
+@Test
+fun ReclaimsWhatIsWasted() -> bool uses unsafe {
+  const path = TempName("wolang-store") + ".db"
+  match Open(path) {
+    Ok(store) => {
+      var held = store
+      var i = 0
+      while i < 20 {
+        const _written = held.Put("key", "value number {i}")
+        i = i + 1
+      }
+      const before = SizeOf(path)
+      const wasted = held.Wasted() > 0
+      const packed = held.Compact()
+      const after = SizeOf(path)
+      const kept = (held.Get("key") ?? "") == "value number 19" &&
+                   held.Len() == 1
+      Close(&mut held)
+      const _gone = Remove(path)
+      return wasted && packed && kept && after < before
+    },
+    Unreadable => { return false },
+  }
+}

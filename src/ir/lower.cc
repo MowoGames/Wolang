@@ -1700,10 +1700,24 @@ class Lowerer {
     // A `T!`: which it is, and the value when it is a value (D90). Zero
     // says it is a value; anything else says which error, named by the
     // tag's own symbol so that one number means one error everywhere.
-    if (types_->KindOf(target) == TypeKind::kFallible &&
-        types_->KindOf(source_type) != TypeKind::kFallible) {
+    //
+    // What the *value* is, not what the checker recorded: `return 7`
+    // from a `-> int!` has the literal recorded as `int!` already,
+    // because the checker adapted it -- and reading that as "already
+    // wrapped" returned a bare seven where a pair was expected, which
+    // the two tiers then read as two different kinds of nonsense
+    // (D182).
+    const TypeId built = ValueType(value);
+    const bool wrapped =
+        built.is_valid() &&
+        types_->KindOf(Erase(built)) == TypeKind::kFallible;
+    if (types_->KindOf(target) == TypeKind::kFallible && !wrapped) {
       const TypeId held = Erase(types_->ElementOf(target));
-      if (types_->KindOf(source_type) == TypeKind::kErrorSet) {
+      const bool is_error =
+          types_->KindOf(source_type) == TypeKind::kErrorSet ||
+          (built.is_valid() &&
+           types_->KindOf(Erase(built)) == TypeKind::kErrorSet);
+      if (is_error) {
         // The value *is* the tag, so it travels as it is and the payload
         // is whatever was there -- a `T!` that failed has no value, and
         // nothing may read one out of it without matching first.
@@ -1805,9 +1819,18 @@ class Lowerer {
 
   // The type a value is built at, when the context asked for an optional of
   // it.
+  // The type a value is built at, when the context asked for an
+  // optional or a fallible of it.
+  //
+  // A fallible as well as an optional: `return 7` from a `-> int!` has
+  // the literal recorded as `int!` by the checker, and building a
+  // `const.int` *typed* `int!` is how a bare seven ended up where a
+  // pair was expected (D182). The `Coerce` right after this is what
+  // wraps it.
   TypeId Unwrapped(TypeId type) {
     const TypeId erased = Erase(type);
-    return types_->KindOf(erased) == TypeKind::kOptional
+    const TypeKind kind = types_->KindOf(erased);
+    return kind == TypeKind::kOptional || kind == TypeKind::kFallible
                ? Erase(types_->ElementOf(erased))
                : erased;
   }

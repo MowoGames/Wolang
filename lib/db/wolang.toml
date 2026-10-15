@@ -1,0 +1,6 @@
+[package]
+name = "db"
+source = "src"
+
+[dependencies]
+std = { path = "../std" }
