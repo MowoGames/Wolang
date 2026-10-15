@@ -82,6 +82,11 @@ class ManifestParser {
   void ApplyDependencyField(const Field& field, Manifest* manifest);
   void ApplyLintField(const Field& field, Manifest* manifest);
   void ApplyBuildField(const Field& field, Manifest* manifest);
+  void ApplyLinkField(const Field& field, Manifest* manifest);
+  // A comma separated list in a quoted string, the way `capabilities` is
+  // spelled. Lists in this subset of TOML are strings, because a parser
+  // with arrays is a bigger parser for no more expressiveness here.
+  bool ReadList(const Field& field, std::vector<std::string>* out);
 
   FileId file_;
   DiagnosticEngine* diagnostics_;
@@ -240,6 +245,54 @@ void ManifestParser::ApplyLintField(const Field& field, Manifest* manifest) {
   manifest->lints.push_back(LintOverride{std::string(field.key), severity});
 }
 
+bool ManifestParser::ReadList(const Field& field,
+                              std::vector<std::string>* out) {
+  std::string joined;
+  if (!ReadString(field, &joined)) {
+    return false;
+  }
+  size_t begin = 0;
+  while (begin <= joined.size()) {
+    size_t end = joined.find(',', begin);
+    if (end == std::string::npos) {
+      end = joined.size();
+    }
+    std::string_view piece(joined.data() + begin, end - begin);
+    while (!piece.empty() && (piece.front() == ' ' || piece.front() == '\t')) {
+      piece.remove_prefix(1);
+    }
+    while (!piece.empty() && (piece.back() == ' ' || piece.back() == '\t')) {
+      piece.remove_suffix(1);
+    }
+    if (!piece.empty()) {
+      out->emplace_back(piece);
+    }
+    begin = end + 1;
+  }
+  return true;
+}
+
+void ManifestParser::ApplyLinkField(const Field& field, Manifest* manifest) {
+  if (field.key == "libraries") {
+    ReadList(field, &manifest->link_libraries);
+    return;
+  }
+  if (field.key == "paths") {
+    ReadList(field, &manifest->link_paths);
+    return;
+  }
+  if (field.key == "frameworks") {
+    ReadList(field, &manifest->link_frameworks);
+    return;
+  }
+  std::string message = "unknown key `";
+  message.append(field.key);
+  message.append("` in `[link]`");
+  Report(kUnknownKey, std::move(message),
+         Span(field.key_offset, field.key.size()),
+         "known keys are libraries, paths and frameworks");
+}
+
 void ManifestParser::ApplyBuildField(const Field& field, Manifest* manifest) {
   if (field.key == "unsafe") {
     std::string policy;
@@ -328,12 +381,13 @@ Manifest ManifestParser::Run() {
       if (table == "package") {
         saw_package = true;
       } else if (table != "dependencies" && table != "lints" &&
-                 table != "build") {
+                 table != "build" && table != "link") {
         std::string message = "unknown table `[";
         message.append(table);
         message.append("]`");
         Report(kUnknownKey, std::move(message), Span(offset, line.size()),
-               "known tables are package, dependencies, lints and build");
+               "known tables are package, dependencies, lints, build and "
+               "link");
       }
       continue;
     }
@@ -376,6 +430,8 @@ Manifest ManifestParser::Run() {
       ApplyLintField(field, &manifest);
     } else if (table == "build") {
       ApplyBuildField(field, &manifest);
+    } else if (table == "link") {
+      ApplyLinkField(field, &manifest);
     }
   }
 

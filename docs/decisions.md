@@ -1496,3 +1496,21 @@ than of what it offers another module.
 This is not a sandbox, and the header says so: a script can declare
 `extern "C"` and reach anything the process can, the same way the
 standard library does.
+
+**D129. A package says what it links against.** `[link] libraries = "SDL2,
+m"` in a manifest, with `paths` and `frameworks` beside it. `wolang
+build` passes them to the linker; `wolang run` has no link step, so it
+opens them in the process instead -- which is what makes the same
+`extern "C"` declaration work in all three tiers. A package binding a C
+library is the package that knows which library, so this travels with it
+rather than with the program.
+
+**D130. `wolang bind` reads a C header.** The system's own preprocessor
+expands it first, because a header is C and C has a preprocessor; what
+this reads is *declarations*. Out comes a file of `extern "C" fun`,
+constants from enum members, and aliases for simple typedefs -- a
+starting point a person edits, not a binding pretending to be complete.
+The honest parts are the limits: a struct by value, a variadic and a type
+with no mapping are **reported** rather than dropped, a pointer to an
+opaque struct is an address, and a callback parameter is an address too.
+175 declarations out of the system's `math.h` compile as they are.

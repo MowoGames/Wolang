@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <dlfcn.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -21,6 +23,7 @@
 #endif
 
 #include "wolang/base/diagnostic.h"
+#include "wolang/bind/bind.h"
 #include "wolang/base/diagnostic_renderer.h"
 #include "wolang/base/source_manager.h"
 #include "wolang/base/string_interner.h"
@@ -63,6 +66,9 @@ struct Options {
   // standard output, which is what an editor that formats a buffer it has
   // not saved needs.
   bool from_stdin = false;
+  // `bind` only: which declarations to keep, and where the headers are.
+  std::string bind_prefix;
+  std::vector<std::string> bind_includes;
   bool show_spans = false;
   // `fuzz` only: also build each program into a binary and run it, which
   // is the only way to compare the ahead-of-time tier (D98). Slower by
@@ -563,6 +569,50 @@ bool ResumeTask(void* context, int32_t kind, void* frame) {
 // a declaration with no body, and compiling one file at a time would leave
 // every cross-module call to the interpreter. In a package that is most of
 // them.
+// Opens what the packages said they link against, so that the tiers
+// which resolve a symbol through the loader can find it.
+//
+// `wolang build` passes the same names to the linker; a program that is
+// *run* has no link step, so the library has to be brought into the
+// process by hand. Failure is quiet on purpose: a package may name a
+// library only its ahead-of-time build needs, and a missing symbol is
+// reported where it is called rather than here (D129).
+void OpenLinkedLibraries(Database* database) {
+  for (size_t i = 0; i < database->package_count(); ++i) {
+    const Package* package =
+        database->GetPackage(PackageId{static_cast<uint32_t>(i)});
+    if (package == nullptr) {
+      continue;
+    }
+    for (const std::string& library : package->manifest.link_libraries) {
+      // A path or a file name is opened as it is; a bare name gets the
+      // platform's decoration.
+      const bool spelled =
+          library.find('/') != std::string::npos ||
+          library.find(".so") != std::string::npos ||
+          library.find(".dylib") != std::string::npos;
+      std::vector<std::string> tries;
+      if (spelled) {
+        tries.push_back(library);
+      } else {
+#if defined(__APPLE__)
+        tries.push_back("lib" + library + ".dylib");
+#else
+        tries.push_back("lib" + library + ".so");
+#endif
+        for (const std::string& path : package->manifest.link_paths) {
+          tries.push_back(path + "/" + tries.front());
+        }
+      }
+      for (const std::string& candidate : tries) {
+        if (::dlopen(candidate.c_str(), RTLD_NOW | RTLD_GLOBAL) != nullptr) {
+          break;
+        }
+      }
+    }
+  }
+}
+
 std::vector<const ir::Module*> CollectModules(
     Database* database,
     const std::vector<FileId>& files) {
@@ -636,6 +686,7 @@ int RunProgram(const Options& options) {
 
   RenderOptions render;
   render.color = options.color && StderrIsTerminal();
+  OpenLinkedLibraries(&database);
 
   std::vector<Diagnostic> all = load_diagnostics.diagnostics();
   const LoweredFile* program = nullptr;
@@ -1346,6 +1397,53 @@ int RunSystems(const Options& options) {
 // The third tier: the same IR the dev tier runs, through LLVM, into an
 // object file -- and then through the system's linker, with the runtime
 // archive, into something that needs no compiler to run (D98).
+// `wolang bind sdl.h`: C declarations as Wolang.
+//
+// The system's preprocessor expands the header first, because a header is
+// C and C has a preprocessor; what comes out of this is declarations for
+// a person to edit rather than a binding pretending to be complete
+// (D130).
+int RunBind(const Options& options) {
+  const std::string& path = options.inputs.front();
+  bind::Options settings;
+  settings.header = path;
+  settings.prefix = options.bind_prefix;
+
+  std::string text = bind::Preprocess(path, options.bind_includes);
+  bool expanded = !text.empty();
+  if (!expanded) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+      std::fprintf(stderr, "wolang: cannot read %s\n", path.c_str());
+      return 2;
+    }
+    text.assign(std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>());
+  }
+
+  const bind::Result result = bind::Generate(text, settings);
+  if (!options.output.empty()) {
+    std::ofstream out(options.output, std::ios::binary);
+    if (!out) {
+      std::fprintf(stderr, "wolang: cannot write %s\n",
+                   options.output.c_str());
+      return 2;
+    }
+    out << result.source;
+  } else {
+    std::fputs(result.source.c_str(), stdout);
+  }
+
+  std::fprintf(stderr,
+               "wolang: %d functions, %d constants, %d aliases%s\n",
+               result.functions, result.constants, result.aliases,
+               expanded ? "" : " (read without the preprocessor)");
+  for (const std::string& skipped : result.skipped) {
+    std::fprintf(stderr, "  skipped %s\n", skipped.c_str());
+  }
+  return 0;
+}
+
 int RunBuild(const Options& options) {
   if (!codegen::HasAotBackend()) {
     std::fprintf(stderr,
@@ -1426,6 +1524,30 @@ int RunBuild(const Options& options) {
   command.append("' '");
   command.append(archive);
   command.append("' -lpthread");
+  // What the packages said they need, from their `[link]` tables: a
+  // package binding a C library is the one that knows which library, so
+  // the manifest carries it and the link line is assembled here (D129).
+  for (size_t i = 0; i < database.package_count(); ++i) {
+    const Package* held = database.GetPackage(PackageId{
+        static_cast<uint32_t>(i)});
+    if (held == nullptr) {
+      continue;
+    }
+    const Package& package = *held;
+    for (const std::string& path : package.manifest.link_paths) {
+      command.append(" -L'");
+      command.append(path);
+      command.append("'");
+    }
+    for (const std::string& library : package.manifest.link_libraries) {
+      command.append(" -l");
+      command.append(library);
+    }
+    for (const std::string& framework : package.manifest.link_frameworks) {
+      command.append(" -framework ");
+      command.append(framework);
+    }
+  }
   const int linked = std::system(command.c_str());
   if (linked != 0) {
     std::remove(object.c_str());
@@ -1739,7 +1861,13 @@ int Run(int argc, char** argv) {
       options.optimization = argument[2] - '0';
       continue;
     }
-    if (argument == "--stdin") {
+    if (argument == "--prefix" && i + 1 < argc) {
+      options.bind_prefix = argv[++i];
+    } else if (argument == "-I" && i + 1 < argc) {
+      options.bind_includes.push_back(argv[++i]);
+    } else if (argument.rfind("-I", 0) == 0 && argument.size() > 2) {
+      options.bind_includes.push_back(std::string(argument.substr(2)));
+    } else if (argument == "--stdin") {
       options.from_stdin = true;
     } else if (argument == "--unoptimized") {
       options.unoptimized = true;
@@ -1795,7 +1923,8 @@ int Run(int argc, char** argv) {
       options.command == "systems" ||
       options.command == "run" || options.command == "test" ||
       options.command == "asm" || options.command == "bench" ||
-      options.command == "build" || options.command == "doc";
+      options.command == "build" || options.command == "doc" ||
+      options.command == "bind";
   if (needs_inputs && options.inputs.empty()) {
     std::fprintf(stderr, "wolang: %s needs at least one path\n",
                  options.command.c_str());
@@ -1832,6 +1961,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "doc") {
     return RunDoc(options);
+  }
+  if (options.command == "bind") {
+    return RunBind(options);
   }
   if (options.command == "lsp") {
     // The editor's end of the compiler: the same queries `check` and

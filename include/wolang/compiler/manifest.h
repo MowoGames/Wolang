@@ -46,6 +46,14 @@ struct Manifest {
   // `capabilities = ""`, and `has_capabilities` is what tells them apart.
   std::vector<std::string> capabilities;
   bool has_capabilities = false;
+  // What a program using this package has to be linked against, from the
+  // `[link]` table: `libraries = "SDL2, m"` becomes `-lSDL2 -lm`,
+  // `paths` becomes `-L`, and `frameworks` is what macOS calls a library
+  // with headers and resources beside it. A package binding a C library
+  // is the package that knows which one, so this travels with it (D129).
+  std::vector<std::string> link_libraries;
+  std::vector<std::string> link_paths;
+  std::vector<std::string> link_frameworks;
 
   bool is_valid() const { return !name.empty(); }
 
