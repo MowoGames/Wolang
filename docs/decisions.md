@@ -1683,3 +1683,37 @@ is an answer.
 It names a generic instantiation and a closure the way the rest of the
 compiler does, so `@Partition<s32>` and `@closure$2` are what a profile
 of `Sort(numbers, |a, b| a < b)` shows.
+
+**D140. `wolang repl` is a compiler in a loop.** Each line becomes a
+*file* of one session package: a declaration joins the session, and
+anything else becomes a function that shows what the line came to. One vm
+for the whole session, so a `var` keeps what was written into it and a
+`fun` stays declared; a line that does not compile is dropped by
+rebuilding the session from the lines that did. `<?>` at the end of what
+a line printed means its value was nothing -- the line was a statement --
+so what it printed itself is what gets shown.
+
+It is built on the embedding API rather than on anything new, which is
+how three real bugs in that API came out:
+
+A host's source could not **say `need`**. A file added by a host belonged
+to no package, so `need std.io` resolved to nothing. Host sources now
+belong to one package of their own -- made once, not per call -- whose
+dependencies are every package the host loaded.
+
+A **module-level `var` of another file** was read as a constant: lowering
+only knew its own file's globals, so a cross-file read gave back the
+value the variable started with and threw every write away. It is the
+same instruction with the same token now, built from the declaration the
+binding points at.
+
+And **a name is not unique across a program**. `wolang_vm_call` found a
+function by name and the compiled tier then looked *its* name up again --
+so a session that declared `Peek` reached `std.json`'s private `Peek`
+instead, with the wrong number of arguments. Lookups prefer the most
+recently loaded definition with a matching arity, and the call is made by
+the declaration a function came from rather than by its name.
+
+The interpreter's own `Print` now reaches a host too: it collects what a
+program printed rather than writing it, and a host that asked for the
+output gets that as well.

@@ -3061,11 +3061,22 @@ class Lowerer {
   }
 
   // What |name| holds, or an invalid id when it is not a global.
-  TypeId GlobalType(Symbol name) const {
+  TypeId GlobalType(Symbol name) {
     for (const Global& global : globals_) {
       if (global.name == name) {
         return global.type;
       }
+    }
+    // A module-level `var` of *another* file of the same module. Its
+    // storage belongs to the runtime and is found by the declaration it
+    // came from, so reading one from here is the same instruction with
+    // the same token -- and reading it as a *constant* instead, which is
+    // what happened before, gave back the value it started with and
+    // threw every write away (D140).
+    if (const Binding* binding = resolution().Find(name);
+        binding != nullptr && binding->kind == BindingKind::kValue &&
+        binding->is_mutable && binding->type.is_valid()) {
+      return Erase(binding->type);
     }
     return TypeId{};
   }
@@ -3081,6 +3092,18 @@ class Lowerer {
           Opcode::kGlobalAddress,
           types_->Pointer(global.type, /*is_mutable=*/true), {});
       builder_->Mutable(address).payload.integer = global.token;
+      return address;
+    }
+    // Another file's: the same token, built from the declaration the
+    // binding points at (D140).
+    if (const Binding* binding = resolution().Find(name);
+        binding != nullptr && binding->kind == BindingKind::kValue &&
+        binding->is_mutable && binding->type.is_valid()) {
+      const InstId address = builder_->Add(
+          Opcode::kGlobalAddress,
+          types_->Pointer(Erase(binding->type), /*is_mutable=*/true), {});
+      builder_->Mutable(address).payload.integer =
+          (static_cast<uint64_t>(binding->file) << 32) | binding->item;
       return address;
     }
     return InstId{};

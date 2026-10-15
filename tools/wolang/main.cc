@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <span>
 #include <string>
@@ -53,6 +54,7 @@
 #include "wolang/fuzz/generator.h"
 #include "wolang/runtime/scheduler.h"
 #include "wolang/compiler/workspace.h"
+#include "wolang/embed/wolang.hpp"
 #include "wolang/format/formatter.h"
 #include "wolang/interp/interpreter.h"
 #include "wolang/ir/printer.h"
@@ -157,6 +159,7 @@ void PrintUsage() {
       "  bind <header>   write Wolang declarations for a C header\n"
       "  new <dir>       start a package: a manifest, a source file, a "
       "test\n"
+      "  repl            a session: type an expression and see it\n"
       "  lsp             speak the Language Server Protocol on stdin\n"
       "  systems <dir>   print what systems access and when they run\n"
       "  fuzz            generate programs and compare the tiers\n"
@@ -707,6 +710,258 @@ std::string Describe(const interp::Outcome& outcome) {
   result.append(" at ");
   result.append(outcome.where);
   return result;
+}
+
+// Where the standard library is, as this binary can find it.
+//
+// In order: what the environment says, a tree the given directory sits
+// inside, the one next to the compiler itself, and the tree this
+// compiler was built from (D132).
+std::string StandardLibrary(const Options& options,
+                            const std::filesystem::path& near) {
+  std::error_code failed;
+  if (const char* said = std::getenv("WOLANG_STD")) {
+    return said;
+  }
+  for (std::filesystem::path up = std::filesystem::absolute(near, failed);
+       !up.empty() && up != up.root_path(); up = up.parent_path()) {
+    if (std::filesystem::exists(up / "lib" / "std" / "wolang.toml",
+                                failed)) {
+      return (up / "lib" / "std").string();
+    }
+  }
+  const std::filesystem::path own =
+      std::filesystem::weakly_canonical(options.program, failed);
+  const std::filesystem::path beside =
+      own.parent_path().parent_path() / "lib" / "std";
+  if (std::filesystem::exists(beside / "wolang.toml", failed)) {
+    return beside.string();
+  }
+#ifdef WOLANG_LIBRARY_DIRECTORY
+  const std::filesystem::path built =
+      std::filesystem::path(WOLANG_LIBRARY_DIRECTORY) / "std";
+  if (std::filesystem::exists(built / "wolang.toml", failed)) {
+    return built.string();
+  }
+#endif
+  return std::string();
+}
+
+// What a session's program printed, so that the loop can decide whether
+// to show it: a line whose value is nothing prints `<?>`, and showing
+// that would be worse than showing nothing (D140).
+std::string repl_output;
+
+void CollectRepl(void* user, const char* bytes, uint64_t length) {
+  (void)user;
+  repl_output.append(bytes, static_cast<size_t>(length));
+}
+
+int RunRepl(const Options& options) {
+  std::fprintf(stdout,
+               "wolang %s -- type an expression, a statement or a "
+               "declaration.\n"
+               ":help for the commands, :quit to leave.\n",
+               std::string(kVersion).c_str());
+
+  const std::string standard =
+      StandardLibrary(options, std::filesystem::current_path());
+  if (standard.empty()) {
+    std::fprintf(stderr,
+                 "wolang: cannot find the standard library; set "
+                 "WOLANG_STD\n");
+  }
+
+  // One session, one vm: each line becomes a *file* of the same package,
+  // so a declaration stays declared and a variable keeps what was
+  // written into it. A line that does not compile is dropped by
+  // rebuilding the session from the ones that did (D140).
+  std::vector<std::string> history;
+  int serial = 0;
+
+  const auto fresh = [&]() {
+    auto held = std::make_unique<wolang::Vm>();
+    held->OnOutput(&CollectRepl, nullptr);
+    // Replaying what the session already ran must not start its
+    // variables again: what they hold is in the runtime's table, and
+    // this is a rebuild rather than a new program.
+    held->InitializeGlobals(false);
+    if (!standard.empty()) {
+      held->Load(standard);
+    }
+    for (size_t i = 0; i < history.size(); ++i) {
+      held->LoadSource("session" + std::to_string(i) + ".wo", history[i]);
+    }
+    held->InitializeGlobals(true);
+    return held;
+  };
+  std::unique_ptr<wolang::Vm> vm = fresh();
+
+  // Whether a line finishes what it started: a session that runs half a
+  // `fun` is a session nobody can declare anything in.
+  const auto complete = [](const std::string& text) {
+    int depth = 0;
+    bool in_string = false;
+    for (size_t i = 0; i < text.size(); ++i) {
+      const char c = text[i];
+      if (in_string) {
+        if (c == '\\') {
+          ++i;
+        } else if (c == '"') {
+          in_string = false;
+        }
+        continue;
+      }
+      if (c == '"') {
+        in_string = true;
+      } else if (c == '{' || c == '(' || c == '[') {
+        ++depth;
+      } else if (c == '}' || c == ')' || c == ']') {
+        --depth;
+      }
+    }
+    return depth <= 0;
+  };
+
+  const auto is_declaration = [](const std::string& line) {
+    static const char* kStarts[] = {"fun ",      "var ",       "const ",
+                                    "class ",    "struct ",    "enum ",
+                                    "ability ",  "component ", "tag ",
+                                    "type ",     "extern ",    "offer ",
+                                    "machine ",  "system ",    "effect ",
+                                    "@",         "extend ",    "need "};
+    for (const char* start : kStarts) {
+      if (line.rfind(start, 0) == 0) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // `Print` is always in scope in a session: one with no way to show a
+  // value is not a session.
+  const std::string prelude = "need std.io.{Print}\n";
+
+  std::string pending;
+  for (;;) {
+    std::fprintf(stdout, "%s", pending.empty() ? ">>> " : "... ");
+    std::fflush(stdout);
+    std::string line;
+    if (!std::getline(std::cin, line)) {
+      std::fprintf(stdout, "\n");
+      break;
+    }
+    if (!pending.empty()) {
+      pending.push_back('\n');
+    }
+    pending.append(line);
+    if (!complete(pending)) {
+      continue;
+    }
+    std::string whole = pending;
+    pending.clear();
+
+    while (!whole.empty() && (whole.front() == ' ' || whole.front() == '\t')) {
+      whole.erase(whole.begin());
+    }
+    while (!whole.empty() &&
+           (whole.back() == ' ' || whole.back() == '\t' ||
+            whole.back() == '\n')) {
+      whole.pop_back();
+    }
+    if (whole.empty()) {
+      continue;
+    }
+
+    if (whole == ":quit" || whole == ":q") {
+      break;
+    }
+    if (whole == ":help" || whole == ":h") {
+      std::fprintf(stdout,
+                   "  <expression>   evaluate and show it\n"
+                   "  <statement>    run it\n"
+                   "  fun / var / class / need ...   declare it for the "
+                   "session\n"
+                   "  :list          what the session has declared\n"
+                   "  :clear         forget all of it\n"
+                   "  :quit          leave\n");
+      continue;
+    }
+    if (whole == ":list") {
+      for (const std::string& held : history) {
+        std::fputs(held.c_str(), stdout);
+      }
+      continue;
+    }
+    if (whole == ":clear") {
+      history.clear();
+      vm = fresh();
+      std::fprintf(stdout, "the session is empty again\n");
+      continue;
+    }
+
+    const bool declaring = is_declaration(whole);
+    const std::string name = "Repl" + std::to_string(serial++);
+    const std::string file =
+        "session" + std::to_string(history.size()) + ".wo";
+    // A declaration is a file of its own; a line to evaluate is a
+    // function that shows what it came to.
+    const std::string source =
+        declaring ? whole + "\n"
+                  : prelude + "offer fun " + name +
+                        "() uses io, unsafe {\n  Print(\"{" + whole +
+                        "}\")\n}\n";
+
+    repl_output.clear();
+    if (!vm->LoadSource(file, source)) {
+      const std::string errors = vm->errors();
+      // The broken file is still in the session's database, so the
+      // session is rebuilt from the lines that worked.
+      vm = fresh();
+      bool ran = false;
+      if (!declaring) {
+        // Not an expression, perhaps: `x = x + 1` and `Print("hi")` are
+        // statements, and a statement in an interpolation does not
+        // compile.
+        const std::string again = prelude + "offer fun " + name +
+                                  "() uses io, unsafe {\n  " + whole +
+                                  "\n}\n";
+        repl_output.clear();
+        if (vm->LoadSource(file, again)) {
+          ran = vm->Call(name).has_value();
+          if (ran) {
+            std::fputs(repl_output.c_str(), stdout);
+          } else {
+            std::fputs(vm->errors().c_str(), stderr);
+          }
+        }
+      }
+      if (!ran) {
+        std::fputs(errors.c_str(), stderr);
+        vm = fresh();
+      }
+      continue;
+    }
+
+    if (declaring) {
+      history.push_back(source);
+      continue;
+    }
+    if (!vm->Call(name).has_value()) {
+      std::fputs(vm->errors().c_str(), stderr);
+      vm = fresh();
+      continue;
+    }
+    // `<?>` at the end is a value with nothing in it: the line was a
+    // statement, and what it printed itself is what to show.
+    const bool nothing =
+        repl_output.size() >= 4 &&
+        repl_output.compare(repl_output.size() - 4, 4, "<?>\n") == 0;
+    std::fputs(nothing ? repl_output.substr(0, repl_output.size() - 4).c_str()
+                       : repl_output.c_str(),
+               stdout);
+  }
+  return 0;
 }
 
 // Where the program spent its time.
@@ -1629,44 +1884,20 @@ int RunNew(const Options& options) {
   // absolute one otherwise (D132).
   const std::filesystem::path here =
       std::filesystem::absolute(directory, failed);
-  std::string standard;
-  if (const char* said = std::getenv("WOLANG_STD")) {
-    standard = said;
-  }
-  if (standard.empty()) {
-    for (std::filesystem::path up = here; !up.empty() && up != up.root_path();
-         up = up.parent_path()) {
-      if (std::filesystem::exists(up / "lib" / "std" / "wolang.toml",
-                                  failed)) {
-        standard =
-            std::filesystem::relative(up / "lib" / "std", here, failed)
-                .string();
-        break;
-      }
-    }
-  }
-  if (standard.empty()) {
-    // An installed compiler: `<prefix>/bin/wolang` and
-    // `<prefix>/lib/std`.
-    const std::filesystem::path own =
-        std::filesystem::weakly_canonical(options.program, failed);
-    const std::filesystem::path beside =
-        own.parent_path().parent_path() / "lib" / "std";
-    if (std::filesystem::exists(beside / "wolang.toml", failed)) {
-      standard = beside.string();
-    }
-  }
-#ifdef WOLANG_LIBRARY_DIRECTORY
-  if (standard.empty()) {
-    const std::filesystem::path built =
-        std::filesystem::path(WOLANG_LIBRARY_DIRECTORY) / "std";
-    if (std::filesystem::exists(built / "wolang.toml", failed)) {
-      standard = built.string();
-    }
-  }
-#endif
+  std::string standard = StandardLibrary(options, here);
   if (standard.empty()) {
     standard = "../lib/std";
+  } else if (std::filesystem::exists(
+                 std::filesystem::path(standard) / "wolang.toml", failed)) {
+    // A relative path when the package is inside the tree -- that is what
+    // makes the compiler's own examples movable -- and an absolute one
+    // otherwise (D132).
+    const std::filesystem::path relative =
+        std::filesystem::relative(standard, here, failed);
+    if (!failed && relative.string().rfind("..", 0) == 0 &&
+        relative.string().find("../..") != 0) {
+      standard = relative.string();
+    }
   }
 
   const auto write = [&](const std::string& path,
@@ -2373,6 +2604,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "new") {
     return RunNew(options);
+  }
+  if (options.command == "repl") {
+    return RunRepl(options);
   }
   if (options.command == "lsp") {
     // The editor's end of the compiler: the same queries `check` and

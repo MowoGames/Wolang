@@ -41,6 +41,12 @@ class CompiledModule {
   CompiledModule& operator=(const CompiledModule&) = delete;
 
   bool Contains(Symbol name) const;
+  // Whether the function declared at |file|:|item| is compiled here.
+  //
+  // By the declaration rather than by the name, because a name is not
+  // unique across a program: two files may each have a `Peek`, and a
+  // host calling one of them must reach the one it meant (D140).
+  bool ContainsSource(uint32_t file, uint32_t item) const;
   // Why |name| was left to the interpreter, or empty when it was compiled.
   std::string_view SkipReason(Symbol name) const;
 
@@ -60,6 +66,13 @@ class CompiledModule {
                       const std::vector<interp::Value>& arguments,
                       std::vector<std::string>* backtrace = nullptr,
                       bool keep_globals = false) const;
+
+  // The same, by the declaration the function came from.
+  interp::Outcome RunSource(uint32_t file,
+                            uint32_t item,
+                            const std::vector<interp::Value>& arguments,
+                            std::vector<std::string>* backtrace = nullptr,
+                            bool keep_globals = false) const;
 
   // Which function an offset into the code belongs to, as `@Name+0x1c`.
   std::string Symbolize(uint32_t offset) const;

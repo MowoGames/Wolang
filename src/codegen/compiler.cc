@@ -110,6 +110,7 @@ class CompiledModule::Impl {
                       std::vector<std::string>* backtrace,
                       bool keep_globals = false);
 
+
   // Which function an address belongs to, as a name and an offset. What
   // makes a trap from compiled code readable, and what a profiler needs to
   // label a sample.
@@ -173,6 +174,20 @@ class CompiledModule::Impl {
     uint32_t size = 0;
   };
 
+  // The entry for the function declared at |file|:|item|, preferring a
+  // definition over a declaration that names it (D140).
+  const Entry* FindSource(uint32_t file, uint32_t item) const {
+    for (uint32_t i = 0; i < entries_.size(); ++i) {
+      const ir::Function& function = FunctionOf(entries_[i]);
+      if (function.source_file != file || function.source_item != item) {
+        continue;
+      }
+      const Entry& entry = entries_[i];
+      return entry.compiled ? &entry : &entries_[entry.link];
+    }
+    return nullptr;
+  }
+
   const Entry* Find(Symbol name) const {
     const auto found = by_name_.find(name.index);
     if (found == by_name_.end()) {
@@ -181,6 +196,25 @@ class CompiledModule::Impl {
     const Entry& entry = entries_[found->second];
     return entry.compiled ? &entry : &entries_[entry.link];
   }
+
+  // By the declaration a function came from rather than by its name: a
+  // name is not unique across a program (D140).
+  interp::Outcome RunSource(uint32_t file,
+                            uint32_t item,
+                            const std::vector<interp::Value>& arguments,
+                            std::vector<std::string>* backtrace,
+                            bool keep_globals = false);
+
+  bool ContainsSource(uint32_t file, uint32_t item) const {
+    const Entry* entry = FindSource(file, item);
+    return entry != nullptr && entry->compiled;
+  }
+
+  interp::Outcome RunEntry(const Entry* entry,
+                           Symbol name,
+                           const std::vector<interp::Value>& arguments,
+                           std::vector<std::string>* backtrace,
+                           bool keep_globals);
 
   const ir::Function& FunctionOf(const Entry& entry) const {
     return files_[entry.file]->module.functions[entry.local];
@@ -493,8 +527,27 @@ interp::Outcome CompiledModule::Impl::Run(
     const std::vector<interp::Value>& arguments,
     std::vector<std::string>* backtrace,
     bool keep_globals) {
+  return RunEntry(Find(name), name, arguments, backtrace, keep_globals);
+}
+
+interp::Outcome CompiledModule::Impl::RunSource(
+    uint32_t file,
+    uint32_t item,
+    const std::vector<interp::Value>& arguments,
+    std::vector<std::string>* backtrace,
+    bool keep_globals) {
+  const Entry* entry = FindSource(file, item);
+  const Symbol name = entry != nullptr ? FunctionOf(*entry).name : Symbol{};
+  return RunEntry(entry, name, arguments, backtrace, keep_globals);
+}
+
+interp::Outcome CompiledModule::Impl::RunEntry(
+    const Entry* entry,
+    Symbol name,
+    const std::vector<interp::Value>& arguments,
+    std::vector<std::string>* backtrace,
+    bool keep_globals) {
   interp::Outcome outcome;
-  const Entry* entry = Find(name);
   if (entry == nullptr || !entry->compiled || !block_.is_installed()) {
     outcome.trap = ir::TrapKind::kNoBody;
     outcome.where = "@" + std::string(interner_.Text(name));
@@ -677,6 +730,19 @@ interp::Outcome CompiledModule::Run(
     std::vector<std::string>* backtrace,
     bool keep_globals) const {
   return impl_->Run(name, arguments, backtrace, keep_globals);
+}
+
+interp::Outcome CompiledModule::RunSource(
+    uint32_t file,
+    uint32_t item,
+    const std::vector<interp::Value>& arguments,
+    std::vector<std::string>* backtrace,
+    bool keep_globals) const {
+  return impl_->RunSource(file, item, arguments, backtrace, keep_globals);
+}
+
+bool CompiledModule::ContainsSource(uint32_t file, uint32_t item) const {
+  return impl_->ContainsSource(file, item);
 }
 
 bool CompiledModule::ResumeTask(Symbol dispatch,

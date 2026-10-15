@@ -199,6 +199,12 @@ class Vm {
     wolang_vm_set_compiled(held_, allowed ? 1 : 0);
   }
 
+  // Whether a load starts the module-level `var`s it declares. A session
+  // replaying what it has already run turns it off (D140).
+  void InitializeGlobals(bool initialize) {
+    wolang_vm_set_initialize(held_, initialize ? 1 : 0);
+  }
+
   // The files the program was built from, for a host that watches them.
   std::vector<std::string> Files() const {
     std::vector<std::string> paths;

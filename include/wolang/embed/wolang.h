@@ -200,6 +200,14 @@ void wolang_vm_set_step_limit(WolangVm* vm, uint64_t steps);
 // wants every call counted turns it off.
 void wolang_vm_set_compiled(WolangVm* vm, int32_t allowed);
 
+// Whether loading a file starts its module-level `var`s from what the
+// source wrote. On by default.
+//
+// A session that reloads what it has already run turns it off: the
+// values are in the runtime's table already, and starting them again
+// would undo everything the session did (D140).
+void wolang_vm_set_initialize(WolangVm* vm, int32_t initialize);
+
 // --------------------------------------------------------------- reloads ---
 
 // Forgets everything and loads |path| again.

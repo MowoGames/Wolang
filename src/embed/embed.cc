@@ -83,10 +83,17 @@ struct WolangVm {
   std::vector<const wolang::ir::Module*> linked;
   std::string errors;
   bool ok = false;
+  // Which files have had their module-level `var`s started. A second
+  // load must not start them again: a session that adds a file per line
+  // would see every variable it has set go back to its first value
+  // (D140).
+  std::vector<FileId> initialized;
   // How much a call may do, and whether the machine-code tier may run
   // it: counting steps is something only the interpreter can do (D137).
   uint64_t steps = 0;
   bool allow_compiled = true;
+  // Whether a load starts the module-level `var`s it declares (D140).
+  bool initialize = true;
   // Kept alive for as long as the vm is: a text the program answered
   // points into one of these, so the host can read it after the call.
   std::vector<std::string> answers;
@@ -98,6 +105,10 @@ namespace {
 // off: what a host shows beside a script's function in a console, and
 // the same text `wolang doc` writes (D137).
 std::string DocumentationFor(WolangVm* vm, FileId file, Symbol name);
+
+// Hands |text| to the host's writer, or to standard output when there is
+// none (D140).
+void Written(const std::string& text);
 
 // Everything the program has to say about itself, rendered the way the
 // command-line compiler renders it.
@@ -235,6 +246,14 @@ void Prepare(WolangVm* vm) {
         lowered->module.initializer >= lowered->module.functions.size()) {
       continue;
     }
+    if (std::find(vm->initialized.begin(), vm->initialized.end(), file) !=
+        vm->initialized.end()) {
+      continue;
+    }
+    vm->initialized.push_back(file);
+    if (!vm->initialize) {
+      continue;
+    }
     const wolang::ir::Function& init =
         lowered->module.functions[lowered->module.initializer];
     const CheckedFile* checked = vm->database.Checked(file);
@@ -257,16 +276,38 @@ void Prepare(WolangVm* vm) {
   }
 }
 
-const Callable* Find(const WolangVm* vm, const char* name) {
+// The function called |name|, preferring the one loaded last.
+//
+// A host's own source wins over a library's: a session that declares
+// `Read` means its own, and two files of a program may both have a
+// function by that name. |arity| narrows it further when the caller
+// knows how many arguments it is passing -- which is what stops a call
+// reaching a function of the same name and a different shape (D140).
+const Callable* Find(const WolangVm* vm, const char* name,
+                     int32_t arity = -1) {
   if (vm == nullptr || name == nullptr) {
     return nullptr;
   }
-  for (const Callable& entry : vm->callable) {
-    if (entry.name == name) {
-      return &entry;
+  const Callable* fallback = nullptr;
+  for (auto it = vm->callable.rbegin(); it != vm->callable.rend(); ++it) {
+    if (it->name != name) {
+      continue;
+    }
+    if (arity < 0) {
+      return &*it;
+    }
+    const size_t takes =
+        it->function == nullptr
+            ? 0
+            : vm->database.types().ArgumentsOf(it->function->type).size();
+    if (static_cast<int32_t>(takes) == arity) {
+      return &*it;
+    }
+    if (fallback == nullptr) {
+      fallback = &*it;
     }
   }
-  return nullptr;
+  return fallback;
 }
 
 // A host's value as the interpreter holds one, at the type the function
@@ -482,6 +523,42 @@ int32_t wolang_vm_load_source(WolangVm* vm,
   }
   const FileId file = vm->database.AddFile(
       name == nullptr ? "<host>" : name, source);
+  // Source a host handed over belongs to a package of its own, which
+  // depends on every package already loaded: a script that cannot say
+  // `need std.io` is not a script anyone wants to write (D140).
+  if (file.is_valid()) {
+    // One package for everything a host hands over, made once: a second
+    // one would put the second file in another module, and then two
+    // lines of a session could not see each other's declarations (D140).
+    wolang::ModuleId module = vm->database.FindModule("host");
+    if (!module.is_valid()) {
+      wolang::Manifest manifest;
+      manifest.name = "host";
+      manifest.version = "0.0.0";
+      for (size_t i = 0; i < vm->database.package_count(); ++i) {
+        const wolang::Package* held =
+            vm->database.GetPackage(
+                wolang::PackageId{static_cast<uint32_t>(i)});
+        if (held == nullptr || held->name == "host") {
+          continue;
+        }
+        manifest.dependencies.push_back(
+            wolang::ManifestDependency{held->name, held->directory});
+      }
+      const wolang::PackageId package = vm->database.AddPackage(
+          "host", std::filesystem::current_path().string(),
+          std::move(manifest));
+      module = vm->database.AddModule(
+          "host", std::filesystem::current_path().string(), package);
+    }
+    std::vector<FileId> files;
+    if (const wolang::Module* existing = vm->database.GetModule(module);
+        existing != nullptr) {
+      files = existing->files;
+    }
+    files.push_back(file);
+    vm->database.SetModuleFiles(module, std::move(files));
+  }
   if (!file.is_valid()) {
     vm->errors = "wolang: cannot add the source\n";
     vm->ok = false;
@@ -546,7 +623,7 @@ int32_t wolang_vm_call(WolangVm* vm,
   if (!vm->ok) {
     return 1;
   }
-  const Callable* entry = Find(vm, name);
+  const Callable* entry = Find(vm, name, count < 0 ? 0 : count);
   if (entry == nullptr) {
     vm->errors = std::string("wolang: no function called `") +
                  (name == nullptr ? "" : name) + "`\n";
@@ -574,10 +651,15 @@ int32_t wolang_vm_call(WolangVm* vm,
   // the compiled tier, because counting steps is something only the
   // interpreter does (D137).
   wolang::interp::Outcome outcome;
+  // By the declaration rather than by the name: a program may have two
+  // functions called `Peek`, and a host calling one of them has to reach
+  // the one it looked up (D140).
   if (vm->allow_compiled && vm->steps == 0 && vm->compiled != nullptr &&
-      vm->compiled->Contains(entry->symbol)) {
-    outcome = vm->compiled->Run(entry->symbol, boxed, nullptr,
-                                /*keep_globals=*/true);
+      vm->compiled->ContainsSource(entry->function->source_file,
+                                   entry->function->source_item)) {
+    outcome = vm->compiled->RunSource(entry->function->source_file,
+                                      entry->function->source_item, boxed,
+                                      nullptr, /*keep_globals=*/true);
   } else {
     // The resolution of the file the function came from, with every
     // other file's member tables shared in: a type crosses files, and a
@@ -594,10 +676,18 @@ int32_t wolang_vm_call(WolangVm* vm,
     if (vm->steps != 0) {
       limits.steps = vm->steps;
     }
+    // The interpreter collects what a program printed rather than
+    // writing it: a single file that has not linked `std.io` reaches
+    // `Print` as an intrinsic, and a host should see that output like
+    // any other (D140).
+    wolang::interp::Output printed;
     outcome = wolang::interp::RunNamed(
         vm->database.interner(), vm->database.types(), *entry->module,
-        entry->symbol, boxed, limits, nullptr, vm->foreign.get(), &layouts,
-        vm->linked);
+        entry->symbol, boxed, limits, &printed, vm->foreign.get(),
+        &layouts, vm->linked);
+    if (!printed.text.empty()) {
+      Written(printed.text);
+    }
   }
 
   if (!outcome.ok()) {
@@ -913,6 +1003,18 @@ extern "C" int64_t WriteThroughHost(int32_t fd,
 
 }  // namespace
 
+namespace {
+
+void Written(const std::string& text) {
+  if (host_writer != nullptr) {
+    host_writer(host_writer_user, text.data(), text.size());
+    return;
+  }
+  std::fwrite(text.data(), 1, text.size(), stdout);
+}
+
+}  // namespace
+
 void wolang_vm_set_writer(WolangVm* vm, WolangWriter writer, void* user) {
   (void)vm;
   host_writer = writer;
@@ -941,6 +1043,12 @@ void wolang_vm_set_step_limit(WolangVm* vm, uint64_t steps) {
 void wolang_vm_set_compiled(WolangVm* vm, int32_t allowed) {
   if (vm != nullptr) {
     vm->allow_compiled = allowed != 0;
+  }
+}
+
+void wolang_vm_set_initialize(WolangVm* vm, int32_t initialize) {
+  if (vm != nullptr) {
+    vm->initialize = initialize != 0;
   }
 }
 
