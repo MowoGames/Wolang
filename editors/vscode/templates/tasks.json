@@ -1,0 +1,65 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "wolang: build for debugging",
+      "type": "shell",
+      "command": "wolang",
+      "args": ["build", "${workspaceFolder}", "-O0", "-o",
+               "${workspaceFolder}/target/debug-binary"],
+      "problemMatcher": {
+        // What `wolang check` prints: `error[E0101]: ...` and a line
+        // below it pointing at the file.
+        "owner": "wolang",
+        "fileLocation": ["absolute"],
+        "pattern": [
+          {
+            "regexp": "^(error|warning)\\[(E|W)(\\d+)\\]:\\s+(.*)$",
+            "severity": 1,
+            "code": 3,
+            "message": 4
+          },
+          {
+            "regexp": "^\\s*-->\\s+(.*?):(\\d+):(\\d+)$",
+            "file": 1,
+            "line": 2,
+            "column": 3
+          }
+        ]
+      },
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "wolang: test",
+      "type": "shell",
+      "command": "wolang",
+      "args": ["test", "${workspaceFolder}"],
+      "problemMatcher": [],
+      "group": { "kind": "test", "isDefault": true }
+    },
+    {
+      "label": "wolang: check",
+      "type": "shell",
+      "command": "wolang",
+      "args": ["check", "${workspaceFolder}"],
+      "problemMatcher": {
+        "owner": "wolang",
+        "fileLocation": ["absolute"],
+        "pattern": [
+          {
+            "regexp": "^(error|warning)\\[(E|W)(\\d+)\\]:\\s+(.*)$",
+            "severity": 1,
+            "code": 3,
+            "message": 4
+          },
+          {
+            "regexp": "^\\s*-->\\s+(.*?):(\\d+):(\\d+)$",
+            "file": 1,
+            "line": 2,
+            "column": 3
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -165,6 +165,8 @@ void PrintUsage() {
       "  new <dir>       start a package: a manifest, a source file, a "
       "test\n"
       "  fetch <dir>     get the dependencies and write wolang.lock\n"
+      "  debug <dir>     build with line information and start a "
+      "debugger\n"
       "  repl            a session: type an expression and see it\n"
       "  lsp             speak the Language Server Protocol on stdin\n"
       "  systems <dir>   print what systems access and when they run\n"
@@ -2247,6 +2249,73 @@ int RunBuild(const Options& options) {
   return 0;
 }
 
+// `wolang debug <package>`: build it with line information and start a
+// debugger on it.
+//
+// Not a debugger of its own: the binary carries DWARF (D118), so lldb
+// and gdb already know where every line is. What this does is the part a
+// person should not have to remember -- build with the right flags, then
+// hand the binary over with the source root set (D143).
+int RunDebug(const Options& options) {
+  Options building = options;
+  building.command = "build";
+  building.optimization = 0;
+  if (building.output.empty()) {
+    const std::filesystem::path where(options.inputs.front());
+    std::error_code failed;
+    const std::filesystem::path canonical =
+        std::filesystem::weakly_canonical(where, failed);
+    building.output =
+        (std::filesystem::temp_directory_path() /
+         ("wolang-debug-" + canonical.filename().string()))
+            .string();
+  }
+  if (const int built = RunBuild(building); built != 0) {
+    return built;
+  }
+
+  // Which debugger: whatever is there. lldb first on macOS, gdb first
+  // elsewhere, and a clear message when neither is.
+  const char* first = nullptr;
+#if defined(__APPLE__)
+  const char* candidates[] = {"lldb", "gdb"};
+#else
+  const char* candidates[] = {"gdb", "lldb"};
+#endif
+  for (const char* candidate : candidates) {
+    std::string probe = "command -v ";
+    probe.append(candidate);
+    probe.append(" >/dev/null 2>&1");
+    if (std::system(probe.c_str()) == 0) {
+      first = candidate;
+      break;
+    }
+  }
+  if (first == nullptr) {
+    std::fprintf(stderr,
+                 "wolang: no lldb or gdb on the path; the binary is at "
+                 "%s\n",
+                 building.output.c_str());
+    return 1;
+  }
+
+  std::fprintf(stdout,
+               "%s %s\n"
+               "  `b main.wo:12` puts a breakpoint on a line; `run` "
+               "starts it.\n",
+               first, building.output.c_str());
+  std::string command(first);
+  command.append(" '");
+  command.append(building.output);
+  command.append("'");
+  for (size_t i = 1; i < options.inputs.size(); ++i) {
+    command.append(" ");
+    command.append(options.inputs[i]);
+  }
+  return std::system(command.c_str()) == 0 ? 0 : 1;
+}
+
+
 
 // ------------------------------------------------------------- `doc` ---
 
@@ -2630,7 +2699,7 @@ int Run(int argc, char** argv) {
       options.command == "asm" || options.command == "bench" ||
       options.command == "build" || options.command == "doc" ||
       options.command == "bind" || options.command == "new" ||
-      options.command == "fetch";
+      options.command == "fetch" || options.command == "debug";
   if (needs_inputs && options.inputs.empty()) {
     std::fprintf(stderr, "wolang: %s needs at least one path\n",
                  options.command.c_str());
@@ -2679,6 +2748,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "fetch") {
     return RunFetch(options);
+  }
+  if (options.command == "debug") {
+    return RunDebug(options);
   }
   if (options.command == "lsp") {
     // The editor's end of the compiler: the same queries `check` and

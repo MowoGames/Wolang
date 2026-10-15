@@ -1,0 +1,34 @@
+{
+  // Debugging Wolang in VS Code.
+  //
+  // A Wolang binary carries DWARF, so the debugger a C++ project would
+  // use works as it is: breakpoints by `file:line`, stepping, and the
+  // frame's variables. Two tasks build it first -- one for the program,
+  // one for the tests -- and `wolang debug <dir>` does the same thing
+  // from a terminal (D143).
+  //
+  // Copy this into `.vscode/launch.json` and `tasks.json` below it.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Wolang: debug this package",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug-binary",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "wolang: build for debugging",
+      "sourceLanguages": ["c"]
+    },
+    {
+      "name": "Wolang: debug with the C/C++ extension",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug-binary",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "MIMode": "lldb",
+      "preLaunchTask": "wolang: build for debugging"
+    }
+  ]
+}
