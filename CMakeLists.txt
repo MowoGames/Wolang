@@ -63,10 +63,49 @@ if(PROJECT_IS_TOP_LEVEL)
         install(TARGETS wolang_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
 
-    install(TARGETS wolang_runtime wolang_embed
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    # The embedding library is exported as a target, so that a host can
+    # `find_package(Wolang CONFIG)` and link `Wolang::embed` without
+    # knowing where anything is (D137).
+    # The core's headers come with it: exporting a target means a host
+    # can link it, and linking it means its headers have to be there.
+    install(TARGETS wolang_embed wolang_core wolang_runtime
+        EXPORT WolangTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        FILE_SET HEADERS DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
     install(TARGETS wolang_embed_shared
+        EXPORT WolangTargets
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(EXPORT WolangTargets
+        FILE WolangTargets.cmake
+        NAMESPACE Wolang::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Wolang)
+    # `Wolang::embed` rather than `Wolang::wolang_embed`: the namespace
+    # already says whose it is.
+    set_target_properties(wolang_embed PROPERTIES EXPORT_NAME embed)
+    set_target_properties(wolang_embed_shared PROPERTIES
+        EXPORT_NAME embed_shared)
+    set_target_properties(wolang_core PROPERTIES EXPORT_NAME core)
+    set_target_properties(wolang_runtime PROPERTIES EXPORT_NAME runtime)
+
+    include(CMakePackageConfigHelpers)
+    configure_package_config_file(
+        ${PROJECT_SOURCE_DIR}/cmake/WolangConfig.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/WolangConfig.cmake
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Wolang)
+    write_basic_package_version_file(
+        ${CMAKE_CURRENT_BINARY_DIR}/WolangConfigVersion.cmake
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMinorVersion)
+    install(FILES
+            ${CMAKE_CURRENT_BINARY_DIR}/WolangConfig.cmake
+            ${CMAKE_CURRENT_BINARY_DIR}/WolangConfigVersion.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Wolang)
+
+    # And for a host that does not use CMake.
+    configure_file(${PROJECT_SOURCE_DIR}/cmake/wolang-embed.pc.in
+        ${CMAKE_CURRENT_BINARY_DIR}/wolang-embed.pc @ONLY)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/wolang-embed.pc
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
     install(DIRECTORY
             ${PROJECT_SOURCE_DIR}/lib/std
             ${PROJECT_SOURCE_DIR}/lib/http
@@ -75,7 +114,9 @@ if(PROJECT_IS_TOP_LEVEL)
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         PATTERN "*.wo"
         PATTERN "wolang.toml")
-    install(FILES ${PROJECT_SOURCE_DIR}/include/wolang/embed/wolang.h
+    install(FILES
+            ${PROJECT_SOURCE_DIR}/include/wolang/embed/wolang.h
+            ${PROJECT_SOURCE_DIR}/include/wolang/embed/wolang.hpp
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/wolang/embed)
     install(DIRECTORY ${PROJECT_SOURCE_DIR}/editors
         DESTINATION ${CMAKE_INSTALL_DATADIR}/wolang)

@@ -1,0 +1,17 @@
+# Relative to this file, so that an unpacked archive works wherever it
+# landed: `pcfiledir` is `<prefix>/lib/pkgconfig`.
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+# Where the standard library's sources are: a host hands this to
+# `wolang_vm_load` or puts it in `WOLANG_STD`.
+wolang_std=${libdir}/std
+
+Name: wolang-embed
+Description: Wolang as an embeddable language, behind a C ABI
+URL: https://github.com/MowoGames/Wolang
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lwolang_embed -Wl,-rpath,${libdir}
+Libs.private: -lwolang_core -lwolang_runtime
+Cflags: -I${includedir}

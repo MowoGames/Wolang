@@ -44,6 +44,14 @@ struct Outcome {
 struct Limits {
   uint64_t steps = 10'000'000;
   uint32_t depth = 1024;
+  // Whether to leave the module-level `var`s as they are.
+  //
+  // Off by default: every run starts them from what the source wrote, so
+  // that a test and a differential check see the same program twice
+  // (D88). A *host* that embeds the language needs the opposite -- it
+  // sets a global and then calls a function, and a reset between the two
+  // would wipe what it set (D137).
+  bool keep_globals = false;
 };
 
 // Executes |function| of |module| with |arguments|.

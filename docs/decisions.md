@@ -1610,3 +1610,28 @@ as its type's zero, which is what the runtime's storage already is.
 With all three fixed: 53 900 requests a second on one thread and 58 900
 on eight, with keep-alive and no failures -- and `ab` itself is the
 bottleneck at that point.
+
+**D137. The embedding API is something you ship.** A host wants more than
+"load and call": a function looked up once and called every frame, the
+script's module-level `var`s as settings it owns, the program's output in
+its own console, a step limit for code it did not write, and a reload
+when a file changes. All of that is in the C header now, and `wolang.hpp`
+is the same API with the ceremony removed -- header only, over the C ABI
+rather than over the compiler's own headers, so a host built with another
+compiler still links.
+
+Two things had to change underneath. Module-level `var`s were reset
+before *every* run, which is right for a test and a differential check
+(D88) and wrong for a host: it sets a global and then calls a function,
+and the reset between the two wiped what it set. Runs now say whether to
+keep them. And a host's output is captured by registering `write` in the
+runtime's symbol table, which is consulted before the loader -- so a
+program that prints reaches the host without knowing it.
+
+Shipping it is the other half: `cmake --install` lays out headers, the
+static and shared libraries, the standard library's sources, a CMake
+package (`find_package(Wolang CONFIG)` → `Wolang::embed`) and a
+relocatable pkg-config file. A release builds that layout per platform
+and an embedding-only archive beside it. CI links a host project through
+`find_package`, because an embedding API nobody links from outside the
+tree is a guess.

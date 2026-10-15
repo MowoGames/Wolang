@@ -53,9 +53,13 @@ class CompiledModule {
   //
   // |backtrace| receives the compiled callers at the moment of a trap,
   // innermost first, when one is asked for.
+  // |keep_globals| leaves the module-level `var`s as they are instead of
+  // starting them from what the source wrote. What an embedding host
+  // needs: it sets a global and then calls a function (D137).
   interp::Outcome Run(Symbol name,
                       const std::vector<interp::Value>& arguments,
-                      std::vector<std::string>* backtrace = nullptr) const;
+                      std::vector<std::string>* backtrace = nullptr,
+                      bool keep_globals = false) const;
 
   // Which function an offset into the code belongs to, as `@Name+0x1c`.
   std::string Symbolize(uint32_t offset) const;

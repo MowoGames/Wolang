@@ -1,0 +1,14 @@
+# What `find_package(Wolang CONFIG)` gives a host: `Wolang::embed`, which
+# is the embedding library and its one header directory. Nothing about
+# the compiler's own internals is exported -- a host builds against the C
+# ABI (D137).
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/WolangTargets.cmake")
+
+set(WOLANG_LIBRARY_DIR "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@")
+# Where the standard library's sources are, which a host hands to
+# `wolang_vm_load` or points `WOLANG_STD` at.
+set(WOLANG_STD_DIR "${WOLANG_LIBRARY_DIR}/std")
+
+check_required_components(Wolang)

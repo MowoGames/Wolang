@@ -52,25 +52,46 @@ jobs:
           build/release/tools/wolang/wolang --version
           build/release/tools/wolang/wolang test lib/std
 
-      # The binary, the standard library it needs, and the runtime
-      # archive `wolang build` hands to the linker.
+      # The whole thing, laid out by `cmake --install`: the compiler, the
+      # libraries, the embedding headers, the CMake package and the
+      # pkg-config file. Which is the same layout `wolang new` and
+      # `find_package(Wolang)` look for (D132, D137).
       - name: Assemble
         shell: bash
         run: |
           out="${{ matrix.name }}"
-          mkdir -p "$out/bin" "$out/lib" "$out/include"
-          cp build/release/tools/wolang/wolang "$out/bin/"
-          cp -R lib/std lib/http lib/game lib/core "$out/lib/"
-          cp build/release/src/libwolang_runtime.a "$out/lib/" || true
-          cp build/release/src/libwolang_embed.a "$out/lib/" || true
-          cp -R include/wolang/embed "$out/include/"
-          cp README.md LICENSE "$out/" 2>/dev/null || cp README.md "$out/"
+          cmake --install build/release --prefix "$PWD/$out"
+          cp README.md "$out/" || true
+          cp LICENSE "$out/" 2>/dev/null || true
+          cp docs/embedding.md "$out/" || true
+          tar -czf "$out.tar.gz" "$out"
+
+      # And the embedding API on its own, for a host that wants the
+      # library and the headers and not a compiler.
+      - name: Assemble the embedding package
+        shell: bash
+        run: |
+          out="wolang-embed-${{ matrix.name }}"
+          out="${out#wolang-embed-wolang-}"
+          out="wolang-embed-$out"
+          mkdir -p "$out"
+          cp -R "${{ matrix.name }}/include" "$out/"
+          mkdir -p "$out/lib"
+          cp -R "${{ matrix.name }}/lib/cmake" "$out/lib/" || true
+          cp -R "${{ matrix.name }}/lib/pkgconfig" "$out/lib/" || true
+          cp -R "${{ matrix.name }}"/lib/std "${{ matrix.name }}"/lib/http \
+                "${{ matrix.name }}"/lib/game "${{ matrix.name }}"/lib/core \
+                "$out/lib/" || true
+          cp "${{ matrix.name }}"/lib/libwolang_* "$out/lib/" || true
+          cp docs/embedding.md "$out/README.md" || true
           tar -czf "$out.tar.gz" "$out"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ matrix.name }}.tar.gz
+          path: |
+            ${{ matrix.name }}.tar.gz
+            wolang-embed-*.tar.gz
 
   publish:
     needs: artifacts

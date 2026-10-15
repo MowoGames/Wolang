@@ -131,6 +131,88 @@ int32_t wolang_vm_bind(WolangVm* vm, const char* symbol, void* function);
 // The arguments the program sees in `std.env.Args`.
 void wolang_vm_set_args(WolangVm* vm, int32_t count, const char* const* args);
 
+// --------------------------------------------------------------- handles ---
+
+// A function looked up once and called many times.
+//
+// What an engine wants: a script's `Update` is called every frame, and a
+// name lookup per frame is a string comparison per frame for nothing. A
+// handle is valid until the program is reloaded.
+typedef struct WolangFunction WolangFunction;
+
+WolangFunction* wolang_vm_function(WolangVm* vm, const char* name);
+
+// Calls |function|. The same answers as `wolang_vm_call`.
+int32_t wolang_call(WolangFunction* function,
+                    const WolangValue* arguments,
+                    int32_t count,
+                    WolangValue* out);
+
+// How many arguments it takes, and what it answers: what a host checks
+// once rather than guessing per call. The kinds are `WolangKind` values,
+// and `-1` says the function is not callable from here.
+int32_t wolang_function_arity(const WolangFunction* function);
+WolangKind wolang_function_result(const WolangFunction* function);
+WolangKind wolang_function_parameter(const WolangFunction* function,
+                                     int32_t index);
+const char* wolang_function_doc(const WolangFunction* function);
+
+// --------------------------------------------------------------- globals ---
+
+// A module-level `var` of the loaded program, read and written.
+//
+// What a host configures a script with: `var gravity: f32 = -9.8` in the
+// script, and the engine's own value written into it before the first
+// call. Zero on success.
+int32_t wolang_vm_get_global(WolangVm* vm,
+                             const char* name,
+                             WolangValue* out);
+int32_t wolang_vm_set_global(WolangVm* vm,
+                             const char* name,
+                             WolangValue value);
+
+// ---------------------------------------------------------------- output ---
+
+// Where the program's `Print` goes.
+//
+// Without one it goes to standard output, like any program's. A host with
+// a console of its own installs this and gets the bytes instead.
+typedef void (*WolangWriter)(void* user, const char* bytes, uint64_t length);
+
+void wolang_vm_set_writer(WolangVm* vm, WolangWriter writer, void* user);
+
+// Where a diagnostic goes as it happens, rather than being collected.
+// Same shape, same reason.
+void wolang_vm_set_reporter(WolangVm* vm, WolangWriter reporter, void* user);
+
+// ---------------------------------------------------------------- limits ---
+
+// How much a call may do before it is stopped.
+//
+// For a host running scripts it did not write: a loop that never ends is
+// stopped after |steps| instructions rather than hanging the process.
+// Zero means no limit, which is the default. Only the interpreter can
+// count steps, so setting this keeps calls off the compiled tier --
+// which is the trade the caller is making knowingly.
+void wolang_vm_set_step_limit(WolangVm* vm, uint64_t steps);
+
+// Whether to use the machine-code tier at all. On by default; a host that
+// wants every call counted turns it off.
+void wolang_vm_set_compiled(WolangVm* vm, int32_t allowed);
+
+// --------------------------------------------------------------- reloads ---
+
+// Forgets everything and loads |path| again.
+//
+// What hot reloading is: a script changed on disk, and the next frame
+// should run the new one. Handles from before are invalid afterwards.
+int32_t wolang_vm_reload(WolangVm* vm);
+
+// What was loaded, so a host can watch it for changes: the files of the
+// program, in load order.
+int32_t wolang_vm_file_count(const WolangVm* vm);
+const char* wolang_vm_file_name(const WolangVm* vm, int32_t index);
+
 // ------------------------------------------------------------------ misc ---
 
 // The version of the compiler this was built from.

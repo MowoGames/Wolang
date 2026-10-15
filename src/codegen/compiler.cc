@@ -107,7 +107,8 @@ class CompiledModule::Impl {
 
   interp::Outcome Run(Symbol name,
                       const std::vector<interp::Value>& arguments,
-                      std::vector<std::string>* backtrace);
+                      std::vector<std::string>* backtrace,
+                      bool keep_globals = false);
 
   // Which function an address belongs to, as a name and an offset. What
   // makes a trap from compiled code readable, and what a profiler needs to
@@ -469,7 +470,8 @@ void CompiledModule::Impl::RegisterClasses() {
 interp::Outcome CompiledModule::Impl::Run(
     Symbol name,
     const std::vector<interp::Value>& arguments,
-    std::vector<std::string>* backtrace) {
+    std::vector<std::string>* backtrace,
+    bool keep_globals) {
   interp::Outcome outcome;
   const Entry* entry = Find(name);
   if (entry == nullptr || !entry->compiled || !block_.is_installed()) {
@@ -483,8 +485,13 @@ interp::Outcome CompiledModule::Impl::Run(
   // values the source wrote, every time something is run: the storage
   // outlives one run, and a differential check against a mutated global
   // would be comparing nothing (D88).
-  runtime::wolang_global_reset();
+  if (!keep_globals) {
+    runtime::wolang_global_reset();
+  }
   for (const std::unique_ptr<FileState>& other : files_) {
+    if (keep_globals) {
+      break;
+    }
     if (other == nullptr ||
         other->module.initializer >= other->module.functions.size()) {
       continue;
@@ -634,8 +641,9 @@ std::string_view CompiledModule::SkipReason(Symbol name) const {
 interp::Outcome CompiledModule::Run(
     Symbol name,
     const std::vector<interp::Value>& arguments,
-    std::vector<std::string>* backtrace) const {
-  return impl_->Run(name, arguments, backtrace);
+    std::vector<std::string>* backtrace,
+    bool keep_globals) const {
+  return impl_->Run(name, arguments, backtrace, keep_globals);
 }
 
 bool CompiledModule::ResumeTask(Symbol dispatch,

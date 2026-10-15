@@ -2095,8 +2095,14 @@ Outcome RunNamed(const StringInterner& interner,
   // and start from their type's zero every time something is run: the
   // storage outlives one run, and a differential check that compared a
   // second run against a mutated global would be comparing nothing (D88).
-  runtime::wolang_global_reset();
+  if (!limits.keep_globals) {
+    runtime::wolang_global_reset();
+  }
   const auto initialize = [&](const ir::Module& home) {
+    if (limits.keep_globals) {
+      // The host has them as it wants them.
+      return;
+    }
     if (home.initializer >= home.functions.size()) {
       return;
     }

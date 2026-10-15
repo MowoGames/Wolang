@@ -143,3 +143,129 @@ WOLANG_TEST(EmbedTest, RefusesTheWrongNumberOfArguments) {
   WOLANG_EXPECT(wolang_vm_call(vm, "Missing", nullptr, 0, nullptr) != 0);
   wolang_vm_destroy(vm);
 }
+
+namespace {
+
+std::string captured;
+
+void Capture(void* user, const char* bytes, uint64_t length) {
+  (void)user;
+  captured.append(bytes, static_cast<size_t>(length));
+}
+
+}  // namespace
+
+WOLANG_TEST(EmbedTest, CallsThroughAHandle) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "frame.wo", R"(
+/// Moves one step.
+offer fun Update(delta: f32) -> f32 => delta * 2.0
+)"),
+                   0);
+
+  // What an engine does once rather than per frame (D137).
+  WolangFunction* update = wolang_vm_function(vm, "Update");
+  WOLANG_EXPECT(update != nullptr);
+  WOLANG_EXPECT_EQ(wolang_function_arity(update), 1);
+  WOLANG_EXPECT_EQ(wolang_function_parameter(update, 0), kWolangFloat);
+  WOLANG_EXPECT_EQ(wolang_function_result(update), kWolangFloat);
+
+  WolangValue delta = wolang_float(0.25);
+  WolangValue answer = wolang_void();
+  for (int frame = 0; frame < 3; ++frame) {
+    WOLANG_EXPECT_EQ(wolang_call(update, &delta, 1, &answer), 0);
+    WOLANG_EXPECT(answer.number > 0.49 && answer.number < 0.51);
+  }
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ReadsAndWritesGlobals) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "config.wo", R"(
+offer var gravity: f32 = -9.8
+offer var level: int = 1
+offer var paused: bool = false
+
+offer fun Describe() -> int => level * 10
+)"),
+                   0);
+
+  // What a host configures a script with.
+  WolangValue held = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_get_global(vm, "gravity", &held), 0);
+  WOLANG_EXPECT(held.number < -9.0 && held.number > -10.0);
+
+  WOLANG_EXPECT_EQ(wolang_vm_set_global(vm, "level", wolang_int(7)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_get_global(vm, "level", &held), 0);
+  WOLANG_EXPECT_EQ(held.integer, 7);
+
+  // And the program sees what the host wrote.
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Describe", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 70);
+
+  WOLANG_EXPECT_EQ(wolang_vm_set_global(vm, "paused", wolang_bool(1)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_get_global(vm, "paused", &held), 0);
+  WOLANG_EXPECT_EQ(held.boolean, 1);
+
+  WOLANG_EXPECT(wolang_vm_get_global(vm, "missing", &held) != 0);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, SendsOutputToTheHost) {
+  captured.clear();
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_writer(vm, &Capture, nullptr);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "talk.wo", R"(
+extern "C" fun write(fd: s32, buffer: *u8, count: u64) -> s64
+
+offer fun Say() -> int uses unsafe {
+  const message = "from the script\n"
+  const _written = write(1, message.data, message.length)
+  return 1
+}
+)"),
+                   0);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Say", nullptr, 0, &answer), 0);
+  // The host's writer saw it instead of standard output (D137).
+  WOLANG_EXPECT_EQ(captured, std::string("from the script\n"));
+  wolang_vm_set_writer(vm, nullptr, nullptr);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, StopsAScriptThatNeverEnds) {
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_step_limit(vm, 100000);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "forever.wo", R"(
+offer fun Spin() -> int {
+  var i = 0
+  loop {
+    i = i + 1
+  }
+}
+)"),
+                   0);
+  // A host running code it did not write gets an error rather than a
+  // hung process (D137).
+  WOLANG_EXPECT(wolang_vm_call(vm, "Spin", nullptr, 0, nullptr) != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("step limit") !=
+                std::string::npos);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ReloadsWhatItLoaded) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "mod.wo",
+                                         "offer fun N() -> int => 1"),
+                   0);
+  WOLANG_EXPECT_EQ(wolang_vm_file_count(vm), 1);
+  // Reloading source given by the host loads the same source again: the
+  // point of the call is a *file* that changed, and this at least says
+  // the machinery works.
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "N", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 1);
+  wolang_vm_destroy(vm);
+}
