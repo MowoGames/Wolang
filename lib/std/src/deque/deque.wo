@@ -1,0 +1,203 @@
+// A double-ended queue.
+//
+// A ring over one allocation: pushing and popping at either end is
+// arithmetic, and the storage is one block rather than a chain of
+// nodes. What a work list, a breadth-first walk and a frame of events
+// all want, and what a `List` cannot do -- taking from the front of one
+// moves everything after it (D146).
+
+need std.mem.{ArrayNew, Free}
+
+offer class Deque<T> {
+  var items: []T
+  /// Where the first element is.
+  var first: int = 0
+  var count: int = 0
+
+  deinit  {
+    Free(items)
+  }
+
+  fun Len() -> int {
+    return count
+  }
+
+  fun IsEmpty() -> bool {
+    return count == 0
+  }
+
+  /// What `for x in deque` walks: front to back.
+  fun Iterate() -> DequeWalk<T> {
+    return DequeWalk<T>(self, -1)
+  }
+
+  /// Where element `index` is in the storage.
+  fun Slot(index: int) -> int {
+    const size = items.len
+    if size == 0 {
+      return 0
+    }
+    var at = first + index
+    while at >= size {
+      at = at - size
+    }
+    return at
+  }
+
+  /// The `index`th from the front.
+  fun At(index: int) -> T {
+    return items[Slot(index)]
+  }
+
+  fun Set(index: int, value: T) {
+    items[Slot(index)] = value
+  }
+
+  /// Adds to the back.
+  fun Push(value: T) uses unsafe {
+    Reserve(count + 1)
+    items[Slot(count)] = value
+    count = count + 1
+  }
+
+  /// Adds to the front.
+  fun PushFront(value: T) uses unsafe {
+    Reserve(count + 1)
+    const size = items.len
+    if first == 0 {
+      first = size - 1
+    } else {
+      first = first - 1
+    }
+    items[first] = value
+    count = count + 1
+  }
+
+  /// Takes from the front. The caller checks `Len` first: a queue with
+  /// nothing in it has nothing to give, and an optional of `T` would be
+  /// a second shape to lay out for every `T`.
+  fun Pop() -> T {
+    const held = items[first]
+    if count != 0 {
+      first = Slot(1)
+      count = count - 1
+    }
+    return held
+  }
+
+  /// Takes from the back.
+  fun PopBack() -> T {
+    const held = items[Slot(count - 1)]
+    if count != 0 {
+      count = count - 1
+    }
+    return held
+  }
+
+  fun Front() -> T {
+    return items[first]
+  }
+
+  fun Back() -> T {
+    return items[Slot(count - 1)]
+  }
+
+  fun Clear() {
+    first = 0
+    count = 0
+  }
+
+  /// Makes room for `wanted` elements.
+  ///
+  /// Growing a ring means laying it out straight again: the elements are
+  /// copied in order, so `first` is zero afterwards and the arithmetic
+  /// above stays the same.
+  fun Reserve(wanted: int) uses unsafe {
+    if wanted <= items.len {
+      return
+    }
+    var size = items.len * 2
+    if size < 8 {
+      size = 8
+    }
+    while size < wanted {
+      size = size * 2
+    }
+    var grown = ArrayNew<T>(size)
+    var i = 0
+    while i < count {
+      grown[i] = items[Slot(i)]
+      i = i + 1
+    }
+    Free(items)
+    items = grown
+    first = 0
+  }
+}
+
+/// Walks a deque from front to back.
+offer class DequeWalk<T> {
+  var over: Deque<T>
+  var at: int = -1
+
+  fun Next() -> bool {
+    at = at + 1
+    return at < over.Len()
+  }
+
+  fun Value() -> T {
+    return over.At(at)
+  }
+}
+
+offer fun DequeNew<T>() -> Deque<T> uses unsafe {
+  return Deque<T>(ArrayNew<T>(0), 0, 0)
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun TakesFromBothEnds() -> bool uses unsafe {
+  var queue = DequeNew<int>()
+  var i = 1
+  while i <= 5 {
+    queue.Push(i)
+    i = i + 1
+  }
+  queue.PushFront(0)
+  // 0 1 2 3 4 5
+  return queue.Len() == 6 && queue.Front() == 0 && queue.Back() == 5 &&
+         queue.Pop() == 0 && queue.PopBack() == 5 && queue.Len() == 4 &&
+         queue.At(0) == 1 && queue.At(3) == 4
+}
+
+@Test
+fun WrapsAroundTheStorage() -> bool uses unsafe {
+  var queue = DequeNew<int>()
+  // Push and pop enough that the ring wraps several times, which is
+  // where the arithmetic is either right or quietly wrong.
+  var i = 0
+  while i < 100 {
+    queue.Push(i)
+    if queue.Len() > 3 {
+      const _taken = queue.Pop()
+    }
+    i = i + 1
+  }
+  return queue.Len() == 3 && queue.Front() == 97 && queue.Back() == 99
+}
+
+@Test
+fun WalksFrontToBack() -> bool uses unsafe {
+  var queue = DequeNew<int>()
+  queue.Push(2)
+  queue.Push(3)
+  queue.PushFront(1)
+  var total = 0
+  var seen = 0
+  for value in queue {
+    total = total * 10 + value
+    seen = seen + 1
+  }
+  return seen == 3 && total == 123
+}

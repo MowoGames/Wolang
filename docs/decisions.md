@@ -1785,3 +1785,18 @@ things: a program whose output is a log wants every line out *now*, and
 one writing a report wants it fast. `Flush` is where a program says
 which, and a writer that goes out of scope flushes itself -- one that
 dropped the last line would be a writer nobody could trust.
+
+**D146. A deque and a heap, because a list is not either of them.**
+`std.deque` is a ring over one allocation: pushing and popping at either
+end is arithmetic, which is what a work list and a breadth-first walk
+need and what taking from the front of a `List` cannot be. Growing it
+lays it out straight again, so the arithmetic stays the same afterwards.
+
+`std.heap` is a binary heap whose order comes in as a function value, the
+way `Sort`'s does: `HeapNew<int>(|a, b| a < b)` is a smallest-first
+queue. Sorting a whole list to take one element off it is the thing it
+exists to avoid.
+
+Both `Pop` the same way: the caller checks `Len` first. An optional of
+`T` would be a second shape to lay out for every `T`, and a queue with
+nothing in it has nothing to give.

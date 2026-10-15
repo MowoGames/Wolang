@@ -1,0 +1,174 @@
+// A priority queue, as a binary heap over one array.
+//
+// What a scheduler, a pathfinder and an event loop all want: the next
+// thing by some order, cheaply, with everything else left unsorted.
+// Sorting the whole list to take one element off it is the thing this
+// exists to avoid (D146).
+//
+// The order comes in as a function value, the way `Sort` and `Map` take
+// theirs: `HeapNew<int>(|a, b| a < b)` is a smallest-first queue, and
+// `|a, b| a > b` is the other one.
+
+need std.mem.{ArrayNew, Free}
+
+offer class Heap<T> {
+  var items: []T
+  var count: int = 0
+  /// Whether the first argument comes out before the second.
+  var before: fun(T, T) -> bool
+
+  deinit  {
+    Free(items)
+  }
+
+  fun Len() -> int {
+    return count
+  }
+
+  fun IsEmpty() -> bool {
+    return count == 0
+  }
+
+  /// What comes out next, without taking it.
+  fun Peek() -> T {
+    return items[0]
+  }
+
+  /// Adds `value`, then moves it up until the order holds.
+  fun Push(value: T) uses unsafe {
+    Reserve(count + 1)
+    items[count] = value
+    count = count + 1
+    var at = count - 1
+    while at > 0 {
+      const parent = (at - 1) / 2
+      if !before(items[at], items[parent]) {
+        break
+      }
+      const held = items[at]
+      items[at] = items[parent]
+      items[parent] = held
+      at = parent
+    }
+  }
+
+  /// Takes the next one out. The caller checks `Len` first, for the same
+  /// reason a deque's `Pop` does.
+  fun Pop() -> T {
+    const held = items[0]
+    if count == 0 {
+      return held
+    }
+    count = count - 1
+    if count == 0 {
+      return held
+    }
+    items[0] = items[count]
+    // Down from the top until both children are after it: the last
+    // element took the first one's place and has to find its own.
+    var at = 0
+    loop {
+      const left = at * 2 + 1
+      const right = left + 1
+      var smallest = at
+      if left < count && before(items[left], items[smallest]) {
+        smallest = left
+      }
+      if right < count && before(items[right], items[smallest]) {
+        smallest = right
+      }
+      if smallest == at {
+        break
+      }
+      const moved = items[at]
+      items[at] = items[smallest]
+      items[smallest] = moved
+      at = smallest
+    }
+    return held
+  }
+
+  fun Clear() {
+    count = 0
+  }
+
+  fun Reserve(wanted: int) uses unsafe {
+    if wanted <= items.len {
+      return
+    }
+    var size = items.len * 2
+    if size < 8 {
+      size = 8
+    }
+    while size < wanted {
+      size = size * 2
+    }
+    var grown = ArrayNew<T>(size)
+    var i = 0
+    while i < count {
+      grown[i] = items[i]
+      i = i + 1
+    }
+    Free(items)
+    items = grown
+  }
+}
+
+offer fun HeapNew<T>(before: fun(T, T) -> bool) -> Heap<T> uses unsafe {
+  return Heap<T>(ArrayNew<T>(0), 0, before)
+}
+
+// ------------------------------------------------------------- tests ---
+
+fun Smaller(left: int, right: int) -> bool {
+  return left < right
+}
+
+fun Larger(left: int, right: int) -> bool {
+  return left > right
+}
+
+@Test
+fun GivesTheSmallestFirst() -> bool uses unsafe {
+  var queue = HeapNew<int>(Smaller)
+  const values = [5, 3, 8, 1, 9, 2, 7]
+  var i = 0
+  while i < 7 {
+    queue.Push(values[i])
+    i = i + 1
+  }
+  if queue.Len() != 7 || queue.Peek() != 1 {
+    return false
+  }
+  // Out in order, which is the whole contract.
+  var last = -1
+  var sorted = true
+  while queue.Len() != 0 {
+    const held = queue.Pop()
+    sorted = sorted && held >= last
+    last = held
+  }
+  return sorted && last == 9
+}
+
+@Test
+fun TakesTheOrderItWasGiven() -> bool uses unsafe {
+  var queue = HeapNew<int>(Larger)
+  queue.Push(3)
+  queue.Push(9)
+  queue.Push(5)
+  return queue.Pop() == 9 && queue.Pop() == 5 && queue.Pop() == 3 &&
+         queue.IsEmpty()
+}
+
+@Test
+fun TakesAClosureAsItsOrder() -> bool uses unsafe {
+  // What closures are for: the order is the program's, and a captured
+  // bound travels with it (D138).
+  const bias = 100
+  var queue = HeapNew<int>(|a, b| a % bias < b % bias)
+  queue.Push(205)
+  queue.Push(101)
+  queue.Push(310)
+  return queue.Pop() == 101 && queue.Pop() == 205 && queue.Pop() == 310
+}
