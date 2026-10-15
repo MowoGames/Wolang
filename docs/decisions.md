@@ -1382,3 +1382,17 @@ a function, which is the next thing this makes possible.
 
 `--no-debug` leaves it all out, which is a fine thing for a release build
 to ask for.
+
+**D119. A method may have type parameters of its own.** `fun Map<T>(f:
+fun(int) -> T) -> T` on a plain `class Box` is a recipe like any other
+generic: one copy per set of arguments, named with them so that
+`Box.Map<int>` and `Box.Map<f32>` are two functions. It type-checked
+before this and lowered to a call with no body behind it, which is the
+worst kind of gap -- silent.
+
+Two things in the checker had to give way. Half an answer is enough for a
+closure: `fun(int) -> T` says what the closure *takes* while its result is
+what is being inferred, so the hint is passed down and the result is
+taken from the body. And an expectation that still mentions a type
+parameter is a *pattern* rather than a type -- adapting against it
+reported the very answer that binds the parameter as a mismatch.

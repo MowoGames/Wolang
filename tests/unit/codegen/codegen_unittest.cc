@@ -500,6 +500,32 @@ fun Probe() -> int {
   WOLANG_EXPECT_EQ(f.Run("Probe"), "6");
 }
 
+WOLANG_TEST(CodegenTest, RunsAGenericMethod) {
+  // A method with type parameters of its own, on a type that has none:
+  // one copy per set of arguments, and the closure's parameter types come
+  // from the half of the signature inference already knows (D119).
+  Fixture f(R"(
+class Box {
+  var value: int
+
+  fun Map<T>(f: fun(int) -> T) -> T {
+    return f(value)
+  }
+}
+
+fun Half(n: int) -> f32 => (n as f32) / 2.0
+
+fun Probe() -> int {
+  const box = Box(7)
+  const doubled = box.Map(|n| n * 2)
+  const halved = box.Map(Half)
+  return doubled + (halved as int)
+}
+)");
+  // Fourteen and three: one copy of `Map` per result type.
+  WOLANG_EXPECT_EQ(f.Run("Probe"), "17");
+}
+
 WOLANG_TEST(CodegenTest, RunsClosures) {
   // A closure is a function the program wrote where it is used, and its
   // value is that function's address: the parameter types come from the

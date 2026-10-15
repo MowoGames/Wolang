@@ -1380,9 +1380,28 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
         const TypeId narrowed = types_->Substitute(params[i], substitution);
         if (!types_->MentionsParameter(narrowed)) {
           wanted = narrowed;
+        } else if (types_->KindOf(narrowed) == TypeKind::kFunction) {
+          // Half an answer is enough for a closure: `fun Map<T>(f:
+          // fun(int) -> T)` says what the closure *takes* even though
+          // its result is what is being inferred, and that is exactly
+          // what `|n| n * 2` needs to be checkable (D119).
+          bool arguments_known = true;
+          for (const TypeId argument : types_->ArgumentsOf(narrowed)) {
+            arguments_known &= !types_->MentionsParameter(argument);
+          }
+          if (arguments_known) {
+            wanted = narrowed;
+          }
         }
       }
-      const TypeId actual = Adapt(Check(args[i], wanted), wanted,
+      // The hint goes into the check; only a *settled* type goes into
+      // the adaptation, because adapting against `fun(int) -> T` would
+      // report a mismatch with the very answer that binds `T` (D119).
+      const TypeId adapt_to =
+          wanted.is_valid() && !types_->MentionsParameter(wanted)
+              ? wanted
+              : TypeId{};
+      const TypeId actual = Adapt(Check(args[i], wanted), adapt_to,
                                   ast_.Get(args[i]).span);
       found.push_back(actual);
       if (i < params.size()) {
@@ -2464,11 +2483,17 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
         Bind(param.name, param_type, param.is_mutable, param.span);
         ++position;
       }
-      const TypeId declared =
-          expr.type.is_valid() ? resolver_.Resolve(ast_, expr.type)
-                               : (wanted.is_valid()
-                                      ? types_->ElementOf(wanted)
-                                      : TypeId{});
+      TypeId declared = expr.type.is_valid()
+                            ? resolver_.Resolve(ast_, expr.type)
+                            : (wanted.is_valid()
+                                   ? types_->ElementOf(wanted)
+                                   : TypeId{});
+      // A result the context has not worked out yet says nothing: what
+      // the body gives back is the answer, and it is what the caller's
+      // `T` is then inferred *from* (D119).
+      if (declared.is_valid() && types_->MentionsParameter(declared)) {
+        declared = TypeId{};
+      }
       const TypeId body = Check(expr.lhs, declared);
       ShowLocals(enclosing);
       PopScope();
@@ -2510,7 +2535,13 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       break;
   }
 
-  if (!(keep_open && !expected.is_valid())) {
+  // An expectation that still mentions a type parameter is a *pattern*,
+  // not a type: it says what shape the argument has while inference works
+  // out the rest, and adapting against it would report the very answer
+  // that binds the parameter as a mismatch (D119).
+  const bool pattern =
+      expected.is_valid() && types_->MentionsParameter(expected);
+  if (!(keep_open && !expected.is_valid()) && !pattern) {
     type = Adapt(type, expected, expr.span);
   }
   // An owned string handed where a borrowed one is wanted is a borrow, and

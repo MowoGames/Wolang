@@ -521,21 +521,86 @@ class Lowerer {
   // The substitution comes from the receiver rather than from inference,
   // which is what makes this simpler than a generic function: by the time
   // a method is called, what its type stands for is already decided.
-  uint32_t InstantiateMethod(TypeId owner, Symbol name, const Member& member) {
-    const TypeId base = types_->Get(owner).base;
+  // The type parameters a method declares for itself: the ones its
+  // signature mentions which the owning type does not provide (D119).
+  std::vector<TypeId> MethodParameters(TypeId owner, const Member& member) {
+    std::vector<TypeId> mine;
+    if (!member.type.is_valid()) {
+      return mine;
+    }
+    const TypeId base = types_->KindOf(owner) == TypeKind::kInstance
+                            ? types_->Get(owner).base
+                            : owner;
+    const std::span<const TypeId> owned = resolution().ParametersOf(base);
+    for (const TypeId parameter : ParametersIn(member.type)) {
+      bool from_owner = false;
+      for (const TypeId held : owned) {
+        from_owner |= held == parameter;
+      }
+      if (!from_owner) {
+        mine.push_back(parameter);
+      }
+    }
+    return mine;
+  }
+
+  uint32_t InstantiateMethod(TypeId owner,
+                             Symbol name,
+                             const Member& member,
+                             ExprId call = ExprId{}) {
+    const bool generic_owner = types_->KindOf(owner) == TypeKind::kInstance;
+    const TypeId base = generic_owner ? types_->Get(owner).base : owner;
     const std::span<const TypeId> parameters = resolution().ParametersOf(base);
-    const std::vector<TypeId> arguments = types_->ArgumentsOf(owner);
-    if (parameters.empty() || parameters.size() != arguments.size()) {
+    const std::vector<TypeId> arguments =
+        generic_owner ? types_->ArgumentsOf(owner) : std::vector<TypeId>();
+    const std::vector<TypeId> mine = MethodParameters(owner, member);
+    if (generic_owner &&
+        (parameters.empty() || parameters.size() != arguments.size())) {
+      return 0xFFFFFFFFu;
+    }
+    if (!generic_owner && mine.empty()) {
       return 0xFFFFFFFFu;
     }
 
     TypeStore::Substitution substitution;
-    for (size_t i = 0; i < parameters.size(); ++i) {
+    for (size_t i = 0; i < parameters.size() && i < arguments.size(); ++i) {
       const TypeId concrete = Erase(Apply(arguments[i]));
       if (!concrete.is_valid() || types_->MentionsParameter(concrete)) {
         return 0xFFFFFFFFu;
       }
       substitution.emplace_back(parameters[i], concrete);
+    }
+    // What the call said its own parameters are. Inference happened at
+    // the call, so this is where the answer is -- and a method whose `T`
+    // nothing bound is a call with nothing to copy for.
+    if (!mine.empty()) {
+      const std::vector<TypeId>* said = FindInstantiation(call);
+      if (said == nullptr) {
+        return 0xFFFFFFFFu;
+      }
+      const std::vector<TypeId> order = ParametersIn(member.type);
+      size_t at = 0;
+      for (const TypeId parameter : order) {
+        if (at >= said->size()) {
+          break;
+        }
+        const TypeId given = Erase(Apply((*said)[at]));
+        ++at;
+        bool wanted = false;
+        for (const TypeId held : mine) {
+          wanted |= held == parameter;
+        }
+        if (!wanted) {
+          continue;
+        }
+        if (!given.is_valid() || types_->MentionsParameter(given)) {
+          return 0xFFFFFFFFu;
+        }
+        substitution.emplace_back(parameter, given);
+      }
+      if (substitution.size() != parameters.size() + mine.size()) {
+        return 0xFFFFFFFFu;
+      }
     }
 
     // Where the body is: the member table says which file and which
@@ -566,7 +631,28 @@ class Lowerer {
       return 0xFFFFFFFFu;
     }
 
-    const Symbol mangled = MethodName(owner, name);
+    // The name says which copy this is: a method with type parameters of
+    // its own has one per set of arguments, and `Box.Map` alone would
+    // make `Map<int>` and `Map<text>` the same function (D119).
+    std::string spelling(interner_->Text(MethodName(owner, name)));
+    if (!mine.empty()) {
+      spelling.push_back('<');
+      bool first = true;
+      for (const TypeId parameter : mine) {
+        for (const auto& [written, value] : substitution) {
+          if (written != parameter) {
+            continue;
+          }
+          if (!first) {
+            spelling.append(", ");
+          }
+          first = false;
+          spelling.append(types_->Describe(*interner_, value));
+        }
+      }
+      spelling.push_back('>');
+    }
+    const Symbol mangled = interner_->Intern(spelling);
     for (const auto& [existing, index] : specializations_) {
       if (existing == mangled) {
         return index;
@@ -849,12 +935,19 @@ class Lowerer {
 
   // The function implementing |member| of |owner|, declaring it if this
   // file only knows the signature.
-  uint32_t MethodIndex(TypeId owner, const Member& member) {
+  uint32_t MethodIndex(TypeId owner, const Member& member,
+                       ExprId call = ExprId{}) {
     // A method of a generic type is a recipe: ask for the copy for *this*
     // instantiation rather than for a declaration with no body.
-    if (types_->KindOf(owner) == TypeKind::kInstance) {
+    //
+    // So is a method with type parameters of its own, whatever its type
+    // is: `fun Map<T>(f: fun(int) -> T)` on a plain `class Box` needs a
+    // copy per `T`, and asking for the declaration instead left the call
+    // naming a function with no body (D119).
+    if (types_->KindOf(owner) == TypeKind::kInstance ||
+        MethodParameters(owner, member).size() != 0) {
       const uint32_t copy =
-          InstantiateMethod(owner, member.name, member);
+          InstantiateMethod(owner, member.name, member, call);
       if (copy != 0xFFFFFFFFu) {
         return copy;
       }
@@ -3684,7 +3777,7 @@ class Lowerer {
 
     // `receiver.Method(args)`, and `Method(args)` inside a method -- which
     // is the same call with the receiver left implicit.
-    if (const InstId called = LowerMethodCall(expr, type, &arguments);
+    if (const InstId called = LowerMethodCall(expr, type, &arguments, id);
         called.is_valid()) {
       return called;
     }
@@ -4136,7 +4229,8 @@ class Lowerer {
 
   InstId LowerMethodCall(const Expr& expr,
                          TypeId type,
-                         std::vector<InstId>* arguments) {
+                         std::vector<InstId>* arguments,
+                         ExprId id = ExprId{}) {
     if (!ast().Contains(expr.lhs)) {
       return InstId{};
     }
@@ -4213,14 +4307,23 @@ class Lowerer {
       return call;
     }
 
-    uint32_t index =
-        IndexOfSource(member->file, member->item, member->slot);
+    // A method with type parameters of its own is a recipe wherever it
+    // lives: one copy per set of arguments, asked for before the
+    // declaration is, because the declaration has no body (D119).
+    const std::vector<TypeId> own = MethodParameters(owner, *member);
+    uint32_t index = 0xFFFFFFFFu;
+    if (!own.empty()) {
+      index = InstantiateMethod(owner, name, *member, id);
+    }
+    if (index == 0xFFFFFFFFu) {
+      index = IndexOfSource(member->file, member->item, member->slot);
+    }
     if (index == 0xFFFFFFFFu && types_->KindOf(owner) == TypeKind::kInstance) {
       // A method of a generic type gets one copy per instantiation, the
       // same way a generic function does -- and from the same place: the
       // receiver's own arguments say what its parameters stand for, so
       // there is nothing to infer.
-      index = InstantiateMethod(owner, name, *member);
+      index = InstantiateMethod(owner, name, *member, id);
     }
     if (index == 0xFFFFFFFFu) {
       if (member->file == file_index()) {
