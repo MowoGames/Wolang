@@ -1332,3 +1332,14 @@ things.
 zero, hashing one, handing one to C as a word: all three were
 unspellable, and the promise that a number is an address is exactly what
 `unsafe` records.
+
+**D116. `wolang doc` writes what a package offers, from the source.** A
+signature is taken from the program's own spelling rather than rebuilt
+from the syntax tree: a default value, a `where` clause and the order of
+the effects all say something, and a renderer that rebuilt them would be
+a second grammar to keep in step. Markdown because it reads as text and
+renders where the code lives.
+
+Only what another module can name: a private helper is an implementation
+detail by definition, and `docs/api/*.md` is what the four libraries
+offer today -- regenerated with one command rather than written by hand.

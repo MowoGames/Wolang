@@ -117,6 +117,7 @@ void PrintUsage() {
       "  bench <paths>   run and time every function marked `@Bench`\n"
       "  test <paths>    run every function marked `@Test`\n"
       "  modules <dir>   print the module graph of a package\n"
+      "  doc <dir>       write what a package offers, as Markdown\n"
       "  systems <dir>   print what systems access and when they run\n"
       "  fuzz            generate programs and compare the tiers\n"
       "  version         print the version and exit\n"
@@ -1349,6 +1350,261 @@ int RunBuild(const Options& options) {
   return 0;
 }
 
+
+// ------------------------------------------------------------- `doc` ---
+
+// The `///` lines of a declaration, with the slashes taken off.
+std::string DocText(const SourceManager& sources, SourceSpan span) {
+  if (!span.is_valid()) {
+    return {};
+  }
+  std::string text;
+  const std::string_view whole = sources.SpanText(span);
+  size_t at = 0;
+  while (at <= whole.size()) {
+    const size_t stop = whole.find('\n', at);
+    const std::string_view line =
+        whole.substr(at, stop == std::string_view::npos ? stop : stop - at);
+    at = stop == std::string_view::npos ? whole.size() + 1 : stop + 1;
+    std::string_view trimmed = line;
+    while (!trimmed.empty() &&
+           (trimmed.front() == ' ' || trimmed.front() == '\t')) {
+      trimmed.remove_prefix(1);
+    }
+    if (trimmed.rfind("///", 0) == 0) {
+      trimmed.remove_prefix(3);
+    }
+    if (!trimmed.empty() && trimmed.front() == ' ') {
+      trimmed.remove_prefix(1);
+    }
+    text.append(trimmed);
+    text.push_back('\n');
+  }
+  return text;
+}
+
+// What a declaration looks like, as the program wrote it: everything from
+// its name up to the body.
+//
+// Taken from the source rather than rebuilt from the syntax tree,
+// because the program's own spelling is the documentation -- a default
+// value, a `where` clause and the order of the effects all say something
+// (D116).
+std::string Signature(const SourceManager& sources,
+                      const Ast& ast,
+                      const Item& item) {
+  SourceSpan span = item.span;
+  if (!span.is_valid()) {
+    return {};
+  }
+  uint32_t end = span.end;
+  if (item.body.is_valid() && ast.Contains(item.body)) {
+    const SourceSpan body = ast.Get(item.body).span;
+    if (body.is_valid() && body.begin > span.begin) {
+      end = body.begin;
+    }
+  } else if (!ast.Get(item.members).empty()) {
+    // A type: up to where its first member is.
+    const ItemId first = ast.Get(item.members).front();
+    if (ast.Contains(first) && ast.Get(first).span.is_valid()) {
+      end = ast.Get(first).span.begin;
+    }
+  }
+  uint32_t begin = span.begin;
+  // The doc comment is part of the declaration's span; the signature
+  // starts after it.
+  if (item.doc.is_valid() && item.doc.end > begin && item.doc.end <= end) {
+    begin = item.doc.end;
+  }
+  const std::string_view text =
+      sources.SpanText(SourceSpan{span.file, begin, end});
+  std::string signature(text);
+  // One line, and nothing hanging off the end: a signature that spans
+  // lines keeps its line breaks, and a trailing `{` or `,` is noise.
+  while (!signature.empty() &&
+         (signature.back() == ' ' || signature.back() == '\n' ||
+          signature.back() == '\t' || signature.back() == '{' ||
+          signature.back() == '\r')) {
+    signature.pop_back();
+  }
+  size_t start = 0;
+  while (start < signature.size() &&
+         (signature[start] == ' ' || signature[start] == '\n' ||
+          signature[start] == '\t')) {
+    ++start;
+  }
+  return signature.substr(start);
+}
+
+const char* KindWord(ItemKind kind) {
+  switch (kind) {
+    case ItemKind::kFunction:
+      return "function";
+    case ItemKind::kStruct:
+      return "struct";
+    case ItemKind::kClass:
+      return "class";
+    case ItemKind::kAbility:
+      return "ability";
+    case ItemKind::kEnum:
+      return "enum";
+    case ItemKind::kComponent:
+      return "component";
+    case ItemKind::kBinding:
+      return "constant";
+    case ItemKind::kTypeAlias:
+      return "type";
+    case ItemKind::kSystem:
+      return "system";
+    case ItemKind::kSignal:
+      return "signal";
+    case ItemKind::kErrorSet:
+      return "error";
+    case ItemKind::kMachine:
+      return "machine";
+    default:
+      return "declaration";
+  }
+}
+
+// Writes what one module offers.
+void DocumentModule(const Database& database,
+                    const Module& module,
+                    std::string* out) {
+  out->append("\n## ");
+  out->append(module.name);
+  out->append("\n");
+
+  for (const FileId file : module.files) {
+    const ParsedFile* parsed =
+        const_cast<Database&>(database).Parse(file);
+    if (parsed == nullptr) {
+      continue;
+    }
+    const Ast& ast = parsed->ast;
+    for (const ItemId id : ast.Get(ast.root())) {
+      if (!ast.Contains(id)) {
+        continue;
+      }
+      const Item& item = ast.Get(id);
+      // What another module can name, which is what documentation is
+      // about: a private helper is an implementation detail by
+      // definition.
+      if (!HasFlag(item.flags, ItemFlags::kOffer)) {
+        continue;
+      }
+      out->append("\n### ");
+      out->append(KindWord(item.kind));
+      out->append(" `");
+      out->append(database.interner().Text(item.name));
+      out->append("`\n\n```wolang\n");
+      out->append(Signature(database.sources(), ast, item));
+      out->append("\n```\n");
+      const std::string doc = DocText(database.sources(), item.doc);
+      if (!doc.empty()) {
+        out->append("\n");
+        out->append(doc);
+      }
+
+      // The members a type offers: a method with no `priv` is part of
+      // the surface, because a type's members are offered with it.
+      for (const ItemId member_id : ast.Get(item.members)) {
+        if (!ast.Contains(member_id)) {
+          continue;
+        }
+        const Item& member = ast.Get(member_id);
+        if (HasFlag(member.flags, ItemFlags::kPriv) ||
+            !member.name.is_valid()) {
+          continue;
+        }
+        out->append("\n#### ");
+        out->append(member.kind == ItemKind::kBinding ? "field" : "method");
+        out->append(" `");
+        out->append(database.interner().Text(member.name));
+        out->append("`\n\n```wolang\n");
+        out->append(Signature(database.sources(), ast, member));
+        out->append("\n```\n");
+        const std::string member_doc =
+            DocText(database.sources(), member.doc);
+        if (!member_doc.empty()) {
+          out->append("\n");
+          out->append(member_doc);
+        }
+      }
+    }
+  }
+}
+
+// `wolang doc`: what a package offers, as Markdown.
+//
+// Markdown because it reads as text and renders where code lives, and
+// from the *source* spans because the program's own spelling of a
+// signature is the documentation (D116).
+int RunDoc(const Options& options) {
+  if (options.inputs.size() != 1) {
+    std::fprintf(stderr, "wolang: doc needs exactly one directory\n");
+    return 2;
+  }
+  Database database;
+  DiagnosticEngine diagnostics;
+  if (!LoadPackage(&database, options.inputs.front(), &diagnostics)) {
+    RenderOptions render;
+    render.color = options.color && StderrIsTerminal();
+    return Report(database.sources(), diagnostics.diagnostics(), render);
+  }
+
+  // The package the directory names, not its dependencies: a package's
+  // documentation is what *it* offers, and `std` has its own page.
+  PackageId wanted;
+  for (size_t i = 0; i < database.package_count(); ++i) {
+    const PackageId id{static_cast<uint32_t>(i)};
+    const Package* package = database.GetPackage(id);
+    if (package == nullptr) {
+      continue;
+    }
+    if (package->directory.find(options.inputs.front()) !=
+            std::string::npos ||
+        options.inputs.front().find(package->directory) !=
+            std::string::npos) {
+      wanted = id;
+    }
+  }
+
+  std::string out;
+  if (const Package* package = database.GetPackage(wanted);
+      package != nullptr) {
+    out.append("# ");
+    out.append(package->name);
+    if (!package->manifest.version.empty()) {
+      out.append(" ");
+      out.append(package->manifest.version);
+    }
+    out.append("\n");
+  }
+
+  for (const Module& module : database.modules()) {
+    if (wanted.is_valid() && module.package != wanted) {
+      continue;
+    }
+    DocumentModule(database, module, &out);
+  }
+
+  if (options.output.empty()) {
+    std::fwrite(out.data(), 1, out.size(), stdout);
+    return 0;
+  }
+  std::FILE* file = std::fopen(options.output.c_str(), "wb");
+  if (file == nullptr) {
+    std::fprintf(stderr, "wolang: cannot write %s\n",
+                 options.output.c_str());
+    return 1;
+  }
+  std::fwrite(out.data(), 1, out.size(), file);
+  std::fclose(file);
+  std::fprintf(stdout, "%s\n", options.output.c_str());
+  return 0;
+}
+
 int Run(int argc, char** argv) {
   Options options;
   // Everything after `--` belongs to the program being run, not to the
@@ -1434,7 +1690,7 @@ int Run(int argc, char** argv) {
       options.command == "systems" ||
       options.command == "run" || options.command == "test" ||
       options.command == "asm" || options.command == "bench" ||
-      options.command == "build";
+      options.command == "build" || options.command == "doc";
   if (needs_inputs && options.inputs.empty()) {
     std::fprintf(stderr, "wolang: %s needs at least one path\n",
                  options.command.c_str());
@@ -1468,6 +1724,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "modules") {
     return RunModules(options);
+  }
+  if (options.command == "doc") {
+    return RunDoc(options);
   }
   if (options.command == "systems") {
     return RunSystems(options);
