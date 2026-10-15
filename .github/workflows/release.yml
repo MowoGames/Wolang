@@ -25,32 +25,57 @@ jobs:
         include:
           - name: wolang-linux-x86_64
             os: ubuntu-24.04
+          - name: wolang-linux-arm64
+            os: ubuntu-24.04-arm
           - name: wolang-macos-arm64
             os: macos-14
           - name: wolang-macos-x86_64
             os: macos-13
+          - name: wolang-windows-x86_64
+            os: windows-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ninja
+      # clang everywhere, because that is what this project is built
+      # with -- clang-cl on Windows (D184).
+      - name: Install what the build needs
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            sudo apt-get update && sudo apt-get install -y ninja-build
-          else
+            sudo apt-get update
+            sudo apt-get install -y ninja-build clang lld libx11-dev
+            echo "CC=clang" >> $GITHUB_ENV
+            echo "CXX=clang++" >> $GITHUB_ENV
+          elif [ "$RUNNER_OS" = "macOS" ]; then
             brew install ninja
+          else
+            choco install ninja llvm --no-progress -y
           fi
 
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
       - name: Build
+        shell: bash
         run: |
-          cmake --preset release
-          cmake --build --preset release -j
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake --preset windows -DCMAKE_BUILD_TYPE=Release
+            cmake --build --preset windows -j
+            echo "WOLANG_BUILD=windows" >> $GITHUB_ENV
+          else
+            cmake --preset release
+            cmake --build --preset release -j
+            echo "WOLANG_BUILD=release" >> $GITHUB_ENV
+          fi
 
       - name: Check it runs
+        shell: bash
         run: |
-          build/release/tools/wolang/wolang --version
-          build/release/tools/wolang/wolang test lib/std
+          W="build/$WOLANG_BUILD/tools/wolang/wolang"
+          [ "$RUNNER_OS" = "Windows" ] && W="$W.exe"
+          "$W" --version
+          "$W" test lib/std
 
       # The whole thing, laid out by `cmake --install`: the compiler, the
       # libraries, the embedding headers, the CMake package and the
@@ -60,11 +85,20 @@ jobs:
         shell: bash
         run: |
           out="${{ matrix.name }}"
-          cmake --install build/release --prefix "$PWD/$out"
-          cp README.md "$out/" || true
-          cp LICENSE "$out/" 2>/dev/null || true
-          cp docs/embedding.md "$out/" || true
-          tar -czf "$out.tar.gz" "$out"
+          cmake --install "build/$WOLANG_BUILD" --prefix "$PWD/$out"
+          cp README.md LICENSE NOTICE "$out/" 2>/dev/null || true
+          cp docs/embedding.md docs/install.md "$out/" || true
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a -tzip "$out.zip" "$out" > /dev/null
+            sha256sum "$out.zip" > "$out.zip.sha256"
+          else
+            tar -czf "$out.tar.gz" "$out"
+            if command -v sha256sum > /dev/null; then
+              sha256sum "$out.tar.gz" > "$out.tar.gz.sha256"
+            else
+              shasum -a 256 "$out.tar.gz" > "$out.tar.gz.sha256"
+            fi
+          fi
 
       # And the embedding API on its own, for a host that wants the
       # library and the headers and not a compiler.
@@ -91,10 +125,23 @@ jobs:
           name: ${{ matrix.name }}
           path: |
             ${{ matrix.name }}.tar.gz
+            ${{ matrix.name }}.zip
+            ${{ matrix.name }}.*.sha256
             wolang-embed-*.tar.gz
 
+  # The editor extension, which needs no compiler to build (D175).
+  extension:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/package/make_vsix.py --out .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension
+          path: "*.vsix"
+
   publish:
-    needs: artifacts
+    needs: [artifacts, extension]
     runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -103,7 +150,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      # One file of checksums, which is what the install scripts read.
+      - name: Gather the checksums
+        run: |
+          cat artifacts/**/*.sha256 | sed 's|.*/||' > SHA256SUMS
+          cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/**/*.vsix
+            SHA256SUMS
           generate_release_notes: true
