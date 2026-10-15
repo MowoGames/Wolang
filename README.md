@@ -69,6 +69,22 @@ Memory is hybrid by design: value semantics with second-class references,
 arenas, and a garbage collector that is optional — a program that never
 declares a `class` does not link one.
 
+## Installing
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MowoGames/Wolang/alpha/install.sh | sh
+```
+
+PowerShell, on Windows:
+
+```powershell
+irm https://raw.githubusercontent.com/MowoGames/Wolang/alpha/install.ps1 | iex
+```
+
+Then `wolang new hello && cd hello && wolang run .`. The rest —
+particular versions, installing by hand, what is in the archive — is in
+[docs/install.md](docs/install.md).
+
 ## Building
 
 Requires **clang** and CMake 3.24+. No third party dependencies; LLVM is
@@ -181,6 +197,7 @@ docs/             specification, architecture, decisions, diagnostics, style
 - [docs/architecture.md](docs/architecture.md) — how the compiler is built
 - [docs/roadmap.md](docs/roadmap.md) — waves and exit criteria
 - [docs/diagnostics.md](docs/diagnostics.md) — diagnostic catalog
+- [docs/install.md](docs/install.md) — installing it, on each system
 - [docs/building.md](docs/building.md) — building it, on each system
 - [docs/stdlib.md](docs/stdlib.md) — the standard library, module by module
 - [docs/style.md](docs/style.md) — code and commit conventions

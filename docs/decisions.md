@@ -2245,3 +2245,18 @@ each; `std::thread` and `<mmreg.h>` missing from the Windows backend; a
 cursor handle that needed a wide pointer; and `file_clock::to_sys`, which
 one standard library has and the other does not -- so the difference
 between the two epochs is measured once at run time rather than named.
+
+**D185. Installing is one line.** `install.sh` and `install.ps1` work out
+which build the machine wants, download it, check it against the
+published `SHA256SUMS`, unpack it under `~/.wolang` or
+`%LOCALAPPDATA%\Wolang`, and put that on the PATH. Nothing is written
+outside the prefix and nothing asks for a password -- a language that
+needs `sudo` to try is a language fewer people try.
+
+POSIX shell rather than bash, because this runs on a machine where
+nothing is installed yet. `--from-source` is there for a platform with no
+build published, and it insists on clang like everything else (D184).
+
+The release now carries every platform -- Linux on two architectures,
+macOS on two, Windows -- plus the checksums the installers read and the
+editor extension.
