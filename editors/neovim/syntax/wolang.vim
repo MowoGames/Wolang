@@ -17,7 +17,7 @@ syn keyword wolangDeclare signal effect dimension unit deinit derived
 syn keyword wolangDeclare virtual override offer priv need
 syn keyword wolangOther as mut uses where unsafe arena comptime self error
 syn keyword wolangOther with without before after aos soa
-syn keyword wolangBool true false null
+syn keyword wolangBool true false null ptrnull
 syn keyword wolangType int float bool text str Text void never
 syn keyword wolangType s8 s16 s32 s64 u8 u16 u32 u64 f32 f64
 

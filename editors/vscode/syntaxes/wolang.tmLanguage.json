@@ -132,7 +132,7 @@
         },
         {
           "name": "constant.language.wolang",
-          "match": "\\b(true|false|null)\\b"
+          "match": "\\b(true|false|null|ptrnull)\\b"
         }
       ]
     },

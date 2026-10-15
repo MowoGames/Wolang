@@ -1,0 +1,14 @@
+[package]
+name = "gfx"
+source = "src"
+
+[dependencies]
+std = { path = "../std" }
+
+# The window, GPU and sound library, which ships beside the compiler
+# rather than inside it (D155). The build directory comes first so that a
+# checkout tests what it just built, and the installed one is what a
+# program on another machine finds.
+[link]
+libraries = "wolang_platform"
+paths = "../../build/debug/platform, ../../build/release/platform, /usr/local/lib, /usr/lib, /opt/homebrew/lib"

@@ -1,0 +1,637 @@
+// A window, what a person does to it, pixels, the GPU and sound.
+//
+// Over `libwolang_platform`, which is this project's own backend for
+// each system -- Cocoa, Win32, X11 -- rather than a binding to someone
+// else's windowing library (D155). What it offers is what a program
+// actually needs: a window, events, a buffer of pixels to put on it, a
+// GL context when the GPU is wanted, and a queue of sound.
+//
+// `Available()` first: a build for a machine with no display has every
+// one of these and they all answer no, so a program can say something
+// useful instead of failing to link.
+
+need std.mem.{ArrayNew, Free}
+need std.text.{Bytes, TextFromRaw}
+
+// --------------------------------------------------------- the library ---
+
+extern "C" fun wolang_platform_available() -> s32
+extern "C" fun wolang_platform_backend() -> *u8
+extern "C" fun wolang_platform_time() -> f64
+extern "C" fun wolang_platform_sleep(seconds: f64)
+extern "C" fun wolang_window_open(title: *u8, width: s32, height: s32,
+                                  flags: u32) -> *mut u8
+extern "C" fun wolang_window_close(window: *mut u8)
+extern "C" fun wolang_window_poll(window: *mut u8,
+                                  out: *mut Event) -> s32
+extern "C" fun wolang_window_size(window: *mut u8, width: *mut s32,
+                                  height: *mut s32)
+extern "C" fun wolang_window_scale(window: *mut u8) -> f64
+extern "C" fun wolang_window_set_title(window: *mut u8, title: *u8)
+extern "C" fun wolang_window_present(window: *mut u8, pixels: *u32,
+                                     width: s32, height: s32)
+extern "C" fun wolang_window_gl_start(window: *mut u8) -> s32
+extern "C" fun wolang_window_swap(window: *mut u8, interval: s32)
+extern "C" fun wolang_gl_proc(name: *u8) -> *mut u8
+extern "C" fun wolang_clipboard_text() -> *u8
+extern "C" fun wolang_clipboard_set(text: *u8)
+extern "C" fun wolang_audio_open(rate: s32, channels: s32) -> *mut u8
+extern "C" fun wolang_audio_close(audio: *mut u8)
+extern "C" fun wolang_audio_queue(audio: *mut u8, samples: *f32,
+                                  frames: s32) -> s32
+extern "C" fun wolang_audio_queued(audio: *mut u8) -> s32
+extern "C" fun wolang_audio_room(audio: *mut u8) -> s32
+
+/// Whether this build can open a window at all.
+offer fun Available() -> bool uses unsafe {
+  return wolang_platform_available() != 0
+}
+
+/// Which backend it is: "cocoa", "win32", "x11" or "none".
+offer fun Backend() -> text uses unsafe {
+  return TextFromC(wolang_platform_backend())
+}
+
+/// Seconds from a clock that does not jump.
+offer fun Time() -> f64 uses unsafe {
+  return wolang_platform_time()
+}
+
+/// Waits, which is what a frame loop does with the time it has left.
+offer fun Sleep(seconds: f64) uses unsafe {
+  wolang_platform_sleep(seconds)
+}
+
+// ------------------------------------------------------------- events ---
+
+/// What happened.
+///
+/// One struct for every kind, laid out exactly as the C one: a flat
+/// shape costs a few unused fields and saves every program from taking
+/// a tagged union apart.
+offer struct Event {
+  var kind: s32 = 0
+  /// A key for a key event, a button for a mouse one.
+  var key: s32 = 0
+  var x: s32 = 0
+  var y: s32 = 0
+  var scroll_x: f64 = 0.0
+  var scroll_y: f64 = 0.0
+  var width: s32 = 0
+  var height: s32 = 0
+  var modifiers: u32 = 0
+  /// What was typed, for a `kText` event.
+  var code_point: u32 = 0
+  var repeat: s32 = 0
+}
+
+offer const kNone: s32 = 0
+offer const kClosed: s32 = 1
+offer const kResized: s32 = 2
+offer const kPressed: s32 = 3
+offer const kReleased: s32 = 4
+offer const kMouseDown: s32 = 5
+offer const kMouseUp: s32 = 6
+offer const kMouseMoved: s32 = 7
+offer const kScrolled: s32 = 8
+offer const kText: s32 = 9
+offer const kFocus: s32 = 10
+offer const kBlur: s32 = 11
+
+offer const kMouseLeft: s32 = 1
+offer const kMouseRight: s32 = 2
+offer const kMouseMiddle: s32 = 3
+
+offer const kModShift: u32 = 1
+offer const kModControl: u32 = 2
+offer const kModAlt: u32 = 4
+offer const kModSuper: u32 = 8
+
+// Where a key is, not what it prints: what a person typed arrives as a
+// `kText` event, because a layout is theirs and not the program's.
+offer const kKeyA: s32 = 1
+offer const kKeyB: s32 = 2
+offer const kKeyC: s32 = 3
+offer const kKeyD: s32 = 4
+offer const kKeyE: s32 = 5
+offer const kKeyF: s32 = 6
+offer const kKeyG: s32 = 7
+offer const kKeyH: s32 = 8
+offer const kKeyI: s32 = 9
+offer const kKeyJ: s32 = 10
+offer const kKeyK: s32 = 11
+offer const kKeyL: s32 = 12
+offer const kKeyM: s32 = 13
+offer const kKeyN: s32 = 14
+offer const kKeyO: s32 = 15
+offer const kKeyP: s32 = 16
+offer const kKeyQ: s32 = 17
+offer const kKeyR: s32 = 18
+offer const kKeyS: s32 = 19
+offer const kKeyT: s32 = 20
+offer const kKeyU: s32 = 21
+offer const kKeyV: s32 = 22
+offer const kKeyW: s32 = 23
+offer const kKeyX: s32 = 24
+offer const kKeyY: s32 = 25
+offer const kKeyZ: s32 = 26
+offer const kKey0: s32 = 27
+offer const kKey1: s32 = 28
+offer const kKey2: s32 = 29
+offer const kKey3: s32 = 30
+offer const kKey4: s32 = 31
+offer const kKey5: s32 = 32
+offer const kKey6: s32 = 33
+offer const kKey7: s32 = 34
+offer const kKey8: s32 = 35
+offer const kKey9: s32 = 36
+offer const kKeySpace: s32 = 37
+offer const kKeyEnter: s32 = 38
+offer const kKeyEscape: s32 = 39
+offer const kKeyTab: s32 = 40
+offer const kKeyBackspace: s32 = 41
+offer const kKeyDelete: s32 = 42
+offer const kKeyLeft: s32 = 43
+offer const kKeyRight: s32 = 44
+offer const kKeyUp: s32 = 45
+offer const kKeyDown: s32 = 46
+offer const kKeyShift: s32 = 47
+offer const kKeyControl: s32 = 48
+offer const kKeyAlt: s32 = 49
+offer const kKeySuper: s32 = 50
+offer const kKeyF1: s32 = 51
+offer const kKeyF2: s32 = 52
+offer const kKeyF3: s32 = 53
+offer const kKeyF4: s32 = 54
+offer const kKeyF5: s32 = 55
+offer const kKeyF6: s32 = 56
+offer const kKeyF7: s32 = 57
+offer const kKeyF8: s32 = 58
+offer const kKeyF9: s32 = 59
+offer const kKeyF10: s32 = 60
+offer const kKeyF11: s32 = 61
+offer const kKeyF12: s32 = 62
+
+// --------------------------------------------------------------- window ---
+
+offer const kResizable: u32 = 1
+/// Ask for a GL context. Without it the window is for pixels.
+offer const kGl: u32 = 2
+offer const kHidden: u32 = 4
+
+/// A window, and the only thing that owns one.
+///
+/// `IsOpen` says whether there is one: a machine with no display answers
+/// false rather than failing, which is what lets the same program run on
+/// a server and say so.
+offer class Window {
+  var handle: *mut u8
+
+  deinit {
+    if handle != ptrnull {
+      wolang_window_close(handle)
+    }
+  }
+
+  fun IsOpen() -> bool {
+    return handle != ptrnull
+  }
+
+  /// The next thing that happened, or a `kNone` event when there is
+  /// nothing left this turn.
+  fun Poll() -> Event uses unsafe {
+    var event = Event(0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0)
+    if handle == ptrnull {
+      return event
+    }
+    if wolang_window_poll(handle, &mut event) == 0 {
+      return Event(0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0)
+    }
+    return event
+  }
+
+  /// The content size in pixels, which on a dense display is not the
+  /// size in points.
+  fun Width() -> int uses unsafe {
+    var width: s32 = 0
+    var height: s32 = 0
+    if handle != ptrnull {
+      wolang_window_size(handle, &mut width, &mut height)
+    }
+    return width as int
+  }
+
+  fun Height() -> int uses unsafe {
+    var width: s32 = 0
+    var height: s32 = 0
+    if handle != ptrnull {
+      wolang_window_size(handle, &mut width, &mut height)
+    }
+    return height as int
+  }
+
+  fun Scale() -> f64 uses unsafe {
+    if handle == ptrnull {
+      return 1.0
+    }
+    return wolang_window_scale(handle)
+  }
+
+  fun SetTitle(title: text) uses unsafe {
+    if handle == ptrnull {
+      return
+    }
+    const bytes = Bytes(title + "\0")
+    wolang_window_set_title(handle, &bytes[0])
+  }
+
+  /// Puts a canvas on the screen, stretched to the window.
+  fun Present(canvas: &Canvas) uses unsafe {
+    if handle == ptrnull || canvas.pixels.len == 0 {
+      return
+    }
+    wolang_window_present(handle, &canvas.pixels[0],
+                          canvas.width as s32, canvas.height as s32)
+  }
+
+  /// Makes this window's GL context current, and says whether there is
+  /// one. Only a window opened with `kGl` has one.
+  fun StartGl() -> bool uses unsafe {
+    if handle == ptrnull {
+      return false
+    }
+    return wolang_window_gl_start(handle) != 0
+  }
+
+  /// Shows what GL drew. `hold` is whether to wait for the display,
+  /// which is what keeps a frame loop at the refresh rate.
+  fun Swap(hold: bool) uses unsafe {
+    if handle == ptrnull {
+      return
+    }
+    var interval: s32 = 0
+    if hold {
+      interval = 1
+    }
+    wolang_window_swap(handle, interval)
+  }
+
+  fun Close() uses unsafe {
+    if handle != ptrnull {
+      wolang_window_close(handle)
+      handle = ptrnull
+    }
+  }
+}
+
+/// Opens a window. A closed one comes back when there is no backend or
+/// the system refused.
+offer fun Open(title: text, width: int, height: int, flags: u32)
+    -> Window uses unsafe {
+  if !Available() {
+    return Window(ptrnull)
+  }
+  const bytes = Bytes(title + "\0")
+  return Window(wolang_window_open(&bytes[0], width as s32,
+                                   height as s32, flags))
+}
+
+/// The address of a GL entry point, for a program that binds OpenGL
+/// itself. Zero when there is none.
+offer fun GlProc(name: text) -> *mut u8 uses unsafe {
+  const bytes = Bytes(name + "\0")
+  return wolang_gl_proc(&bytes[0])
+}
+
+/// What the clipboard holds, and how to put something there.
+offer fun Clipboard() -> text uses unsafe {
+  return TextFromC(wolang_clipboard_text())
+}
+
+offer fun SetClipboard(value: text) uses unsafe {
+  const bytes = Bytes(value + "\0")
+  wolang_clipboard_set(&bytes[0])
+}
+
+// --------------------------------------------------------------- pixels ---
+
+/// A buffer of pixels, and what can be drawn into it.
+///
+/// `0xAARRGGBB`, one word per pixel, rows top to bottom: the one format
+/// every backend here takes without converting. A canvas owns its
+/// storage and gives it back when it goes out of scope.
+offer class Canvas {
+  var pixels: []u32
+  var width: int = 0
+  var height: int = 0
+
+  deinit {
+    Free(pixels)
+  }
+
+  fun Clear(colour: u32) {
+    var i = 0
+    while i < pixels.len {
+      pixels[i] = colour
+      i = i + 1
+    }
+  }
+
+  /// One pixel, ignored when it is outside: a drawing routine that
+  /// clamps is one that can be called with anything.
+  fun Set(x: int, y: int, colour: u32) {
+    if x < 0 || y < 0 || x >= width || y >= height {
+      return
+    }
+    pixels[y * width + x] = colour
+  }
+
+  fun At(x: int, y: int) -> u32 {
+    if x < 0 || y < 0 || x >= width || y >= height {
+      return 0
+    }
+    return pixels[y * width + x]
+  }
+
+  /// A filled rectangle, clipped to the canvas.
+  fun Rect(x: int, y: int, w: int, h: int, colour: u32) {
+    var top = y
+    if top < 0 {
+      top = 0
+    }
+    var left = x
+    if left < 0 {
+      left = 0
+    }
+    var right = x + w
+    if right > width {
+      right = width
+    }
+    var bottom = y + h
+    if bottom > height {
+      bottom = height
+    }
+    var row = top
+    while row < bottom {
+      var column = left
+      while column < right {
+        pixels[row * width + column] = colour
+        column = column + 1
+      }
+      row = row + 1
+    }
+  }
+
+  /// The outline of a rectangle.
+  fun Frame(x: int, y: int, w: int, h: int, colour: u32) {
+    Rect(x, y, w, 1, colour)
+    Rect(x, y + h - 1, w, 1, colour)
+    Rect(x, y, 1, h, colour)
+    Rect(x + w - 1, y, 1, h, colour)
+  }
+
+  /// A line, by the oldest algorithm there is: integers only, one pixel
+  /// a step, no gaps.
+  fun Line(x0: int, y0: int, x1: int, y1: int, colour: u32) {
+    var x = x0
+    var y = y0
+    var dx = x1 - x0
+    if dx < 0 {
+      dx = -dx
+    }
+    var dy = y1 - y0
+    if dy < 0 {
+      dy = -dy
+    }
+    var step_x = 1
+    if x1 < x0 {
+      step_x = -1
+    }
+    var step_y = 1
+    if y1 < y0 {
+      step_y = -1
+    }
+    var slack = dx - dy
+    loop {
+      Set(x, y, colour)
+      if x == x1 && y == y1 {
+        break
+      }
+      const doubled = slack * 2
+      if doubled > -dy {
+        slack = slack - dy
+        x = x + step_x
+      }
+      if doubled < dx {
+        slack = slack + dx
+        y = y + step_y
+      }
+    }
+  }
+
+  /// A filled circle, by the distance test: a radius this is used at is
+  /// small, and the obvious loop is fast enough and obviously right.
+  fun Circle(cx: int, cy: int, radius: int, colour: u32) {
+    if radius <= 0 {
+      return
+    }
+    var y = -radius
+    while y <= radius {
+      var x = -radius
+      while x <= radius {
+        if x * x + y * y <= radius * radius {
+          Set(cx + x, cy + y, colour)
+        }
+        x = x + 1
+      }
+      y = y + 1
+    }
+  }
+
+  /// Copies another canvas in at `x, y`, skipping fully transparent
+  /// pixels.
+  fun Blit(source: &Canvas, x: int, y: int) {
+    var row = 0
+    while row < source.height {
+      var column = 0
+      while column < source.width {
+        const colour = source.pixels[row * source.width + column]
+        if (colour >> 24) != 0 {
+          Set(x + column, y + row, colour)
+        }
+        column = column + 1
+      }
+      row = row + 1
+    }
+  }
+}
+
+/// A canvas of `width` by `height`, all of it opaque black.
+offer fun CanvasNew(width: int, height: int) -> Canvas uses unsafe {
+  var canvas = Canvas(ArrayNew<u32>(width * height), width, height)
+  canvas.Clear(0xFF000000)
+  return canvas
+}
+
+/// A colour from parts, each 0 to 255.
+offer fun Rgb(red: int, green: int, blue: int) -> u32 {
+  return Rgba(red, green, blue, 255)
+}
+
+offer fun Rgba(red: int, green: int, blue: int, alpha: int) -> u32 {
+  return ((alpha as u32 & 255) << 24) | ((red as u32 & 255) << 16) |
+         ((green as u32 & 255) << 8) | (blue as u32 & 255)
+}
+
+// ---------------------------------------------------------------- sound ---
+
+/// The default output, played from a queue.
+///
+/// A queue rather than a callback: a callback would be the system's
+/// audio thread calling into a tier that may still be compiling, and a
+/// program that makes sound has a frame loop to push from anyway (D155).
+offer class Audio {
+  var handle: *mut u8
+  var rate: int = 48000
+  var channels: int = 2
+
+  deinit {
+    if handle != ptrnull {
+      wolang_audio_close(handle)
+    }
+  }
+
+  fun IsOpen() -> bool {
+    return handle != ptrnull
+  }
+
+  /// Adds interleaved frames, each sample between -1 and 1, and answers
+  /// how many it took.
+  fun Queue(samples: []f32) -> int uses unsafe {
+    if handle == ptrnull || samples.len == 0 {
+      return 0
+    }
+    return wolang_audio_queue(handle, &samples[0],
+                              (samples.len / channels) as s32) as int
+  }
+
+  /// How many frames are waiting, and how many more fit.
+  fun Queued() -> int uses unsafe {
+    if handle == ptrnull {
+      return 0
+    }
+    return wolang_audio_queued(handle) as int
+  }
+
+  fun Room() -> int uses unsafe {
+    if handle == ptrnull {
+      return 0
+    }
+    return wolang_audio_room(handle) as int
+  }
+
+  fun Close() uses unsafe {
+    if handle != ptrnull {
+      wolang_audio_close(handle)
+      handle = ptrnull
+    }
+  }
+}
+
+/// Opens the default output. 48000 and two channels is what to ask for
+/// unless there is a reason not to.
+offer fun OpenAudio(rate: int, channels: int) -> Audio uses unsafe {
+  if !Available() {
+    return Audio(ptrnull, rate, channels)
+  }
+  return Audio(wolang_audio_open(rate as s32, channels as s32), rate,
+               channels)
+}
+
+// ----------------------------------------------------------------- bits ---
+
+/// A C string as text. The bytes belong to the library that answered,
+/// so this copies.
+fun TextFromC(from: *u8) -> text uses unsafe {
+  if from == 0 as *u8 {
+    return ""
+  }
+  var length = 0
+  while *(from + length) != 0 {
+    length = length + 1
+  }
+  return TextFromRaw(from, length)
+}
+
+// ------------------------------------------------------------- tests ---
+//
+// What can be tested without a display: the drawing, the colours and the
+// queue arithmetic. Opening a window is tested by `examples/window`,
+// which a person runs.
+
+@Test
+fun MakesColours() -> bool {
+  return Rgb(255, 0, 0) == 0xFFFF0000 && Rgb(0, 255, 0) == 0xFF00FF00 &&
+         Rgb(0, 0, 255) == 0xFF0000FF &&
+         Rgba(1, 2, 3, 4) == 0x04010203
+}
+
+@Test
+fun DrawsIntoACanvas() -> bool uses unsafe {
+  var canvas = CanvasNew(16, 8)
+  if canvas.At(0, 0) != 0xFF000000 {
+    return false
+  }
+  canvas.Clear(Rgb(0, 0, 0))
+  canvas.Rect(2, 2, 4, 3, Rgb(255, 0, 0))
+  if canvas.At(2, 2) != 0xFFFF0000 || canvas.At(5, 4) != 0xFFFF0000 {
+    return false
+  }
+  if canvas.At(6, 2) != 0xFF000000 || canvas.At(2, 5) != 0xFF000000 {
+    return false
+  }
+  // Outside is dropped rather than wrapping onto the next row.
+  canvas.Set(-1, 0, Rgb(0, 255, 0))
+  canvas.Set(16, 0, Rgb(0, 255, 0))
+  if canvas.At(15, 0) != 0xFF000000 {
+    return false
+  }
+  canvas.Line(0, 0, 15, 7, Rgb(255, 255, 255))
+  return canvas.At(0, 0) == 0xFFFFFFFF && canvas.At(15, 7) == 0xFFFFFFFF
+}
+
+@Test
+fun ClipsAndFrames() -> bool uses unsafe {
+  var canvas = CanvasNew(8, 8)
+  canvas.Clear(0)
+  // Half outside on every side: what is inside is drawn and nothing
+  // else happens.
+  canvas.Rect(-2, -2, 4, 4, Rgb(255, 255, 255))
+  if canvas.At(0, 0) != 0xFFFFFFFF || canvas.At(2, 0) != 0 {
+    return false
+  }
+  canvas.Clear(0)
+  canvas.Frame(1, 1, 6, 6, Rgb(255, 255, 255))
+  return canvas.At(1, 1) == 0xFFFFFFFF && canvas.At(6, 6) == 0xFFFFFFFF &&
+         canvas.At(3, 3) == 0
+}
+
+@Test
+fun BlitsSkippingTransparent() -> bool uses unsafe {
+  var sprite = CanvasNew(2, 2)
+  sprite.Clear(0)
+  sprite.Set(0, 0, Rgb(255, 0, 0))
+  var canvas = CanvasNew(4, 4)
+  canvas.Clear(Rgb(0, 0, 255))
+  canvas.Blit(&sprite, 1, 1)
+  return canvas.At(1, 1) == 0xFFFF0000 && canvas.At(2, 2) == 0xFF0000FF
+}
+
+@Test
+fun SaysWhatBackendThisIs() -> bool uses unsafe {
+  // On a machine with no display this is "none" and `Available` is
+  // false, and both are the right answer rather than a failure.
+  const name = Backend()
+  return name == "cocoa" || name == "win32" || name == "x11" ||
+         name == "none"
+}

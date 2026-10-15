@@ -73,6 +73,8 @@ std::string_view ExprKindName(ExprKind kind) {
       return "bool";
     case ExprKind::kNullLiteral:
       return "null";
+    case ExprKind::kPointerNull:
+      return "ptrnull";
     case ExprKind::kPath:
       return "path";
     case ExprKind::kSelf:

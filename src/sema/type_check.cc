@@ -774,6 +774,18 @@ TypeId Checker::CheckLiteral(const Expr& expr, TypeId expected) {
       }
       return types_->Optional(types_->never());
 
+    case ExprKind::kPointerNull:
+      // `ptrnull` is the address no object has: what a C function takes
+      // to mean "nothing here" and gives back to mean "this failed". It
+      // takes the pointer type the context wants, and `*mut u8` when
+      // there is none -- the one every other pointer converts from
+      // without a promise being broken (D156).
+      if (expected.is_valid() &&
+          types_->KindOf(expected) == TypeKind::kPointer) {
+        return expected;
+      }
+      return types_->Pointer(types_->Int(IntWidth::k8, false), true);
+
     default:
       return types_->error();
   }
@@ -2351,6 +2363,7 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
     case ExprKind::kCharLiteral:
     case ExprKind::kBoolLiteral:
     case ExprKind::kNullLiteral:
+    case ExprKind::kPointerNull:
       type = CheckLiteral(expr, expected);
       break;
 
@@ -2396,14 +2409,23 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
           (types_->KindOf(source) == TypeKind::kPointer ||
            types_->KindOf(source) == TypeKind::kReference) &&
           types_->IsInteger(type);
-      if (views || address) {
+      // And a number as an address, which is how a binding says NULL:
+      // `0 as *mut u8` for a handle that is not one yet, and for the
+      // `null` that half of C's functions take and give back. Without
+      // it a binding has to invent a sentinel -- which is what `lib/tls`
+      // did, and it was a freed address (D156).
+      const bool pointer =
+          types_->IsInteger(source) &&
+          types_->KindOf(type) == TypeKind::kPointer;
+      if (views || address || pointer) {
         result_.direct_effects.Add(
             types_->BuiltinEffectId(BuiltinEffect::kUnsafe));
       }
       // `as` is a numeric conversion and nothing else. It is the escape
       // hatch D33 left open by removing implicit widening, not a
       // reinterpretation of arbitrary bits -- that is what `unsafe` is for.
-      if (!views && !address && type.is_valid() && source.is_valid() &&
+      if (!views && !address && !pointer && type.is_valid() &&
+          source.is_valid() &&
           !types_->IsError(source) && !types_->IsError(type) &&
           types_->KindOf(source) != TypeKind::kNever && source != type &&
           !(types_->IsNumeric(source) && types_->IsNumeric(type))) {

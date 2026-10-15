@@ -140,6 +140,9 @@ enum class ExprKind : uint8_t {
   kCharLiteral,
   kBoolLiteral,
   kNullLiteral,
+  // `ptrnull`: the address no object has, for a binding that has to
+  // pass or test one (D156).
+  kPointerNull,
   kPath,
   kSelf,
   kUnary,

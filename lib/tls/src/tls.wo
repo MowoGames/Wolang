@@ -124,11 +124,8 @@ offer class Stream {
 }
 
 /// A closed stream, which is what a failure answers with.
-offer fun StreamNone() -> Stream uses unsafe {
-  var buffer = ArrayNew<u8>(1)
-  const none = &mut buffer[0]
-  Free(buffer)
-  return Stream(none, none, Socket(-1), false)
+offer fun StreamNone() -> Stream {
+  return Stream(ptrnull, ptrnull, Socket(-1), false)
 }
 
 /// Connects to `host` on `port` and shakes hands.
@@ -150,7 +147,7 @@ offer fun Handshake(host: text, port: int, verify: bool) -> Stream
   }
   const method = TLS_client_method()
   const context = SSL_CTX_new(method)
-  if context as u64 == 0 {
+  if context == ptrnull {
     socket.Close()
     return StreamNone()
   }
@@ -159,7 +156,7 @@ offer fun Handshake(host: text, port: int, verify: bool) -> Stream
     SSL_CTX_set_verify(context, kVerifyPeer, 0)
   }
   const connection = SSL_new(context)
-  if connection as u64 == 0 {
+  if connection == ptrnull {
     SSL_CTX_free(context)
     socket.Close()
     return StreamNone()

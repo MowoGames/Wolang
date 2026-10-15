@@ -946,6 +946,9 @@ class Formatter {
         Put(expr.aux != 0 ? "true" : "false");
         break;
 
+      case ExprKind::kPointerNull:
+        Put("ptrnull");
+        break;
       case ExprKind::kNullLiteral:
         Put("null");
         break;

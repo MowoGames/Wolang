@@ -78,7 +78,7 @@ contexts:
       scope: keyword.declaration.wolang
     - match: \b(as|mut|uses|where|unsafe|arena|comptime|self|error|with|without|before|after|aos|soa)\b
       scope: keyword.other.wolang
-    - match: \b(true|false|null)\b
+    - match: \b(true|false|null|ptrnull)\b
       scope: constant.language.wolang
 
   types:

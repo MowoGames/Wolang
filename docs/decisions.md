@@ -1917,3 +1917,45 @@ than it will build for.
 
 This is what `glTexImage2D` needs (nine arguments), and what every
 windowing and graphics binding needs after it.
+
+**D155. A window of our own.** `platform/` is this project's backend for
+each system -- Cocoa, Win32, X11 -- behind one C API: a window, what a
+person does to it, a buffer of pixels, a GL context and a queue of sound.
+Not a binding to someone else's windowing library: that would be a
+dependency to ship, a second layer to debug, and a thing to install
+before a program that draws a rectangle can run.
+
+It is its own shared library rather than part of the runtime, so a
+program that draws nothing links nothing -- a compiler that pulled in
+Cocoa to print a number would be paying for a window it never opens. The
+`gfx` package reaches it through `[link]`, the same mechanism `tls` uses
+for OpenSSL (D150), and a relative path in a manifest is now relative to
+the package rather than to wherever the command was run.
+
+Two ways to put something on the screen, one window. `Present` hands over
+pixels -- `0xAARRGGBB`, rows top to bottom -- which is what a tool, a
+plotter or a software renderer wants, and what the drawing in `gfx` fills
+in. A GL context is the other: `StartGl`, draw with OpenGL, `Swap`. The
+GPU is reached by calling it, not by an abstraction over it.
+
+Sound is a queue rather than a callback. A callback would be the system's
+audio thread calling into a tier that may still be compiling; a program
+that makes sound has a frame loop to push from, and a ring buffer with
+one writer and one reader needs no lock.
+
+What a backend nobody has run is worth is nothing, which is why
+`examples/window` exists: it opens a window, draws a moving wave at a
+hundred and fifty frames a second, reads the keyboard, plays a tone and
+says so in its title.
+
+**D156. `ptrnull`.** The language could turn an address into a number and
+not the other way around, so a binding had no way to write NULL -- half
+of C's functions take one and the other half give one back. `lib/tls`
+worked around it by freeing a one-byte buffer and keeping the address: a
+pointer that is neither null nor valid, as a sentinel.
+
+`ptrnull` is the address no object has. It takes whatever pointer type
+the context wants, like `null` does for optionals, and `*mut u8` when
+there is none -- the pointer every other converts from without breaking a
+promise. A number as an address (`0x1000 as *mut u8`) is allowed too, in
+`unsafe`, for a binding that was handed one.

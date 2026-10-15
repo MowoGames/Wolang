@@ -1,0 +1,7 @@
+[package]
+name = "window"
+source = "src"
+
+[dependencies]
+std = { path = "../../lib/std" }
+gfx = { path = "../../lib/gfx" }

@@ -651,7 +651,17 @@ void OpenLinkedLibraries(Database* database) {
         // own search, which on macOS finds a shim for `libcrypto` and
         // warns that it is being loaded unsafely. A manifest that says
         // where the library is means it (D150).
+        //
+        // A relative path is relative to the package, not to wherever
+        // the command was run: a manifest describes its own package,
+        // and `gfx` saying `../../build/debug/platform` has to mean the
+        // same thing from every directory (D155).
         for (const std::string& path : package->manifest.link_paths) {
+          if (!path.empty() && path.front() != '/' &&
+              !package->directory.empty()) {
+            tries.push_back(package->directory + "/" + path + "/" +
+                            decorated);
+          }
           tries.push_back(path + "/" + decorated);
         }
         tries.push_back(decorated);
@@ -1288,6 +1298,10 @@ int RunTests(const Options& options) {
 
   RenderOptions render;
   render.color = options.color && StderrIsTerminal();
+  // A test is a program: a package that declares a library to link
+  // needs it loaded here too, or its own tests are the one place its
+  // bindings cannot be reached (D155).
+  OpenLinkedLibraries(&database);
   std::vector<Diagnostic> all = load_diagnostics.diagnostics();
   for (FileId file : files) {
     if (const std::vector<Diagnostic>* diagnostics =

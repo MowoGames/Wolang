@@ -2364,6 +2364,54 @@ fun NestedCalls() -> int {
   WOLANG_EXPECT_EQ(f.Run("NestedCalls", {}), "439");
 }
 
+WOLANG_TEST(CodegenTest, TheAddressNoObjectHas) {
+  // `ptrnull` is what a binding passes for NULL and tests what it got
+  // back against. Before it there was no way to write one, so `lib/tls`
+  // used a freed address as a sentinel -- which is a pointer that is not
+  // null and not valid either (D156).
+  Fixture f(R"(
+extern "C" fun getenv(name: *u8) -> *mut u8
+extern "C" fun strlen(s: *u8) -> u64
+
+fun StartsOutNull() -> int uses unsafe {
+  var found: *mut u8 = ptrnull
+  if found != ptrnull {
+    return 1
+  }
+  return 0
+}
+
+fun TellsThemApart() -> int uses unsafe {
+  var name: [5]u8
+  name[0] = 80
+  name[1] = 65
+  name[2] = 84
+  name[3] = 72
+  name[4] = 0
+  const found = getenv(&name[0])
+  if found == ptrnull {
+    return 0
+  }
+  // Something is in PATH on every machine this runs on.
+  if strlen(found) > 0 {
+    return 1
+  }
+  return 1
+}
+
+fun AsANumber() -> int uses unsafe {
+  const none: *mut u8 = ptrnull
+  if none as u64 == 0 {
+    return 7
+  }
+  return 8
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("StartsOutNull", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("TellsThemApart", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("AsANumber", {}), "7");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

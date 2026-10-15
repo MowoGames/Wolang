@@ -2328,6 +2328,14 @@ ExprId Parser::ParsePrimary() {
       return ast_->Add(std::move(expr));
     }
 
+    case TokenKind::kKwPtrNull: {
+      const Token& token = Advance();
+      Expr expr;
+      expr.kind = ExprKind::kPointerNull;
+      expr.span = SpanOf(token);
+      return ast_->Add(std::move(expr));
+    }
+
     case TokenKind::kKwSelf: {
       const Token& token = Advance();
       Expr expr;

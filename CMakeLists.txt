@@ -44,6 +44,13 @@ include(cmake/WolangCompilerOptions.cmake)
 
 add_subdirectory(src)
 
+# The window, pixels and sound layer, built unless a build asks for a
+# compiler and nothing else (D155).
+option(WOLANG_BUILD_PLATFORM "Build the window, GPU and sound library" ON)
+if(WOLANG_BUILD_PLATFORM)
+    add_subdirectory(platform)
+endif()
+
 if(WOLANG_BUILD_TOOLS)
     add_subdirectory(tools/wolang)
 endif()

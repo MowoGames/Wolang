@@ -62,7 +62,8 @@ ability   after     arena     as        before    break     class     component
 comptime  const     continue  defer     else      enum      error     extend
 extern    false     for       foreach   fun       if        in        loop
 match     mut       need      null      offer     on        override  priv
-return    self      signal    spawn     struct    system    tag       task
+ptrnull   return    self      signal    spawn     struct    system    tag
+task
 true      type      unsafe    uses      var       virtual   wait      where
 while
 ```
@@ -463,6 +464,24 @@ its context expects.
 no implicit conversions, not as a reinterpretation of bits — converting a
 `text`, a struct or a `bool` with it is `E0124`, and reading a value's bits
 is what `unsafe` is for.
+
+Two conversions are not numeric and are allowed anyway, both inside
+`unsafe`: an address as a number (`handle as u64`, for comparing or
+hashing one) and a number as an address (`0x1000 as *mut u8`, for a
+binding that was given one). The address no object has is spelled
+`ptrnull` — it takes whatever pointer type the context wants, and is what
+a C function takes to mean *nothing here* and gives back to mean *this
+failed*:
+
+```wolang
+extern "C" fun getenv(name: *u8) -> *mut u8
+
+fun Lookup(name: []u8) -> bool uses unsafe {
+  var found: *mut u8 = ptrnull
+  found = getenv(&name[0])
+  return found != ptrnull
+}
+```
 
 A conversion that cannot hold the value **traps**. Overflow traps everywhere
 else in this language, so a cast that quietly kept the low bits would be the

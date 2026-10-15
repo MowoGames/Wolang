@@ -28,7 +28,7 @@
      . font-lock-keyword-face)
     (,(concat "\\_<" (regexp-opt wolang-types) "\\_>")
      . font-lock-type-face)
-    ("\\_<\\(true\\|false\\|null\\)\\_>" . font-lock-constant-face)
+    ("\\_<\\(true\\|false\\|null\\|ptrnull\\)\\_>" . font-lock-constant-face)
     ("@[A-Za-z_][A-Za-z0-9_]*" . font-lock-preprocessor-face)
     ("\\_<[A-Z][A-Za-z0-9_]*\\_>" . font-lock-type-face)
     ("\\_<\\([a-zA-Z_][A-Za-z0-9_]*\\)\\s-*(" 1 font-lock-function-name-face))

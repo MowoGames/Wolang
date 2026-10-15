@@ -2283,6 +2283,14 @@ class Lowerer {
                       types_->bool_type(), type);
       case ExprKind::kNullLiteral:
         return builder_->ConstNull(type);
+      case ExprKind::kPointerNull: {
+        // Zero, as an address. Written as a cast rather than as a
+        // pointer-typed constant so that every tier sees the same shape
+        // it already sees for `0 as *mut u8` (D156).
+        const InstId zero =
+            builder_->ConstInt(types_->Int(IntWidth::k64, false), 0);
+        return builder_->Add(Opcode::kCast, Erase(type), {zero});
+      }
       case ExprKind::kStringLiteral:
         return LowerString(expr, type);
 

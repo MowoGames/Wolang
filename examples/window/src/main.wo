@@ -1,0 +1,140 @@
+// A window, pixels in it, keys out of it, and a tone.
+//
+// What this is for: a backend nobody has run is a backend that does not
+// work. Opening a window, drawing into it, reading the keyboard and
+// playing a sound is the one test that covers all of `lib/gfx` at once
+// (D155).
+//
+//   wolang run examples/window
+//
+// Escape or the close button ends it. Space plays a note, the arrow keys
+// move the square, and the title says the frame rate.
+
+need std.io.{Print}
+need std.math.{Sin}
+need std.mem.{ArrayNew, Free}
+need gfx.{Available, Backend, CanvasNew, Open, OpenAudio, Rgb, Sleep,
+          Time, kClosed, kKeyDown, kKeyEscape, kKeyLeft, kKeyRight,
+          kKeySpace, kKeyUp, kPressed, kReleased, kResizable, kResized}
+
+fun main() uses io, unsafe {
+  if !Available() {
+    Print("no window backend in this build; nothing to show")
+    return
+  }
+  Print("backend: {Backend()}")
+
+  var window = Open("Wolang", 640, 480, kResizable)
+  if !window.IsOpen() {
+    Print("the system would not open a window")
+    return
+  }
+  var canvas = CanvasNew(640, 480)
+  var audio = OpenAudio(48000, 2)
+  if !audio.IsOpen() {
+    Print("no sound output; the rest still works")
+  }
+
+  // A square the arrow keys move, and a tone the space bar plays.
+  var x = 320
+  var y = 240
+  var left = false
+  var right = false
+  var up = false
+  var down = false
+  var playing = false
+  var phase = 0.0
+  var frames = 0
+  var since = Time()
+  var running = true
+
+  // Enough samples for a frame at sixty, and then some.
+  var tone = ArrayNew<f32>(2048)
+
+  while running {
+    loop {
+      const event = window.Poll()
+      if event.kind == 0 {
+        break
+      }
+      if event.kind == kClosed {
+        running = false
+      } else if event.kind == kPressed || event.kind == kReleased {
+        const down_now = event.kind == kPressed
+        if event.key == kKeyEscape && down_now {
+          running = false
+        } else if event.key == kKeyLeft {
+          left = down_now
+        } else if event.key == kKeyRight {
+          right = down_now
+        } else if event.key == kKeyUp {
+          up = down_now
+        } else if event.key == kKeyDown {
+          down = down_now
+        } else if event.key == kKeySpace {
+          playing = down_now
+        }
+      } else if event.kind == kResized {
+        Print("resized to {event.width} by {event.height}")
+      }
+    }
+
+    if left { x = x - 6 }
+    if right { x = x + 6 }
+    if up { y = y - 6 }
+    if down { y = y + 6 }
+
+    // Something that moves on its own, so that a frame that drew is
+    // obvious: a band of colour that walks across the window.
+    canvas.Clear(Rgb(16, 16, 24))
+    const t = Time()
+    var i = 0
+    while i < canvas.width {
+      const wave = Sin((i as f32) * 0.02 + (t as f32) * 2.0)
+      const height = (wave * 80.0 + 120.0) as int
+      canvas.Rect(i, canvas.height - height, 1, height,
+                  Rgb(40 + i / 4, 90, 200 - i / 6))
+      i = i + 1
+    }
+    canvas.Rect(x - 20, y - 20, 40, 40, Rgb(255, 220, 90))
+    canvas.Frame(x - 20, y - 20, 40, 40, Rgb(255, 255, 255))
+    window.Present(&canvas)
+
+    // Keep the queue about a frame ahead: a tone that is pushed once a
+    // frame and played continuously is the whole test of the ring.
+    if audio.IsOpen() {
+      const room = audio.Room()
+      var wanted = 800
+      if wanted > room {
+        wanted = room
+      }
+      var at = 0
+      while at < wanted {
+        var sample: f32 = 0.0
+        if playing {
+          sample = Sin(phase as f32) * 0.2
+        }
+        tone[at * 2] = sample
+        tone[at * 2 + 1] = sample
+        // 440 cycles a second at 48000 frames a second.
+        phase = phase + 0.05759586531581287
+        at = at + 1
+      }
+      const _taken = audio.Queue(tone)
+    }
+
+    frames = frames + 1
+    if Time() - since >= 1.0 {
+      window.SetTitle("Wolang -- {frames} frames a second")
+      frames = 0
+      since = Time()
+    }
+    // A frame loop that never sleeps is a fan that never stops.
+    Sleep(0.004)
+  }
+
+  Free(tone)
+  audio.Close()
+  window.Close()
+  Print("closed")
+}
