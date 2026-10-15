@@ -7,8 +7,9 @@ ergonomics. Wolang is its own project: the compiler, runtime and libraries have
 no dependency on any game engine, and an engine is just one of the hosts it can
 be embedded into.
 
-**Status:** the language runs, compiles to machine code, embeds in other
-programs and has a standard library. Three tiers agree on every test: an
+**Status:** the language runs, compiles to machine code for five
+targets, embeds in other programs, opens a window, serves HTTP and has
+a standard library of thirty-four modules. Three tiers agree on every test: an
 interpreter as the reference, a just-in-time tier for `run`, and an
 ahead-of-time tier through LLVM for `build`. A differential fuzzer
 compares all of them on generated programs, which is what finds
@@ -22,8 +23,8 @@ a compiler-scheduled frame, `comptime`, destructors and moves, closures
 that capture by copy, threads, an arena, and C interop in both
 directions.
 
-What it does not have yet: TLS, WebAssembly (the back end is there, the
-toolchain is not), GPU kernels, and associated types on abilities. See
+What it does not have yet: GPU kernels, associated types on abilities,
+HTTP/2, and a garbage collector that does anything. See
 [STATUS.md](STATUS.md) for where work stopped and
 [docs/decisions.md](docs/decisions.md) for why things are the way they
 are.
@@ -197,6 +198,8 @@ docs/             specification, architecture, decisions, diagnostics, style
 - [docs/architecture.md](docs/architecture.md) — how the compiler is built
 - [docs/roadmap.md](docs/roadmap.md) — waves and exit criteria
 - [docs/diagnostics.md](docs/diagnostics.md) — diagnostic catalog
+- [docs/tour.md](docs/tour.md) — the language in examples, start here
+- [docs/cookbook.md](docs/cookbook.md) — whole programs that do a thing
 - [docs/install.md](docs/install.md) — installing it, on each system
 - [docs/building.md](docs/building.md) — building it, on each system
 - [docs/stdlib.md](docs/stdlib.md) — the standard library, module by module
