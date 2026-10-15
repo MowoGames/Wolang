@@ -2,8 +2,8 @@
   "name": "wolang",
   "displayName": "Wolang",
   "description": "Wolang language support: highlighting, diagnostics, hover, go to definition, symbols, formatting and completion.",
-  "version": "0.1.0",
-  "publisher": "mowogames",
+  "version": "0.1.1",
+  "publisher": "mowogroup",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -109,7 +109,7 @@
     ]
   },
   "scripts": {
-    "package": "python3 ../../tools/package/make_vsix.py"
+    "package": "py ../../tools/package/make_vsix.py"
   },
   "icon": "icon.png",
   "galleryBanner": {
