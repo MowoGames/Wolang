@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Email <mowogames@proton.me>, or use GitHub's
+Email <contact@mowogames.com>, or use GitHub's
 [private advisory form](https://github.com/MowoGames/Wolang/security/advisories/new).
 Please do not open a public issue.
 

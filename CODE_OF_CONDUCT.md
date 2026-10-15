@@ -29,7 +29,7 @@ anywhere someone is representing the project.
 
 ## If something goes wrong
 
-Report it to <mowogames@proton.me>. What you send stays between you and
+Report it to <contact@mowogames.com>. What you send stays between you and
 the maintainer. You will get an answer, and you will be told what was
 done.
 
