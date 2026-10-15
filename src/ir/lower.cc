@@ -2843,6 +2843,26 @@ class Lowerer {
                  : builder_->Add(Opcode::kLogicalNot, types_->bool_type(),
                                  {equal});
     }
+    // `a < b` on strings is the order their bytes are in. Without this
+    // the tiers compared the *pairs* -- a pointer and a length -- which
+    // is an answer about where two strings happen to live rather than
+    // about what they say (D172).
+    if (opcode >= Opcode::kLt && opcode <= Opcode::kGe &&
+        IsView(TypeOf(expr.lhs)) && IsView(TypeOf(expr.rhs))) {
+      const TypeId bytes = types_->Pointer(
+          types_->Int(IntWidth::k8, /*is_signed=*/false),
+          /*is_mutable=*/false);
+      const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
+      const TypeId narrow = types_->Int(IntWidth::k32, /*is_signed=*/true);
+      const InstId order =
+          RuntimeCall("wolang_text_compare", narrow,
+                      {builder_->Extract(bytes, left, 0),
+                       builder_->Extract(word, left, 1),
+                       builder_->Extract(bytes, right, 0),
+                       builder_->Extract(word, right, 1)});
+      return builder_->Add(opcode, types_->bool_type(),
+                           {order, builder_->ConstInt(narrow, 0)});
+    }
     // `p + n` on a raw pointer: the address of the nth element from there.
     // An element address rather than an add, because only the tiers know
     // how big an element is -- and the length a bounds check would use is
@@ -2859,14 +2879,63 @@ class Lowerer {
     }
     const bool compare = opcode >= Opcode::kEq && opcode <= Opcode::kGe;
     if (compare) {
-      return builder_->Add(opcode, types_->bool_type(), {left, right});
+      // Both sides of the same type: `byte == 48` where the literal kept
+      // its own is a comparison of two different types, which the IR has
+      // no meaning for (D173).
+      const TypeId both = ValueType(left).is_valid() ? ValueType(left)
+                                                     : ValueType(right);
+      return builder_->Add(opcode, types_->bool_type(),
+                           {AsType(left, both), AsType(right, both)});
     }
     // Typed by what it operates on rather than by what the context
     // wanted: `sign * whole` where a `float?` is expected multiplies two
     // floats, and the wrap is a `Coerce` like every other one (D111).
-    const TypeId held = ValueType(left).is_valid() ? ValueType(left)
-                                                   : Erase(type);
-    return Coerce(builder_->Add(opcode, held, {left, right}), held, type);
+    //
+    // The side that is not a bare literal decides: `48 + byte` is byte
+    // arithmetic, and taking the left side's type made it the literal's
+    // -- which is how one return of `48 + byte` came back wider than
+    // the other (D173).
+    TypeId held = ValueType(left).is_valid() ? ValueType(left)
+                                             : Erase(type);
+    if (IsBareLiteral(expr.lhs) && !IsBareLiteral(expr.rhs) &&
+        ValueType(right).is_valid()) {
+      held = ValueType(right);
+    }
+    // And both operands of that type: `48 + byte` is an add of a
+    // literal's type and a byte's, and the one that came out depended on
+    // which side the inliner looked at (D173).
+    return Coerce(
+        builder_->Add(opcode, held, {AsType(left, held),
+                                     AsType(right, held)}),
+        held, type);
+  }
+
+  // |value| as |wanted|, with a cast when what it already is differs.
+  //
+  // Not `Coerce`: that answers the question the *checker* asked, and
+  // this one is about the type the instruction carries -- a constant
+  // whose recorded type is wider than the byte it is being added to is
+  // exactly the case Coerce sees nothing wrong with (D173).
+  InstId AsType(InstId value, TypeId wanted) {
+    if (!value.is_valid() || !wanted.is_valid()) {
+      return value;
+    }
+    const TypeId held = ValueType(value);
+    if (!held.is_valid() || held == wanted) {
+      return value;
+    }
+    return builder_->Add(Opcode::kCast, wanted, {value});
+  }
+
+  // Whether an expression is a number written down, with no type of its
+  // own until something gives it one.
+  bool IsBareLiteral(ExprId id) const {
+    if (!ast().Contains(id)) {
+      return false;
+    }
+    const ExprKind kind = ast().Get(id).kind;
+    return kind == ExprKind::kIntLiteral ||
+           kind == ExprKind::kFloatLiteral;
   }
 
   static Opcode BinaryOpcode(TokenKind op) {

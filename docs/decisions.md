@@ -2081,3 +2081,44 @@ read as a comparison with an array literal, because the heuristic that
 tells a generic call from a `<` did not allow brackets between the angle
 brackets. Nor a function type, so `Keep<fun(int) -> bool>(f)` was the
 same. Both are allowed now.
+
+**D170. Randomness that is not a sequence, and hashes that are ours.**
+`std.random` is a generator: fast, repeatable, and exactly wrong for a
+token. `std.crypto` takes its bytes from the system -- `getentropy`, or
+the cryptographic provider on Windows -- because a language that rolled
+its own would be rolling its own mistakes.
+
+SHA-256 and SHA-512 are written in Wolang rather than bound: two hundred
+lines of arithmetic with published vectors, no keys to mishandle, and a
+language that cannot hash a salt without a C library has a hole in it.
+Anything with a cipher or a key exchange in it is still `lib/tls`, which
+binds the system's own (D150).
+
+The arithmetic wraps where SHA says it wraps -- written as a wider add
+and a mask, because every operator in this language traps on overflow and
+here the wrapping *is* the algorithm.
+
+**D171. A byte is one byte wide.** The interpreter wrote an integer
+through a pointer using the width of the value it happened to be
+carrying, not the width of the type being written. A `u8` went out as
+eight bytes and took the seven after it with it -- which is how a digest
+in a heap buffer came back with its first half belonging to whatever was
+written next to it. Found by the sanitizer, in one line, after an hour of
+reasoning about allocators.
+
+**D172. Strings have an order.** `a < b` on two strings compared the
+*pairs* -- a pointer and a length -- so the answer was about where the
+strings happened to live. Now it is a call into the runtime that compares
+bytes, which for UTF-8 is also the order of the code points. The three
+tiers agreed on the nonsense before and agree on the answer now.
+
+**D173. Both sides of an operator are one type.** `48 + byte` built an
+add whose operands were a literal's type and a byte's. Nothing complained
+until two such returns met at an inlined function's continuation, where
+one was wider than the other.
+
+Three fixes, smallest first: the side that is not a bare literal decides
+the type, both operands are cast to it, and the inliner casts a returned
+value that does not match the call's type. The second is the one that
+mattered -- an operator whose operands disagree has no meaning in this
+IR, and the verifier said so as soon as anything looked.

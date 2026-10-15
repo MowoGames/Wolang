@@ -132,6 +132,31 @@ extern "C" void wolang_print(const void* message) {
   std::fputc('\n', stdout);
 }
 
+// Which of two strings comes first, by bytes.
+//
+// Negative, zero or positive, like every other comparison in C. The
+// bytes rather than the characters: a UTF-8 string compares the same way
+// by bytes as by code points, which is the one thing that encoding was
+// designed to make true (D172).
+extern "C" int32_t wolang_text_compare(const uint8_t* left,
+                                       uint64_t left_length,
+                                       const uint8_t* right,
+                                       uint64_t right_length) {
+  const uint64_t shared =
+      left_length < right_length ? left_length : right_length;
+  if (shared != 0 && left != nullptr && right != nullptr) {
+    const int held =
+        std::memcmp(left, right, static_cast<size_t>(shared));
+    if (held != 0) {
+      return held < 0 ? -1 : 1;
+    }
+  }
+  if (left_length == right_length) {
+    return 0;
+  }
+  return left_length < right_length ? -1 : 1;
+}
+
 }  // namespace runtime
 }  // namespace wolang
 

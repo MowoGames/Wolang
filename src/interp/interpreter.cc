@@ -439,8 +439,20 @@ class Interpreter {
         return Value::Void();
       }
       case Value::Kind::kInt: {
+        // As many bytes as the *type* holds, not as many as the value
+        // happens to be carried in. A `u8` written as eight bytes wrote
+        // over the seven after it -- which is how a digest in a heap
+        // buffer came back with its first bytes belonging to whatever
+        // was written next to it (D171).
         const uint64_t raw = value.integer();
-        std::memcpy(address, &raw, WidthInBytes(value.int_width()));
+        size_t size = WidthInBytes(value.int_width());
+        if (type.is_valid() && layouts_ != nullptr) {
+          const uint32_t declared = layouts_->SizeOf(type);
+          if (declared != 0 && declared <= sizeof(raw)) {
+            size = declared;
+          }
+        }
+        std::memcpy(address, &raw, size);
         return Value::Void();
       }
       case Value::Kind::kFunction: {

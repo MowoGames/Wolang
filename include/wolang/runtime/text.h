@@ -48,6 +48,13 @@ bool wolang_text_equal(const uint8_t* left,
 
 }  // extern "C"
 
+// Which of two strings comes first, by bytes: negative, zero or
+// positive (D172).
+extern "C" int32_t wolang_text_compare(const uint8_t* left,
+                                       uint64_t left_length,
+                                       const uint8_t* right,
+                                       uint64_t right_length);
+
 // Writes a `text` and a line break, where |message| is the address of
 // one. What `Print` is for a file compiled on its own, which links no
 // standard library to call (D161).

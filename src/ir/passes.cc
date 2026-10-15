@@ -648,11 +648,44 @@ bool InlineCalls(TypeStore* types, const Module& module, Function* function) {
       if (source.opcode == Opcode::kReturn) {
         copy.opcode = Opcode::kJump;
         if (returns_value && source.operands_count != 0) {
+          InstId returned = map_value(callee.OperandsOf(source)[0]);
+          // The continuation's parameter is the call's type, and two
+          // return sites of the same function may be typed differently
+          // -- `48 + byte` where one side kept the literal's type. A
+          // cast where they differ, because a block parameter that
+          // disagrees with what is passed to it is what the verifier
+          // exists to catch (D173).
+          if (returned.is_valid() && call.type.is_valid() &&
+              function->Contains(returned) &&
+              function->Get(returned).type != call.type) {
+            const InstId cast{
+                static_cast<uint32_t>(function->instructions.size())};
+            Inst conversion;
+            conversion.opcode = Opcode::kCast;
+            conversion.type = call.type;
+            conversion.operands_begin =
+                static_cast<uint32_t>(function->operands.size());
+            conversion.operands_count = 1;
+            function->operands.push_back(returned);
+            function->instructions.push_back(conversion);
+            function->owners.push_back(BlockId{block_map[b]});
+            function->spans.push_back(callee.SpanOf(id));
+            // Before the jump: this block already holds the jump's id
+            // -- the ids were handed out before the bodies were filled
+            // in -- so appending would put a terminator in the middle.
+            Block& where = function->Get(BlockId{block_map[b]});
+            if (where.instructions.empty()) {
+              where.instructions.push_back(cast);
+            } else {
+              where.instructions.insert(where.instructions.end() - 1,
+                                        cast);
+            }
+            returned = cast;
+          }
           copy.operands_begin =
               static_cast<uint32_t>(function->operands.size());
           copy.operands_count = 1;
-          function->operands.push_back(
-              map_value(callee.OperandsOf(source)[0]));
+          function->operands.push_back(returned);
         }
         copy.successors_begin =
             static_cast<uint32_t>(function->successors.size());

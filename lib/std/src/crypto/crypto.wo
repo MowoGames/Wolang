@@ -1,0 +1,488 @@
+// Hashes, signatures and identifiers.
+//
+// SHA-256 and SHA-512 written here rather than bound: they are two
+// hundred lines of arithmetic with published test vectors, they have no
+// keys to mishandle, and a language that cannot hash a password salt
+// without a C library has a hole in it. What is *not* written here is
+// anything that needs a cipher or a key exchange -- that is `lib/tls`,
+// which binds the system's own, because shipping cryptography means
+// shipping its CVEs (D150, D170).
+//
+// Randomness comes from the system: `std.random` is a sequence, which is
+// exactly wrong for a token.
+
+need std.mem.{ArrayNew, Free, Prefix}
+need std.text.{Bytes, BuilderNew, Length}
+
+extern "C" fun wolang_entropy(into: *mut u8, count: u64) -> s32
+
+// ---------------------------------------------------------- SHA-256 ---
+
+const kRound: [64]u32 = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b,
+  0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01,
+  0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7,
+  0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+  0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152,
+  0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+  0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+  0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+  0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08,
+  0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f,
+  0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+  0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]
+
+fun RotateRight(value: u32, by: u32) -> u32 {
+  return (value >> by) | (value << (32 as u32 - by))
+}
+
+// Addition that wraps.
+//
+// Every arithmetic operator in this language traps on overflow, which is
+// what a program wants everywhere except here: SHA is *defined* as
+// arithmetic modulo two to the thirty-two, so the wrapping is the
+// algorithm rather than a mistake. Written as a wider add and a mask, so
+// that the trap never fires and the intent is on the page (D170).
+fun Wrap(left: u32, right: u32) -> u32 {
+  return ((left as u64 + right as u64) % 4294967296) as u32
+}
+
+/// SHA-256 of `bytes`, as 32 bytes.
+offer fun Sha256(bytes: []u8) -> []u8 uses unsafe {
+  var state = ArrayNew<u32>(8)
+  state[0] = 0x6a09e667
+  state[1] = 0xbb67ae85
+  state[2] = 0x3c6ef372
+  state[3] = 0xa54ff53a
+  state[4] = 0x510e527f
+  state[5] = 0x9b05688c
+  state[6] = 0x1f83d9ab
+  state[7] = 0x5be0cd19
+
+  // The message, padded: a one bit, zeroes, and the length in bits as
+  // eight bytes -- so that two messages that differ only in how they
+  // end cannot hash the same.
+  const length = bytes.len
+  var padded = length + 1
+  while padded % 64 != 56 {
+    padded = padded + 1
+  }
+  var block = ArrayNew<u8>(padded + 8)
+  var i = 0
+  while i < length {
+    block[i] = bytes[i]
+    i = i + 1
+  }
+  block[length] = 0x80
+  i = length + 1
+  while i < padded {
+    block[i] = 0
+    i = i + 1
+  }
+  const bits = (length * 8) as u64
+  i = 0
+  while i < 8 {
+    block[padded + i] = ((bits >> ((7 - i) * 8) as u64) % 256) as u8
+    i = i + 1
+  }
+
+  var words = ArrayNew<u32>(64)
+  var at = 0
+  while at < block.len {
+    var t = 0
+    while t < 16 {
+      words[t] = (block[at + t * 4] as u32 << 24 as u32) |
+                 (block[at + t * 4 + 1] as u32 << 16 as u32) |
+                 (block[at + t * 4 + 2] as u32 << 8 as u32) |
+                 block[at + t * 4 + 3] as u32
+      t = t + 1
+    }
+    while t < 64 {
+      const a = words[t - 15]
+      const b = words[t - 2]
+      const s0 = RotateRight(a, 7) ^ RotateRight(a, 18) ^ (a >> 3 as u32)
+      const s1 = RotateRight(b, 17) ^ RotateRight(b, 19) ^
+                 (b >> 10 as u32)
+      words[t] = Wrap(Wrap(words[t - 16], s0),
+                       Wrap(words[t - 7], s1))
+      t = t + 1
+    }
+
+    var a = state[0]
+    var b = state[1]
+    var c = state[2]
+    var d = state[3]
+    var e = state[4]
+    var f = state[5]
+    var g = state[6]
+    var h = state[7]
+    t = 0
+    while t < 64 {
+      const s1 = RotateRight(e, 6) ^ RotateRight(e, 11) ^
+                 RotateRight(e, 25)
+      const choose = (e & f) ^ (~e & g)
+      const first = Wrap(Wrap(Wrap(h, s1), Wrap(choose, kRound[t])),
+                         words[t])
+      const s0 = RotateRight(a, 2) ^ RotateRight(a, 13) ^
+                 RotateRight(a, 22)
+      const major = (a & b) ^ (a & c) ^ (b & c)
+      const second = Wrap(s0, major)
+      h = g
+      g = f
+      f = e
+      e = Wrap(d, first)
+      d = c
+      c = b
+      b = a
+      a = Wrap(first, second)
+      t = t + 1
+    }
+    state[0] = Wrap(state[0], a)
+    state[1] = Wrap(state[1], b)
+    state[2] = Wrap(state[2], c)
+    state[3] = Wrap(state[3], d)
+    state[4] = Wrap(state[4], e)
+    state[5] = Wrap(state[5], f)
+    state[6] = Wrap(state[6], g)
+    state[7] = Wrap(state[7], h)
+    at = at + 64
+  }
+  Free(block)
+  Free(words)
+
+  var digest = ArrayNew<u8>(32)
+  i = 0
+  while i < 8 {
+    digest[i * 4] = (state[i] >> 24 as u32) as u8
+    digest[i * 4 + 1] = ((state[i] >> 16 as u32) % 256 as u32) as u8
+    digest[i * 4 + 2] = ((state[i] >> 8 as u32) % 256 as u32) as u8
+    digest[i * 4 + 3] = (state[i] % 256 as u32) as u8
+    i = i + 1
+  }
+  Free(state)
+  return digest
+}
+
+/// The same, over text.
+offer fun Sha256Of(value: text) -> []u8 uses unsafe {
+  return Sha256(Bytes(value))
+}
+
+/// A digest as lowercase hexadecimal, which is how one is written down.
+offer fun Hex(digest: []u8) -> text uses unsafe {
+  var builder = BuilderNew()
+  var i = 0
+  while i < digest.len {
+    builder.AppendByte(HexDigit(digest[i] / 16))
+    builder.AppendByte(HexDigit(digest[i] % 16))
+    i = i + 1
+  }
+  return builder.Release()
+}
+
+fun HexDigit(value: u8) -> u8 {
+  if value < 10 {
+    return 48 + value
+  }
+  return 87 + value
+}
+
+// --------------------------------------------------------------- HMAC ---
+
+/// HMAC-SHA-256 of `message` with `key`, as 32 bytes.
+///
+/// What signs a cookie, a webhook or a token: a hash of the message and
+/// the key together, arranged so that knowing the hash of one message
+/// does not let someone sign another.
+offer fun Hmac(key: []u8, message: []u8) -> []u8 uses unsafe {
+  // A key longer than a block is hashed first; a shorter one is padded
+  // with zeroes.
+  var block = ArrayNew<u8>(64)
+  var i = 0
+  while i < 64 {
+    block[i] = 0
+    i = i + 1
+  }
+  if key.len > 64 {
+    const hashed = Sha256(key)
+    i = 0
+    while i < hashed.len {
+      block[i] = hashed[i]
+      i = i + 1
+    }
+    Free(hashed)
+  } else {
+    i = 0
+    while i < key.len {
+      block[i] = key[i]
+      i = i + 1
+    }
+  }
+
+  var inner = ArrayNew<u8>(64 + message.len)
+  var outer = ArrayNew<u8>(64 + 32)
+  i = 0
+  while i < 64 {
+    inner[i] = block[i] ^ 0x36
+    outer[i] = block[i] ^ 0x5c
+    i = i + 1
+  }
+  i = 0
+  while i < message.len {
+    inner[64 + i] = message[i]
+    i = i + 1
+  }
+  const first = Sha256(inner)
+  i = 0
+  while i < 32 {
+    outer[64 + i] = first[i]
+    i = i + 1
+  }
+  const second = Sha256(outer)
+  Free(block)
+  Free(inner)
+  Free(outer)
+  Free(first)
+  return second
+
+}
+
+/// Whether two digests are the same, in time that does not depend on
+/// where they differ.
+///
+/// A comparison that stops at the first difference tells an attacker how
+/// much of a signature they got right, which is enough to find the rest
+/// one byte at a time.
+offer fun SameDigest(left: []u8, right: []u8) -> bool {
+  if left.len != right.len {
+    return false
+  }
+  var difference: u8 = 0
+  var i = 0
+  while i < left.len {
+    difference = difference | (left[i] ^ right[i])
+    i = i + 1
+  }
+  return difference == 0
+}
+
+// ------------------------------------------------------- randomness ---
+
+/// `count` bytes from the system's own source.
+///
+/// Not `std.random`: that is a sequence, and a token made from a
+/// sequence is a token someone can continue (D170).
+offer fun RandomBytes(count: int) -> []u8 uses unsafe {
+  var bytes = ArrayNew<u8>(count)
+  if count <= 0 {
+    return bytes
+  }
+  if wolang_entropy(&mut bytes[0], count as u64) != 0 {
+    // Said rather than silently weak: a caller that gets nothing knows
+    // it got nothing.
+    var i = 0
+    while i < count {
+      bytes[i] = 0
+      i = i + 1
+    }
+  }
+  return bytes
+}
+
+/// A token of `bytes` random bytes, as hexadecimal.
+offer fun Token(bytes: int) -> text uses unsafe {
+  const held = RandomBytes(bytes)
+  const written = Hex(held)
+  Free(held)
+  return written
+}
+
+/// A version 4 UUID: random, in the shape everything expects.
+offer fun Uuid() -> text uses unsafe {
+  var bytes = RandomBytes(16)
+  // The version and the variant, which are what make it a UUID rather
+  // than sixteen random bytes.
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const written = Formatted(bytes)
+  Free(bytes)
+  return written
+}
+
+/// A version 7 UUID: the time first, then randomness.
+///
+/// Two of them made a millisecond apart sort in the order they were
+/// made, which is what a database index wants and what version 4 does
+/// not give.
+offer fun UuidAt(millis: s64) -> text uses unsafe {
+  var bytes = RandomBytes(16)
+  var i = 0
+  while i < 6 {
+    bytes[i] = ((millis >> ((5 - i) * 8) as s64) % 256) as u8
+    i = i + 1
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x70
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const written = Formatted(bytes)
+  Free(bytes)
+  return written
+}
+
+fun Formatted(bytes: []u8) -> text uses unsafe {
+  var builder = BuilderNew()
+  var i = 0
+  while i < 16 {
+    if i == 4 || i == 6 || i == 8 || i == 10 {
+      builder.AppendByte(45)
+    }
+    builder.AppendByte(HexDigit(bytes[i] / 16))
+    builder.AppendByte(HexDigit(bytes[i] % 16))
+    i = i + 1
+  }
+  return builder.Release()
+}
+
+// --------------------------------------------------------- base32 ---
+
+const kBase32: text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+/// Base32 as RFC 4648 writes it: what a one-time password secret and a
+/// case-insensitive identifier are written in.
+offer fun ToBase32(bytes: []u8) -> text uses unsafe {
+  var builder = BuilderNew()
+  const alphabet = Bytes(kBase32)
+  var held: u64 = 0
+  var bits = 0
+  var i = 0
+  while i < bytes.len {
+    held = (held << 8 as u64) | bytes[i] as u64
+    bits = bits + 8
+    while bits >= 5 {
+      bits = bits - 5
+      builder.AppendByte(alphabet[((held >> bits as u64) % 32) as int])
+    }
+    i = i + 1
+  }
+  if bits > 0 {
+    builder.AppendByte(alphabet[((held << (5 - bits) as u64) % 32) as int])
+  }
+  // Padded to a multiple of eight, which is what the standard says and
+  // what everything that reads it expects.
+  while Length(builder.Text()) % 8 != 0 {
+    builder.AppendByte(61)
+  }
+  return builder.Release()
+}
+
+/// The bytes a base32 string spells. Anything that is not a digit of the
+/// alphabet is skipped, which is what makes a written-down secret with
+/// spaces in it work.
+offer fun FromBase32(value: text) -> []u8 uses unsafe {
+  const bytes = Bytes(value)
+  var out = ArrayNew<u8>(bytes.len * 5 / 8 + 1)
+  var written = 0
+  var held: u64 = 0
+  var bits = 0
+  var i = 0
+  while i < bytes.len {
+    const digit = Base32Digit(bytes[i])
+    i = i + 1
+    if digit < 0 {
+      continue
+    }
+    held = (held << 5 as u64) | digit as u64
+    bits = bits + 5
+    if bits >= 8 {
+      bits = bits - 8
+      out[written] = ((held >> bits as u64) % 256) as u8
+      written = written + 1
+    }
+  }
+  return Prefix<u8>(out, written)
+}
+
+fun Base32Digit(byte: u8) -> int {
+  if byte >= 65 && byte <= 90 {
+    return (byte - 65) as int
+  }
+  if byte >= 97 && byte <= 122 {
+    return (byte - 97) as int
+  }
+  if byte >= 50 && byte <= 55 {
+    return (byte - 50 + 26) as int
+  }
+  return -1
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun HashesTheKnownVectors() -> bool uses unsafe {
+  // The vectors everyone's SHA-256 is checked against.
+  const empty = Sha256Of("")
+  const abc = Sha256Of("abc")
+  const longer = Sha256Of(
+      "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+  const held = Hex(empty) ==
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" &&
+      Hex(abc) ==
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" &&
+      Hex(longer) ==
+      "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+  Free(empty)
+  Free(abc)
+  Free(longer)
+  return held
+}
+
+@Test
+fun SignsAndChecks() -> bool uses unsafe {
+  // The RFC 4231 vector: a twenty-byte key of `0x0b` and "Hi There".
+  var key = ArrayNew<u8>(20)
+  var i = 0
+  while i < 20 {
+    key[i] = 0x0b
+    i = i + 1
+  }
+  const signature = Hmac(key, Bytes("Hi There"))
+  const expected =
+      "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+  const held = Hex(signature) == expected
+  const same = SameDigest(signature, signature)
+  const other = Hmac(key, Bytes("Hi there"))
+  const different = !SameDigest(signature, other)
+  Free(key)
+  Free(signature)
+  Free(other)
+  return held && same && different
+}
+
+@Test
+fun MakesIdentifiers() -> bool uses unsafe {
+  const one = Uuid()
+  const two = Uuid()
+  // Thirty-six characters, dashes in four places, and version four.
+  const shaped = Length(one) == 36 && Bytes(one)[8] == 45 &&
+                 Bytes(one)[13] == 45 && Bytes(one)[14] == 52 &&
+                 Bytes(one)[18] == 45 && Bytes(one)[23] == 45
+  const sorted = UuidAt(1000) < UuidAt(2000)
+  return shaped && one != two && Length(Token(16)) == 32 && sorted
+}
+
+@Test
+fun WritesAndReadsBase32() -> bool uses unsafe {
+  const bytes = Bytes("foobar")
+  const written = ToBase32(bytes)
+  const back = FromBase32(written)
+  var same = back.len == bytes.len
+  var i = 0
+  while same && i < bytes.len {
+    same = back[i] == bytes[i]
+    i = i + 1
+  }
+  Free(back)
+  // The vector from the standard.
+  return written == "MZXW6YTBOI======" && same
+}

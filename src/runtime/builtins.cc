@@ -6,6 +6,7 @@
 #include "wolang/runtime/arena.h"
 #include "wolang/runtime/classes.h"
 #include "wolang/runtime/dns.h"
+#include "wolang/runtime/entropy.h"
 #include "wolang/runtime/env.h"
 #include "wolang/runtime/files.h"
 #include "wolang/runtime/globals.h"
@@ -155,6 +156,9 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_resolve", reinterpret_cast<void*>(&wolang_resolve)},
       {"wolang_spawn", reinterpret_cast<void*>(&wolang_spawn)},
       {"wolang_print", reinterpret_cast<void*>(&wolang_print)},
+      {"wolang_text_compare",
+       reinterpret_cast<void*>(&wolang_text_compare)},
+      {"wolang_entropy", reinterpret_cast<void*>(&wolang_entropy)},
       {"wolang_socket_open",
        reinterpret_cast<void*>(&wolang_socket_open)},
       {"wolang_socket_connect",
