@@ -37,3 +37,18 @@ so that a file looks right before the server has answered.
 formatted text back. Text that does not parse comes back unchanged
 rather than as an error: a buffer mid-edit is the normal case, and
 losing it would be unforgivable.
+
+## Packaging the Visual Studio Code extension
+
+The extension is plain JavaScript with no dependencies, so building the
+`.vsix` needs neither npm nor a network:
+
+```sh
+python3 tools/package/make_vsix.py          # build/wolang-0.1.0.vsix
+code --install-extension build/wolang-0.1.0.vsix
+```
+
+What that produces is a complete extension: the grammar, the language
+configuration, the task and debug templates, the icon, and a language
+client that speaks LSP to `wolang lsp` over a pipe. `npx vsce package`
+works too, and produces the same thing with more steps (D175).

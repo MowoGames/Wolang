@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 240" width="760" height="240">
+  <rect width="760" height="240" fill="none"/>
+  <polygon points="131.5,202.6 87.0,160.6 71.0,98.4 62.6,58.1 94.6,85.8 131.5,74.9 168.5,85.8 200.4,58.1 192.0,98.4 176.0,160.6" fill="rgb(226, 233, 247)"/>
+  <polygon points="62.6,58.1 94.6,85.8 81.1,95.9" fill="rgb(76, 91, 212)"/>
+  <polygon points="200.4,58.1 168.5,85.8 181.9,95.9" fill="rgb(76, 91, 212)"/>
+  <polygon points="131.5,200.1 112.2,153.0 150.8,153.0" fill="rgb(154, 167, 196)"/>
+  <polygon points="131.5,186.6 122.3,166.5 140.8,166.5" fill="rgb(24, 30, 56)"/>
+  <polygon points="92.0,105.2 121.4,115.2 120.6,130.4 93.7,120.3" fill="rgb(255, 176, 32)"/>
+  <polygon points="171.0,105.2 141.6,115.2 142.4,130.4 169.3,120.3" fill="rgb(255, 176, 32)"/>
+  <text x="268" y="152" font-family="Inter, Helvetica, Arial, sans-serif" font-size="108" font-weight="700" fill="rgb(226, 233, 247)">Wolang</text>
+  <text x="272" y="196" font-family="Inter, Helvetica, Arial, sans-serif" font-size="26" letter-spacing="6" fill="rgb(255, 176, 32)">COMPILED. TYPED. FAST.</text>
+</svg>

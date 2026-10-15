@@ -5,17 +5,33 @@
   "version": "0.1.0",
   "publisher": "mowogames",
   "license": "Apache-2.0",
-  "repository": { "type": "git", "url": "https://github.com/MowoGames/Wolang" },
-  "engines": { "vscode": "^1.75.0" },
-  "categories": ["Programming Languages"],
-  "main": "./out/extension.js",
-  "activationEvents": ["onLanguage:wolang"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MowoGames/Wolang"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters",
+    "Debuggers"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:wolang"
+  ],
   "contributes": {
     "languages": [
       {
         "id": "wolang",
-        "aliases": ["Wolang", "wolang"],
-        "extensions": [".wo"],
+        "aliases": [
+          "Wolang",
+          "wolang"
+        ],
+        "extensions": [
+          ".wo"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -36,7 +52,11 @@
         },
         "wolang.trace.server": {
           "type": "string",
-          "enum": ["off", "messages", "verbose"],
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
           "default": "off",
           "description": "Log the traffic between the editor and the language server."
         }
@@ -45,26 +65,67 @@
     "taskDefinitions": [
       {
         "type": "wolang",
-        "required": ["command"],
+        "required": [
+          "command"
+        ],
         "properties": {
           "command": {
             "type": "string",
             "description": "check, test, build or run"
           },
-          "package": { "type": "string", "description": "The package directory." }
+          "package": {
+            "type": "string",
+            "description": "The package directory."
+          }
         }
+      }
+    ],
+    "commands": [
+      {
+        "command": "wolang.check",
+        "title": "Wolang: Check",
+        "category": "Wolang"
+      },
+      {
+        "command": "wolang.test",
+        "title": "Wolang: Test",
+        "category": "Wolang"
+      },
+      {
+        "command": "wolang.build",
+        "title": "Wolang: Build",
+        "category": "Wolang"
+      },
+      {
+        "command": "wolang.run",
+        "title": "Wolang: Run",
+        "category": "Wolang"
+      },
+      {
+        "command": "wolang.restart",
+        "title": "Wolang: Restart the language server",
+        "category": "Wolang"
       }
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "package": "python3 ../../tools/package/make_vsix.py"
   },
-  "dependencies": { "vscode-languageclient": "^9.0.1" },
-  "devDependencies": {
-    "@types/node": "^20.11.0",
-    "@types/vscode": "^1.75.0",
-    "typescript": "^5.3.3"
-  }
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#0E1222",
+    "theme": "dark"
+  },
+  "keywords": [
+    "wolang",
+    "systems",
+    "gamedev",
+    "compiler",
+    "lsp"
+  ],
+  "bugs": {
+    "url": "https://github.com/MowoGames/Wolang/issues"
+  },
+  "homepage": "https://github.com/MowoGames/Wolang",
+  "qna": "https://github.com/MowoGames/Wolang/discussions"
 }

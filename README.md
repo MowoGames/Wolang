@@ -1,3 +1,5 @@
+<img src="assets/logo-128.png" width="96" align="right" alt="">
+
 # Wolang
 
 A statically typed, compiled, general purpose language with gamedev-grade
@@ -179,6 +181,7 @@ docs/             specification, architecture, decisions, diagnostics, style
 - [docs/embedding.md](docs/embedding.md) — Wolang inside another program
 - [docs/debugging.md](docs/debugging.md) — debuggers, profiles, replays
 - [editors/README.md](editors/README.md) — editor support, all over `wolang lsp`
+- [assets/](assets/) — the logo, the wordmark and the mascot, and the script that draws them
 
 ## Licence
 
