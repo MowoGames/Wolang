@@ -1,4 +1,5 @@
-// Copyright 2026 The Wolang Authors. All rights reserved.
+// Copyright 2026 The Wolang Authors. Licensed under the Apache
+// License, Version 2.0; see LICENSE.
 //
 // Wolang, embedded: one header, a C ABI, and no C++ in sight.
 //

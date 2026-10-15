@@ -1,4 +1,5 @@
-// Copyright 2026 The Wolang Authors. All rights reserved.
+// Copyright 2026 The Wolang Authors. Licensed under the Apache
+// License, Version 2.0; see LICENSE.
 //
 // Every fact the compiler caches is a query. Include this file after defining
 // either macro; both default to expanding to nothing.

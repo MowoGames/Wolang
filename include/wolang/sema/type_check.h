@@ -1,4 +1,5 @@
-// Copyright 2026 The Wolang Authors. All rights reserved.
+// Copyright 2026 The Wolang Authors. Licensed under the Apache
+// License, Version 2.0; see LICENSE.
 
 #ifndef WOLANG_SEMA_TYPE_CHECK_H_
 #define WOLANG_SEMA_TYPE_CHECK_H_

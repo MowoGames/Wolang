@@ -1,4 +1,5 @@
-// Copyright 2026 The Wolang Authors. All rights reserved.
+// Copyright 2026 The Wolang Authors. Licensed under the Apache
+// License, Version 2.0; see LICENSE.
 //
 // The single source of truth for Wolang's token vocabulary. Include this file
 // after defining any of the macros below; every macro defaults to expanding to

@@ -1,4 +1,5 @@
-// Copyright 2026 The Wolang Authors. All rights reserved.
+// Copyright 2026 The Wolang Authors. Licensed under the Apache
+// License, Version 2.0; see LICENSE.
 
 #ifndef WOLANG_FORMAT_FORMATTER_H_
 #define WOLANG_FORMAT_FORMATTER_H_

@@ -1,4 +1,5 @@
-// Copyright 2026 The Wolang Authors. All rights reserved.
+// Copyright 2026 The Wolang Authors. Licensed under the Apache
+// License, Version 2.0; see LICENSE.
 //
 // Every IR operation, in one place. Include this file after defining the
 // macros; both default to expanding to nothing.

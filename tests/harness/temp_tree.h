@@ -1,4 +1,5 @@
-// Copyright 2026 The Wolang Authors. All rights reserved.
+// Copyright 2026 The Wolang Authors. Licensed under the Apache
+// License, Version 2.0; see LICENSE.
 
 #ifndef WOLANG_TESTS_HARNESS_TEMP_TREE_H_
 #define WOLANG_TESTS_HARNESS_TEMP_TREE_H_

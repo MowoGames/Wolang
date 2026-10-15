@@ -36,7 +36,7 @@ offer fun Print(message: text) uses io {
 // ------------------------------------------------------- the rest of it ---
 
 need std.mem.{ArrayNew, Free}
-need std.text.{BuilderNew}
+need std.text.{Builder, BuilderNew}
 
 extern "C" fun read(fd: s32, buffer: *mut u8, count: u64) -> s64
 
@@ -112,7 +112,82 @@ offer fun ReadLine() -> text? uses io, unsafe {
   return builder.Release()
 }
 
+// --------------------------------------------------------- buffered out ---
+//
+// `Print` is one system call per line, which is what makes a program
+// that prints a hundred thousand lines spend its time in the kernel. A
+// buffered writer is the usual answer: collect, then write once.
+//
+// Explicit rather than automatic: a program whose output is a log wants
+// every line out *now*, and one writing a report wants it fast. Which it
+// is is the program's decision, and `Flush` is where it says so (D145).
+
+/// Collects output and writes it in blocks.
+offer class Out {
+  var held: Builder
+  var fd: s32 = 1
+  /// How much to collect before writing by itself.
+  var most: int = 65536
+
+  deinit  {
+    // Whatever is left goes out: a writer that dropped the last line
+    // would be a writer nobody could trust.
+    Flush()
+  }
+
+  /// Adds `message`, writing if there is enough to be worth it.
+  fun Write(message: text) uses io, unsafe {
+    held.Append(message)
+    if held.Len() >= most {
+      Flush()
+    }
+  }
+
+  /// Adds `message` and a line break.
+  fun Line(message: text) uses io, unsafe {
+    Write(message)
+    Write("\n")
+  }
+
+  /// Writes what has been collected, if anything.
+  fun Flush() uses io, unsafe {
+    if held.Len() == 0 {
+      return
+    }
+    const bytes = held.Text()
+    const _written = write(fd, bytes.data, bytes.length)
+    held.Clear()
+  }
+}
+
+/// A writer for standard output.
+offer fun OutNew() -> Out uses unsafe {
+  return Out(BuilderNew(), 1, 65536)
+}
+
+/// A writer for standard error.
+offer fun ErrNew() -> Out uses unsafe {
+  return Out(BuilderNew(), 2, 65536)
+}
+
+/// A writer for an open file descriptor.
+offer fun OutTo(fd: s32) -> Out uses unsafe {
+  return Out(BuilderNew(), fd, 65536)
+}
+
 // ------------------------------------------------------------- tests ---
+
+@Test
+fun BuffersUntilAsked() -> bool uses io, unsafe {
+  var out = OutNew()
+  // Nothing has gone out yet, which is the point: what is held is held
+  // until there is enough of it or until `Flush`.
+  out.Write("")
+  out.Line("")
+  out.Flush()
+  out.Flush()
+  return true
+}
 
 @Test
 fun WritesToBothStreams() -> bool uses io, unsafe {

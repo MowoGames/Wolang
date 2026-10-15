@@ -5,15 +5,26 @@ ergonomics. Wolang is its own project: the compiler, runtime and libraries have
 no dependency on any game engine, and an engine is just one of the hosts it can
 be embedded into.
 
-**Status:** wave 9 of 16. Wolang runs, and it runs as machine code: the front
-end is incremental, the IR is typed SSA, and the dev tier compiles to arm64
-with an interpreter alongside it as the reference semantics. Every `@Test`
-runs in both tiers and the two are compared. Programs call C through
-`extern`, and `std.io.Print` is written in Wolang on top of `write`.
+**Status:** the language runs, compiles to machine code, embeds in other
+programs and has a standard library. Three tiers agree on every test: an
+interpreter as the reference, a just-in-time tier for `run`, and an
+ahead-of-time tier through LLVM for `build`. A differential fuzzer
+compares all of them on generated programs, which is what finds
+miscompilations before a person does.
 
-What is not there yet: concurrency, ECS, owning heap types and the
-optimizing AOT tier. See [STATUS.md](STATUS.md) for where work stopped and
-[docs/roadmap.md](docs/roadmap.md) for what each wave adds.
+What it has: types with inference, abilities with static and dynamic
+dispatch, generics (including methods with type parameters of their own),
+exhaustive `match`, optionals and `T!`, effects (`uses io`) checked
+through the call graph, units and dimensions, components and systems with
+a compiler-scheduled frame, `comptime`, destructors and moves, closures
+that capture by copy, threads, an arena, and C interop in both
+directions.
+
+What it does not have yet: TLS, WebAssembly (the back end is there, the
+toolchain is not), GPU kernels, and associated types on abilities. See
+[STATUS.md](STATUS.md) for where work stopped and
+[docs/decisions.md](docs/decisions.md) for why things are the way they
+are.
 
 ```wolang
 need std.io.{Print}
@@ -68,17 +79,67 @@ ctest --test-dir build/debug --output-on-failure
 
 Presets: `debug`, `asan` (address and UB sanitizers), `release`.
 
-## Trying the current wave
+## Using it
 
 ```sh
-W=./build/debug/tools/wolang/wolang
-
-$W modules examples/package    # the package and module graph
-$W check examples/package      # check a whole package
-$W fmt examples/turret.wo      # format a file
-$W ast examples/turret.wo      # print the syntax tree
-$W check examples/recovery.wo  # see error recovery
+wolang new game && cd game     # a package that runs, tests and builds
+wolang run .                   # run it
+wolang test .                  # every `@Test`, in each tier, compared
+wolang build . -o game         # a binary that needs no compiler
+wolang check .                 # types, effects, borrows, exhaustiveness
+wolang fmt --write .           # the formatter
 ```
+
+And the rest of what the driver does:
+
+```sh
+wolang repl                    # a session: type an expression, see it
+wolang debug .                 # build with line information, start lldb
+wolang run --profile .         # where the time goes
+wolang run --record r.journal . # and --replay, to make a run happen again
+wolang fetch .                 # git dependencies, written into wolang.lock
+wolang doc . -o docs/api       # what a package offers, as Markdown
+wolang bind sdl.h              # Wolang declarations for a C header
+wolang lsp                     # what every editor in editors/ talks to
+wolang fuzz --count 200        # generate programs, compare the tiers
+wolang systems examples/systems # what systems touch and when they run
+```
+
+## Serving and calling
+
+```wolang
+need http.{AppNew, Ok, Request, Response, ServeWithDefaults}
+
+fun Health(_request: Request) -> Response => Ok("ok\n")
+
+fun main() uses io, unsafe {
+  var app = AppNew()
+  app.Get("/health", Health)
+  const _code = ServeWithDefaults(app, 8080, 512)
+}
+```
+
+`wolang-http` is Wolang over eight socket calls: a router with path
+parameters and nested routers, middleware, typed extractors, static files
+with the traversal checks, and a client. 53 900 requests a second on one
+thread and 58 900 on eight, keep-alive, in a couple of megabytes of
+resident memory.
+
+## Embedding it
+
+```c
+#include "wolang/embed/wolang.h"
+
+WolangVm* vm = wolang_vm_create();
+wolang_vm_bind(vm, "host_log", (void*)&host_log);
+wolang_vm_load(vm, "scripts/enemy");
+WolangValue delta = wolang_float(1.0 / 60.0), out;
+wolang_vm_call(vm, "Update", &delta, 1, &out);
+```
+
+One header, a C ABI, a static and a shared library, and
+`find_package(Wolang CONFIG)` → `Wolang::embed`. See
+[docs/embedding.md](docs/embedding.md).
 
 ## Layout
 
@@ -88,12 +149,22 @@ include/wolang/   public headers, mirrored by src/
   syntax/         tokens, lexer, syntax tree, parser, tree printer
   query/          the incremental query engine
   compiler/       item trees, database, manifests, modules, workspace, cache
-  format/         the formatter
+  sema/           types, resolution, effects, dimensions, flow, systems
+  ir/             typed SSA, lowering, passes, the verifier, tasks
+  codegen/        the dev tier (arm64, x64) and the LLVM back end
+  interp/         the reference tier
+  runtime/        allocator, arena, threads, poller, world, text
+  abi/            layouts: what a value is in memory
+  embed/          the C ABI for embedding
+  bind/           C headers in, Wolang declarations out
+  lsp/            the language server
 src/              implementation (.cc)
 tools/wolang/     the `wolang` command line driver
+lib/              std, http, game, core -- written in Wolang
+editors/          VS Code, Zed, Neovim, Sublime, Emacs, Helix, JetBrains
 tests/            unit tests and the dependency-free test harness
 examples/         .wo sources used by hand and as compiler corpus
-docs/             specification, architecture, roadmap, diagnostics, style
+docs/             specification, architecture, decisions, diagnostics, style
 ```
 
 ## Documentation
@@ -105,3 +176,10 @@ docs/             specification, architecture, roadmap, diagnostics, style
 - [docs/roadmap.md](docs/roadmap.md) — waves and exit criteria
 - [docs/diagnostics.md](docs/diagnostics.md) — diagnostic catalog
 - [docs/style.md](docs/style.md) — code and commit conventions
+- [docs/embedding.md](docs/embedding.md) — Wolang inside another program
+- [docs/debugging.md](docs/debugging.md) — debuggers, profiles, replays
+- [editors/README.md](editors/README.md) — editor support, all over `wolang lsp`
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

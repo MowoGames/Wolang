@@ -1,4 +1,5 @@
-// Copyright 2026 The Wolang Authors. All rights reserved.
+// Copyright 2026 The Wolang Authors. Licensed under the Apache
+// License, Version 2.0; see LICENSE.
 //
 // The wolang command line driver. Only the commands that the current wave
 // supports are implemented; see docs/roadmap.md for what each wave adds.

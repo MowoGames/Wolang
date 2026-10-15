@@ -1,4 +1,5 @@
-// Copyright 2026 The Wolang Authors. All rights reserved.
+// Copyright 2026 The Wolang Authors. Licensed under the Apache
+// License, Version 2.0; see LICENSE.
 //
 // The embedding API for C++, which is the same API with the ceremony
 // removed: a vm that closes itself, calls that take their arguments as
