@@ -2316,3 +2316,23 @@ which standard names a file uses, and whether it includes the header each
 one comes from. It is a heuristic over the names this project actually
 uses, not a model of C++; what it buys is that the next one is found by
 CI rather than by somebody on another operating system.
+
+**D190. A type comes with the value.** `FindAll` hands back a
+`List<Match>`, and the caller never mentions `List`. Calling `.Len()` on
+it produced an *error type* -- silently, with no diagnostic -- and the
+program trapped at run time with nothing explaining why.
+
+The cause: member tables were merged into a file's resolution from the
+modules it imports directly, and `List` belongs to `std.list`, which the
+caller never imported. So the caller had a type it knew the name of and
+no members.
+
+The merge walks the import graph transitively now. That also means a file
+is invalidated when a transitively imported file changes -- which is
+correct, because its types' members did change. The cost of the old
+behaviour was a class of silent miscompilation in every program that
+passes a container across a package boundary, which is every program.
+
+Found by writing the cookbook: the example that searched a file with a
+regular expression did not work, and the manual is where a library's
+shape gets used the way a stranger would use it (D183).

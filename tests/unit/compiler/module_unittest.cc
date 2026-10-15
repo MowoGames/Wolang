@@ -190,6 +190,58 @@ fun Use() -> int {
                 std::string::npos);
 }
 
+WOLANG_TEST(ModuleScopeTest, AMethodOnATypeTheCallerNeverImported) {
+  // `Rows()` hands back a `Holder<int>`, and the caller never mentions
+  // `Holder`. It should still be able to call a method on what it was
+  // given -- the type came with the value.
+  //
+  // Member tables were merged from the direct imports only, so the
+  // caller had a type it knew the name of and no members: the call
+  // quietly became an error value and the program trapped at run time
+  // with nothing explaining why (D190).
+  Fixture fixture;
+  const ModuleId library = fixture.AddModule("box");
+  fixture.AddFile(library, "box.wo", R"(
+offer struct Holder<T> {
+  var item: T
+
+  fun Item() -> T {
+    return item
+  }
+}
+)");
+
+  const ModuleId middle = fixture.AddModule("middle");
+  fixture.AddFile(middle, "middle.wo", R"(
+need box.{Holder}
+
+offer fun Rows() -> Holder<int> {
+  return Holder<int>(7)
+}
+)");
+
+  const ModuleId app = fixture.AddModule("app");
+  const FileId main = fixture.AddFile(app, "main.wo", R"(
+need middle.{Rows}
+
+fun Use() -> int {
+  const held = Rows()
+  return held.Item()
+}
+)");
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+
+  const LoweredFile* lowered = fixture.db().Lowered(main);
+  WOLANG_ASSERT_NE(lowered, nullptr);
+  WOLANG_EXPECT_EQ(JoinProblems(lowered->problems), "");
+  const std::string text =
+      ir::PrintModule(fixture.db().interner(), fixture.db().types(),
+                      lowered->module);
+  // The method is a call, not an undefined value.
+  WOLANG_EXPECT(text.find("undef : <error>") == std::string::npos);
+  WOLANG_EXPECT(text.find("Holder<s32>.Item") != std::string::npos);
+}
+
 WOLANG_TEST(ModuleScopeTest, ResolvesImportsBetweenModules) {
   Fixture fixture;
   const ModuleId math = fixture.AddModule("game.math");

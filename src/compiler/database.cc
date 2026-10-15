@@ -618,10 +618,41 @@ void Database::RegisterQueries() {
             }
           }
         }
+        // Imports, and what *they* import.
+        //
+        // A module's public shape may mention a type from its own
+        // dependencies -- `fun Rows() -> List<Held>` names `List`, which
+        // belongs to `std.list` -- and a caller needs that type's members
+        // to call a method on what it was handed. Merging only the direct
+        // imports left the caller with a type it knew the name of and no
+        // members, so `rows.Len()` quietly became an error value and the
+        // program trapped at run time with nothing explaining why (D190).
         if (const auto* imports = db.GetAs<ResolvedImports>(ImportsKey(file));
             imports != nullptr) {
+          std::vector<ModuleId> pending;
+          std::vector<uint32_t> seen;
           for (const ResolvedImport& import : imports->imports) {
-            const Module* module = GetModule(import.module);
+            pending.push_back(import.module);
+          }
+          while (!pending.empty()) {
+            const ModuleId module_id = pending.back();
+            pending.pop_back();
+            if (!module_id.is_valid()) {
+              continue;
+            }
+            bool known = false;
+            for (uint32_t held : seen) {
+              if (held == module_id.index) {
+                known = true;
+                break;
+              }
+            }
+            if (known) {
+              continue;
+            }
+            seen.push_back(module_id.index);
+
+            const Module* module = GetModule(module_id);
             if (module == nullptr) {
               continue;
             }
@@ -630,6 +661,13 @@ void Database::RegisterQueries() {
                       db.GetAs<FileResolution>(MemberTablesKey(source));
                   other != nullptr) {
                 merge(*other, source.index);
+              }
+              if (const auto* theirs =
+                      db.GetAs<ResolvedImports>(ImportsKey(source));
+                  theirs != nullptr) {
+                for (const ResolvedImport& import : theirs->imports) {
+                  pending.push_back(import.module);
+                }
               }
             }
           }
