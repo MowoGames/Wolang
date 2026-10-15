@@ -26,7 +26,8 @@ offer fun Kind(value: Json) -> int {
   }
 }
 
-error Malformed
+/// What a document that is not one answers with.
+offer error Malformed
 
 /// One of the six things a JSON value can be.
 offer enum Json {

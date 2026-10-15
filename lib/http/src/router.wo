@@ -1,0 +1,225 @@
+// Routing.
+//
+// A list of routes, each a method and a pattern, matched in the order
+// they were added. A pattern is the path with `:name` where a value goes
+// -- `/users/:id/posts/:post` -- and what matched is in the request's
+// params for the handler to read (D112).
+//
+// No tree and no regular expressions: an API has tens of routes, the
+// match is a walk over segments, and the walk is what makes `:id` cost
+// nothing but a pair in a list.
+
+need std.list.{List, ListNew}
+need std.text.{Bytes}
+
+/// One route: which method, which pattern, and what answers it.
+offer struct Route {
+  var method: text
+  var pattern: text
+  var handle: fun(Request) -> Response
+}
+
+/// A list of routes, tried in order.
+offer class Router {
+  var routes: List<Route>
+
+  /// Adds a route. Answers nothing: a router is built once, at the top of
+  /// a program, so the calls read as a list rather than as a chain.
+  fun Add(method: text, pattern: text,
+          handle: fun(Request) -> Response) uses unsafe {
+    routes.Push(Route(method, pattern, handle))
+  }
+
+  fun Get(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+    Add("GET", pattern, handle)
+  }
+
+  fun Post(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+    Add("POST", pattern, handle)
+  }
+
+  fun Put(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+    Add("PUT", pattern, handle)
+  }
+
+  fun Delete(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+    Add("DELETE", pattern, handle)
+  }
+
+  /// How many routes there are.
+  fun Len() -> int {
+    return routes.Len()
+  }
+}
+
+offer fun RouterNew() -> Router uses unsafe {
+  return Router(ListNew<Route>())
+}
+
+/// Finds the route for `request`, fills in its path parameters, and
+/// answers with what the handler said.
+///
+/// `404` when no pattern matches the path, and `405` when one does but
+/// not for this method -- which is the difference between "no such thing"
+/// and "not like that".
+offer fun Dispatch(router: &Router, request: Request) -> Response
+    uses io, unsafe {
+  var subject = request
+  var matched_path = false
+  var i = 0
+  while i < router.Len() {
+    const route = router.routes.At(i)
+    // Written into the request rather than handed alongside it: a
+    // handler takes a request and nothing else, and `:id` is part of
+    // what the request was (D112).
+    subject.param_count = 0
+    if Matches(route.pattern, subject.path, &mut subject) {
+      matched_path = true
+      if route.method == subject.method {
+        return route.handle(subject)
+      }
+    }
+    i = i + 1
+  }
+  if matched_path {
+    return Status(405, "method not allowed\n")
+  }
+  return NotFound()
+}
+
+/// Whether `pattern` matches `path`, filling `params` with what `:name`
+/// stood for.
+///
+/// Segment by segment: `:name` takes whatever is in that segment, `*`
+/// takes the rest, and anything else has to be equal.
+offer fun Matches(pattern: text, path: text, into: &mut Request)
+    -> bool uses unsafe {
+  const want = Bytes(pattern)
+  const have = Bytes(path)
+  var at_want = 0
+  var at_have = 0
+  loop {
+    at_want = SkipSlashes(want, at_want)
+    at_have = SkipSlashes(have, at_have)
+    if at_want >= want.len {
+      // The pattern is finished: so must the path be.
+      return at_have >= have.len
+    }
+    if want[at_want] == 42 {
+      // `*`: the rest of the path, whatever it is.
+      return true
+    }
+    if at_have >= have.len {
+      return false
+    }
+    const want_end = SegmentEnd(want, at_want)
+    const have_end = SegmentEnd(have, at_have)
+    if want[at_want] == 58 {
+      // `:name`: this segment is the value.
+      const name = SliceOf(want, at_want + 1, want_end) as text
+      const value = SliceOf(have, at_have, have_end) as text
+      if into.param_count < kMostParams {
+        into.params[into.param_count] = Pair(name, value)
+        into.param_count = into.param_count + 1
+      }
+    } else {
+      const left = SliceOf(want, at_want, want_end) as text
+      const right = SliceOf(have, at_have, have_end) as text
+      if left != right {
+        return false
+      }
+    }
+    at_want = want_end
+    at_have = have_end
+  }
+}
+
+fun SkipSlashes(bytes: []u8, from: int) -> int {
+  var at = from
+  while at < bytes.len && bytes[at] == 47 {
+    at = at + 1
+  }
+  return at
+}
+
+fun SegmentEnd(bytes: []u8, from: int) -> int {
+  var at = from
+  while at < bytes.len && bytes[at] != 47 {
+    at = at + 1
+  }
+  return at
+}
+
+// The same view-of-part-of-a-buffer the request parser needs, under its
+// own name because a package's files share one module and `Slice` is
+// already taken there.
+fun SliceOf(bytes: []u8, from: int, to: int) -> []u8 uses unsafe {
+  return Slice(bytes, from, to)
+}
+
+// ------------------------------------------------------------ serving ---
+
+// A router the server loop can reach without a closure.
+//
+// A closure takes nothing with it (D106), so the loop cannot carry the
+// router in one -- and a module-level `var` is what the language has for
+// "one of these, for the program" (D88). Set by `ServeRoutes`, read by
+// the handler it installs.
+var serving: Router = Router(ListNew<Route>())
+
+fun Installed(request: Request) -> Response uses io, unsafe {
+  return Dispatch(&serving, request)
+}
+
+/// Listens on `port` and answers with `router`, polling for readiness.
+///
+/// What a program serving an API calls: the router says what answers
+/// what, and this is the loop around it (D112).
+offer fun ServeRoutes(port: int, most: int, router: Router) -> s32
+    uses io, unsafe {
+  serving = router
+  return RunPolled(port, most, Installed)
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun MatchesAPlainPath() -> bool uses unsafe {
+  var request = RequestNew()
+  return Matches("/health", "/health", &mut request) &&
+         !Matches("/health", "/healthz", &mut request) &&
+         !Matches("/health", "/health/more", &mut request)
+}
+
+@Test
+fun TakesWhatAPatternNames() -> bool uses unsafe {
+  var request = RequestNew()
+  const matched = Matches("/users/:id/posts/:post",
+                          "/users/7/posts/hello", &mut request)
+  return matched && Param(&request, "id", "") == "7" &&
+         Param(&request, "post", "") == "hello" &&
+         Param(&request, "missing", "none") == "none"
+}
+
+@Test
+fun AStarTakesTheRest() -> bool uses unsafe {
+  var request = RequestNew()
+  return Matches("/files/*", "/files/a/b/c.txt", &mut request) &&
+         Matches("/files/*", "/files/", &mut request)
+}
+
+@Test
+fun ReadsAQueryAndAHeader() -> bool uses unsafe {
+  const text = "GET /search?q=wolang&page=2 HTTP/1.1\r\n" +
+               "Host: localhost\r\nContent-Type: text/plain\r\n" +
+               "Content-Length: 5\r\n\r\nhello"
+  const bytes = Bytes(text)
+  const request = ParseRequest(bytes, bytes.len)
+  return request.method == "GET" && request.path == "/search" &&
+         Query(&request, "q", "") == "wolang" &&
+         Query(&request, "page", "") == "2" &&
+         Query(&request, "missing", "none") == "none" &&
+         Header(&request, "host", "") == "localhost" &&
+         Header(&request, "Content-Type", "") == "text/plain" &&
+         request.body == "hello"
+}

@@ -1005,3 +1005,42 @@ A closure takes nothing with it: naming a local of the function around it
 is an error (`E0135`), because that local has to live somewhere after the
 frame goes away. A type with the state and a method on it says where, and
 costs nothing that is not written down.
+
+## Serving an API
+
+```wolang
+need http.{Created, NotFound, Ok, OkJson, Param, Query, Request, Response,
+            RouterNew, ServeRoutes}
+
+fun User(request: Request) -> Response uses unsafe {
+  const id = Param(&request, "id", "0")
+  return OkJson("\{\"id\":\"{id}\"\}\n")
+}
+
+fun Hello(request: Request) -> Response uses unsafe {
+  return Ok("hello, {Query(&request, "name", "world")}\n")
+}
+
+fun main() uses io, unsafe {
+  var router = RouterNew()
+  router.Get("/users/:id", User)
+  router.Get("/hello", Hello)
+  const _code = ServeRoutes(8080, 256, router)
+}
+```
+
+A request carries its method, path, query string, body, headers and the
+path parameters the router matched; all of them are views into the buffer
+it was read from, so reading one costs nothing. `Header`, `Query` and
+`Param` take the request by reference, because a request is a value and
+reading it must not consume it.
+
+A response is a status, a body, a content type and up to eight headers:
+`Ok`, `OkJson`, `Created`, `NoContent`, `NotFound`, `BadRequest` and
+`Status` build one, and `WithHeader` adds to it.
+
+`ServeRoutes(port, most, router)` is the loop: one thread, readiness
+polling, keep-alive, and an arena per request so everything a handler
+allocates goes back at the end of the turn. On this machine it serves
+**39 000 requests a second over 500 connections** compiled in memory, and
+**42 800** as a binary built with `wolang build`.

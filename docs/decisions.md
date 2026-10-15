@@ -1272,3 +1272,43 @@ reference tier answered with a frame-relative slot, which meant a
 different slot in the callee it was passed to; and storing or loading a
 tagged enum through a pointer used an aggregate's field offsets, where an
 enum's payload is at the offsets *that variant* gave it.
+
+**D112. A request is views, and a router is a list of patterns.** What a
+server needs beyond a method and a path -- headers, a query string, a
+body, path parameters, a status and content type -- is now there, and all
+of it costs no allocation: a request's headers are a fixed run of
+name/value views into the connection's buffer, and so are a response's.
+
+Fixed rather than grown, and that is the decision. A `List` owns its
+storage, so a request holding one would be a value that has to be
+destroyed -- while a request is built by a parser, handed to a router,
+rebuilt with its parameters, given to a handler and dropped at the end of
+a turn. Every one of those steps would be a question about who frees it,
+and two of them got the answer wrong before this. A fixed run has no
+answer to give: twenty-four headers and eight parameters, and a request
+with more keeps the first ones.
+
+The router matches segment by segment -- `:name` takes a segment, `*`
+takes the rest -- in the order the routes were added. No tree and no
+regular expressions: an API has tens of routes, and the walk is what makes
+`:id` cost a pair in an array. A path that matches with the wrong method
+is `405` rather than `404`, which is the difference between "no such
+thing" and "not like that".
+
+A write through a mutable reference is the reference's business rather
+than the binding's: `fun Matches(.., into: &mut Request)` says the thing
+referred to may be written, and the name holding the reference is not
+what is being assigned.
+
+**D113. Freeing storage an `arena` handed out is not a free.** A
+destructor that runs inside an `arena` block frees what it owns -- and
+inside a block, what it owns came from the arena, which reclaims it when
+the block ends. `free` on that is a pointer the allocator never gave
+anyone, and it aborted the process on the first request a server served
+with a string builder in it.
+
+So `wolang_object_free` asks the arena first. Not a flag on the pointer or
+a header before it: the arena knows its chunks, the check is a walk over a
+handful of ranges, and it happens only on a free. The arena stack is also
+per thread now, which it had to be the moment a stage of systems ran in
+threads (D97).

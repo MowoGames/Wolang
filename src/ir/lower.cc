@@ -2092,7 +2092,21 @@ class Lowerer {
         // value carries across unchanged and the conversion is a fact
         // about types rather than an operation.
         if (IsView(TypeOf(expr.lhs)) && IsView(type)) {
-          return operand;
+          const TypeId want = Erase(type);
+          if (!want.is_valid() || ValueType(operand) == want) {
+            return operand;
+          }
+          // The same pair under another name: rebuilt rather than passed
+          // through, so that the instruction says what it is. Letting the
+          // operand's type stand made a `[]u8 as text` a `[]u8` as far as
+          // everything downstream could tell (D111).
+          const TypeId bytes = types_->Pointer(
+              types_->Int(IntWidth::k8, /*is_signed=*/false),
+              /*is_mutable=*/false);
+          const TypeId word = types_->u64();
+          return builder_->Add(Opcode::kMakeStruct, want,
+                               {builder_->Extract(bytes, operand, 0),
+                                builder_->Extract(word, operand, 1)});
         }
         const TypeId built = Unwrapped(type);
         return Coerce(builder_->Add(Opcode::kCast, built, {operand}), built,
@@ -2940,9 +2954,16 @@ class Lowerer {
     if (!value.is_valid()) {
       return value;
     }
-    const InstId slot = builder_->Add(Opcode::kAlloca, TypeOf(place));
+    // A value with nowhere to point at: it is put somewhere first, and
+    // what travels is the address of that -- `local.addr` rather than the
+    // slot itself, because a slot is an index into the frame that made it
+    // and `&x` is for handing to somebody else (D111).
+    const TypeId held = Erase(TypeOf(place));
+    const InstId slot = builder_->Add(Opcode::kAlloca, held);
     builder_->Add(Opcode::kStore, TypeId{}, {slot, value});
-    return slot;
+    return builder_->Add(Opcode::kLocalAddress,
+                         types_->Pointer(held, /*is_mutable=*/true),
+                         {slot});
   }
 
   // Where a value lives.
@@ -3033,7 +3054,11 @@ class Lowerer {
         // the type the context wanted at the expression, so a field read
         // where a `T?` is expected is recorded as `T?` -- and a step
         // typed that way read the enum's bytes as an optional's (D111).
-        const Member* read = FindAnyMember(owner, expr.name);
+        const TypeId through_address =
+            types_->KindOf(owner) == TypeKind::kPointer
+                ? Erase(types_->ElementOf(owner))
+                : owner;
+        const Member* read = FindAnyMember(through_address, expr.name);
         const TypeId field_type = read != nullptr
                                       ? Erase(Apply(read->type))
                                       : Erase(TypeOf(id));
@@ -3058,6 +3083,26 @@ class Lowerer {
           place.path.push_back(Step{FieldIndex(owner, expr.name), InstId{},
                                     InstId{}, field_type});
           return place;
+        }
+        // A field through an address: a reference is a pointer here
+        // (D109), and reading a field of what it refers to is the same
+        // walk a class gets -- the address is the value, and the field is
+        // an offset into it.
+        if (types_->KindOf(owner) == TypeKind::kPointer) {
+          const TypeId referenced = Erase(types_->ElementOf(owner));
+          if (FindAnyMember(referenced, expr.name) != nullptr) {
+            // A reference to a class refers to the *handle*, so the
+            // handle is read out of it first; a reference to a value type
+            // already is the address its fields are at.
+            place.pointer = types_->IsHandle(referenced)
+                                ? builder_->Add(Opcode::kLoad, referenced,
+                                                {Value(expr.lhs)})
+                                : Value(expr.lhs);
+            place.root_type = referenced;
+            place.path.push_back(Step{FieldIndex(referenced, expr.name),
+                                      InstId{}, InstId{}, field_type});
+            return place;
+          }
         }
         Place base = PlaceOf(expr.lhs);
         if (!base.readable()) {

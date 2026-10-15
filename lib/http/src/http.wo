@@ -8,25 +8,212 @@
 
 need std.io.{Print}
 need std.mem.{BytesFromRaw}
+need std.text.{Bytes, BuilderNew}
 
 // `socket.wo` is the same module -- a package's files link into one -- so
 // the floor it declares needs no import here.
 
+/// One name and one value: a header, a query parameter, a path
+/// parameter. The same shape for all three, because the work -- find the
+/// one called this -- is the same (D112).
+offer struct Pair {
+  var name: text = ""
+  var value: text = ""
+}
+
+// How many headers and path parameters a request holds.
+//
+// Fixed rather than grown: a request *is* views into the connection's
+// buffer, and a list that owns its storage would make a request something
+// that has to be destroyed -- which a value handed to a handler, rebuilt
+// by a router and dropped at the end of a turn is a bad fit for (D112).
+// A request with more headers than this keeps the first ones.
+offer const kMostHeaders: int = 24
+offer const kMostParams: int = 8
+
 /// A request, as views into the buffer it was read from.
+///
+/// Everything here is a view: the bytes stay in the connection's buffer
+/// until the turn is over, which is what makes reading a request cost no
+/// allocation at all.
 offer struct Request {
-  var method: text
-  var path: text
-  var length: int
+  var method: text = ""
+  var path: text = ""
+  // What came after `?`, unparsed. `Query` is what reads it.
+  var query: text = ""
+  var body: text = ""
+  var headers: [24]Pair
+  var header_count: int = 0
+  // What the router matched: `/users/:id` against `/users/7` puts `id`
+  // here.
+  var params: [8]Pair
+  var param_count: int = 0
+  var length: int = 0
+}
+
+/// An empty request, to fill in.
+///
+/// The arrays are not written here: an element nobody filled is never
+/// read, because the counts say how many there are.
+offer fun RequestNew() -> Request {
+  var headers: [24]Pair
+  var params: [8]Pair
+  return Request("", "", "", "", headers, 0, params, 0, 0)
 }
 
 /// What a handler answers with.
+///
+/// Its headers are a fixed run for the same reason a request's are: a
+/// response is built, handed on and written, and a list that owns its
+/// storage would make every one of those a question about who frees it
+/// (D112).
+offer const kMostAnswerHeaders: int = 8
+
 offer struct Response {
   var status: int
   var body: text
+  var kind: text
+  var headers: [8]Pair
+  var header_count: int
 }
 
-offer fun Ok(body: text) -> Response => Response(200, body)
-offer fun NotFound() -> Response => Response(404, "not found")
+fun Answering(status: int, body: text, kind: text) -> Response {
+  var headers: [8]Pair
+  return Response(status, body, kind, headers, 0)
+}
+
+/// The value of the header called `name`, or `fallback`.
+///
+/// Compared without regard to case, because a client may send
+/// `Content-Type` or `content-type` and both mean the same header.
+offer fun Header(request: &Request, name: text, fallback: text) -> text
+    uses unsafe {
+  var i = 0
+  while i < request.header_count {
+    const held = request.headers[i]
+    if SameName(held.name, name) {
+      return held.value
+    }
+    i = i + 1
+  }
+  return fallback
+}
+
+/// The query parameter called `name`, or `fallback`.
+///
+/// `?a=1&b=two` is read on demand rather than up front: most handlers
+/// want one of them, and splitting the rest costs a pass over bytes
+/// nobody reads.
+offer fun Query(request: &Request, name: text, fallback: text) -> text
+    uses unsafe {
+  const bytes = Bytes(request.query)
+  var at = 0
+  while at < bytes.len {
+    const equals = SpanToAny(bytes, at, 61, 38)
+    const end = SpanTo(bytes, at, 38)
+    if equals < end {
+      const key = Slice(bytes, at, equals) as text
+      if key == name {
+        return Slice(bytes, equals + 1, end) as text
+      }
+    }
+    at = end + 1
+  }
+  return fallback
+}
+
+/// The path parameter called `name`, or `fallback`: what the router
+/// matched for `:name`.
+offer fun Param(request: &Request, name: text, fallback: text) -> text
+    uses unsafe {
+  var i = 0
+  while i < request.param_count {
+    const held = request.params[i]
+    if held.name == name {
+      return held.value
+    }
+    i = i + 1
+  }
+  return fallback
+}
+
+// Whether two header names are the same, ignoring case.
+fun SameName(left: text, right: text) -> bool uses unsafe {
+  const a = Bytes(left)
+  const b = Bytes(right)
+  if a.len != b.len {
+    return false
+  }
+  var i = 0
+  while i < a.len {
+    if Lower(a[i]) != Lower(b[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+fun Lower(byte: u8) -> u8 {
+  if byte >= 65 && byte <= 90 {
+    return byte + 32
+  }
+  return byte
+}
+
+// ---------------------------------------------------------- answering ---
+
+/// `200 OK`, as plain text.
+offer fun Ok(body: text) -> Response {
+  return Answering(200, body, "text/plain")
+}
+
+/// `200 OK`, as a JSON document. The body is written as it is: a handler
+/// that has a `Json` value writes it with `json.Write` first.
+offer fun OkJson(body: text) -> Response {
+  return Answering(200, body, "application/json")
+}
+
+/// `201 Created`, with where the thing was created.
+offer fun Created(location: text, body: text) -> Response {
+  return WithHeader(Answering(201, body, "application/json"), "Location",
+                    location)
+}
+
+offer fun NoContent() -> Response {
+  return Answering(204, "", "text/plain")
+}
+
+offer fun NotFound() -> Response {
+  return Answering(404, "not found\n", "text/plain")
+}
+
+offer fun BadRequest(why: text) -> Response {
+  return Answering(400, why, "text/plain")
+}
+
+offer fun Status(status: int, body: text) -> Response {
+  return Answering(status, body, "text/plain")
+}
+
+/// The same response with one more header on it. Answers the response, so
+/// calls chain.
+offer fun WithHeader(answer: Response, name: text, value: text)
+    -> Response {
+  var held = answer
+  if held.header_count < kMostAnswerHeaders {
+    held.headers[held.header_count] = Pair(name, value)
+    held.header_count = held.header_count + 1
+  }
+  return held
+}
+
+/// The same response with a different content type.
+offer fun WithType(answer: Response, kind: text) -> Response {
+  var held = answer
+  held.kind = kind
+  return held
+}
 
 /// Finds the end of the request line's first word, starting at `from`.
 fun SpanTo(bytes: []u8, from: int, stop: u8) -> int {
@@ -45,18 +232,97 @@ fun SpanTo(bytes: []u8, from: int, stop: u8) -> int {
 /// Returns a request whose `length` is zero when the line is not one: a
 /// parser that cannot say "this is not a request" is not a parser.
 offer fun ParseRequest(bytes: []u8, received: int) -> Request uses unsafe {
+  var request = RequestNew()
   if received <= 0 {
-    return Request("", "", 0)
+    return request
   }
   const line = SpanTo(bytes, 0, 13)
   const method_end = SpanTo(bytes, 0, 32)
   if method_end >= line {
-    return Request("", "", 0)
+    return request
   }
-  const path_end = SpanTo(bytes, method_end + 1, 32)
-  const method = Slice(bytes, 0, method_end) as text
-  const path = Slice(bytes, method_end + 1, path_end) as text
-  return Request(method, path, received)
+  const target_end = SpanTo(bytes, method_end + 1, 32)
+  request.method = Slice(bytes, 0, method_end) as text
+  // The target is `/path?query`, and the query is whatever follows the
+  // first `?`.
+  const question = SpanToAny(bytes, method_end + 1, 63, 32)
+  request.path = Slice(bytes, method_end + 1, question) as text
+  if question < target_end {
+    request.query = Slice(bytes, question + 1, target_end) as text
+  }
+
+  // The headers, one per line, up to the empty line that ends them.
+  var at = line + 2
+  while at < received {
+    const end = SpanTo(bytes, at, 13)
+    if end <= at {
+      // The empty line: the body starts after it.
+      at = end + 2
+      break
+    }
+    const colon = SpanToAny(bytes, at, 58, 13)
+    if colon < end && request.header_count < kMostHeaders {
+      var value = colon + 1
+      // One space after the colon is the convention, and both forms are
+      // legal.
+      while value < end && bytes[value] == 32 {
+        value = value + 1
+      }
+      request.headers[request.header_count] =
+          Pair(Slice(bytes, at, colon) as text,
+               Slice(bytes, value, end) as text)
+      request.header_count = request.header_count + 1
+    }
+    at = end + 2
+  }
+
+  // The body is what the headers said there would be, as far as it
+  // arrived: a handler that wants all of it checks the length.
+  request.length = received
+  if at < received {
+    const said = ParseInt(Header(&request, "Content-Length", ""))
+    var size = received - at
+    if said > 0 && said < size {
+      size = said
+    }
+    request.body = Slice(bytes, at, at + size) as text
+  }
+  return request
+}
+
+/// The number `value` spells, or zero. Stops at the first byte that is
+/// not a digit, which is what a `Content-Length` with anything after it
+/// deserves.
+offer fun ParseInt(value: text) -> int uses unsafe {
+  const bytes = Bytes(value)
+  var total = 0
+  var i = 0
+  var seen = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte < 48 || byte > 57 {
+      break
+    }
+    total = total * 10 + (byte - 48) as int
+    seen = seen + 1
+    i = i + 1
+  }
+  if seen == 0 {
+    return 0
+  }
+  return total
+}
+
+/// Where the first `stop` or `other` is, from `from`.
+fun SpanToAny(bytes: []u8, from: int, stop: u8, other: u8) -> int {
+  var at = from
+  while at < bytes.len {
+    if bytes[at] == stop || bytes[at] == other {
+      return at
+    }
+    at = at + 1
+  }
+  return bytes.len
 }
 
 /// A view of `bytes` from `from` up to `to`. The one place that needs to
@@ -110,23 +376,66 @@ fun Answer(
     return false
   }
   const answer = handle(request)
-  // Header and body in one string, and so in one write. Two writes of a
-  // small response wait for each other on a socket -- the second one is
-  // held back until the first is acknowledged -- which costs more than
-  // building the string does.
-  const message = "HTTP/1.1 {answer.status} {Reason(answer.status)}\r\nContent-Length: {answer.body.len}\r\nContent-Type: text/plain\r\nConnection: keep-alive\r\n\r\n{answer.body}"
-  return WriteAll(connection, message)
+  return WriteResponse(connection, answer)
+}
+
+/// Writes a response: the status line, the headers it carries, and the
+/// body.
+///
+/// One write, because two writes of a small response wait for each other
+/// on a socket -- the second is held back until the first is
+/// acknowledged -- which costs more than building the string does.
+offer fun WriteResponse(connection: s32, answer: Response) -> bool
+    uses io, unsafe {
+  var message = BuilderNew()
+  message.Append("HTTP/1.1 {answer.status} {Reason(answer.status)}\r\n")
+  message.Append("Content-Length: {answer.body.len}\r\n")
+  message.Append("Content-Type: {answer.kind}\r\n")
+  message.Append("Connection: keep-alive\r\n")
+  var i = 0
+  while i < answer.header_count {
+    const held = answer.headers[i]
+    message.Append("{held.name}: {held.value}\r\n")
+    i = i + 1
+  }
+  message.Append("\r\n")
+  message.Append(answer.body)
+  return WriteAll(connection, message.Text())
 }
 
 fun Reason(status: int) -> text {
   if status == 200 {
     return "OK"
   }
-  if status == 404 {
-    return "Not Found"
+  if status == 201 {
+    return "Created"
+  }
+  if status == 204 {
+    return "No Content"
   }
   if status == 400 {
     return "Bad Request"
+  }
+  if status == 401 {
+    return "Unauthorized"
+  }
+  if status == 403 {
+    return "Forbidden"
+  }
+  if status == 404 {
+    return "Not Found"
+  }
+  if status == 405 {
+    return "Method Not Allowed"
+  }
+  if status == 409 {
+    return "Conflict"
+  }
+  if status == 422 {
+    return "Unprocessable Content"
+  }
+  if status == 500 {
+    return "Internal Server Error"
   }
   return "Error"
 }

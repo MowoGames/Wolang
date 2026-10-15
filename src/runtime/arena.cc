@@ -23,10 +23,11 @@ struct Arena {
   uint64_t used = 0;
 };
 
-// The stack of open blocks. One per thread when there are threads; there
-// is one thread for now and this is where that assumption lives.
+// The stack of open blocks, per thread: a system running in a stage of
+// its own opens its own arenas, and two threads sharing one stack would
+// be two programs sharing a frame (D97).
 std::vector<Arena>& Stack() {
-  static std::vector<Arena> stack;
+  static thread_local std::vector<Arena> stack;
   return stack;
 }
 
@@ -51,6 +52,28 @@ void wolang_arena_pop() {
     std::free(chunk.bytes);
   }
   Stack().pop_back();
+}
+
+bool wolang_arena_owns(const void* pointer) {
+  // Whether |pointer| is inside a chunk of an open block.
+  //
+  // What this is for: a destructor that runs inside an `arena` block
+  // frees storage the *arena* handed out, and `free` on that is not a
+  // free at all -- it is a pointer the allocator never gave anyone. The
+  // arena reclaims it when the block ends, which is what an arena is
+  // (D113).
+  if (pointer == nullptr) {
+    return false;
+  }
+  const auto* at = static_cast<const uint8_t*>(pointer);
+  for (const Arena& arena : Stack()) {
+    for (const Chunk& chunk : arena.chunks) {
+      if (at >= chunk.bytes && at < chunk.bytes + chunk.size) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 void* wolang_arena_alloc(uint64_t size) {

@@ -1232,10 +1232,19 @@ TypeId Checker::CheckAssign(const Expr& expr) {
       // Which elements may be written is a question this language does
       // not ask yet -- there is no `[]mut T` -- and when it does, this is
       // where the answer goes.
+      // A write through a mutable reference is the reference's business,
+      // not the binding's: `fun Fill(into: &mut Request)` says the thing
+      // referred to may be written, and the name holding the reference is
+      // not what is being assigned (D112).
+      const bool through_mutable_reference =
+          (types_->KindOf(root_type) == TypeKind::kReference ||
+           types_->KindOf(root_type) == TypeKind::kPointer) &&
+          types_->Get(root_type).is_mutable;
       const bool through_handle =
           types_->IsHandle(root_type) ||
           types_->KindOf(root_type) == TypeKind::kSlice ||
-          types_->KindOf(root_type) == TypeKind::kPointer;
+          types_->KindOf(root_type) == TypeKind::kPointer ||
+          through_mutable_reference;
       if (is_self && !through_handle &&
           (through_field || root.kind == ExprKind::kPath)) {
         Report(kSelfNotMutable,

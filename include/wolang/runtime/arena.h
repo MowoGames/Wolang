@@ -28,6 +28,14 @@ void wolang_arena_pop();
 // a field nobody wrote has to read as zero in every tier.
 void* wolang_arena_alloc(uint64_t size);
 
+// Whether |pointer| came from an open `arena` block.
+//
+// What it is for: a destructor running inside one frees storage the arena
+// handed out, and the arena is what reclaims that -- so the free has to
+// be a no-op rather than a free of something `malloc` never gave out
+// (D113).
+bool wolang_arena_owns(const void* pointer);
+
 // How deep the arenas are, for a test to be able to see that a block
 // released what it took.
 uint64_t wolang_arena_depth();

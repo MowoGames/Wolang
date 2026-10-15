@@ -109,6 +109,12 @@ void* wolang_object_alloc(uint64_t size) {
 }
 
 void wolang_object_free(void* object) {
+  // Storage an open `arena` block handed out is reclaimed by the block,
+  // not by this: a destructor that runs inside one would otherwise free a
+  // pointer the allocator never gave anyone (D113).
+  if (wolang_arena_owns(object)) {
+    return;
+  }
   std::free(object);
 }
 

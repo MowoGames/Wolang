@@ -1,29 +1,71 @@
-// A server, in Wolang.
+// An API, in Wolang.
 //
-// Three handlers and a router, over `wolang-http` -- which is itself
-// Wolang over the eight socket calls in `http.socket`. Nothing in this
-// file is unsafe: the responsibility stops at the floor, which is what
-// `uses unsafe` on a declaration means.
+// A router, path parameters, a query string, JSON in and out -- over
+// `wolang-http`, which is itself Wolang over the eight socket calls in
+// `http.socket`. Nothing in this file is unsafe: the responsibility stops
+// at the floor, which is what `uses unsafe` on a declaration means.
 
 need std.io.{Print}
-need http.{NotFound, Ok, Request, Response, RunPolled}
+need std.json.{AsText, Malformed, Member, Null, OfInt, OfText, Object,
+                Parse, Put, Write}
+need http.{BadRequest, Created, NotFound, Ok, OkJson, Param, Query, Request,
+           Response, RouterNew, ServeRoutes}
 
-fun Route(request: Request) -> Response {
-  if request.path == "/" {
-    return Ok("wolang\n")
+fun Home(_request: Request) -> Response uses unsafe {
+  return Ok("wolang\n")
+}
+
+fun Health(_request: Request) -> Response uses unsafe {
+  return OkJson("\{\"status\":\"ok\"\}\n")
+}
+
+// `/hello?name=...`, which is what a query string is for.
+fun Hello(request: Request) -> Response uses unsafe {
+  const name = Query(&request, "name", "world")
+  return Ok("hello, {name}\n")
+}
+
+// `/users/:id`, answered as JSON built rather than spelled.
+fun User(request: Request) -> Response uses unsafe {
+  const id = Param(&request, "id", "0")
+  var user = Object()
+  user = Put(user, "id", OfText(id))
+  user = Put(user, "name", OfText("user {id}"))
+  user = Put(user, "visits", OfInt(3))
+  return OkJson(Write(user) + "\n")
+}
+
+// A POST with a JSON body: read a field out of it and answer with where
+// the thing would be.
+fun CreateUser(request: Request) -> Response uses unsafe {
+  match Parse(request.body) {
+    Ok(document) => {
+      const name = AsText(Member(document, "name") ?? Null(), "")
+      if name == "" {
+        return BadRequest("a user needs a name\n")
+      }
+      var created = Object()
+      created = Put(created, "name", OfText(name))
+      created = Put(created, "id", OfInt(7))
+      return Created("/users/7", Write(created) + "\n")
+    },
+    Malformed => { return BadRequest("that is not JSON\n") },
   }
-  if request.path == "/health" {
-    return Ok("ok\n")
-  }
-  if request.path == "/echo" {
-    return Ok(
-        "you said {request.method} {request.path}, {request.length} bytes\n")
-  }
+}
+
+fun Missing(_request: Request) -> Response uses unsafe {
   return NotFound()
 }
 
 fun main() uses io, unsafe {
+  var router = RouterNew()
+  router.Get("/", Home)
+  router.Get("/health", Health)
+  router.Get("/hello", Hello)
+  router.Get("/users/:id", User)
+  router.Post("/users", CreateUser)
+  router.Get("/*", Missing)
+
   Print("server: http://127.0.0.1:8080")
-  // Polled rather than blocking: one loop, many connections (D95).
-  const _code = RunPolled(8080, 256, Route)
+  const _code = ServeRoutes(8080, 256, router)
 }
