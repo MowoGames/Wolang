@@ -31,6 +31,7 @@ constexpr Entry kIntrinsics[] = {
     {"wolang_text_from_bool", Intrinsic::kTextFromBool},
     {"wolang_text_concat", Intrinsic::kTextConcat},
     {"wolang_text_equal", Intrinsic::kTextEqual},
+    {"wolang_text_free", Intrinsic::kTextFree},
 };
 
 // A pointer the runtime handed back, as a value. The IR reads the pair out
@@ -119,6 +120,14 @@ Value CallIntrinsic(Intrinsic intrinsic,
           arguments[1].integer(),
           reinterpret_cast<const uint8_t*>(arguments[2].integer()),
           arguments[3].integer()));
+    }
+
+    case Intrinsic::kTextFree: {
+      if (!arguments.empty()) {
+        runtime::wolang_text_free(
+            reinterpret_cast<const uint8_t*>(arguments[0].integer()));
+      }
+      return Value::Void();
     }
 
     case Intrinsic::kNone:

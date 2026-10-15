@@ -500,6 +500,35 @@ fun Probe() -> int {
   WOLANG_EXPECT_EQ(f.Run("Probe"), "6");
 }
 
+WOLANG_TEST(CodegenTest, GivesAnInterpolatedStringBack) {
+  // An interpolated string is allocated, so somebody has to free it: the
+  // binding that holds it, when its scope ends. The pieces a
+  // concatenation consumed go back immediately -- a string built from
+  // three parts is one live allocation, not three (D133).
+  //
+  // What this test can check is that the program still answers: that the
+  // *memory* goes back is what `20000000` iterations in a flat
+  // twenty-six megabytes showed.
+  Fixture f(R"(
+fun Build(n: int) -> int {
+  const message = "value {n} of many"
+  return message.len
+}
+
+fun Probe() -> int {
+  var total = 0
+  var i = 0
+  while i < 100 {
+    total = total + Build(i)
+    i = i + 1
+  }
+  return total
+}
+)");
+  // Fifteen bytes of fixed text, plus one or two digits per value.
+  WOLANG_EXPECT_EQ(f.Run("Probe"), "1590");
+}
+
 WOLANG_TEST(CodegenTest, ReachesAFarOffsetInALargeFrame) {
   // A frame with a four-kilobyte buffer in it puts the locals after it
   // out of reach of both addressing forms, and the assembler used to

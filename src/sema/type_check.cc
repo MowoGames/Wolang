@@ -2541,6 +2541,10 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
   // that binds the parameter as a mismatch (D119).
   const bool pattern =
       expected.is_valid() && types_->MentionsParameter(expected);
+  // What the expression produced, before the context had its say: an
+  // owned string adapted to a borrowed one *is* an owned string, and
+  // asking afterwards gets the answer the context gave (D133).
+  const TypeId produced = type;
   if (!(keep_open && !expected.is_valid()) && !pattern) {
     type = Adapt(type, expected, expr.span);
   }
@@ -2548,7 +2552,7 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
   // the flow analysis has to know: a borrow does not move.
   if (expected.is_valid() &&
       types_->KindOf(expected) == TypeKind::kStr &&
-      types_->KindOf(type) == TypeKind::kString) {
+      types_->KindOf(produced) == TypeKind::kString) {
     result_.borrows.push_back(id);
   }
   Record(id, type);

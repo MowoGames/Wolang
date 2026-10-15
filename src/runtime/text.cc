@@ -74,6 +74,24 @@ Text* wolang_text_concat(const uint8_t* left,
   return text;
 }
 
+void wolang_text_free(const uint8_t* data) {
+  if (data == nullptr) {
+    return;
+  }
+  // The pair and its bytes are one allocation, and `data` points just
+  // past the pair -- so what was allocated is a header's worth before it
+  // (D133).
+  auto* text = reinterpret_cast<Text*>(
+      const_cast<uint8_t*>(data) - sizeof(Text));
+  if (wolang_arena_owns(text)) {
+    // Storage an open `arena` block handed out is reclaimed by the block
+    // (D113), and freeing it here would free a pointer the allocator
+    // never gave anyone.
+    return;
+  }
+  std::free(text);
+}
+
 bool wolang_text_equal(const uint8_t* left,
                        uint64_t left_length,
                        const uint8_t* right,

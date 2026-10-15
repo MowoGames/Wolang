@@ -36,6 +36,10 @@ Text* wolang_text_concat(const uint8_t* left,
 
 // Whether two strings hold the same bytes. A pair of pointers is not an
 // answer to that question, which is why `==` on a string is a call.
+// Gives back a string this allocated. A string an `arena` block handed
+// out is left to the block.
+void wolang_text_free(const uint8_t* data);
+
 bool wolang_text_equal(const uint8_t* left,
                        uint64_t left_length,
                        const uint8_t* right,

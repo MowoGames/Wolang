@@ -1538,3 +1538,36 @@ this compiler was built from -- in that order.
 everything it depends on, which is what makes a new package's output one
 line instead of seventy-four. `--all` asks for the rest. And `cmake
 --install` lays out exactly what `new` looks for.
+
+**D133. An interpolated string is given back.** A program that built
+strings in a loop grew without bound: `"value {n} of many"` allocates,
+and nothing freed it. Three things were missing, and all three are the
+same mistake in different places.
+
+The *binding* owns it. An owned string is a type of its own (`Text`), so
+the scope exit frees one the same way it destroys a class -- through the
+flag that says whether the name still holds it. Which needed the
+**unerased** type, because erasing a string to its two words is exactly
+what loses the difference between owning the bytes and viewing someone
+else's.
+
+The *pieces* go back as they are consumed. A concatenation copies both
+sides into a new allocation, so `"a {b} c {d}"` frees each intermediate
+immediately: one live string instead of one per piece.
+
+And a borrow is not a move. The checker records which uses are implicit
+borrows -- an owned string handed where a `text` is wanted -- and the
+merge from per-declaration results into the file's result was dropping
+that list. So every string passed to a function looked like a move,
+nobody owned it, and nobody freed it. Twenty million interpolations now
+run in a flat twenty-six megabytes; before, the same program reached a
+gigabyte.
+
+**D134. The date header is written once a second.** HTTP dates have
+one-second resolution, so a server answering tens of thousands of
+requests a second can write it once and hand out the same string. Worth
+the two globals: it is a calendar calculation and seven allocations per
+response otherwise. The server does 39 700 requests a second in the JIT
+and 42 900 as an ahead-of-time binary, in 2 MB of resident memory, and
+28 500 with a log line per request -- which is what a line to standard
+error costs.

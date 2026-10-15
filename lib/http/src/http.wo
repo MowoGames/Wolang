@@ -516,9 +516,22 @@ offer fun WriteAnswer(connection: s32, answer: Response, with_body: bool,
   return WriteAll(connection, message.Text())
 }
 
+// The date, and the second it was written for. An HTTP date has
+// one-second resolution, so a server answering thousands of requests a
+// second can write it once and hand out the same string -- which is
+// several allocations and a calendar calculation per request saved
+// (D134).
+var date_second: s64 = -1
+var date_text: text = ""
+
 /// The date header, in the format HTTP wants.
 offer fun Date() -> text uses unsafe {
-  return HttpDate(WallClock().seconds)
+  const now = WallClock().seconds
+  if now != date_second {
+    date_second = now
+    date_text = HttpDate(now)
+  }
+  return date_text
 }
 
 fun Reason(status: int) -> text {

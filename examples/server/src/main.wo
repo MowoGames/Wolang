@@ -5,10 +5,11 @@
 // `http.socket`. Nothing in this file is unsafe: the responsibility stops
 // at the floor, which is what `uses unsafe` on a declaration means.
 
+need std.env.{Get}
 need std.io.{Print}
 need std.json.{AsText, Malformed, Member, Null, OfInt, OfText, Object,
                 Parse, Put, Write}
-need http.{AppNew, Authorize, BadRequest, Created, Field, JsonOf,
+need http.{AppNew, Authorize, ServeApp, BadRequest, Created, Field, JsonOf,
            NoContent, Ok, OkJson, Param, Problem, Query, QueryInt,
            Request, RequireToken, Response, RouterNew, ServeUnder,
            ServeWithDefaults, Unprocessable, WithCache, WithCookie}
@@ -120,5 +121,12 @@ fun main() uses io, unsafe {
   app.Otherwise(Missing)
 
   Print("server: http://127.0.0.1:8080")
-  const _code = ServeWithDefaults(app, 8080, 256)
+  // `WOLANG_QUIET` turns the usual layers off, which is how the same
+  // example serves as a benchmark: a line per request to standard error
+  // is most of what a small response costs.
+  if Get("WOLANG_QUIET", "") == "1" {
+    const _quiet = ServeApp(app, 8080, 512)
+    return
+  }
+  const _code = ServeWithDefaults(app, 8080, 512)
 }

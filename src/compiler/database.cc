@@ -681,6 +681,14 @@ void Database::RegisterQueries() {
           result.body.instantiations.insert(
               result.body.instantiations.end(), body.instantiations.begin(),
               body.instantiations.end());
+          // Which uses were borrows rather than moves. Lowering reads
+          // this to decide whether a scope exit still owns what a name
+          // held, and it was the one list the merge left behind -- which
+          // made every owned string handed to a `text` parameter look
+          // like a move (D15b, D133).
+          result.body.borrows.insert(result.body.borrows.end(),
+                                     body.borrows.begin(),
+                                     body.borrows.end());
           result.items.push_back(std::move(body));
         }
         result.resolution = resolution;

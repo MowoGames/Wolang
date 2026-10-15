@@ -1582,6 +1582,13 @@ class Lowerer {
       const Param& param = ast().Get(param_id);
       const TypeId type =
           ParamTypeOf(module_->functions[index], locals_.size());
+      // What the parameter was *declared* as, which is what says whether
+      // the callee owns it: a `Text` parameter is handed a string the
+      // caller gave up, and a `text` one is a borrow (D133).
+      const TypeId declared = param.type.is_valid()
+                                  ? Apply(resolver_.Resolve(ast(),
+                                                            param.type))
+                                  : type;
       const InstId value = builder.AddParam(entry, type);
       if (in_task_) {
         // A parameter outlives every suspension, so in a task it lives in
@@ -1589,11 +1596,11 @@ class Lowerer {
         const InstId slot = builder.Add(Opcode::kAlloca, type);
         builder.Add(Opcode::kStore, TypeId{}, {slot, value});
         locals_.push_back(Local{param.name, slot, InstId{}, type});
-        RememberOwner(param.name, slot, type, /*live=*/true);
+        RememberOwner(param.name, slot, declared, /*live=*/true);
         continue;
       }
       locals_.push_back(Local{param.name, InstId{}, value, type});
-      RememberOwner(param.name, value, type, /*live=*/true,
+      RememberOwner(param.name, value, declared, /*live=*/true,
                     /*in_slot=*/false);
     }
 
@@ -1795,6 +1802,14 @@ class Lowerer {
     return Erase(Apply(recorded.is_valid() ? recorded : types_->error()));
   }
 
+  // The same, as the checker recorded it: with the dimensions and the
+  // ownership still on it. What decides who frees a string, which
+  // erasing is exactly what loses (D133).
+  TypeId DeclaredTypeOf(ExprId id) {
+    const TypeId recorded = typed().TypeOf(id);
+    return Apply(recorded.is_valid() ? recorded : types_->error());
+  }
+
   // Dimensions participate in type checking and are gone by code
   // generation, so `Length` and `Length/Time` are both `f32` here. Erasing
   // at the boundary rather than in every back end is what makes "unit safe
@@ -1977,9 +1992,16 @@ class Lowerer {
     // from, so the annotation is the only place it comes from. Before this
     // the slot was typed `<error>`, which nothing noticed until slot
     // promotion put the value on an edge and the verifier compared it.
-    TypeId type = stmt.expr.is_valid() ? TypeOf(stmt.expr) : TypeId{};
-    if ((!type.is_valid() || types_->IsError(type)) && stmt.type.is_valid()) {
-      type = Erase(Apply(resolver_.Resolve(ast(), stmt.type)));
+    TypeId type = stmt.expr.is_valid() ? DeclaredTypeOf(stmt.expr)
+                                       : TypeId{};
+    // An annotation wins over what the initializer happened to produce:
+    // `const message: Text = "..."` says the binding owns the string.
+    if (stmt.type.is_valid()) {
+      const TypeId said = Apply(resolver_.Resolve(ast(), stmt.type));
+      if (!type.is_valid() || types_->IsError(type) ||
+          types_->KindOf(said) == TypeKind::kString) {
+        type = said;
+      }
     }
     if (!type.is_valid()) {
       type = types_->error();
@@ -1991,20 +2013,26 @@ class Lowerer {
     // leaves values alone, so a value that outlived a suspension would be
     // one the machine has nowhere to keep. Making every binding a slot is
     // what makes that impossible rather than merely unlikely.
+    // A binding that owns something goes in a slot even when it is a
+    // `const`: the flag that says whether it still owns it is written
+    // beside the value, and a value with no address has nowhere for the
+    // scope exit to read it from (D133).
     if (!mutable_binding && !in_task_ &&
         !HasFlag(pattern->flags, PatternFlags::kMutable) &&
-        !Owns(Erase(type))) {
+        !Owns(type)) {
       locals_.push_back(Local{pattern->name, InstId{}, value, type});
       return;
     }
 
     // A `var` goes in a slot. Lowering every one of them and letting SROA
     // promote the ones that can be is simpler than deciding here.
-    const InstId slot = builder_->Add(Opcode::kAlloca, type);
+    const InstId slot = builder_->Add(Opcode::kAlloca, Erase(type));
     if (value.is_valid()) {
       builder_->Add(Opcode::kStore, TypeId{}, {slot, value});
     }
-    locals_.push_back(Local{pattern->name, slot, InstId{}, type});
+    locals_.push_back(Local{pattern->name, slot, InstId{}, Erase(type)});
+    // The *unerased* type decides who frees: erasing is what loses the
+    // difference between a string that owns its bytes and a view.
     RememberOwner(pattern->name, slot, type, value.is_valid());
   }
 
@@ -2053,7 +2081,7 @@ class Lowerer {
                      TypeId type,
                      bool live,
                      bool in_slot = true) {
-    if (!Owns(Erase(type))) {
+    if (!Owns(type)) {
       return;
     }
     const InstId flag =
@@ -2095,13 +2123,29 @@ class Lowerer {
         entry.in_slot
             ? builder_->Add(Opcode::kLoad, Erase(entry.type), {entry.value})
             : entry.value;
-    Destroy(value, Erase(entry.type));
+    Destroy(value, entry.type);
     builder_->Jump(after, {});
     builder_->SetCurrent(after);
   }
 
   // Runs the destructor of |type| on |value|, then frees what it was in.
-  void Destroy(InstId value, TypeId type) {
+  void Destroy(InstId value, TypeId raw) {
+    // An owned string: the bytes it was built with, given back. The
+    // runtime leaves a string an `arena` block handed out to the block
+    // (D113, D133).
+    if (types_->KindOf(raw) == TypeKind::kString) {
+      const TypeId bytes = types_->Pointer(
+          types_->Int(IntWidth::k8, /*is_signed=*/false),
+          /*is_mutable=*/false);
+      const Symbol name = interner_->Intern("wolang_text_free");
+      const uint32_t free = DeclareExternal(
+          name, types_->Function({bytes}, types_->void_type()));
+      module_->functions[free].foreign_symbol = name;
+      builder_->Call(free, types_->void_type(),
+                     {builder_->Extract(bytes, value, 0)});
+      return;
+    }
+    const TypeId type = Erase(raw);
     if (const Member* deinit = FindDestructor(type)) {
       const uint32_t index = MethodIndex(type, *deinit);
       if (index != 0xFFFFFFFFu) {
@@ -2138,8 +2182,18 @@ class Lowerer {
   }
 
   // Whether a value of |type| has to be destroyed when it goes away.
-  bool Owns(TypeId type) const {
-    return FindDestructor(type) != nullptr;
+  // Whether a value of |type| has to be given back when its scope ends.
+  //
+  // A class with a destructor, and an owned string -- which is a
+  // declared type of its own (`Text`), allocated when it is built and
+  // nobody's until this says whose. The type is the *unerased* one,
+  // because erasing is exactly what loses the difference between a
+  // string that owns its bytes and a view of someone else's (D133).
+  bool Owns(TypeId type) {
+    if (types_->KindOf(type) == TypeKind::kString) {
+      return true;
+    }
+    return FindDestructor(Erase(type)) != nullptr;
   }
 
   // Drops the entries a scope owned, after its exit has been emitted.
@@ -2342,21 +2396,48 @@ class Lowerer {
     // ones.
     const TypeId str = types_->str();
     InstId result;
+    // Whether what `result` holds was allocated by this expression. A
+    // concatenation copies both sides into a new allocation, so the
+    // pieces it consumed can go back immediately -- which is what keeps
+    // `"a {b} c {d}"` to one live string instead of one per piece. The
+    // leak this closes was the whole of why a program that builds strings
+    // in a loop grew (D133).
+    bool result_is_fresh = false;
     for (ExprId part : parts) {
       if (!ast().Contains(part)) {
         continue;
       }
       const Expr& piece = ast().Get(part);
       InstId text;
+      bool text_is_fresh = false;
       if (piece.kind == ExprKind::kStringText) {
         text = builder_->ConstString(str, ast().string(piece.aux));
       } else {
-        text = Stringify(Value(part), TypeOf(part));
+        const TypeId held = TypeOf(part);
+        text = Stringify(Value(part), held);
+        // A number, a bool or a float became a string just now; a string
+        // that was already one belongs to whoever made it.
+        text_is_fresh = types_->KindOf(held) != TypeKind::kStr &&
+                        types_->KindOf(held) != TypeKind::kString;
       }
       if (!text.is_valid()) {
         continue;
       }
-      result = result.is_valid() ? ConcatText(result, text) : text;
+      if (!result.is_valid()) {
+        result = text;
+        result_is_fresh = text_is_fresh;
+        continue;
+      }
+      const InstId joined = ConcatText(result, text);
+      if (result_is_fresh) {
+        FreeText(result);
+      }
+      if (text_is_fresh) {
+        FreeText(text);
+      }
+      result = joined;
+      result_is_fresh = true;
+      continue;
     }
     return result.is_valid() ? result
                              : builder_->ConstString(str, std::string());
@@ -2443,6 +2524,20 @@ class Lowerer {
          builder_->Extract(word, left, 1),
          builder_->Extract(bytes, right, 0),
          builder_->Extract(word, right, 1)});
+  }
+
+  // Gives a string's bytes back. The runtime leaves one an `arena` block
+  // handed out to the block (D113, D133).
+  void FreeText(InstId value) {
+    const TypeId bytes = types_->Pointer(
+        types_->Int(IntWidth::k8, /*is_signed=*/false),
+        /*is_mutable=*/false);
+    const Symbol name = interner_->Intern("wolang_text_free");
+    const uint32_t free = DeclareExternal(
+        name, types_->Function({bytes}, types_->void_type()));
+    module_->functions[free].foreign_symbol = name;
+    builder_->Call(free, types_->void_type(),
+                   {builder_->Extract(bytes, value, 0)});
   }
 
   // Whether two strings hold the same bytes.

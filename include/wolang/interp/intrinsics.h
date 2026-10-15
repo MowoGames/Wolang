@@ -33,6 +33,7 @@ enum class Intrinsic : uint8_t {
   kTextFromBool,
   kTextConcat,
   kTextEqual,
+  kTextFree,
 };
 
 Intrinsic LookupIntrinsic(std::string_view name);
