@@ -15,7 +15,7 @@ BlockId Builder::AddBlock(std::string label) {
 }
 
 bool Builder::Terminated() const {
-  if (!function().Contains(current_)) {
+  if (poisoned_ || !function().Contains(current_)) {
     return true;
   }
   const InstId last = function().TerminatorOf(current_);

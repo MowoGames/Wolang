@@ -4787,6 +4787,7 @@ class Lowerer {
     }
     // `Value` lowers the block and yields its final expression; `Lower`
     // does the same without a result. Calling both would run the body twice.
+    bool reached = false;
     InstId then_value = produces ? Value(expr.rhs) : InstId{};
     if (!produces) {
       Lower(expr.rhs);
@@ -4799,6 +4800,7 @@ class Lowerer {
       then_value = Coerce(then_value, ValueType(then_value), type);
     }
     if (!builder_->Terminated()) {
+      reached = true;
       builder_->Jump(join, produces ? std::vector<InstId>{then_value}
                                     : std::vector<InstId>{});
     }
@@ -4819,11 +4821,17 @@ class Lowerer {
       else_value = Coerce(else_value, ValueType(else_value), type);
     }
     if (!builder_->Terminated()) {
+      reached = true;
       builder_->Jump(join, produces ? std::vector<InstId>{else_value}
                                     : std::vector<InstId>{});
     }
 
     builder_->SetCurrent(join);
+    if (!reached) {
+      // No arm fell through, so nothing reaches the join and nothing
+      // should be put in it (D152).
+      builder_->Poison();
+    }
     return result;
   }
 

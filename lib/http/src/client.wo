@@ -11,7 +11,9 @@
 // rather than pretending.
 
 need std.net.{Connect, Socket}
-need std.text.{Bytes, BuilderNew, IndexOf, Length, StartsWith,
+need std.time.{ElapsedMillis, Now}
+need tls.{Handshake, Stream}
+need std.text.{Builder, Bytes, BuilderNew, IndexOf, Length, StartsWith,
                Substring, Trim}
 
 // What went wrong with a call that never got an answer.
@@ -98,36 +100,185 @@ offer fun ReplyHeader(answer: &Reply, name: text, fallback: text) -> text
 
 /// `GET url`.
 offer fun Fetch(url: text) -> Reply! uses io, unsafe {
-  return Send("GET", url, "", "")
+  return Perform(CallNew("GET", url))
 }
 
 /// `POST url` with a JSON body.
 offer fun PostJson(url: text, body: text) -> Reply! uses io, unsafe {
-  return Send("POST", url, body, "application/json")
+  return Perform(WithBody(CallNew("POST", url), body,
+                          "application/json"))
 }
 
-/// One request, one answer.
+/// `PUT`, `PATCH` and `DELETE`, for an API that uses them.
+offer fun PutJson(url: text, body: text) -> Reply! uses io, unsafe {
+  return Perform(WithBody(CallNew("PUT", url), body,
+                          "application/json"))
+}
+
+offer fun PatchJson(url: text, body: text) -> Reply! uses io, unsafe {
+  return Perform(WithBody(CallNew("PATCH", url), body,
+                          "application/json"))
+}
+
+offer fun Delete(url: text) -> Reply! uses io, unsafe {
+  return Perform(CallNew("DELETE", url))
+}
+
+/// A form submission: `a=1&b=two`, escaped, as a browser sends it.
+offer fun PostForm(url: text, body: text) -> Reply! uses io, unsafe {
+  return Perform(WithBody(CallNew("POST", url), body,
+                          "application/x-www-form-urlencoded"))
+}
+
+/// What a built call does. `Perform`, because `Request` is what a
+/// server receives and `Run` is what a server does.
+///
+/// Redirects are followed up to the call's limit -- a `303` becomes a
+/// `GET` with no body, which is what the status means and what every
+/// other client does -- and `https` goes over the system's TLS (D151).
+offer fun Perform(call: Call) -> Reply! uses io, unsafe {
+  var held = call
+  var left = call.redirects
+  loop {
+    const reply = Once(held)?
+    const moved = reply.status == 301 || reply.status == 302 ||
+                  reply.status == 303 || reply.status == 307 ||
+                  reply.status == 308
+    if !moved || left <= 0 {
+      return reply
+    }
+    const next = ReplyHeader(&reply, "Location", "")
+    if Length(next) == 0 {
+      return reply
+    }
+    left = left - 1
+    held.url = Absolute(held.url, next)
+    if reply.status == 303 || reply.status == 302 ||
+       reply.status == 301 {
+      // What the status means: come back with a `GET` and nothing in
+      // hand. `307` and `308` keep the method and the body.
+      held.method = "GET"
+      held.body = ""
+      held.kind = ""
+    }
+  }
+}
+
+/// A `Location` resolved against where the request went.
+///
+/// Absolute stays as it is; `/path` keeps the host; anything else is
+/// relative to the directory the request was in.
+offer fun Absolute(from: text, location: text) -> text uses unsafe {
+  if StartsWith(location, "http://") || StartsWith(location, "https://") {
+    return location
+  }
+  match ParseUrl(from) {
+    Ok(target) => {
+      var scheme = "http://"
+      if target.secure {
+        scheme = "https://"
+      }
+      var authority = target.host
+      if (target.secure && target.port != 443) ||
+         (!target.secure && target.port != 80) {
+        authority = "{target.host}:{target.port}"
+      }
+      if StartsWith(location, "/") {
+        return scheme + authority + location
+      }
+      // Relative: everything up to the last `/` of the target.
+      var directory = target.target
+      var at = Length(directory)
+      while at > 0 {
+        if Substring(directory, at - 1, at) == "/" {
+          break
+        }
+        at = at - 1
+      }
+      return scheme + authority + Substring(directory, 0, at) + location
+    },
+    _ => { return location },
+  }
+}
+
+/// One request, one answer, no redirects.
 ///
 /// `Connection: close` on the way out, because a client that holds a
 /// connection has to decide when to let it go -- and a function that
 /// answers once has nowhere to keep it. A client that wants keep-alive
-/// uses `Open` and `Ask` below.
-offer fun Send(method: text, url: text, body: text, kind: text)
-    -> Reply! uses io, unsafe {
-  const target = ParseUrl(url)?
+/// uses `Open` and `Ask`.
+offer fun Once(call: Call) -> Reply! uses io, unsafe {
+  const target = ParseUrl(call.url)?
+  const request = Written(call, target, false)
   if target.secure {
-    return NeedsTls
+    // The system's TLS, verified against its own roots unless the call
+    // said otherwise (D150).
+    var stream = Handshake(target.host, target.port, call.verify)
+    if !stream.IsOpen() {
+      return Unreachable
+    }
+    if !stream.Send(request) {
+      stream.Close()
+      return Unreachable
+    }
+    const answer = Secure(&mut stream, call.timeout)
+    stream.Close()
+    return answer?
   }
   var connection = Connect(target.host, target.port)
   if !connection.IsOpen() {
     return Unreachable
   }
-  const answer = Ask(&mut connection, target, method, body, kind, false)
+  if !connection.Send(request) {
+    connection.Close()
+    return Unreachable
+  }
+  const answer = Plain(&mut connection, call.timeout)
   connection.Close()
   return answer?
 }
 
+/// The bytes of a request.
+offer fun Written(call: Call, target: Url, keep_alive: bool) -> text
+    uses unsafe {
+  var request = BuilderNew()
+  request.Append("{call.method} {target.target} HTTP/1.1\r\n")
+  request.Append("Host: {target.host}\r\n")
+  if keep_alive {
+    request.Append("Connection: keep-alive\r\n")
+  } else {
+    request.Append("Connection: close\r\n")
+  }
+  var said_type = false
+  var said_accept = false
+  var i = 0
+  while i < call.header_count {
+    const held = call.headers[i]
+    said_type = said_type || SameName(held.name, "Content-Type")
+    said_accept = said_accept || SameName(held.name, "Accept")
+    request.Append("{held.name}: {held.value}\r\n")
+    i = i + 1
+  }
+  if Length(call.kind) != 0 && !said_type {
+    request.Append("Content-Type: {call.kind}\r\n")
+  }
+  if !said_accept {
+    request.Append("Accept: */*\r\n")
+  }
+  if Length(call.body) != 0 {
+    request.Append("Content-Length: {call.body.len}\r\n")
+  }
+  request.Append("\r\n")
+  if Length(call.body) != 0 {
+    request.Append(call.body)
+  }
+  return request.Release()
+}
+
 /// A connection held open, for a program making several calls.
+///
+/// Plain only: a kept TLS connection is `tls.Open` and `Ask` over it,
+/// which a caller that wants one can write in three lines.
 offer fun Open(url: text) -> Socket! uses io, unsafe {
   const target = ParseUrl(url)?
   if target.secure {
@@ -141,67 +292,232 @@ offer fun Open(url: text) -> Socket! uses io, unsafe {
 }
 
 /// One request on a connection the caller owns.
+/// One request on a connection the caller owns.
 offer fun Ask(connection: &mut Socket, target: Url, method: text,
               body: text, kind: text, keep_alive: bool) -> Reply!
     uses io, unsafe {
-  var request = BuilderNew()
-  request.Append("{method} {target.target} HTTP/1.1\r\n")
-  request.Append("Host: {target.host}\r\n")
-  if keep_alive {
-    request.Append("Connection: keep-alive\r\n")
-  } else {
-    request.Append("Connection: close\r\n")
-  }
-  if Length(kind) != 0 {
-    request.Append("Content-Type: {kind}\r\n")
-  }
-  if Length(body) != 0 {
-    request.Append("Content-Length: {body.len}\r\n")
-  }
-  request.Append("Accept: */*\r\n\r\n")
-  if Length(body) != 0 {
-    request.Append(body)
-  }
-  if !connection.Send(request.Text()) {
+  var call = CallNew(method, target.target)
+  call = WithBody(call, body, kind)
+  if !connection.Send(Written(call, target, keep_alive)) {
     return Unreachable
   }
+  return Plain(connection, call.timeout)?
+}
 
-  // The head first, then as much body as the length says. A read may
-  // stop anywhere, which is the whole reason this is a loop (D144).
+/// Reads an answer off a plain connection.
+offer fun Plain(connection: &mut Socket, timeout: int) -> Reply!
+    uses io, unsafe {
   var received = BuilderNew()
+  const started = Now()
   var head = -1
   var length = -1
-  var seen = 0
+  var chunked = false
   loop {
     const piece = connection.Receive(8192)
     if piece.len == 0 {
       break
     }
     received.Append(piece)
-    seen = seen + piece.len
-    const whole = received.Text()
-    if head < 0 {
-      const blank = IndexOf(whole, "\r\n\r\n")
-      if blank >= 0 {
-        head = blank + 4
-        length = ContentLength(Substring(whole, 0, head))
-      }
-    }
-    if head >= 0 && length >= 0 && seen >= head + length {
+    const state = Progress(&mut received, &mut head, &mut length,
+                           &mut chunked)
+    if state {
       break
     }
+    if timeout > 0 && ElapsedMillis(started, Now()) as int > timeout {
+      return Truncated
+    }
   }
+  return Finish(received.Release(), head, length, chunked)?
+}
 
-  // `Release` rather than `Text`: what comes back is *views* into these
-  // bytes -- the status line, each header, the body -- so they have to
-  // outlive the builder. One allocation per call, reclaimed by the
-  // enclosing `arena` block when there is one, which is what a handler
-  // making a call has (D144).
-  const whole = received.Release()
+/// The same, over TLS.
+///
+/// The same loop twice rather than one loop over an ability: a stream
+/// and a socket are two types with the same three methods, and an
+/// ability with a method per direction is more machinery than the
+/// duplication costs (D151).
+offer fun Secure(stream: &mut Stream, timeout: int) -> Reply!
+    uses io, unsafe {
+  var received = BuilderNew()
+  const started = Now()
+  var head = -1
+  var length = -1
+  var chunked = false
+  loop {
+    const piece = stream.Receive(8192)
+    if piece.len == 0 {
+      break
+    }
+    received.Append(piece)
+    const state = Progress(&mut received, &mut head, &mut length,
+                           &mut chunked)
+    if state {
+      break
+    }
+    if timeout > 0 && ElapsedMillis(started, Now()) as int > timeout {
+      return Truncated
+    }
+  }
+  return Finish(received.Release(), head, length, chunked)?
+}
+
+/// Whether what has arrived is the whole answer.
+///
+/// The head first -- which says how the body is framed -- and then
+/// either `Content-Length` bytes or chunks up to the empty one. A read
+/// stops wherever it likes, which is why this is asked after every one.
+offer fun Progress(received: &mut Builder, head: &mut int,
+                   length: &mut int, chunked: &mut bool) -> bool
+    uses unsafe {
+  const whole = received.Text()
+  if *head < 0 {
+    const blank = IndexOf(whole, "\r\n\r\n")
+    if blank < 0 {
+      return false
+    }
+    *head = blank + 4
+    const top = Substring(whole, 0, *head)
+    *length = ContentLength(top)
+    *chunked = IsChunked(top)
+  }
+  if *chunked {
+    return ChunkedEnd(whole, *head) >= 0
+  }
+  if *length < 0 {
+    // Neither a length nor chunks: the body ends when the connection
+    // does, which is what HTTP/1.0 did and what a `close` means.
+    return false
+  }
+  return Length(whole) >= *head + *length
+}
+
+/// The answer, with a chunked body put back together.
+offer fun Finish(whole: text, head: int, length: int, chunked: bool)
+    -> Reply! uses unsafe {
   if head < 0 {
     return Truncated
   }
-  return ParseReply(whole, head, length)
+  if !chunked {
+    return ParseReply(whole, head, length)?
+  }
+  // The chunks, joined: each is a hexadecimal size, a line break, that
+  // many bytes, and a line break. The last one is zero.
+  var body = BuilderNew()
+  var at = head
+  loop {
+    const line = IndexOf(Substring(whole, at, Length(whole)), "\r\n")
+    if line < 0 {
+      break
+    }
+    const size = FromHexDigits(Substring(whole, at, at + line))
+    at = at + line + 2
+    if size <= 0 {
+      break
+    }
+    if at + size > Length(whole) {
+      return Truncated
+    }
+    body.Append(Substring(whole, at, at + size))
+    at = at + size + 2
+  }
+  var answer = ParseReply(whole, head, 0)?
+  answer.body = body.Release()
+  return answer
+}
+
+/// Where a chunked body ends, or -1 when it has not yet.
+offer fun ChunkedEnd(whole: text, head: int) -> int uses unsafe {
+  var at = head
+  loop {
+    const rest = Substring(whole, at, Length(whole))
+    const line = IndexOf(rest, "\r\n")
+    if line < 0 {
+      return -1
+    }
+    const size = FromHexDigits(Substring(whole, at, at + line))
+    at = at + line + 2
+    if size <= 0 {
+      return at
+    }
+    at = at + size + 2
+    if at > Length(whole) {
+      return -1
+    }
+  }
+}
+
+/// The number a hexadecimal chunk header spells, or -1.
+///
+/// A header may carry extensions after a `;`, which nothing uses and
+/// everything has to skip.
+offer fun FromHexDigits(line: text) -> int uses unsafe {
+  const bytes = Bytes(Trim(line))
+  var total = 0
+  var seen = 0
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    var digit = -1
+    if byte >= 48 && byte <= 57 {
+      digit = (byte - 48) as int
+    } else if byte >= 97 && byte <= 102 {
+      digit = (byte - 87) as int
+    } else if byte >= 65 && byte <= 70 {
+      digit = (byte - 55) as int
+    } else if byte == 59 {
+      break
+    } else {
+      return -1
+    }
+    total = total * 16 + digit
+    seen = seen + 1
+    i = i + 1
+  }
+  if seen == 0 {
+    return -1
+  }
+  return total
+}
+
+/// Whether the head says the body comes in chunks.
+offer fun IsChunked(head: text) -> bool uses unsafe {
+  var at = 0
+  const bytes = Bytes(head)
+  while at < bytes.len {
+    var end = at
+    while end < bytes.len && bytes[end] != 13 && bytes[end] != 10 {
+      end = end + 1
+    }
+    const line = Substring(head, at, end)
+    const colon = IndexOf(line, ":")
+    if colon > 0 && SameName(Substring(line, 0, colon),
+                             "Transfer-Encoding") {
+      const value = Trim(Substring(line, colon + 1, Length(line)))
+      if IndexOf(Lowered(value), "chunked") >= 0 {
+        return true
+      }
+    }
+    at = end
+    while at < bytes.len && (bytes[at] == 13 || bytes[at] == 10) {
+      at = at + 1
+    }
+  }
+  return false
+}
+
+fun Lowered(value: text) -> text uses unsafe {
+  var builder = BuilderNew()
+  const bytes = Bytes(value)
+  var i = 0
+  while i < bytes.len {
+    var byte = bytes[i]
+    if byte >= 65 && byte <= 90 {
+      byte = byte + 32
+    }
+    builder.AppendByte(byte)
+    i = i + 1
+  }
+  return builder.Release()
 }
 
 // What the head says the body's length is, or -1 when it says nothing.

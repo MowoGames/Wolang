@@ -4,3 +4,5 @@ source = "src"
 
 [dependencies]
 std = { path = "../std" }
+# `https` is the system's TLS, bound rather than implemented (D150).
+tls = { path = "../tls" }

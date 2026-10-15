@@ -1822,3 +1822,58 @@ answer is the one that has to match. Which also says what a body may not
 do -- write to what it captured, because a capture is a copy and here
 there is one per thread. A result comes back through storage the body was
 given, by index.
+
+**D148. Names, through the system's resolver.** `std.net.Connect` took a
+dotted address, which means a client that could not reach anything a
+person would type. `Resolve` asks the system -- `getaddrinfo`, so
+`/etc/hosts`, the resolver's configuration and mDNS all answer the way
+they do for every other program on the machine. A language with its own
+DNS would answer differently from the machine it runs on.
+
+An address is 64 bits wide here, because `128.0.0.0` already does not fit
+a signed 32-bit one -- which is what made resolving a real host overflow.
+
+**D149. The rest of a filesystem.** `Exists`, `KindOf`, `SizeOf`,
+`ChangedAt`, `Remove`, `Rename`, `MakeDirectory` and `List`: a tool needs
+all of them, and a program should not have to declare `stat` itself. A
+listing comes back as names separated by line breaks rather than as a
+list -- the caller splits it with `std.text.Pieces`, which is what it
+would do with a list anyway, and this way the whole listing is one call
+and one allocation.
+
+**D150. TLS is bound, not implemented.** `lib/tls` is OpenSSL through
+`extern "C"`, with `[link] libraries = "ssl, crypto"` in its manifest: a
+language that shipped its own cryptography would be shipping its own
+CVEs. The certificate is verified against the system's roots *and* the
+name is checked against the certificate -- TLS that checks only the first
+is TLS any server can answer.
+
+Two things came out of writing it. `SSL_set_tlsext_host_name` is a
+*macro* in OpenSSL, so a binding reaches what it expands to --
+`SSL_ctrl` with control code 55 -- which is exactly why `wolang bind`
+produces a starting point rather than a binding (D130). And a bare
+library name goes through the loader's own search, which on macOS finds a
+shim for `libcrypto` and warns that it is being loaded unsafely: a
+manifest that says where the library is means it, so the named paths are
+tried first.
+
+**D151. The client does what a client has to do.** A built `Call` --
+method, headers, body, query, basic or bearer authentication, timeout,
+redirect limit, certificate verification -- and `Perform` runs it:
+`https` over the system's TLS, redirects followed (a `303` becomes a
+`GET` with no body, which is what the status means), `chunked` answers
+put back together, and a timeout so that a server which never answers
+does not become a program that never returns.
+
+The plain and the TLS read loops are the same loop twice rather than one
+loop over an ability: a socket and a stream are two types with the same
+three methods, and an ability with a method per direction is more
+machinery than the duplication costs.
+
+**D152. Nothing goes into a block nothing reaches.** An `if` whose every
+arm returns or breaks has a join block nothing jumps to -- and lowering
+put the *enclosing* structure's jump in it, which the verifier rightly
+called a block unreachable from the entry. The builder can now be
+poisoned: after such a join, everything appended is dropped until the
+next block begins. An empty unreachable block is something both the
+verifier and the passes already ignore.

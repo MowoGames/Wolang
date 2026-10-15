@@ -41,7 +41,21 @@ class Builder {
   BlockId AddBlock(std::string label);
 
   BlockId current() const { return current_; }
-  void SetCurrent(BlockId block) { current_ = block; }
+  void SetCurrent(BlockId block) {
+    current_ = block;
+    poisoned_ = false;
+  }
+
+  // Says that nothing reaches the current block, so nothing should be
+  // put in it.
+  //
+  // Where this comes up: an `if` whose every arm returns or breaks has a
+  // join block nothing jumps to, and whatever the enclosing structure
+  // would have emitted there is unreachable too. An *empty* unreachable
+  // block is something the verifier and the passes both ignore; one with
+  // a jump in it is a block the verifier is right to complain about
+  // (D152).
+  void Poison() { poisoned_ = true; }
 
   // Where the instructions being added came from. Lowering moves this as
   // it walks, and everything appended until it moves again belongs to
@@ -115,6 +129,7 @@ class Builder {
   Module* module_;
   FunctionId function_;
   BlockId current_;
+  bool poisoned_ = false;
   SourceSpan where_;
 };
 

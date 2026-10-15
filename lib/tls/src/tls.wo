@@ -133,12 +133,16 @@ offer fun StreamNone() -> Stream uses unsafe {
 
 /// Connects to `host` on `port` and shakes hands.
 ///
+/// `Handshake` rather than `Open`, because a program that speaks both
+/// HTTP and TLS imports both and this language has no import aliases
+/// (D150).
+///
 /// The certificate is verified against the system's own roots, and the
 /// name is checked against it: TLS that does not check the name is TLS
 /// that any server can answer (D150). `verify = false` is for a
 /// development server with a certificate it signed itself, and says so
 /// at the call.
-offer fun Open(host: text, port: int, verify: bool) -> Stream
+offer fun Handshake(host: text, port: int, verify: bool) -> Stream
     uses unsafe {
   var socket = Connect(host, port)
   if !socket.IsOpen() {
@@ -195,7 +199,7 @@ offer fun Open(host: text, port: int, verify: bool) -> Stream
 fun RefusesAHostThatIsNotThere() -> bool uses unsafe {
   // No network needed: a name nothing resolves cannot be connected to,
   // and what comes back is a closed stream rather than a trap.
-  var stream = Open("this.name.does.not.exist.invalid", 443, true)
+  var stream = Handshake("this.name.does.not.exist.invalid", 443, true)
   const closed = !stream.IsOpen()
   stream.Close()
   return closed

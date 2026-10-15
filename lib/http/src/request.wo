@@ -1,0 +1,127 @@
+// A request a program builds, and what a client does with it.
+//
+// `Fetch(url)` covers the common case; this covers the rest of what a
+// person expects from a client -- any method, headers of their own, a
+// body, basic or bearer authentication, a query built from pairs,
+// redirects followed, `chunked` answers read, and a timeout so that a
+// server which never answers does not become a program that never
+// returns (D151).
+
+need std.encoding.{ToBase64, ToUrl}
+need std.text.{Bytes, IndexOf}
+
+/// What to ask for.
+///
+/// Built up and handed to `Call`: `RequestNew("GET", url)` and then the
+/// `With...` functions, each answering the request so that calls chain.
+offer struct Call {
+  var method: text = "GET"
+  var url: text = ""
+  var body: text = ""
+  var kind: text = ""
+  var headers: [16]Pair
+  var header_count: int = 0
+  /// How long to wait for the whole answer, in milliseconds. Zero waits
+  /// as long as the system does.
+  var timeout: int = 30000
+  /// How many redirects to follow. Zero follows none.
+  var redirects: int = 5
+  /// Whether to check the certificate. Off is for a development server
+  /// with one it signed itself, and says so at the call.
+  var verify: bool = true
+}
+
+offer fun CallNew(method: text, url: text) -> Call {
+  var headers: [16]Pair
+  return Call(method, url, "", "", headers, 0, 30000, 5, true)
+}
+
+/// The same call with one more header.
+offer fun WithHeaderOn(call: Call, name: text, value: text) -> Call {
+  var held = call
+  if held.header_count < 16 {
+    held.headers[held.header_count] = Pair(name, value)
+    held.header_count = held.header_count + 1
+  }
+  return held
+}
+
+/// The same call with a body and what it is.
+offer fun WithBody(call: Call, body: text, kind: text) -> Call {
+  var held = call
+  held.body = body
+  held.kind = kind
+  return held
+}
+
+/// `Authorization: Bearer <token>`.
+offer fun WithBearer(call: Call, token: text) -> Call uses unsafe {
+  return WithHeaderOn(call, "Authorization", "Bearer " + token)
+}
+
+/// `Authorization: Basic <user:password>`, base64 as the scheme wants.
+offer fun WithBasic(call: Call, user: text, password: text) -> Call
+    uses unsafe {
+  const pair = user + ":" + password
+  return WithHeaderOn(call, "Authorization",
+                      "Basic " + ToBase64(Bytes(pair)))
+}
+
+/// The same call with `name=value` added to the query, escaped.
+offer fun WithQuery(call: Call, name: text, value: text) -> Call
+    uses unsafe {
+  var held = call
+  var joiner = "?"
+  if IndexOf(held.url, "?") >= 0 {
+    joiner = "&"
+  }
+  held.url = held.url + joiner + ToUrl(name) + "=" + ToUrl(value)
+  return held
+}
+
+/// The same call, waiting at most `millis` for the whole answer.
+offer fun WithTimeout(call: Call, millis: int) -> Call {
+  var held = call
+  held.timeout = millis
+  return held
+}
+
+/// The same call, following at most `count` redirects.
+offer fun WithRedirects(call: Call, count: int) -> Call {
+  var held = call
+  held.redirects = count
+  return held
+}
+
+/// The same call, without checking the certificate.
+offer fun WithoutVerification(call: Call) -> Call {
+  var held = call
+  held.verify = false
+  return held
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun BuildsACall() -> bool uses unsafe {
+  var call = CallNew("POST", "http://example.com/users")
+  call = WithQuery(call, "page", "2")
+  call = WithQuery(call, "q", "a b")
+  call = WithBearer(call, "abc")
+  call = WithBody(call, "\{\}", "application/json")
+  call = WithTimeout(call, 1000)
+  return call.url == "http://example.com/users?page=2&q=a%20b" &&
+         call.header_count == 1 &&
+         call.headers[0].value == "Bearer abc" &&
+         call.body == "\{\}" && call.timeout == 1000 &&
+         call.redirects == 5
+}
+
+@Test
+fun BuildsBasicAuthentication() -> bool uses unsafe {
+  const call = WithBasic(CallNew("GET", "http://x/"), "aladdin",
+                         "opensesame")
+  // The example from the specification, which is why it is the one in
+  // the test.
+  return call.headers[0].value == "Basic YWxhZGRpbjpvcGVuc2VzYW1l"
+}
