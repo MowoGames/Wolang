@@ -48,6 +48,7 @@
 #include "wolang/codegen/aot.h"
 #include "wolang/lsp/server.h"
 #include "wolang/runtime/env.h"
+#include "wolang/runtime/journal.h"
 #include "wolang/codegen/compiler.h"
 #include "wolang/abi/layout.h"
 #include "wolang/codegen/foreign.h"
@@ -91,6 +92,10 @@ struct Options {
   // `run` only: sample where the time goes, and how often to sample.
   bool profile = false;
   int hertz = 1000;
+  // `run` only: write down what the machine answered, or hand back what
+  // a previous run wrote (D142).
+  std::string record;
+  std::string replay;
   // How this binary was invoked, which is how `new` finds the standard
   // library next to an installed compiler.
   std::string program;
@@ -191,7 +196,9 @@ void PrintUsage() {
       "  --lib           `new` only: a library rather than a program\n"
       "  --all           `test` only: the dependencies' tests too\n"
       "  --profile       `run` only: sample where the time goes\n"
-      "  --hertz <n>     how often `--profile` samples, default 1000\n",
+      "  --hertz <n>     how often `--profile` samples, default 1000\n"
+      "  --record <file> `run`: write down the clock and the input\n"
+      "  --replay <file> `run`: hand back what a recording wrote\n",
       std::string(kVersion).c_str());
 }
 
@@ -1137,6 +1144,23 @@ int RunProgram(const Options& options) {
   render.color = options.color && StderrIsTerminal();
   OpenLinkedLibraries(&database);
 
+  // A journal, when one was asked for: everything the machine answers --
+  // the clock, standard input, the process id -- written down on the way
+  // out and handed back on the way in (D142). Opened before anything
+  // runs, because a global's initializer may already ask the clock.
+  if (!options.record.empty() &&
+      runtime::JournalRecord(options.record.c_str()) != 0) {
+    std::fprintf(stderr, "wolang: cannot write the journal %s\n",
+                 options.record.c_str());
+    return 2;
+  }
+  if (!options.replay.empty() &&
+      runtime::JournalReplay(options.replay.c_str()) != 0) {
+    std::fprintf(stderr, "wolang: cannot read the journal %s\n",
+                 options.replay.c_str());
+    return 2;
+  }
+
   std::vector<Diagnostic> all = load_diagnostics.diagnostics();
   const LoweredFile* program = nullptr;
   const CheckedFile* program_file = nullptr;
@@ -1228,6 +1252,7 @@ int RunProgram(const Options& options) {
     profile::Stop();
     profile::Report(compiled.get());
   }
+  runtime::JournalClose();
   std::fputs(output.text.c_str(), stdout);
   if (!outcome.ok()) {
     std::fprintf(stderr, "wolang: %s at %s: %s\n",
@@ -2558,6 +2583,10 @@ int Run(int argc, char** argv) {
       options.new_library = true;
     } else if (argument == "--all") {
       options.test_all = true;
+    } else if (argument == "--record" && i + 1 < argc) {
+      options.record = argv[++i];
+    } else if (argument == "--replay" && i + 1 < argc) {
+      options.replay = argv[++i];
     } else if (argument == "--profile") {
       options.profile = true;
     } else if (argument == "--hertz" && i + 1 < argc) {

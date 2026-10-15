@@ -1736,3 +1736,20 @@ record.
 Where a checkout lands depends only on the repository and the revision,
 so two packages wanting the same dependency share one copy, and two
 revisions of the same repository are two directories.
+
+**D142. `--record` and `--replay` make a run happen again.** Everything
+the machine answers -- the clock, standard input, the process id -- is
+written down on the way out and handed back on the way in, in order. So
+"it only goes wrong on the server" becomes a file: record there, replay
+on a laptop, and the program sees the same clock, the same input and the
+same random numbers, because the seed came from the clock.
+
+The journal is text, with the bytes in hexadecimal: one that cannot be
+read in an editor is one nobody looks at when the replay disagrees. The
+shims take over through the runtime's symbol registry (D137), so a
+program reaches them without knowing they are there -- and a run with no
+journal touches none of it.
+
+What it does not do is make threads deterministic: they interleave as the
+machine decides, and a program whose outcome depends on that is not fixed
+by this. Said out loud rather than discovered.
