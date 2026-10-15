@@ -11,6 +11,7 @@
 #include "wolang/runtime/env.h"
 #include "wolang/runtime/files.h"
 #include "wolang/runtime/globals.h"
+#include "wolang/runtime/handles.h"
 #include "wolang/runtime/poll.h"
 #include "wolang/runtime/threads.h"
 #include "wolang/runtime/trap.h"
@@ -127,6 +128,16 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_fs_remove_tree)},
       {"wolang_fs_walk", reinterpret_cast<void*>(&wolang_fs_walk)},
       {"wolang_fs_append", reinterpret_cast<void*>(&wolang_fs_append)},
+      {"wolang_file_open", reinterpret_cast<void*>(&wolang_file_open)},
+      {"wolang_file_read_at",
+       reinterpret_cast<void*>(&wolang_file_read_at)},
+      {"wolang_file_append",
+       reinterpret_cast<void*>(&wolang_file_append)},
+      {"wolang_file_size", reinterpret_cast<void*>(&wolang_file_size)},
+      {"wolang_file_sync", reinterpret_cast<void*>(&wolang_file_sync)},
+      {"wolang_file_truncate",
+       reinterpret_cast<void*>(&wolang_file_truncate)},
+      {"wolang_file_close", reinterpret_cast<void*>(&wolang_file_close)},
       {"wolang_world_create",
        reinterpret_cast<void*>(&wolang_world_create)},
       {"wolang_world_destroy",
