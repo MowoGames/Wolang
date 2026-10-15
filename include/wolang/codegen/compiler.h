@@ -64,6 +64,15 @@ class CompiledModule {
   // Which function an offset into the code belongs to, as `@Name+0x1c`.
   std::string Symbolize(uint32_t offset) const;
 
+  // Where the compiled code is, so that a sampling profiler can tell a
+  // program counter inside it from one in the host (D139).
+  uint64_t code_begin() const;
+  uint64_t code_end() const;
+
+  // The name of the function an address belongs to, with no offset, or
+  // empty when the address is not in this module's code.
+  std::string FunctionAt(uint64_t address) const;
+
   // Every compiled function and how many bytes it took, in the order they
   // were emitted.
   std::vector<std::pair<std::string, uint32_t>> Listing() const;

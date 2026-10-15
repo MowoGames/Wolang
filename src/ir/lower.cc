@@ -208,6 +208,7 @@ class Lowerer {
           // the clause the symbol is the declaration's own name.
           function.foreign_symbol =
               item.link_name.is_valid() ? item.link_name : item.name;
+          function.type = ForeignSignature(function.type);
         }
         Remember(function.source_file, function.source_item,
                  module_->functions.size());
@@ -4009,6 +4010,8 @@ class Lowerer {
         if (binding->is_foreign &&
             !module_->functions[target].foreign_symbol.is_valid()) {
           module_->functions[target].foreign_symbol = name;
+          module_->functions[target].type =
+              ForeignSignature(module_->functions[target].type);
         }
         return CallAs(target, type, std::move(arguments));
       }
@@ -4442,6 +4445,36 @@ class Lowerer {
   // the call's own made the IR disagree with the function it was calling
   // (D111) -- and the wrap that bridges the two belongs where every other
   // conversion is.
+  // A C function's signature as the IR has to state it.
+  //
+  // A function value is two words here and one in C, so a foreign
+  // declaration that takes a callback takes an address: the pair's code
+  // half, which is what `ForC` hands it (D138).
+  TypeId ForeignSignature(TypeId type) {
+    if (!type.is_valid() ||
+        types_->KindOf(Erase(type)) != TypeKind::kFunction) {
+      return type;
+    }
+    const TypeId word = types_->u64();
+    std::vector<TypeId> params;
+    bool changed = false;
+    for (const TypeId held : types_->ArgumentsOf(Erase(type))) {
+      if (types_->KindOf(Erase(held)) == TypeKind::kFunction) {
+        params.push_back(word);
+        changed = true;
+      } else {
+        params.push_back(Erase(held));
+      }
+    }
+    TypeId result = Erase(types_->ElementOf(Erase(type)));
+    if (result.is_valid() &&
+        types_->KindOf(result) == TypeKind::kFunction) {
+      result = word;
+      changed = true;
+    }
+    return changed ? types_->Function(params, result) : type;
+  }
+
   // What a foreign call sees of a function value: its code address.
   //
   // A C function takes a function pointer, which is one word -- so the
@@ -4456,11 +4489,14 @@ class Lowerer {
     if (!target.is_foreign()) {
       return args;
     }
-    const std::vector<TypeId> params = types_->ArgumentsOf(target.type);
+    // Decided by what is being *passed*, not by what the declaration
+    // says it takes: the declaration already says `u64`, because that is
+    // what a C function takes (see `ForeignSignature`).
     const TypeId word = types_->u64();
-    for (size_t i = 0; i < args.size() && i < params.size(); ++i) {
-      if (types_->KindOf(Erase(params[i])) == TypeKind::kFunction &&
-          args[i].is_valid()) {
+    for (size_t i = 0; i < args.size(); ++i) {
+      if (args[i].is_valid() &&
+          types_->KindOf(Erase(ValueType(args[i]))) ==
+              TypeKind::kFunction) {
         args[i] = builder_->Extract(word, args[i], 0);
       }
     }
@@ -5386,7 +5422,13 @@ class Lowerer {
       // back when the scope that made the closure ends (D138).
       const TypeId pointer =
           types_->Pointer(environment, /*is_mutable=*/true);
-      const InstId storage = builder_->Add(Opcode::kNew, pointer);
+      // At the top of the function rather than here: the environment is
+      // freed when the scope ends, and a definition inside a branch --
+      // `a && Each(xs, |x| ...)` puts one there -- would not dominate
+      // that (D138). One allocation per closure site per call, reused by
+      // every turn of a loop, which is safe because a capturing closure
+      // cannot outlive the frame anyway.
+      const InstId storage = builder_->AddToEntry(Opcode::kNew, pointer);
       for (size_t i = 0; i < captured_values.size(); ++i) {
         const InstId field = builder_->FieldAddress(
             types_->Pointer(captured_types[i], /*is_mutable=*/true),

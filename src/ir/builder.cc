@@ -34,6 +34,31 @@ InstId Builder::Append(Inst inst, BlockId block) {
   return id;
 }
 
+InstId Builder::AddToEntry(Opcode opcode, TypeId type) {
+  if (function().blocks.empty()) {
+    return InstId{};
+  }
+  Inst inst;
+  inst.opcode = opcode;
+  inst.type = type;
+  const InstId id{static_cast<uint32_t>(function().instructions.size())};
+  const BlockId entry{0};
+  function().instructions.push_back(std::move(inst));
+  function().owners.push_back(entry);
+  function().spans.push_back(where_);
+
+  // After the block's parameters and before everything else: a parameter
+  // is not an instruction a definition may come before.
+  std::vector<InstId>& held = function().Get(entry).instructions;
+  size_t at = 0;
+  while (at < held.size() &&
+         function().Get(held[at]).opcode == Opcode::kParam) {
+    ++at;
+  }
+  held.insert(held.begin() + static_cast<long>(at), id);
+  return id;
+}
+
 InstId Builder::AddParam(BlockId block, TypeId type) {
   Inst inst;
   inst.opcode = Opcode::kParam;

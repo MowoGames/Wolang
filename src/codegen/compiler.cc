@@ -115,6 +115,27 @@ class CompiledModule::Impl {
   // label a sample.
   std::string Symbolize(uint64_t offset) const;
 
+  uint64_t code_begin() const {
+    return block_.is_installed()
+               ? reinterpret_cast<uint64_t>(block_.AddressOf(0))
+               : 0;
+  }
+  uint64_t code_end() const {
+    return code_begin() == 0 ? 0 : code_begin() + bytes_.size();
+  }
+
+  // The function an address is inside, by name and nothing else: what a
+  // profiler's sample is attributed to (D139).
+  std::string FunctionAt(uint64_t address) const {
+    const uint64_t begin = code_begin();
+    if (begin == 0 || address < begin || address >= code_end()) {
+      return std::string();
+    }
+    const std::string named = Symbolize(address - begin);
+    const size_t plus = named.find('+');
+    return plus == std::string::npos ? named : named.substr(0, plus);
+  }
+
   // One file's IR and everything derived from it. A layout store belongs to
   // a file because a struct's fields do: they are part of the resolution
   // that declared them.
@@ -636,6 +657,18 @@ std::string_view CompiledModule::SkipReason(Symbol name) const {
   const Impl::Entry* entry = impl_->Find(name);
   return entry == nullptr ? std::string_view("is not in the module")
                           : std::string_view(entry->reason);
+}
+
+uint64_t CompiledModule::code_begin() const {
+  return impl_->code_begin();
+}
+
+uint64_t CompiledModule::code_end() const {
+  return impl_->code_end();
+}
+
+std::string CompiledModule::FunctionAt(uint64_t address) const {
+  return impl_->FunctionAt(address);
 }
 
 interp::Outcome CompiledModule::Run(

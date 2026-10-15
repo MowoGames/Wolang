@@ -5,8 +5,20 @@
 
 #include <algorithm>
 #include <chrono>
-#include <dlfcn.h>
+// `ucontext` is where a signal handler finds the program counter, and on
+// macOS it wants to be asked for by its old name (D139).
+#if !defined(_WIN32) && !defined(_XOPEN_SOURCE)
+#define _XOPEN_SOURCE 700
+#endif
 
+#include <dlfcn.h>
+#include <signal.h>
+#include <sys/time.h>
+#if !defined(_WIN32)
+#include <ucontext.h>
+#endif
+
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -74,6 +86,9 @@ struct Options {
   bool new_library = false;
   // `test` only: run the dependencies' tests as well.
   bool test_all = false;
+  // `run` only: sample where the time goes, and how often to sample.
+  bool profile = false;
+  int hertz = 1000;
   // How this binary was invoked, which is how `new` finds the standard
   // library next to an installed compiler.
   std::string program;
@@ -170,7 +185,9 @@ void PrintUsage() {
       "  --prefix <p>    `bind` only: keep declarations starting with p\n"
       "  -I <dir>        `bind` only: where the headers are\n"
       "  --lib           `new` only: a library rather than a program\n"
-      "  --all           `test` only: the dependencies' tests too\n",
+      "  --all           `test` only: the dependencies' tests too\n"
+      "  --profile       `run` only: sample where the time goes\n"
+      "  --hertz <n>     how often `--profile` samples, default 1000\n",
       std::string(kVersion).c_str());
 }
 
@@ -692,6 +709,128 @@ std::string Describe(const interp::Outcome& outcome) {
   return result;
 }
 
+// Where the program spent its time.
+//
+// A sampling profiler: a timer fires a few thousand times a second, the
+// handler writes down the program counter, and afterwards each sample is
+// attributed to the function whose code it landed in. Sampling rather
+// than counting, because counting changes what it measures -- and
+// because a profile of the compiled tier is the one worth having (D139).
+namespace profile {
+
+// What the handler may touch: it runs on a signal, so everything here is
+// either atomic or written only by it.
+constexpr size_t kMostSamples = 1 << 18;
+std::atomic<uint32_t> taken{0};
+uint64_t samples[kMostSamples];
+std::atomic<bool> running{false};
+
+void OnTick(int, siginfo_t*, void* context) {
+  if (!running.load(std::memory_order_relaxed)) {
+    return;
+  }
+  const auto* uc = static_cast<const ucontext_t*>(context);
+  uint64_t pc = 0;
+#if defined(__APPLE__) && defined(__aarch64__)
+  pc = uc->uc_mcontext->__ss.__pc;
+#elif defined(__APPLE__) && defined(__x86_64__)
+  pc = uc->uc_mcontext->__ss.__rip;
+#elif defined(__linux__) && defined(__aarch64__)
+  pc = uc->uc_mcontext.pc;
+#elif defined(__linux__) && defined(__x86_64__)
+  pc = static_cast<uint64_t>(uc->uc_mcontext.gregs[REG_RIP]);
+#else
+  (void)uc;
+#endif
+  const uint32_t at = taken.fetch_add(1, std::memory_order_relaxed);
+  if (at < kMostSamples) {
+    samples[at] = pc;
+  }
+}
+
+// Starts sampling at |hertz|, or does nothing when the platform will not
+// give us a timer.
+bool Start(int hertz) {
+  struct sigaction action = {};
+  action.sa_flags = SA_SIGINFO | SA_RESTART;
+  action.sa_sigaction = &OnTick;
+  sigemptyset(&action.sa_mask);
+  if (::sigaction(SIGPROF, &action, nullptr) != 0) {
+    return false;
+  }
+  itimerval timer = {};
+  timer.it_interval.tv_usec = 1000000 / (hertz > 0 ? hertz : 1000);
+  timer.it_value = timer.it_interval;
+  if (::setitimer(ITIMER_PROF, &timer, nullptr) != 0) {
+    return false;
+  }
+  running.store(true, std::memory_order_relaxed);
+  return true;
+}
+
+void Stop() {
+  running.store(false, std::memory_order_relaxed);
+  itimerval off = {};
+  ::setitimer(ITIMER_PROF, &off, nullptr);
+  ::signal(SIGPROF, SIG_IGN);
+}
+
+// What was sampled, by function, most first.
+void Report(const codegen::CompiledModule* compiled) {
+  const uint32_t count =
+      std::min<uint32_t>(taken.load(std::memory_order_relaxed),
+                         kMostSamples);
+  if (count == 0) {
+    std::fprintf(stdout,
+                 "no samples: the program finished before the timer "
+                 "fired\n");
+    return;
+  }
+
+  std::vector<std::pair<std::string, uint32_t>> tally;
+  uint32_t elsewhere = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    std::string name =
+        compiled != nullptr ? compiled->FunctionAt(samples[i])
+                            : std::string();
+    if (name.empty()) {
+      // The runtime, the allocator, the kernel: everything that is not
+      // this program's compiled code. Worth reporting as one line rather
+      // than hiding, because "most of the time is in the allocator" is
+      // an answer.
+      ++elsewhere;
+      continue;
+    }
+    bool held = false;
+    for (auto& [existing, times] : tally) {
+      if (existing == name) {
+        ++times;
+        held = true;
+        break;
+      }
+    }
+    if (!held) {
+      tally.emplace_back(std::move(name), 1);
+    }
+  }
+  std::sort(tally.begin(), tally.end(),
+            [](const auto& left, const auto& right) {
+              return left.second > right.second;
+            });
+
+  std::fprintf(stdout, "\n%u samples\n", count);
+  for (const auto& [name, times] : tally) {
+    std::fprintf(stdout, "  %5.1f%%  %6u  %s\n",
+                 100.0 * times / count, times, name.c_str());
+  }
+  if (elsewhere != 0) {
+    std::fprintf(stdout, "  %5.1f%%  %6u  <runtime, libraries, kernel>\n",
+                 100.0 * elsewhere / count, elsewhere);
+  }
+}
+
+}  // namespace profile
+
 int RunProgram(const Options& options) {
   Database database;
   DiagnosticEngine load_diagnostics;
@@ -775,6 +914,12 @@ int RunProgram(const Options& options) {
 
   interp::Output output;
   interp::Outcome outcome;
+  const bool profiling = options.profile && profile::Start(options.hertz);
+  if (options.profile && !profiling) {
+    std::fprintf(stderr,
+                 "wolang: this system will not give us a profiling "
+                 "timer\n");
+  }
   if (compiled != nullptr && compiled->Contains(main)) {
     outcome = compiled->Run(main, {});
   } else {
@@ -785,6 +930,10 @@ int RunProgram(const Options& options) {
                                foreign.get(), &program_layouts, modules);
   }
 
+  if (profiling) {
+    profile::Stop();
+    profile::Report(compiled.get());
+  }
   std::fputs(output.text.c_str(), stdout);
   if (!outcome.ok()) {
     std::fprintf(stderr, "wolang: %s at %s: %s\n",
@@ -2139,6 +2288,10 @@ int Run(int argc, char** argv) {
       options.new_library = true;
     } else if (argument == "--all") {
       options.test_all = true;
+    } else if (argument == "--profile") {
+      options.profile = true;
+    } else if (argument == "--hertz" && i + 1 < argc) {
+      options.hertz = static_cast<int>(std::strtol(argv[++i], nullptr, 10));
     } else if (argument.size() > 1 && argument[0] == '-') {
       std::fprintf(stderr, "wolang: unknown option %.*s\n",
                    static_cast<int>(argument.size()), argument.data());

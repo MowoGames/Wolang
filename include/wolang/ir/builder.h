@@ -56,6 +56,16 @@ class Builder {
   // else in their block.
   InstId AddParam(BlockId block, TypeId type);
 
+  // An instruction at the top of the entry block, before whatever it
+  // ends with.
+  //
+  // For a definition that has to dominate everything: a closure's
+  // environment is allocated once per call and freed when the call ends,
+  // and allocating it where the closure is written would leave it
+  // undominated by the scope exit that frees it (D138).
+  InstId AddToEntry(Opcode opcode, TypeId type);
+
+
   InstId Add(Opcode opcode, TypeId type, std::vector<InstId> operands = {});
 
   InstId ConstInt(TypeId type, uint64_t value);

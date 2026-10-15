@@ -1669,3 +1669,17 @@ should have had them from the start.
 allocating. And `List.Items()` hands out the part of its storage that is
 in use, through a `std.mem.Prefix` that is the same pair-making
 instruction `ViewFromRaw` is.
+
+**D139. `wolang run --profile` says where the time went.** A sampling
+profiler: a timer fires a thousand times a second, the handler writes
+down the program counter, and afterwards each sample is attributed to the
+function whose compiled code it landed in. Sampling rather than counting,
+because counting changes what it measures -- and because a profile of the
+machine-code tier is the one worth having. Samples that land outside the
+program's own code -- the runtime, the allocator, the kernel -- are one
+line rather than hidden, because "most of the time is in the allocator"
+is an answer.
+
+It names a generic instantiation and a closure the way the rest of the
+compiler does, so `@Partition<s32>` and `@closure$2` are what a profile
+of `Sort(numbers, |a, b| a < b)` shows.
