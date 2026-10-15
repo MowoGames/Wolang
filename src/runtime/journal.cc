@@ -29,7 +29,7 @@ namespace {
 // buffer a `read` filled, a process id -- and the length says how many.
 // A text format, because a journal that cannot be read in an editor is a
 // journal nobody looks at when the replay disagrees (D142).
-struct State {
+struct JournalState {
   std::FILE* file = nullptr;
   bool recording = false;
   bool replaying = false;
@@ -39,8 +39,8 @@ struct State {
   std::mutex lock;
 };
 
-State& Journal() {
-  static State state;
+JournalState& Journal() {
+  static JournalState state;
   return state;
 }
 
@@ -72,7 +72,7 @@ size_t FromHex(const std::string& text, void* into, size_t room) {
 }
 
 void Write(const char* what, const void* bytes, size_t length) {
-  State& state = Journal();
+  JournalState& state = Journal();
   if (!state.recording || state.file == nullptr) {
     return;
   }
@@ -86,7 +86,7 @@ void Write(const char* what, const void* bytes, size_t length) {
 // different order is a replay of a different program, and saying so
 // beats handing back a timestamp where a buffer was wanted.
 bool Next(const char* what, std::string* payload) {
-  State& state = Journal();
+  JournalState& state = Journal();
   if (!state.replaying || state.at >= state.entries.size()) {
     return false;
   }
@@ -102,7 +102,7 @@ bool Next(const char* what, std::string* payload) {
 }  // namespace
 
 int32_t JournalRecord(const char* path) {
-  State& state = Journal();
+  JournalState& state = Journal();
   std::lock_guard<std::mutex> held(state.lock);
   JournalClose();
   state.file = std::fopen(path, "w");
@@ -123,7 +123,7 @@ int32_t JournalRecord(const char* path) {
 }
 
 int32_t JournalReplay(const char* path) {
-  State& state = Journal();
+  JournalState& state = Journal();
   std::lock_guard<std::mutex> held(state.lock);
   JournalClose();
   std::FILE* file = std::fopen(path, "r");
@@ -156,7 +156,7 @@ int32_t JournalReplay(const char* path) {
 }
 
 void JournalClose() {
-  State& state = Journal();
+  JournalState& state = Journal();
   if (state.file != nullptr) {
     std::fclose(state.file);
     state.file = nullptr;
@@ -180,7 +180,7 @@ extern "C" {
 int32_t wolang_journal_clock(int32_t clock, void* out) {
   // Two 64-bit numbers, which is what a `timespec` is on every system
   // this targets.
-  State& state = Journal();
+  JournalState& state = Journal();
   std::lock_guard<std::mutex> held(state.lock);
   if (state.replaying) {
     std::string payload;
@@ -218,7 +218,7 @@ int32_t wolang_journal_clock(int32_t clock, void* out) {
 }
 
 int64_t wolang_journal_read(int32_t fd, void* buffer, uint64_t count) {
-  State& state = Journal();
+  JournalState& state = Journal();
   std::lock_guard<std::mutex> held(state.lock);
   if (state.replaying) {
     std::string payload;
@@ -239,7 +239,7 @@ int64_t wolang_journal_read(int32_t fd, void* buffer, uint64_t count) {
 }
 
 int32_t wolang_journal_getpid(void) {
-  State& state = Journal();
+  JournalState& state = Journal();
   std::lock_guard<std::mutex> held(state.lock);
   if (state.replaying) {
     std::string payload;

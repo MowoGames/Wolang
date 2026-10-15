@@ -12,7 +12,7 @@ namespace {
 
 constexpr size_t kQueryCount = static_cast<size_t>(QueryKind::kCount);
 
-constexpr std::array<std::string_view, kQueryCount> kNames = {
+constexpr std::array<std::string_view, kQueryCount> kQueryNames = {
 #define WOLANG_QUERY_INPUT(Name, Argument, Description) #Name,
 #define WOLANG_QUERY(Name, Argument, Description) #Name,
 #include "wolang/query/query_kind.inc"
@@ -37,7 +37,7 @@ bool InRange(QueryKind kind) {
 }  // namespace
 
 std::string_view QueryKindName(QueryKind kind) {
-  return InRange(kind) ? kNames[static_cast<size_t>(kind)] : "<invalid>";
+  return InRange(kind) ? kQueryNames[static_cast<size_t>(kind)] : "<invalid>";
 }
 
 std::string_view QueryKindDescription(QueryKind kind) {

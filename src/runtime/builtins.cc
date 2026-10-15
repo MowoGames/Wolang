@@ -50,7 +50,7 @@ void wolang_frame_free(void* frame) {
 
 namespace {
 
-struct Entry {
+struct BuiltinEntry {
   std::string_view name;
   void* address;
 };
@@ -91,7 +91,7 @@ void* LookupSymbol(std::string_view name) {
       return address;
     }
   }
-  static const Entry kTable[] = {
+  static const BuiltinEntry kTable[] = {
       {"wolang_frame_alloc", reinterpret_cast<void*>(&wolang_frame_alloc)},
       {"wolang_frame_free", reinterpret_cast<void*>(&wolang_frame_free)},
       {"wolang_sched_spawn",
@@ -275,7 +275,7 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_sched_pending",
        reinterpret_cast<void*>(&wolang_sched_pending)},
   };
-  for (const Entry& entry : kTable) {
+  for (const BuiltinEntry& entry : kTable) {
     if (entry.name == name) {
       return entry.address;
     }

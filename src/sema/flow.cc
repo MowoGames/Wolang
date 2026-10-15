@@ -27,7 +27,7 @@ enum class Flow : uint8_t {
 };
 
 // What is known about a local at a point in the walk.
-enum class State : uint8_t {
+enum class Liveness : uint8_t {
   // Declared with no value, and no path here has written one.
   kUnwritten,
   kLive,
@@ -42,15 +42,15 @@ struct Local {
   // body, which is a region in the only sense that matters here: a
   // reference to a local cannot outlive the frame the local is in.
   uint32_t depth = 0;
-  State state = State::kUnwritten;
+  Liveness state = Liveness::kUnwritten;
   // Reported once: a variable used three times after being moved is one
   // mistake, not three.
   bool reported = false;
 };
 
-class Checker {
+class FlowChecker {
  public:
-  Checker(const Ast& ast,
+  FlowChecker(const Ast& ast,
           const StringInterner& interner,
           const TypeStore& types,
           const FileResolution& resolution,
@@ -206,7 +206,7 @@ class Checker {
     if (local == nullptr || local->reported) {
       return;
     }
-    if (local->state == State::kUnwritten) {
+    if (local->state == Liveness::kUnwritten) {
       local->reported = true;
       std::string message = "`";
       message.append(interner_.Text(name));
@@ -217,7 +217,7 @@ class Checker {
                 "that reaches this point");
       return;
     }
-    if (local->state == State::kMoved) {
+    if (local->state == Liveness::kMoved) {
       local->reported = true;
       std::string message = "`";
       message.append(interner_.Text(name));
@@ -304,13 +304,13 @@ class Checker {
 
   void MaybeMove(Symbol name, ExprId id) {
     Local* local = Find(name);
-    if (local == nullptr || local->state != State::kLive) {
+    if (local == nullptr || local->state != Liveness::kLive) {
       return;
     }
     if (!IsOwning(typed_.TypeOf(id)) || IsBorrow(id)) {
       return;
     }
-    local->state = State::kMoved;
+    local->state = Liveness::kMoved;
   }
 
   // ------------------------------------------------------- statements ----
@@ -354,8 +354,8 @@ class Checker {
             ast_.Get(stmt.type).kind == TypeRefKind::kArray;
         locals_.push_back(
             Local{pattern.name, depth_,
-                  stmt.expr.is_valid() || zero_filled ? State::kLive
-                                                      : State::kUnwritten,
+                  stmt.expr.is_valid() || zero_filled ? Liveness::kLive
+                                                      : Liveness::kUnwritten,
                   false});
         return Flow::kFalls;
       }
@@ -462,7 +462,7 @@ class Checker {
           // Assigning to a name that was moved out of gives it a value
           // again, which is the whole of what makes `var` and moves get
           // along.
-          local->state = State::kLive;
+          local->state = Liveness::kLive;
         }
         return Flow::kFalls;
       }
@@ -479,13 +479,13 @@ class Checker {
         const size_t depth = locals_.size();
         // What each branch wrote, so that "written on every path" is an
         // intersection rather than whatever the last branch did.
-        std::vector<State> before = Written();
+        std::vector<Liveness> before = Written();
         const Flow then_flow = Expression(expr.rhs);
-        std::vector<State> after_then = Written();
+        std::vector<Liveness> after_then = Written();
         Restore(before);
         const Flow else_flow =
             expr.extra.is_valid() ? Expression(expr.extra) : Flow::kFalls;
-        std::vector<State> after_else = Written();
+        std::vector<Liveness> after_else = Written();
 
         locals_.resize(depth);
         if (then_flow == Flow::kDiverges && else_flow == Flow::kDiverges) {
@@ -516,8 +516,8 @@ class Checker {
 
       case ExprKind::kMatch: {
         Expression(expr.lhs);
-        const std::vector<State> before = Written();
-        std::vector<State> common;
+        const std::vector<Liveness> before = Written();
+        std::vector<Liveness> common;
         bool any_falls = false;
         for (MatchArmId arm_id : ast_.Get(expr.arms)) {
           const MatchArm& arm = ast_.Get(arm_id);
@@ -664,17 +664,17 @@ class Checker {
   // The body may also not run at all, so nothing it wrote is known
   // afterwards -- while anything it moved is gone.
   void Body(ExprId body) {
-    const std::vector<State> before = Written();
+    const std::vector<Liveness> before = Written();
     const size_t depth = locals_.size();
     Expression(body);
-    const std::vector<State> after = Written();
+    const std::vector<Liveness> after = Written();
     locals_.resize(depth);
 
     bool moved_something = false;
     for (size_t i = 0; i < after.size() && i < before.size(); ++i) {
       moved_something = moved_something ||
-                        (after[i] == State::kMoved &&
-                         before[i] != State::kMoved);
+                        (after[i] == Liveness::kMoved &&
+                         before[i] != Liveness::kMoved);
     }
     if (moved_something) {
       Restore(Intersect(after, before));
@@ -686,8 +686,8 @@ class Checker {
 
   // ---------------------------------------------------- written states ----
 
-  std::vector<State> Written() const {
-    std::vector<State> state;
+  std::vector<Liveness> Written() const {
+    std::vector<Liveness> state;
     state.reserve(locals_.size());
     for (const Local& local : locals_) {
       state.push_back(local.state);
@@ -695,7 +695,7 @@ class Checker {
     return state;
   }
 
-  void Restore(const std::vector<State>& state) {
+  void Restore(const std::vector<Liveness>& state) {
     for (size_t i = 0; i < locals_.size() && i < state.size(); ++i) {
       locals_[i].state = state[i];
     }
@@ -703,17 +703,17 @@ class Checker {
 
   // What is true after a join: written only where both paths wrote, and
   // moved where either did -- a value moved on one path is gone.
-  static std::vector<State> Intersect(const std::vector<State>& lhs,
-                                      const std::vector<State>& rhs) {
-    std::vector<State> result;
+  static std::vector<Liveness> Intersect(const std::vector<Liveness>& lhs,
+                                      const std::vector<Liveness>& rhs) {
+    std::vector<Liveness> result;
     for (size_t i = 0; i < lhs.size(); ++i) {
-      const State other = i < rhs.size() ? rhs[i] : State::kUnwritten;
-      if (lhs[i] == State::kMoved || other == State::kMoved) {
-        result.push_back(State::kMoved);
-      } else if (lhs[i] == State::kLive && other == State::kLive) {
-        result.push_back(State::kLive);
+      const Liveness other = i < rhs.size() ? rhs[i] : Liveness::kUnwritten;
+      if (lhs[i] == Liveness::kMoved || other == Liveness::kMoved) {
+        result.push_back(Liveness::kMoved);
+      } else if (lhs[i] == Liveness::kLive && other == Liveness::kLive) {
+        result.push_back(Liveness::kLive);
       } else {
-        result.push_back(State::kUnwritten);
+        result.push_back(Liveness::kUnwritten);
       }
     }
     return result;
@@ -721,13 +721,13 @@ class Checker {
 
   // What is true after two paths that both diverge: nothing joins, so the
   // most that is known is what either path established.
-  static std::vector<State> Union(const std::vector<State>& lhs,
-                                  const std::vector<State>& rhs) {
-    std::vector<State> result;
+  static std::vector<Liveness> Union(const std::vector<Liveness>& lhs,
+                                  const std::vector<Liveness>& rhs) {
+    std::vector<Liveness> result;
     for (size_t i = 0; i < lhs.size(); ++i) {
-      const State other = i < rhs.size() ? rhs[i] : State::kUnwritten;
-      result.push_back(lhs[i] == State::kLive || other == State::kLive
-                           ? State::kLive
+      const Liveness other = i < rhs.size() ? rhs[i] : Liveness::kUnwritten;
+      result.push_back(lhs[i] == Liveness::kLive || other == Liveness::kLive
+                           ? Liveness::kLive
                            : lhs[i]);
     }
     return result;
@@ -752,7 +752,7 @@ void CheckFlow(const Ast& ast,
                const TypedBody& typed,
                ItemId item,
                DiagnosticEngine* diagnostics) {
-  Checker checker(ast, interner, types, resolution, typed, diagnostics);
+  FlowChecker checker(ast, interner, types, resolution, typed, diagnostics);
   checker.Run(item);
 }
 

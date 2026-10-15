@@ -28,13 +28,13 @@ bool ParseSeverity(std::string_view name, Severity* out) {
   static constexpr struct {
     std::string_view name;
     Severity severity;
-  } kNames[] = {
+  } kSeverityNames[] = {
       {"off", Severity::kOff},         {"hint", Severity::kHint},
       {"perf", Severity::kPerf},       {"warning", Severity::kWarning},
       {"warn", Severity::kWarning},    {"error", Severity::kError},
   };
 
-  for (const auto& entry : kNames) {
+  for (const auto& entry : kSeverityNames) {
     if (entry.name == name) {
       if (out) {
         *out = entry.severity;

@@ -113,6 +113,18 @@ set_target_properties(wolang_embed_shared PROPERTIES
     OUTPUT_NAME wolang_embed
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR})
+# A shared library on Windows brings an import library with it, and that
+# one is also called `wolang_embed.lib` -- the same name the static
+# library has, which is two rules writing one file. The import library
+# gets its own name; everywhere else the two already differ by their
+# extension (D187).
+if(WIN32)
+    set_target_properties(wolang_embed_shared PROPERTIES
+        ARCHIVE_OUTPUT_NAME wolang_embed_dll
+        # And a DLL exports nothing unless it is asked to, which for a
+        # project that marks nothing is every symbol.
+        WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
 target_link_libraries(wolang_embed_shared PRIVATE wolang_core)
 target_include_directories(wolang_embed_shared PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>

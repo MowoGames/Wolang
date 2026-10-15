@@ -2260,3 +2260,31 @@ build published, and it insists on clang like everything else (D184).
 The release now carries every platform -- Linux on two architectures,
 macOS on two, Windows -- plus the checksums the installers read and the
 editor extension.
+
+**D186. The whole compiler as one file.** `make_amalgamation.py` inlines
+every header and every source into one `.cc` that builds with a plain
+`clang++ -std=c++20 -c`, beside the `wolang.h` a host includes. For a
+host that wants to embed the language and not a build system, that is the
+whole delivery: two files.
+
+Three things had to be true for it to work. An `.inc` is an X-macro table
+and is included several times on purpose, so it is inlined every time
+rather than once -- the first version produced an empty opcode table and
+a static assertion that fired a long way from the cause. A header's
+include guard has to come off, or every include inside it looks
+conditional. And half a dozen file-local names were too generic to share
+one translation unit: four `Entry` structs, two `State`s, two `Checker`s,
+five `kNames`. They now say which file they are in, which is better
+anyway.
+
+The emitters needed more than a rename: both kept their tables in an
+anonymous namespace beside each other, so they now sit inside
+`arm64`/`x64` instead. Two anonymous namespaces in different enclosing
+namespaces are different namespaces.
+
+CI builds the amalgamation and runs a host against it on every commit.
+
+**D187. One name, one file.** On Windows a shared library brings an
+import library with it, and ours was called `wolang_embed.lib` -- the
+same name the static library has, which is two build rules writing one
+file and a build that stops. The import library has its own name now.

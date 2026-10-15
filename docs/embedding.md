@@ -130,3 +130,34 @@ if (ChangedOnDisk(vm)) {
 `wolang_vm_file_count`/`_name` give the files the program was built from,
 including the standard library's, so watching them is a host's own
 business and needs nothing from here.
+
+## Two files, no build system
+
+A host that wants none of CMake, LLVM or a package manager can take the
+whole compiler as one source file:
+
+```sh
+python3 tools/package/make_amalgamation.py       # build/amalgamation
+```
+
+```
+wolang.h                  the C interface
+wolang.hpp                the C++ one, over the same calls
+wolang_amalgamation.cc    everything else, about two megabytes
+```
+
+```sh
+clang++ -std=c++20 -fno-exceptions -fno-rtti -O2 \
+    -c wolang_amalgamation.cc -o wolang.o
+clang++ host.cc wolang.o -o host
+```
+
+That is the interpreter and the just-in-time tier — everything embedding
+uses. The ahead-of-time backend is not in it, because it needs LLVM and
+embedding does not.
+
+What it cost to make this possible: half a dozen file-local names in the
+compiler were too generic to share one translation unit — four different
+`Entry` structs, two `State`s, two `Checker`s — and they now say which
+file they are in. CI builds the amalgamation and runs a host against it
+on every commit, so it cannot quietly stop working (D186).

@@ -17,36 +17,36 @@ namespace wolang {
 namespace runtime {
 namespace {
 
-struct Entry {
+struct TaskEntry {
   int32_t kind = 0;
   void* frame = nullptr;
   bool done = false;
 };
 
-struct State {
-  std::vector<Entry> tasks;
+struct SchedulerState {
+  std::vector<TaskEntry> tasks;
   // Indices of the tasks that can make progress, oldest first.
   std::deque<int32_t> ready;
   ResumeFn resume = nullptr;
   void* context = nullptr;
 };
 
-State& Current() {
-  static State state;
+SchedulerState& Current() {
+  static SchedulerState state;
   return state;
 }
 
 }  // namespace
 
 void InstallResume(ResumeFn resume, void* context) {
-  State& state = Current();
+  SchedulerState& state = Current();
   state.resume = resume;
   state.context = context;
 }
 
 void ResetScheduler() {
-  State& state = Current();
-  for (Entry& task : state.tasks) {
+  SchedulerState& state = Current();
+  for (TaskEntry& task : state.tasks) {
     if (!task.done && task.frame != nullptr) {
       wolang_frame_free(task.frame);
     }
@@ -58,15 +58,15 @@ void ResetScheduler() {
 extern "C" {
 
 int32_t wolang_sched_spawn(int32_t kind, void* frame) {
-  State& state = Current();
+  SchedulerState& state = Current();
   const auto handle = static_cast<int32_t>(state.tasks.size());
-  state.tasks.push_back(Entry{kind, frame, false});
+  state.tasks.push_back(TaskEntry{kind, frame, false});
   state.ready.push_back(handle);
   return handle;
 }
 
 int64_t wolang_sched_run() {
-  State& state = Current();
+  SchedulerState& state = Current();
   if (state.resume == nullptr) {
     return 0;
   }
@@ -74,7 +74,7 @@ int64_t wolang_sched_run() {
   while (!state.ready.empty()) {
     const int32_t handle = state.ready.front();
     state.ready.pop_front();
-    Entry& task = state.tasks[static_cast<size_t>(handle)];
+    TaskEntry& task = state.tasks[static_cast<size_t>(handle)];
     if (task.done) {
       continue;
     }
@@ -82,7 +82,7 @@ int64_t wolang_sched_run() {
     const bool finished =
         state.resume(state.context, task.kind, task.frame);
     // Read again: resuming may have spawned, and the vector may have moved.
-    Entry& after = state.tasks[static_cast<size_t>(handle)];
+    TaskEntry& after = state.tasks[static_cast<size_t>(handle)];
     if (!finished) {
       // Back of the queue: everything else that can run goes first, which
       // is the whole of "cooperative and fair".
@@ -120,7 +120,7 @@ void wolang_object_free(void* object) {
 }
 
 int64_t wolang_sched_join(int32_t handle) {
-  State& state = Current();
+  SchedulerState& state = Current();
   if (state.resume == nullptr) {
     return 0;
   }
@@ -128,14 +128,14 @@ int64_t wolang_sched_join(int32_t handle) {
   while (!wolang_sched_done(handle) && !state.ready.empty()) {
     const int32_t next = state.ready.front();
     state.ready.pop_front();
-    Entry& task = state.tasks[static_cast<size_t>(next)];
+    TaskEntry& task = state.tasks[static_cast<size_t>(next)];
     if (task.done) {
       continue;
     }
     ++steps;
     const bool finished = state.resume(state.context, task.kind,
                                        task.frame);
-    Entry& after = state.tasks[static_cast<size_t>(next)];
+    TaskEntry& after = state.tasks[static_cast<size_t>(next)];
     if (!finished) {
       state.ready.push_back(next);
       continue;
@@ -150,7 +150,7 @@ int64_t wolang_sched_join(int32_t handle) {
 }
 
 bool wolang_sched_done(int32_t handle) {
-  State& state = Current();
+  SchedulerState& state = Current();
   if (handle < 0 || static_cast<size_t>(handle) >= state.tasks.size()) {
     return true;
   }
@@ -158,9 +158,9 @@ bool wolang_sched_done(int32_t handle) {
 }
 
 int32_t wolang_sched_pending() {
-  State& state = Current();
+  SchedulerState& state = Current();
   int32_t pending = 0;
-  for (const Entry& task : state.tasks) {
+  for (const TaskEntry& task : state.tasks) {
     pending += task.done ? 0 : 1;
   }
   return pending;

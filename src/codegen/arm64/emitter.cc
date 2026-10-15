@@ -16,6 +16,12 @@
 
 namespace wolang {
 namespace codegen {
+// Inside the architecture's own namespace rather than
+// beside it: two emitters compiled into one translation
+// unit -- which is what the amalgamation is -- would
+// otherwise share an anonymous namespace and collide on
+// every register table in it (D186).
+namespace arm64 {
 namespace {
 
 using arm64::Assembler;
@@ -2758,8 +2764,6 @@ class FunctionEmitter {
 };
 
 }  // namespace
-
-namespace arm64 {
 
 CompiledFunction EmitFunction(const StringInterner& interner,
                               const TypeStore& types,

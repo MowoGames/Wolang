@@ -358,7 +358,7 @@ class Parser {
 
 constexpr uint32_t kMaxNesting = 192;
 
-Precedence Tighter(Precedence precedence) {
+Precedence TighterPrecedence(Precedence precedence) {
   return static_cast<Precedence>(static_cast<int>(precedence) + 1);
 }
 
@@ -1700,7 +1700,7 @@ ExprId Parser::ParseExpression(Precedence min_precedence) {
       range.flags |= ExprFlags::kInclusive;
     }
     if (StartsExpression(PeekKind(), allow_struct_literal_)) {
-      range.rhs = ParseExpression(Tighter(Precedence::kRange));
+      range.rhs = ParseExpression(TighterPrecedence(Precedence::kRange));
     }
     range.span = SpanFrom(start);
     return ast_->Add(std::move(range));

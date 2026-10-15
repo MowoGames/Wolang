@@ -25,13 +25,13 @@ namespace {
 // `TZ` and `tzset` is the one interface every system has for "what would
 // this moment be called over there". Not thread-safe by nature, so the
 // whole conversion happens under one lock.
-struct Held {
+struct HeldZone {
   std::string previous;
   bool had_previous = false;
 };
 
-Held Enter(const char* zone) {
-  Held held;
+HeldZone Enter(const char* zone) {
+  HeldZone held;
   if (zone == nullptr || zone[0] == 0) {
     return held;
   }
@@ -49,7 +49,7 @@ Held Enter(const char* zone) {
   return held;
 }
 
-void Leave(const Held& held, const char* zone) {
+void Leave(const HeldZone& held, const char* zone) {
   if (zone == nullptr || zone[0] == 0) {
     return;
   }
@@ -72,7 +72,7 @@ extern "C" int32_t wolang_zone_offset(int64_t seconds, const char* zone,
                                       uint64_t length) {
   std::string named(zone != nullptr ? zone : "",
                     static_cast<size_t>(length));
-  const Held held = Enter(named.c_str());
+  const HeldZone held = Enter(named.c_str());
   const auto moment = static_cast<std::time_t>(seconds);
   std::tm local = {};
 #if defined(_WIN32)
@@ -102,7 +102,7 @@ extern "C" int32_t wolang_zone_name(int64_t seconds, const char* zone,
   }
   std::string named(zone != nullptr ? zone : "",
                     static_cast<size_t>(length));
-  const Held held = Enter(named.c_str());
+  const HeldZone held = Enter(named.c_str());
   const auto moment = static_cast<std::time_t>(seconds);
   std::tm local = {};
 #if defined(_WIN32)

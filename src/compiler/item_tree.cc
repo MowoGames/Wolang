@@ -54,14 +54,14 @@ class SignatureWriter {
     static constexpr struct {
       ItemFlags flag;
       std::string_view name;
-    } kNames[] = {
+    } kItemNames[] = {
         {ItemFlags::kOffer, "offer"},         {ItemFlags::kPriv, "priv"},
         {ItemFlags::kAsync, "task"},     {ItemFlags::kVirtual, "virtual"},
         {ItemFlags::kOverride, "override"}, {ItemFlags::kComptime, "comptime"},
         {ItemFlags::kDerived, "derived"}, {ItemFlags::kMutable, "mut"},
         {ItemFlags::kExtern, "extern"},   {ItemFlags::kAbilityImpl, "for"},
     };
-    for (const auto& entry : kNames) {
+    for (const auto& entry : kItemNames) {
       if (HasFlag(flags, entry.flag)) {
         out_.push_back(' ');
         Put(entry.name);

@@ -185,6 +185,39 @@ jobs:
              -o /tmp/host
           /tmp/host examples/embed/script
 
+      # And the way a host with no build system gets it: two files
+      # (D186).
+      - name: The amalgamation builds and runs
+        run: |
+          python3 tools/package/make_amalgamation.py --out /tmp/amalg
+          cd /tmp/amalg
+          c++ -std=c++20 -fno-exceptions -fno-rtti -O1 \
+              -c wolang_amalgamation.cc -o wolang.o
+          cat > host.cc <<'EOT'
+          #include <stdio.h>
+          #include "wolang.h"
+          int main(void) {
+            WolangVm* vm = wolang_vm_create();
+            if (wolang_vm_load_source(
+                    vm, "host.wo",
+                    "offer fun Add(a: int, b: int) -> int => a + b\n")
+                != 0) {
+              fprintf(stderr, "%s", wolang_vm_errors(vm));
+              return 1;
+            }
+            WolangValue args[2] = {wolang_int(2), wolang_int(40)};
+            WolangValue out;
+            if (wolang_vm_call(vm, "Add", args, 2, &out) != 0) {
+              return 1;
+            }
+            printf("%lld\n", (long long)out.integer);
+            wolang_vm_destroy(vm);
+            return 0;
+          }
+          EOT
+          c++ -std=c++20 -O1 host.cc wolang.o -o host
+          test "$(./host)" = "42"
+
       # And the way a host actually gets it: installed, then found.
       - name: Install and link through find_package
         run: |

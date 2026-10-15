@@ -32,7 +32,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-std::string Named(const uint8_t* path, uint64_t length) {
+std::string NamedPath(const uint8_t* path, uint64_t length) {
   if (path == nullptr || length == 0) {
     return std::string();
   }
@@ -66,7 +66,7 @@ int64_t wolang_fs_current(uint8_t* into, uint64_t room) {
 
 int32_t wolang_fs_set_current(const uint8_t* path, uint64_t length) {
   std::error_code failed;
-  fs::current_path(fs::path(Named(path, length)), failed);
+  fs::current_path(fs::path(NamedPath(path, length)), failed);
   return failed ? -1 : 0;
 }
 
@@ -97,7 +97,7 @@ int64_t wolang_fs_absolute(const uint8_t* path, uint64_t length,
   // Weakly: a path that does not exist yet still has an absolute form,
   // which is what a program building an output path wants.
   const fs::path held =
-      fs::weakly_canonical(fs::path(Named(path, length)), failed);
+      fs::weakly_canonical(fs::path(NamedPath(path, length)), failed);
   if (failed) {
     return -1;
   }
@@ -111,15 +111,15 @@ int32_t wolang_fs_copy(const uint8_t* from, uint64_t from_length,
   const fs::copy_options options =
       over != 0 ? fs::copy_options::overwrite_existing
                 : fs::copy_options::none;
-  fs::copy_file(fs::path(Named(from, from_length)),
-                fs::path(Named(to, to_length)), options, failed);
+  fs::copy_file(fs::path(NamedPath(from, from_length)),
+                fs::path(NamedPath(to, to_length)), options, failed);
   return failed ? -1 : 0;
 }
 
 int32_t wolang_fs_remove_tree(const uint8_t* path, uint64_t length) {
   std::error_code failed;
   const uintmax_t taken =
-      fs::remove_all(fs::path(Named(path, length)), failed);
+      fs::remove_all(fs::path(NamedPath(path, length)), failed);
   if (failed) {
     return -1;
   }
@@ -131,7 +131,7 @@ int32_t wolang_fs_remove_tree(const uint8_t* path, uint64_t length) {
 int64_t wolang_fs_walk(const uint8_t* path, uint64_t length,
                        uint8_t* into, uint64_t room) {
   std::error_code failed;
-  fs::recursive_directory_iterator walk(fs::path(Named(path, length)),
+  fs::recursive_directory_iterator walk(fs::path(NamedPath(path, length)),
                                         failed);
   if (failed) {
     return -1;
@@ -149,7 +149,7 @@ int64_t wolang_fs_walk(const uint8_t* path, uint64_t length,
 
 int32_t wolang_fs_append(const uint8_t* path, uint64_t length,
                          const uint8_t* bytes, uint64_t count) {
-  const std::string named = Named(path, length);
+  const std::string named = NamedPath(path, length);
   std::FILE* file = std::fopen(named.c_str(), "ab");
   if (file == nullptr) {
     return -1;
@@ -179,7 +179,7 @@ int64_t wolang_fs_temp_name(const uint8_t* prefix, uint64_t length,
 #else
   const unsigned long id = static_cast<unsigned long>(::getpid());
 #endif
-  std::string name = Named(prefix, length);
+  std::string name = NamedPath(prefix, length);
   if (name.empty()) {
     name = "wolang";
   }

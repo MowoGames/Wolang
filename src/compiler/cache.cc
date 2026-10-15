@@ -106,7 +106,7 @@ class Reader {
   bool ok_ = true;
 };
 
-uint64_t HashText(std::string_view text) {
+uint64_t HashCacheText(std::string_view text) {
   uint64_t hash = 0xcbf29ce484222325;
   for (char c : text) {
     hash ^= static_cast<unsigned char>(c);
@@ -142,7 +142,7 @@ bool Cache::Save(Database* database, std::string_view path) {
     }
     const std::string_view text = database->sources().Text(file);
     entries.push_back(Entry{std::string(database->sources().Path(file)),
-                            HashText(text),
+                            HashCacheText(text),
                             static_cast<uint32_t>(text.size()), tree});
   }
 
@@ -240,7 +240,7 @@ bool Cache::Load(Database* database,
       continue;
     }
     const std::string_view text = database->sources().Text(file);
-    if (text.size() != size || HashText(text) != hash) {
+    if (text.size() != size || HashCacheText(text) != hash) {
       ++local.stale;
       continue;
     }

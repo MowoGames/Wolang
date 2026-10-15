@@ -203,7 +203,7 @@ constexpr std::string_view kUnresolvedModule = "E0055";
 constexpr std::string_view kUnresolvedName = "E0056";
 constexpr std::string_view kDuplicateDeclaration = "E0057";
 constexpr std::string_view kPrivateName = "E0058";
-constexpr std::string_view kUnusedName = "W0101";
+constexpr std::string_view kUnusedDatabaseName = "W0101";
 constexpr std::string_view kUndeclaredEffect = "E0701";
 constexpr std::string_view kUnstatedPublicEffect = "E0704";
 constexpr std::string_view kForbiddenEffect = "E0702";
@@ -727,7 +727,7 @@ void Database::RegisterQueries() {
             message.append(interner_.Text(name));
             message.append("` is needed but never used");
             DiagnosticEngine unused;
-            unused.Warning(kUnusedName, std::move(message))
+            unused.Warning(kUnusedDatabaseName, std::move(message))
                 .Primary(item.span, "remove it from the `need` list");
             for (const Diagnostic& diagnostic : unused.diagnostics()) {
               result.diagnostics.push_back(diagnostic);

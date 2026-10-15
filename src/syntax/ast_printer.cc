@@ -16,7 +16,7 @@ std::string FormatDouble(double value) {
   return std::string(buffer);
 }
 
-std::string FormatUint64(uint64_t value) {
+std::string PrintUint64(uint64_t value) {
   char buffer[32];
   std::snprintf(buffer, sizeof(buffer), "%llu",
                 static_cast<unsigned long long>(value));
@@ -290,7 +290,7 @@ class Printer {
     static constexpr struct {
       ItemFlags flag;
       std::string_view name;
-    } kNames[] = {
+    } kPrinterNames[] = {
         {ItemFlags::kOffer, "offer"},
         {ItemFlags::kPriv, "priv"},
         {ItemFlags::kAsync, "task"},
@@ -301,7 +301,7 @@ class Printer {
         {ItemFlags::kExtern, "extern"},
         {ItemFlags::kHasError, "has-error"},
     };
-    for (const auto& entry : kNames) {
+    for (const auto& entry : kPrinterNames) {
       if (HasFlag(flags, entry.flag)) {
         Atom(entry.name);
       }
@@ -447,7 +447,7 @@ class Printer {
     switch (expr.kind) {
       case ExprKind::kIntLiteral: {
         const NumberLiteral& number = ast_.number(expr.aux);
-        Atom(FormatUint64(number.integer_value));
+        Atom(PrintUint64(number.integer_value));
         PrintNumberSuffix(number);
         break;
       }
@@ -461,7 +461,7 @@ class Printer {
         Atom(Quote(ast_.string(expr.aux)));
         break;
       case ExprKind::kCharLiteral:
-        Atom(FormatUint64(expr.aux));
+        Atom(PrintUint64(expr.aux));
         break;
       case ExprKind::kBoolLiteral:
         Atom(expr.aux != 0 ? "true" : "false");

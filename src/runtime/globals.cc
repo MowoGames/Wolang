@@ -11,20 +11,20 @@ namespace wolang {
 namespace runtime {
 namespace {
 
-struct Entry {
+struct GlobalEntry {
   uint64_t token = 0;
   void* storage = nullptr;
 };
 
-std::vector<Entry>& Entries() {
-  static std::vector<Entry> entries;
+std::vector<GlobalEntry>& GlobalEntries() {
+  static std::vector<GlobalEntry> entries;
   return entries;
 }
 
 }  // namespace
 
 extern "C" void* wolang_global_address(uint64_t token, uint64_t size) {
-  for (const Entry& entry : Entries()) {
+  for (const GlobalEntry& entry : GlobalEntries()) {
     if (entry.token == token) {
       return entry.storage;
     }
@@ -32,15 +32,15 @@ extern "C" void* wolang_global_address(uint64_t token, uint64_t size) {
   // Never freed: a module-level variable lives as long as the program,
   // which is the one lifetime that needs no bookkeeping.
   void* storage = std::calloc(1, size == 0 ? 1 : size);
-  Entries().push_back(Entry{token, storage});
+  GlobalEntries().push_back(GlobalEntry{token, storage});
   return storage;
 }
 
 extern "C" void wolang_global_reset(void) {
-  for (const Entry& entry : Entries()) {
+  for (const GlobalEntry& entry : GlobalEntries()) {
     std::free(entry.storage);
   }
-  Entries().clear();
+  GlobalEntries().clear();
 }
 
 }  // namespace runtime
