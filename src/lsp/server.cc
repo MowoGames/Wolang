@@ -175,6 +175,10 @@ class Server {
       Reply(request, Completion(request["params"]));
       return;
     }
+    if (method == "textDocument/codeAction") {
+      Reply(request, Actions(request["params"]));
+      return;
+    }
     // A request this server does not answer still needs an answer, or the
     // editor waits forever.
     if (request.Has("id")) {
@@ -201,6 +205,9 @@ class Server {
     Json completion = Json::Object();
     completion.Set("resolveProvider", Json::Bool(false));
     text_document.Set("completionProvider", std::move(completion));
+    // The fixes a diagnostic carries, as changes the editor can apply
+    // (D191).
+    text_document.Set("codeActionProvider", Json::Bool(true));
 
     Json server = Json::Object();
     server.Set("name", Json::String("wolang"));
@@ -249,6 +256,61 @@ class Server {
                 Json::String("textDocument/publishDiagnostics"));
     message.Set("params", std::move(params));
     WriteMessage(message);
+  }
+
+  // What a diagnostic suggests, where the cursor is.
+  //
+  // The compiler already knows the change -- a fix is part of the
+  // diagnostic -- so this is translation and nothing else: no second
+  // opinion about what the program meant (D191).
+  Json Actions(const Json& params) {
+    Json list = Json::Array();
+    const std::string uri = params["textDocument"]["uri"].AsString();
+    // The map is keyed by path, not by URI: `FileOf` is what knows that.
+    const FileId file = FileOf(params);
+    if (!file.is_valid()) {
+      return list;
+    }
+    const uint32_t from = OffsetOf(file, params["range"]["start"]);
+    const uint32_t to = OffsetOf(file, params["range"]["end"]);
+    const std::vector<Diagnostic>* diagnostics =
+        database_.Diagnostics(file);
+    if (diagnostics == nullptr) {
+      return list;
+    }
+    for (const Diagnostic& diagnostic : *diagnostics) {
+      const SourceSpan span = diagnostic.PrimarySpan();
+      if (!span.is_valid() || span.file != file) {
+        continue;
+      }
+      // What the cursor is on, or what the selection covers.
+      if (span.end < from || span.begin > to) {
+        continue;
+      }
+      for (const Fix& fix : diagnostic.fixes) {
+        Json edits = Json::Array();
+        for (const FixEdit& edit : fix.edits) {
+          Json one = Json::Object();
+          one.Set("range", Range(edit.span));
+          one.Set("newText", Json::String(edit.new_text));
+          edits.Push(std::move(one));
+        }
+        Json changes = Json::Object();
+        changes.Set(uri, std::move(edits));
+        Json workspace = Json::Object();
+        workspace.Set("changes", std::move(changes));
+
+        Json action = Json::Object();
+        action.Set("title", Json::String(fix.message));
+        action.Set("kind", Json::String("quickfix"));
+        Json related = Json::Array();
+        related.Push(Describe(diagnostic));
+        action.Set("diagnostics", std::move(related));
+        action.Set("edit", std::move(workspace));
+        list.Push(std::move(action));
+      }
+    }
+    return list;
   }
 
   Json Describe(const Diagnostic& diagnostic) {

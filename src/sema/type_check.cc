@@ -180,6 +180,20 @@ class Checker {
         .Primary(span, std::move(label));
   }
 
+  // The same, with a change the editor can apply.
+  void WarnWith(std::string_view code,
+                std::string message,
+                SourceSpan span,
+                std::string label,
+                Fix fix) {
+    if (IsAllowed(code)) {
+      return;
+    }
+    diagnostics_.Warning(code, std::move(message))
+        .Primary(span, std::move(label))
+        .AddFix(std::move(fix));
+  }
+
   // Reads `@allow(CODE, reason = "...")` off a declaration and returns how
   // many codes it pushed, so CheckItem can pop exactly those again.
   size_t PushAllowed(const Item& item);
@@ -328,11 +342,22 @@ class Checker {
       if (local.used || local.deliberate || !local.span.is_valid()) {
         continue;
       }
+      const std::string_view spelled =
+          interner_->Text(local.binding.name);
       std::string message = "`";
-      message.append(interner_->Text(local.binding.name));
+      message.append(spelled);
       message.append("` is never used");
-      Warn(kUnusedName, std::move(message), local.span,
-           "prefix it with `_` if that is deliberate");
+      // And the change that silences it, as an edit the editor can
+      // apply: the first fix this compiler offers, and the one every
+      // person meets first (D191).
+      Fix fix;
+      fix.message = "prefix with `_`";
+      fix.edits.push_back(FixEdit{
+          SourceSpan{local.span.file, local.span.begin, local.span.begin},
+          "_"});
+      WarnWith(kUnusedName, std::move(message), local.span,
+               "prefix it with `_` if that is deliberate",
+               std::move(fix));
     }
     scopes_.pop_back();
   }

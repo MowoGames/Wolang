@@ -19,6 +19,8 @@ the language in TypeScript, so the editor and the build never disagree.
 - **Go to definition**, **find references** and **document symbols**.
 - **Completion** for names in scope, members, and the standard library.
 - **Format on save** through `wolang fmt --stdin`.
+- **Quick fixes**: the compiler suggests the change and the editor
+  applies it — `W0101` offers to prefix an unused name with `_`.
 - **Tasks**: `wolang check`, `test`, `build` and `run` for the package in
   the workspace.
 - **Debugging** templates for LLDB, with line information from

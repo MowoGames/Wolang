@@ -159,6 +159,7 @@ void PrintUsage() {
       "commands:\n"
       "  check <paths>   report diagnostics for files or package directories\n"
       "  fmt <files>     format files; prints to stdout by default\n"
+      "  fix <paths>     apply what the diagnostics suggest\n"
       "  tokens <files>  print the token stream of the given files\n"
       "  ast <files>     print the syntax tree of the given files\n"
       "  ir <files>      print the intermediate representation\n"
@@ -198,6 +199,7 @@ void PrintUsage() {
       "  --trivia        include comments in `tokens` output\n"
       "  --spans         annotate `ast` output with positions\n"
       "  --check         `fmt` only: fail if a file is not formatted\n"
+      "  --write         `fmt` and `fix`: change the files in place\n"
       "  --write         `fmt` only: rewrite the file in place\n"
       "  --no-cache      ignore and do not write the on-disk cache\n"
       "  --interpret     `run` only: do not use the compiled tier\n"
@@ -480,6 +482,91 @@ int RunFormatStdin(const Options& options) {
              parsed->ast);
   std::fwrite(formatted.data(), 1, formatted.size(), stdout);
   (void)options;
+  return 0;
+}
+
+// `wolang fix`: applies what the diagnostics suggest.
+//
+// A diagnostic that knows the change carries it (D191), and this is the
+// same edits the editor applies, for a person who does not have one open
+// -- or for a whole tree at once. Without `--write` it says what it
+// would do and changes nothing.
+int RunFix(const Options& options) {
+  Database database;
+  DiagnosticEngine load_diagnostics;
+  std::vector<FileId> files;
+  if (!CollectInputs(&database, options, &load_diagnostics, &files)) {
+    return 2;
+  }
+
+  int changed = 0;
+  int offered = 0;
+  for (FileId file : files) {
+    const std::vector<Diagnostic>* diagnostics = database.Diagnostics(file);
+    if (diagnostics == nullptr) {
+      continue;
+    }
+    // Every edit for this file, latest first: applying from the end means
+    // an earlier offset is still where it was.
+    std::vector<std::pair<FixEdit, std::string>> edits;
+    for (const Diagnostic& diagnostic : *diagnostics) {
+      for (const Fix& fix : diagnostic.fixes) {
+        for (const FixEdit& edit : fix.edits) {
+          if (edit.span.is_valid() && edit.span.file == file) {
+            edits.emplace_back(edit, diagnostic.code + ": " + fix.message);
+          }
+        }
+      }
+    }
+    if (edits.empty()) {
+      continue;
+    }
+    std::sort(edits.begin(), edits.end(),
+              [](const auto& left, const auto& right) {
+                return left.first.span.begin > right.first.span.begin;
+              });
+
+    const std::string path(database.sources().Path(file));
+    std::string text(database.sources().Text(file));
+    for (const auto& held : edits) {
+      const FixEdit& edit = held.first;
+      if (edit.span.begin > text.size() || edit.span.end > text.size()) {
+        continue;
+      }
+      ++offered;
+      const LineColumn at =
+          database.sources().Position(file, edit.span.begin);
+      std::fprintf(stdout, "%s:%u:%u: %s\n", path.c_str(), at.line,
+                   at.column, held.second.c_str());
+      if (options.write_in_place) {
+        text.replace(edit.span.begin, edit.span.end - edit.span.begin,
+                     edit.new_text);
+      }
+    }
+    if (!options.write_in_place) {
+      continue;
+    }
+    std::FILE* out = std::fopen(path.c_str(), "wb");
+    if (out == nullptr) {
+      std::fprintf(stderr, "wolang: cannot write %s\n", path.c_str());
+      return 1;
+    }
+    std::fwrite(text.data(), 1, text.size(), out);
+    std::fclose(out);
+    ++changed;
+  }
+
+  if (offered == 0) {
+    std::fprintf(stdout, "nothing to fix\n");
+    return 0;
+  }
+  if (options.write_in_place) {
+    std::fprintf(stdout, "%d file%s changed\n", changed,
+                 changed == 1 ? "" : "s");
+  } else {
+    std::fprintf(stdout, "%d fix%s available; run again with --write\n",
+                 offered, offered == 1 ? "" : "es");
+  }
   return 0;
 }
 
@@ -2746,7 +2833,8 @@ int Run(int argc, char** argv) {
 
   const bool needs_inputs =
       (options.command == "fmt" && !options.from_stdin) ||
-      options.command == "check" || options.command == "tokens" ||
+      options.command == "check" || options.command == "fix" ||
+      options.command == "tokens" ||
       options.command == "ast" ||
       options.command == "ir" || options.command == "modules" ||
       options.command == "systems" ||
@@ -2767,6 +2855,9 @@ int Run(int argc, char** argv) {
   if (options.command == "tokens" || options.command == "ast" ||
       options.command == "ir") {
     return RunSyntaxCommand(options);
+  }
+  if (options.command == "fix") {
+    return RunFix(options);
   }
   if (options.command == "fmt") {
     return RunFormat(options);

@@ -2336,3 +2336,18 @@ passes a container across a package boundary, which is every program.
 Found by writing the cookbook: the example that searched a file with a
 regular expression did not work, and the manual is where a library's
 shape gets used the way a stranger would use it (D183).
+
+**D191. The first fix.** `Fix` and `FixEdit` had been in the diagnostic
+since the beginning and nothing produced one. `W0101` -- a name nothing
+uses -- now carries the change that silences it: an insertion of `_` at
+the name, which is exactly what the message already told a person to do.
+
+Two ways to apply it. The language server answers
+`textDocument/codeAction` with the fixes of whatever diagnostic the
+cursor is on, translated and nothing else -- the compiler decided the
+change, the server does not have a second opinion. And `wolang fix`
+applies them without an editor, over a whole tree, printing what it would
+do unless `--write` is given.
+
+Edits are applied from the end of the file backwards, so that an earlier
+offset is still where it was.

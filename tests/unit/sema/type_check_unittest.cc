@@ -1310,6 +1310,37 @@ fun f() -> int {
   WOLANG_EXPECT(f.Messages().find("`b` is never used") != std::string::npos);
 }
 
+WOLANG_TEST(TypeCheck, AnUnusedLocalCarriesItsFix) {
+  // The warning says what to do about it; this is the compiler also
+  // saying *where*, as an edit an editor can apply (D191).
+  Fixture f(R"(
+fun g() -> int {
+  const kept = 1
+  const dropped = 2
+  return kept
+}
+)");
+  WOLANG_EXPECT_EQ(f.Warnings(), "W0101");
+  const std::vector<Diagnostic>* diagnostics = f.db().Diagnostics(f.file());
+  WOLANG_ASSERT_NE(diagnostics, nullptr);
+  bool found = false;
+  for (const Diagnostic& diagnostic : *diagnostics) {
+    if (diagnostic.code != "W0101" || diagnostic.fixes.empty()) {
+      continue;
+    }
+    found = true;
+    const Fix& fix = diagnostic.fixes[0];
+    WOLANG_EXPECT_EQ(fix.message, "prefix with `_`");
+    WOLANG_ASSERT_EQ(fix.edits.size(), size_t{1});
+    WOLANG_EXPECT_EQ(fix.edits[0].new_text, "_");
+    // An insertion at the name, not a replacement of it.
+    WOLANG_EXPECT_EQ(fix.edits[0].span.begin, fix.edits[0].span.end);
+    WOLANG_EXPECT_EQ(fix.edits[0].span.begin,
+                     diagnostic.PrimarySpan().begin);
+  }
+  WOLANG_EXPECT(found);
+}
+
 WOLANG_TEST(TypeCheck, AnUnderscorePrefixOptsOut) {
   Fixture f(R"(
 fun f(_unused: int, used: int) -> int {
