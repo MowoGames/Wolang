@@ -135,6 +135,18 @@ bool CanAppearInGenericArguments(TokenKind kind) {
     case TokenKind::kKwMut:
     case TokenKind::kUnderscore:
     case TokenKind::kIntLiteral:
+    // `ArrayNew<[4]int>(1)`: a fixed-size array is a type like any
+    // other, and without these two the brackets made this look like a
+    // comparison with an array literal (D169).
+    case TokenKind::kLeftBracket:
+    case TokenKind::kRightBracket:
+    // `Keep<fun(int) -> bool>(f)`: a function type, for the same
+    // reason.
+    case TokenKind::kKwFun:
+    case TokenKind::kLeftParen:
+    case TokenKind::kRightParen:
+    case TokenKind::kArrow:
+    case TokenKind::kBang:
       return true;
     default:
       return false;

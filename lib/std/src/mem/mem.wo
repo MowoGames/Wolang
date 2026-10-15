@@ -65,3 +65,36 @@ offer fun Prefix<T>(items: []T, count: int) -> []T uses unsafe
 /// is spelled with an argument. How big a value is depends on how the
 /// tier laid it out, so the compiler answers at the call (D100).
 offer fun SizeOf<T>(value: T) -> int
+
+@Test
+fun KeepsAnArrayInsideAStruct() -> bool uses unsafe {
+  // A `[4]int` field written to heap storage was skipped by the
+  // interpreter: it wrote an aggregate field by field at the layout's
+  // offsets, and an array has elements at a stride rather than fields
+  // at offsets. The same program read nine in machine code and zero in
+  // the reference tier (D168).
+  var marks: [4]int
+  marks[2] = 9
+  var room = ArrayNew<Held>(1)
+  room[0] = Held(marks, true)
+  const back = room[0]
+  if back.marks[2] != 9 || !back.ok {
+    Free(room)
+    return false
+  }
+  Free(room)
+
+  var rows: [2][3]int
+  rows[1][2] = 7
+  var nested = ArrayNew<[2][3]int>(1)
+  nested[0] = rows
+  const held = nested[0][1][2]
+  Free(nested)
+  return held == 7
+}
+
+// What the test above puts in the heap.
+struct Held {
+  var marks: [4]int
+  var ok: bool = false
+}

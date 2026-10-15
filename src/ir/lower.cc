@@ -3484,6 +3484,24 @@ class Lowerer {
                                     LengthOf(expr.lhs, sequence), element});
           return place;
         }
+        // Through a reference: it is a pointer here (D109), so the
+        // place is rooted at the address it holds rather than at where
+        // the reference itself lives (D167).
+        if (types_->KindOf(sequence) == TypeKind::kPointer) {
+          const TypeId pointee = Erase(types_->ElementOf(sequence));
+          if (types_->KindOf(pointee) == TypeKind::kArray) {
+            const TypeId element = Erase(types_->ElementOf(pointee));
+            place.pointer = Value(expr.lhs);
+            place.root_type = pointee;
+            place.path.push_back(Step{
+                0, Value(expr.rhs),
+                builder_->ConstInt(
+                    types_->default_int(),
+                    static_cast<uint64_t>(types_->Get(pointee).length)),
+                element});
+            return place;
+          }
+        }
         Place base = PlaceOf(expr.lhs);
         if (!base.readable()) {
           return place;

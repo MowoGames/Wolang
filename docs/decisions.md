@@ -1997,3 +1997,87 @@ wrote means the same thing on both.
 
 CI builds and runs it, because a port nobody runs is a port that does not
 work.
+
+**D160. Code for another machine.** `--target <triple>` on `wolang
+build`, and every target this LLVM has rather than this machine's only:
+a compiler that can only emit code for the machine it runs on cannot
+build the Windows binary from the laptop. The driver grew from
+seventy-six megabytes to a hundred and sixty-seven, which is what every
+target costs and what every other toolchain pays.
+
+What comes out is an object file, and the message says so: linking it
+needs that machine's runtime and that machine's linker, neither of which
+this build has. A triple that *is* this machine links the usual way, so
+`--target` is not a different command for the same thing. Verified by
+compiling the same program for Windows, Linux on two architectures,
+WebAssembly and RISC-V, and reading what the object files say they are.
+
+**D161. `Print` in a file compiled on its own.** A single file links no
+standard library, so `Print` there is a declaration with no body: the
+interpreter answered it with an intrinsic, the compiled tiers could not
+answer it at all, and a binary built from such a file trapped the moment
+it printed. One runtime symbol, pointed at by the one declaration that
+has no definition, and all three tiers do the same thing.
+
+**D162. One document, four formats.** JSON, TOML, INI and YAML are four
+spellings of the same six things: a nothing, a truth, a number, some
+text, a list and a table. `std.doc` is that value, and every format
+reads into it -- so a program that reads configuration does not care
+which file it came from, and `Get(value, "server.ports.0")` is learned
+once. Written as four parsers over one tree rather than four trees.
+
+**D163. A nested generic is not two arguments.** `List<List<T>>` ends on
+one token that closes two lists, and the comma after it belongs to
+whatever the type is *in*. The argument loop ate that comma as a
+separator, so `fun f(a: List<List<T>>, b: int)` parsed as a list with two
+arguments and a function with one parameter. The close is checked before
+the comma now.
+
+**D164. An owned string freed where it was made.** A string built by
+interpolation is owned and freed at the end of the scope that made it;
+one stored in a structure that outlives that scope is a dangling
+pointer. `std.csv` built column names that way and read them back as
+rubbish. A builder's `Release` is what hands a string to something that
+will outlive the call -- which is the wart D127 left, written down here
+because it bit.
+
+**D165. Tags, where a document has no room for them.** YAML's standard
+tags decide how a scalar is read -- `!!str 3` is text and `!!int "7"` is
+seven -- and an unknown tag leaves the value alone. A document value here
+has no room to record which tag it carried, and a reader that refused a
+file over a tag it did not know would be a reader nobody could use.
+
+**D166. A matcher that answers.** `std.regex` is a backtracking matcher
+over a compiled program: literals, classes, anchors, groups,
+alternation, the repetitions and their reluctant forms, and two flags.
+No look-around and no back-references, because each turns a matcher into
+a different machine.
+
+Backtracking has exponential cases -- `(a+)+b` on a line of `a`s is the
+famous one -- so the walk has a budget. Past it the answer is no rather
+than never, which is the honest thing for a library to do to a program
+that did not choose its own pattern.
+
+**D167. Indexing through a reference.** A field and a method already
+reach through one; an index did not, so a `&mut [40]int` parameter was
+an array the callee could not read. Through a reference now, in the
+checker and in lowering -- the place is rooted at the address the
+reference holds rather than at where the reference itself lives.
+
+**D168. Arrays in memory, in the reference tier.** Two bugs, both of them
+the same shape: an array has elements at a stride and a struct has fields
+at offsets, and the interpreter used the second rule for both. A `[4]int`
+field written to the heap was skipped entirely -- zero in the reference
+tier, nine in machine code -- and `rows[1][2]` on a `[2][3]int` added the
+indices instead of stepping into the row, which walked off the end.
+
+Found by writing a regular expression engine, which keeps a fixed array
+of group positions in a struct and copies it through a list. Which is the
+rule this project keeps relearning: a real program finds what a test for
+a feature does not.
+
+**D169. A type in brackets is still a type.** `ArrayNew<[4]int>(1)` was
+read as a comparison with an array literal, because the heuristic that
+tells a generic call from a `<` did not allow brackets between the angle
+brackets. Nor a function type, so `Keep<fun(int) -> bool>(f)` was the
+same. Both are allowed now.

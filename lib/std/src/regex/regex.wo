@@ -1,0 +1,1068 @@
+// Regular expressions.
+//
+// A backtracking matcher over a compiled program, written here rather
+// than bound to someone else's: a language that cannot search a string
+// without a C library is a language with a hole in it, and the C library
+// everyone binds is the one with the exponential cases.
+//
+// What it understands: literals, `.`, classes `[a-z]` with negation and
+// the usual escapes, the shorthands `\d \w \s` and their capitals,
+// anchors `^ $ \b \B`, groups `(...)` and `(?:...)`, alternation `|`,
+// the repetitions `* + ?` and `{n} {n,} {n,m}`, all of them reluctant with a
+// trailing `?`, and the flags `i` (fold case) and `s` (`.` matches a
+// line break).
+//
+// What it does not: look-around, back-references and named groups. Each
+// of those turns a matcher into a different machine, and none of them is
+// what a program searching a log file needs (D166).
+
+need std.list.{List, ListNew}
+need std.text.{Builder, Bytes, BuilderNew, Length, Substring}
+
+/// What a pattern that is not one answers with.
+offer error BadPattern
+
+// What a step in the program is.
+const kByte: int = 0        // one literal byte
+const kAny: int = 1         // `.`
+const kClass: int = 2       // `[...]`, payload is a 256-bit set
+const kSplit: int = 3       // try `a`, then `b`
+const kJump: int = 4        // go to `a`
+const kSave: int = 5        // remember where a group starts or ends
+const kMatch: int = 6       // the end
+const kStart: int = 7       // `^`
+const kEnd: int = 8         // `$`
+const kWordEdge: int = 9    // `\b`
+const kNotWordEdge: int = 10  // `\B`
+
+struct Step {
+  var kind: int = 0
+  // A byte for `kByte`, a slot for `kSave`, an index for `kSplit` and
+  // `kJump`.
+  var value: int = 0
+  var other: int = 0
+  // Which bytes a class matches: 256 bits, four words.
+  var class0: u64 = 0
+  var class1: u64 = 0
+  var class2: u64 = 0
+  var class3: u64 = 0
+}
+
+/// A compiled pattern.
+offer class Regex {
+  var steps: List<Step>
+  var groups: int = 0
+  var fold: bool = false
+  var dot_all: bool = false
+
+  fun Groups() -> int {
+    return groups
+  }
+}
+
+/// Where a match is: the whole of it, and each group.
+///
+/// `start` and `end` are byte offsets; a group that did not take part
+/// has -1 for both.
+offer struct Match {
+  var start: int = -1
+  var end: int = -1
+  var starts: [20]int
+  var ends: [20]int
+  var ok: bool = false
+}
+
+offer fun MatchNone() -> Match {
+  var starts: [20]int
+  var ends: [20]int
+  var i = 0
+  while i < 20 {
+    starts[i] = -1
+    ends[i] = -1
+    i = i + 1
+  }
+  return Match(-1, -1, starts, ends, false)
+}
+
+/// The text a match covers.
+offer fun Whole(input: text, found: &Match) -> text uses unsafe {
+  if !found.ok {
+    return ""
+  }
+  return Substring(input, found.start, found.end)
+}
+
+/// The text group `index` covers, or "" when it took no part. Group 1 is
+/// the first `(`.
+offer fun Group(input: text, found: &Match, index: int) -> text
+    uses unsafe {
+  if !found.ok || index < 1 || index >= 20 {
+    return ""
+  }
+  if found.starts[index] < 0 || found.ends[index] < 0 {
+    return ""
+  }
+  return Substring(input, found.starts[index], found.ends[index])
+}
+
+// ---------------------------------------------------------- compiling ---
+
+// Where the compiler is in the pattern.
+struct Pen {
+  var bytes: []u8
+  var at: int
+  var ok: bool
+  var groups: int
+}
+
+/// Compiles `pattern`. `flags` holds `i` and `s`.
+offer fun Compile(pattern: text, flags: text) -> Regex! uses unsafe {
+  var steps = ListNew<Step>()
+  var pen = Pen(Bytes(pattern), 0, true, 0)
+  const fold = Contains(flags, 105)
+  const dot_all = Contains(flags, 115)
+
+  // Group zero is the whole match, so the program starts by saving it.
+  steps.Push(Save(0))
+  CompileAlternation(&mut steps, &mut pen, fold)
+  if !pen.ok || pen.at != pen.bytes.len {
+    return BadPattern
+  }
+  steps.Push(Save(1))
+  steps.Push(Plain(kMatch, 0))
+  return Regex(steps, pen.groups, fold, dot_all)
+}
+
+fun Contains(flags: text, byte: u8) -> bool uses unsafe {
+  const bytes = Bytes(flags)
+  var i = 0
+  while i < bytes.len {
+    if bytes[i] == byte {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+fun Plain(kind: int, value: int) -> Step {
+  return Step(kind, value, 0, 0, 0, 0, 0)
+}
+
+fun Save(slot: int) -> Step {
+  return Step(kSave, slot, 0, 0, 0, 0, 0)
+}
+
+// `a|b|c`: each branch is tried in turn.
+//
+// Each branch is compiled on its own first, and then they are stitched
+// together: a split before every branch but the last, and a jump to the
+// end after every branch but the last. Compiling in place and inserting
+// the splits afterwards means moving every jump that crossed the
+// insertion -- which is where the first version of this got it wrong.
+fun CompileAlternation(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
+    uses unsafe {
+  var branches = ListNew<List<Step>>()
+  loop {
+    var one = ListNew<Step>()
+    CompileSequence(&mut one, pen, fold)
+    if !pen.ok {
+      return
+    }
+    branches.Push(one)
+    if pen.at >= pen.bytes.len || pen.bytes[pen.at] != 124 {
+      break
+    }
+    pen.at = pen.at + 1
+  }
+
+  if branches.Len() == 1 {
+    AppendPiece(steps, &branches.At(0), steps.Len())
+    return
+  }
+
+  var jumps = ListNew<int>()
+  var i = 0
+  while i < branches.Len() {
+    const last = i == branches.Len() - 1
+    var split_at = -1
+    if !last {
+      split_at = steps.Len()
+      steps.Push(Plain(kSplit, 0))
+    }
+    AppendPiece(steps, &branches.At(i), steps.Len())
+    if !last {
+      jumps.Push(steps.Len())
+      steps.Push(Plain(kJump, 0))
+      // The branch after this one starts here.
+      var split = steps.At(split_at)
+      split.value = split_at + 1
+      split.other = steps.Len()
+      steps.Set(split_at, split)
+    }
+    i = i + 1
+  }
+
+  // Every branch but the last jumps past all of them.
+  var k = 0
+  while k < jumps.Len() {
+    var step = steps.At(jumps.At(k))
+    step.value = steps.Len()
+    steps.Set(jumps.At(k), step)
+    k = k + 1
+  }
+}
+
+// One branch: pieces until `|` or `)`.
+fun CompileSequence(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
+    uses unsafe {
+  loop {
+    if pen.at >= pen.bytes.len {
+      return
+    }
+    const byte = pen.bytes[pen.at]
+    if byte == 124 || byte == 41 {
+      return
+    }
+    const before = steps.Len()
+    CompilePiece(steps, pen, fold)
+    if !pen.ok {
+      return
+    }
+    CompileRepeat(steps, pen, before)
+    if !pen.ok {
+      return
+    }
+  }
+}
+
+fun CompilePiece(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
+    uses unsafe {
+  const byte = pen.bytes[pen.at]
+  if byte == 40 {
+    pen.at = pen.at + 1
+    var capturing = true
+    if pen.at + 1 < pen.bytes.len && pen.bytes[pen.at] == 63 &&
+       pen.bytes[pen.at + 1] == 58 {
+      capturing = false
+      pen.at = pen.at + 2
+    }
+    var slot = 0
+    if capturing {
+      pen.groups = pen.groups + 1
+      slot = pen.groups
+      if slot >= 20 {
+        pen.ok = false
+        return
+      }
+      steps.Push(Save(slot * 2))
+    }
+    CompileAlternation(steps, pen, fold)
+    if !pen.ok {
+      return
+    }
+    if pen.at >= pen.bytes.len || pen.bytes[pen.at] != 41 {
+      pen.ok = false
+      return
+    }
+    pen.at = pen.at + 1
+    if capturing {
+      steps.Push(Save(slot * 2 + 1))
+    }
+    return
+  }
+  if byte == 46 {
+    pen.at = pen.at + 1
+    steps.Push(Plain(kAny, 0))
+    return
+  }
+  if byte == 94 {
+    pen.at = pen.at + 1
+    steps.Push(Plain(kStart, 0))
+    return
+  }
+  if byte == 36 {
+    pen.at = pen.at + 1
+    steps.Push(Plain(kEnd, 0))
+    return
+  }
+  if byte == 91 {
+    CompileClass(steps, pen, fold)
+    return
+  }
+  if byte == 92 {
+    CompileEscape(steps, pen, fold)
+    return
+  }
+  if byte == 42 || byte == 43 || byte == 63 || byte == 123 {
+    // A repetition with nothing before it.
+    pen.ok = false
+    return
+  }
+  pen.at = pen.at + 1
+  steps.Push(ByteStep(byte, fold))
+}
+
+// A literal byte, or a class of two when case is folded.
+fun ByteStep(byte: u8, fold: bool) -> Step {
+  if !fold || !IsLetter(byte) {
+    return Plain(kByte, byte as int)
+  }
+  var step = Plain(kClass, 0)
+  step = AddToClass(step, Lower(byte))
+  step = AddToClass(step, Upper(byte))
+  return step
+}
+
+fun IsLetter(byte: u8) -> bool {
+  return (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+}
+
+fun Lower(byte: u8) -> u8 {
+  if byte >= 65 && byte <= 90 {
+    return byte + 32
+  }
+  return byte
+}
+
+fun Upper(byte: u8) -> u8 {
+  if byte >= 97 && byte <= 122 {
+    return byte - 32
+  }
+  return byte
+}
+
+fun AddToClass(step: Step, byte: u8) -> Step {
+  var held = step
+  const index = byte as int
+  if index < 64 {
+    held.class0 = held.class0 | (1 as u64 << index as u64)
+  } else if index < 128 {
+    held.class1 = held.class1 | (1 as u64 << (index - 64) as u64)
+  } else if index < 192 {
+    held.class2 = held.class2 | (1 as u64 << (index - 128) as u64)
+  } else {
+    held.class3 = held.class3 | (1 as u64 << (index - 192) as u64)
+  }
+  return held
+}
+
+fun InClass(step: &Step, byte: u8) -> bool {
+  const index = byte as int
+  if index < 64 {
+    return (step.class0 >> index as u64) % 2 == 1
+  }
+  if index < 128 {
+    return (step.class1 >> (index - 64) as u64) % 2 == 1
+  }
+  if index < 192 {
+    return (step.class2 >> (index - 128) as u64) % 2 == 1
+  }
+  return (step.class3 >> (index - 192) as u64) % 2 == 1
+}
+
+fun AddRange(step: Step, from: u8, to: u8) -> Step {
+  var held = step
+  var byte = from as int
+  while byte <= to as int {
+    held = AddToClass(held, byte as u8)
+    byte = byte + 1
+  }
+  return held
+}
+
+fun Negate(step: Step) -> Step {
+  var held = step
+  var byte = 0
+  var made = Plain(kClass, 0)
+  while byte < 256 {
+    if !InClass(&held, byte as u8) {
+      made = AddToClass(made, byte as u8)
+    }
+    byte = byte + 1
+  }
+  return made
+}
+
+fun CompileClass(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
+    uses unsafe {
+  pen.at = pen.at + 1
+  var negated = false
+  if pen.at < pen.bytes.len && pen.bytes[pen.at] == 94 {
+    negated = true
+    pen.at = pen.at + 1
+  }
+  var step = Plain(kClass, 0)
+  var first = true
+  loop {
+    if pen.at >= pen.bytes.len {
+      pen.ok = false
+      return
+    }
+    const byte = pen.bytes[pen.at]
+    if byte == 93 && !first {
+      pen.at = pen.at + 1
+      break
+    }
+    first = false
+    if byte == 92 {
+      pen.at = pen.at + 1
+      if pen.at >= pen.bytes.len {
+        pen.ok = false
+        return
+      }
+      const escaped = pen.bytes[pen.at]
+      pen.at = pen.at + 1
+      step = AddEscape(step, escaped)
+      continue
+    }
+    pen.at = pen.at + 1
+    // `a-z`, when what follows is a dash and then something that is not
+    // the closing bracket.
+    if pen.at + 1 < pen.bytes.len && pen.bytes[pen.at] == 45 &&
+       pen.bytes[pen.at + 1] != 93 {
+      const to = pen.bytes[pen.at + 1]
+      pen.at = pen.at + 2
+      step = AddRange(step, byte, to)
+      if fold && IsLetter(byte) && IsLetter(to) {
+        step = AddRange(step, Lower(byte), Lower(to))
+        step = AddRange(step, Upper(byte), Upper(to))
+      }
+      continue
+    }
+    step = AddToClass(step, byte)
+    if fold && IsLetter(byte) {
+      step = AddToClass(step, Lower(byte))
+      step = AddToClass(step, Upper(byte))
+    }
+  }
+  if negated {
+    step = Negate(step)
+  }
+  steps.Push(step)
+}
+
+// `\d`, `\w`, `\s` and their capitals, inside a class or outside it.
+fun AddEscape(step: Step, escaped: u8) -> Step {
+  if escaped == 100 {
+    return AddRange(step, 48, 57)
+  }
+  if escaped == 119 {
+    var held = AddRange(step, 48, 57)
+    held = AddRange(held, 65, 90)
+    held = AddRange(held, 97, 122)
+    return AddToClass(held, 95)
+  }
+  if escaped == 115 {
+    var held = AddToClass(step, 32)
+    held = AddToClass(held, 9)
+    held = AddToClass(held, 10)
+    held = AddToClass(held, 13)
+    held = AddToClass(held, 11)
+    held = AddToClass(held, 12)
+    return held
+  }
+  if escaped == 68 {
+    return Merge(step, Negate(AddRange(Plain(kClass, 0), 48, 57)))
+  }
+  if escaped == 87 {
+    var word = AddRange(Plain(kClass, 0), 48, 57)
+    word = AddRange(word, 65, 90)
+    word = AddRange(word, 97, 122)
+    word = AddToClass(word, 95)
+    return Merge(step, Negate(word))
+  }
+  if escaped == 83 {
+    var blank = AddToClass(Plain(kClass, 0), 32)
+    blank = AddToClass(blank, 9)
+    blank = AddToClass(blank, 10)
+    blank = AddToClass(blank, 13)
+    blank = AddToClass(blank, 11)
+    blank = AddToClass(blank, 12)
+    return Merge(step, Negate(blank))
+  }
+  return AddToClass(step, Unescape(escaped))
+}
+
+fun Merge(left: Step, right: Step) -> Step {
+  var held = left
+  held.class0 = held.class0 | right.class0
+  held.class1 = held.class1 | right.class1
+  held.class2 = held.class2 | right.class2
+  held.class3 = held.class3 | right.class3
+  return held
+}
+
+fun Unescape(escaped: u8) -> u8 {
+  if escaped == 110 {
+    return 10
+  }
+  if escaped == 116 {
+    return 9
+  }
+  if escaped == 114 {
+    return 13
+  }
+  if escaped == 48 {
+    return 0
+  }
+  return escaped
+}
+
+fun CompileEscape(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
+    uses unsafe {
+  pen.at = pen.at + 1
+  if pen.at >= pen.bytes.len {
+    pen.ok = false
+    return
+  }
+  const escaped = pen.bytes[pen.at]
+  pen.at = pen.at + 1
+  if escaped == 98 {
+    steps.Push(Plain(kWordEdge, 0))
+    return
+  }
+  if escaped == 66 {
+    steps.Push(Plain(kNotWordEdge, 0))
+    return
+  }
+  if escaped == 100 || escaped == 119 || escaped == 115 ||
+     escaped == 68 || escaped == 87 || escaped == 83 {
+    steps.Push(AddEscape(Plain(kClass, 0), escaped))
+    return
+  }
+  steps.Push(ByteStep(Unescape(escaped), fold))
+}
+
+// `*`, `+`, `?`, `{n,m}` after a piece, and the reluctant `?` after those.
+fun CompileRepeat(steps: &mut List<Step>, pen: &mut Pen, before: int)
+    uses unsafe {
+  if pen.at >= pen.bytes.len {
+    return
+  }
+  const byte = pen.bytes[pen.at]
+  if byte != 42 && byte != 43 && byte != 63 && byte != 123 {
+    return
+  }
+  var least = 0
+  var most = -1
+  if byte == 42 {
+    pen.at = pen.at + 1
+  } else if byte == 43 {
+    least = 1
+    pen.at = pen.at + 1
+  } else if byte == 63 {
+    most = 1
+    pen.at = pen.at + 1
+  } else {
+    const counted = ReadCount(pen)
+    if !pen.ok {
+      return
+    }
+    least = counted.least
+    most = counted.most
+  }
+  var reluctant = false
+  if pen.at < pen.bytes.len && pen.bytes[pen.at] == 63 {
+    reluctant = true
+    pen.at = pen.at + 1
+  }
+  Repeat(steps, before, least, most, reluctant)
+}
+
+struct Count {
+  var least: int = 0
+  var most: int = -1
+}
+
+fun ReadCount(pen: &mut Pen) -> Count uses unsafe {
+  pen.at = pen.at + 1
+  var least = 0
+  var digits = 0
+  while pen.at < pen.bytes.len && pen.bytes[pen.at] >= 48 &&
+        pen.bytes[pen.at] <= 57 {
+    least = least * 10 + (pen.bytes[pen.at] - 48) as int
+    digits = digits + 1
+    pen.at = pen.at + 1
+  }
+  if digits == 0 {
+    pen.ok = false
+    return Count(0, -1)
+  }
+  var most = least
+  if pen.at < pen.bytes.len && pen.bytes[pen.at] == 44 {
+    pen.at = pen.at + 1
+    most = -1
+    var upper = 0
+    var seen = 0
+    while pen.at < pen.bytes.len && pen.bytes[pen.at] >= 48 &&
+          pen.bytes[pen.at] <= 57 {
+      upper = upper * 10 + (pen.bytes[pen.at] - 48) as int
+      seen = seen + 1
+      pen.at = pen.at + 1
+    }
+    if seen != 0 {
+      most = upper
+    }
+  }
+  if pen.at >= pen.bytes.len || pen.bytes[pen.at] != 125 {
+    pen.ok = false
+    return Count(0, -1)
+  }
+  pen.at = pen.at + 1
+  if most >= 0 && most < least {
+    pen.ok = false
+  }
+  return Count(least, most)
+}
+
+// The steps from `before` to the end, repeated: copied `least` times,
+// then `most - least` optional copies, or a loop when there is no most.
+fun Repeat(steps: &mut List<Step>, before: int, least: int, most: int,
+           reluctant: bool) uses unsafe {
+  var piece = ListNew<Step>()
+  var i = before
+  while i < steps.Len() {
+    piece.Push(steps.At(i))
+    i = i + 1
+  }
+  // Take the piece off, then put back what the repetition needs.
+  while steps.Len() > before {
+    const _dropped = steps.Pop()
+  }
+
+  var written = 0
+  while written < least {
+    AppendPiece(steps, &piece, steps.Len() - before)
+    written = written + 1
+  }
+  if most < 0 {
+    // `x*` and `x+`: a split, the piece, a jump back.
+    const split_at = steps.Len()
+    steps.Push(Plain(kSplit, 0))
+    AppendPiece(steps, &piece, steps.Len() - before)
+    steps.Push(Plain(kJump, split_at))
+    var split = steps.At(split_at)
+    if reluctant {
+      split.value = steps.Len()
+      split.other = split_at + 1
+    } else {
+      split.value = split_at + 1
+      split.other = steps.Len()
+    }
+    steps.Set(split_at, split)
+    return
+  }
+  var optional = least
+  var splits = ListNew<int>()
+  while optional < most {
+    const split_at = steps.Len()
+    splits.Push(split_at)
+    steps.Push(Plain(kSplit, 0))
+    AppendPiece(steps, &piece, steps.Len() - before)
+    optional = optional + 1
+  }
+  var k = 0
+  while k < splits.Len() {
+    var split = steps.At(splits.At(k))
+    if reluctant {
+      split.value = steps.Len()
+      split.other = splits.At(k) + 1
+    } else {
+      split.value = splits.At(k) + 1
+      split.other = steps.Len()
+    }
+    steps.Set(splits.At(k), split)
+    k = k + 1
+  }
+}
+
+// A copy of the piece at the end, with its jumps moved to where it now
+// sits.
+fun AppendPiece(steps: &mut List<Step>, piece: &List<Step>, base: int)
+    uses unsafe {
+  const shift = base
+  var i = 0
+  while i < piece.Len() {
+    var step = piece.At(i)
+    if step.kind == kSplit || step.kind == kJump {
+      step.value = step.value + shift
+      step.other = step.other + shift
+    }
+    steps.Push(step)
+    i = i + 1
+  }
+}
+
+// ---------------------------------------------------------- searching ---
+
+/// Where `pattern` first matches in `input`, or a match that is not one.
+offer fun Find(pattern: &Regex, input: text) -> Match uses unsafe {
+  return FindFrom(pattern, input, 0)
+}
+
+/// The same, starting at `from`.
+offer fun FindFrom(pattern: &Regex, input: text, from: int) -> Match
+    uses unsafe {
+  const bytes = Bytes(input)
+  var start = from
+  while start <= bytes.len {
+    var found = MatchNone()
+    if Run(pattern, bytes, start, &mut found) {
+      return found
+    }
+    start = start + 1
+  }
+  return MatchNone()
+}
+
+/// Whether `pattern` matches anywhere in `input`.
+offer fun Matches(pattern: &Regex, input: text) -> bool uses unsafe {
+  return Find(pattern, input).ok
+}
+
+/// Every match, left to right, without overlapping.
+offer fun FindAll(pattern: &Regex, input: text) -> List<Match>
+    uses unsafe {
+  var found = ListNew<Match>()
+  const bytes = Bytes(input)
+  var at = 0
+  while at <= bytes.len {
+    const one = FindFrom(pattern, input, at)
+    if !one.ok {
+      break
+    }
+    found.Push(one)
+    // An empty match moves on by one, or this never ends.
+    if one.end == one.start {
+      at = one.end + 1
+    } else {
+      at = one.end
+    }
+  }
+  return found
+}
+
+/// `input` with every match replaced by `with`.
+///
+/// `$1` in `with` is the first group, `$0` the whole match, and `$$` a
+/// dollar sign.
+offer fun ReplaceAll(pattern: &Regex, input: text, with: text) -> text
+    uses unsafe {
+  var builder = BuilderNew()
+  const found = FindAll(pattern, input)
+  var at = 0
+  var i = 0
+  while i < found.Len() {
+    const one = found.At(i)
+    builder.Append(Substring(input, at, one.start))
+    AppendReplacement(&mut builder, input, &one, with)
+    at = one.end
+    i = i + 1
+  }
+  builder.Append(Substring(input, at, Length(input)))
+  return builder.Release()
+}
+
+fun AppendReplacement(builder: &mut Builder, input: text, found: &Match,
+                      with: text) uses unsafe {
+  const bytes = Bytes(with)
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == 36 && i + 1 < bytes.len {
+      const next = bytes[i + 1]
+      if next == 36 {
+        builder.AppendByte(36)
+        i = i + 2
+        continue
+      }
+      if next >= 48 && next <= 57 {
+        const index = (next - 48) as int
+        if index == 0 {
+          builder.Append(Substring(input, found.start, found.end))
+        } else {
+          builder.Append(Group(input, found, index))
+        }
+        i = i + 2
+        continue
+      }
+    }
+    builder.AppendByte(byte)
+    i = i + 1
+  }
+}
+
+/// `input` split on every match.
+offer fun Split(pattern: &Regex, input: text) -> List<text> uses unsafe {
+  var pieces = ListNew<text>()
+  const found = FindAll(pattern, input)
+  var at = 0
+  var i = 0
+  while i < found.Len() {
+    const one = found.At(i)
+    if one.end == one.start && one.start == at {
+      i = i + 1
+      continue
+    }
+    pieces.Push(Substring(input, at, one.start))
+    at = one.end
+    i = i + 1
+  }
+  pieces.Push(Substring(input, at, Length(input)))
+  return pieces
+}
+
+// The matcher: a backtracking walk of the program.
+//
+// Recursion through `Step`, with a budget: a pattern like `(a*)*b` on a
+// long line of `a`s is exponential in any backtracking matcher, and a
+// budget turns "never answers" into "answers no".
+fun Run(pattern: &Regex, bytes: []u8, start: int, found: &mut Match)
+    -> bool uses unsafe {
+  var slots: [40]int
+  var i = 0
+  while i < 40 {
+    slots[i] = -1
+    i = i + 1
+  }
+  var budget = 20000
+  if !Walk(pattern, bytes, 0, start, &mut slots, &mut budget) {
+    return false
+  }
+  found.ok = true
+  found.start = slots[0]
+  found.end = slots[1]
+  var group = 0
+  while group < 20 {
+    found.starts[group] = slots[group * 2]
+    found.ends[group] = slots[group * 2 + 1]
+    group = group + 1
+  }
+  return true
+}
+
+fun Walk(pattern: &Regex, bytes: []u8, step_at: int, at: int,
+         slots: &mut [40]int, budget: &mut int) -> bool uses unsafe {
+  if *budget <= 0 {
+    return false
+  }
+  *budget = *budget - 1
+  const step = pattern.steps.At(step_at)
+  if step.kind == kMatch {
+    return true
+  }
+  if step.kind == kByte {
+    if at >= bytes.len || bytes[at] as int != step.value {
+      return false
+    }
+    return Walk(pattern, bytes, step_at + 1, at + 1, slots, budget)
+  }
+  if step.kind == kAny {
+    if at >= bytes.len {
+      return false
+    }
+    if !pattern.dot_all && bytes[at] == 10 {
+      return false
+    }
+    return Walk(pattern, bytes, step_at + 1, at + 1, slots, budget)
+  }
+  if step.kind == kClass {
+    if at >= bytes.len || !InClass(&step, bytes[at]) {
+      return false
+    }
+    return Walk(pattern, bytes, step_at + 1, at + 1, slots, budget)
+  }
+  if step.kind == kStart {
+    if at != 0 && !(at > 0 && bytes[at - 1] == 10) {
+      return false
+    }
+    return Walk(pattern, bytes, step_at + 1, at, slots, budget)
+  }
+  if step.kind == kEnd {
+    if at != bytes.len && !(at < bytes.len && bytes[at] == 10) {
+      return false
+    }
+    return Walk(pattern, bytes, step_at + 1, at, slots, budget)
+  }
+  if step.kind == kWordEdge || step.kind == kNotWordEdge {
+    const before = at > 0 && IsWord(bytes[at - 1])
+    const upper = at < bytes.len && IsWord(bytes[at])
+    const edge = before != upper
+    if edge != (step.kind == kWordEdge) {
+      return false
+    }
+    return Walk(pattern, bytes, step_at + 1, at, slots, budget)
+  }
+  if step.kind == kJump {
+    return Walk(pattern, bytes, step.value, at, slots, budget)
+  }
+  if step.kind == kSplit {
+    if Walk(pattern, bytes, step.value, at, slots, budget) {
+      return true
+    }
+    return Walk(pattern, bytes, step.other, at, slots, budget)
+  }
+  if step.kind == kSave {
+    const slot = step.value
+    if slot < 0 || slot >= 40 {
+      return Walk(pattern, bytes, step_at + 1, at, slots, budget)
+    }
+    const held = slots[slot]
+    slots[slot] = at
+    if Walk(pattern, bytes, step_at + 1, at, slots, budget) {
+      return true
+    }
+    // A group that did not work out keeps whatever it had before.
+    slots[slot] = held
+    return false
+  }
+  return false
+}
+
+fun IsWord(byte: u8) -> bool {
+  return (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) ||
+         (byte >= 97 && byte <= 122) || byte == 95
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun MatchesLiteralsAndClasses() -> bool uses unsafe {
+  match Compile("h[aeiou]llo", "") {
+    Ok(pattern) => {
+      return Matches(&pattern, "say hello there") &&
+             Matches(&pattern, "hullo") &&
+             !Matches(&pattern, "hxllo")
+    },
+    BadPattern => { return false },
+  }
+}
+
+@Test
+fun FindsWhereAndWhat() -> bool uses unsafe {
+  match Compile("(\\w+)@(\\w+)\\.com", "") {
+    Ok(pattern) => {
+      const input = "write to someone@example.com today"
+      const found = Find(&pattern, input)
+      return found.ok && Whole(input, &found) == "someone@example.com" &&
+             Group(input, &found, 1) == "someone" &&
+             Group(input, &found, 2) == "example"
+    },
+    BadPattern => { return false },
+  }
+}
+
+@Test
+fun RepeatsGreedilyAndNot() -> bool uses unsafe {
+  match Compile("<(.+)>", "") {
+    Ok(greedy) => {
+      const input = "<a> and <b>"
+      const found = Find(&greedy, input)
+      if Group(input, &found, 1) != "a> and <b" {
+        return false
+      }
+      match Compile("<(.+?)>", "") {
+        Ok(shy) => {
+          const second = Find(&shy, input)
+          return Group(input, &second, 1) == "a"
+        },
+        BadPattern => { return false },
+      }
+    },
+    BadPattern => { return false },
+  }
+}
+
+@Test
+fun CountsRepetitions() -> bool uses unsafe {
+  match Compile("^a\{2,3\}b$", "") {
+    Ok(pattern) => {
+      return !Matches(&pattern, "ab") && Matches(&pattern, "aab") &&
+             Matches(&pattern, "aaab") && !Matches(&pattern, "aaaab")
+    },
+    BadPattern => { return false },
+  }
+}
+
+@Test
+fun AlternatesAndAnchors() -> bool uses unsafe {
+  match Compile("^(cat|dog|bird)$", "") {
+    Ok(pattern) => {
+      return Matches(&pattern, "dog") && Matches(&pattern, "bird") &&
+             !Matches(&pattern, "dogs")
+    },
+    BadPattern => { return false },
+  }
+}
+
+@Test
+fun FoldsCaseWhenAsked() -> bool uses unsafe {
+  match Compile("wolang", "i") {
+    Ok(pattern) => {
+      return Matches(&pattern, "WOLANG") && Matches(&pattern, "WoLang")
+    },
+    BadPattern => { return false },
+  }
+}
+
+@Test
+fun FindsEveryMatch() -> bool uses unsafe {
+  match Compile("\\d+", "") {
+    Ok(pattern) => {
+      const input = "1 apple, 22 pears, 333 plums"
+      const found = FindAll(&pattern, input)
+      return found.Len() == 3 &&
+             Whole(input, &found.At(2)) == "333"
+    },
+    BadPattern => { return false },
+  }
+}
+
+@Test
+fun ReplacesAndSplits() -> bool uses unsafe {
+  match Compile("(\\w+)=(\\w+)", "") {
+    Ok(pattern) => {
+      const replaced = ReplaceAll(&pattern, "a=1 b=2", "$2:$1")
+      if replaced != "1:a 2:b" {
+        return false
+      }
+      match Compile("\\s*,\\s*", "") {
+        Ok(comma) => {
+          const pieces = Split(&comma, "one , two,three")
+          return pieces.Len() == 3 && pieces.At(2) == "three"
+        },
+        BadPattern => { return false },
+      }
+    },
+    BadPattern => { return false },
+  }
+}
+
+@Test
+fun RefusesWhatIsNotAPattern() -> bool uses unsafe {
+  var refused = 0
+  const broken = ["(unclosed", "[unclosed", "*start", "a\{2,1\}", "a\\"]
+  var i = 0
+  while i < 5 {
+    match Compile(broken[i], "") {
+      Ok(_pattern) => refused = refused,
+      BadPattern => refused = refused + 1,
+    }
+    i = i + 1
+  }
+  return refused == 5
+}
+
+@Test
+fun AnswersRatherThanHanging() -> bool uses unsafe {
+  // The shape that is exponential in every backtracking matcher. What
+  // matters is that it answers at all (D166).
+  match Compile("(a+)+b", "") {
+    Ok(pattern) => {
+      const _held = Matches(&pattern, "aaaaaaaaaaaa")
+      return true
+    },
+    BadPattern => { return false },
+  }
+}

@@ -1569,9 +1569,17 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
 }
 
 TypeId Checker::CheckIndex(const Expr& expr) {
-  const TypeId container = Check(expr.lhs, TypeId{});
+  const TypeId held = Check(expr.lhs, TypeId{});
   Check(expr.rhs, TypeId{});
 
+  // Through a reference, like a field and a method already are: a
+  // `&mut [40]int` parameter is an array that happens to live in the
+  // caller's frame, and making the callee write `(*xs)[i]` buys nothing
+  // (D167).
+  const TypeId container =
+      types_->KindOf(held) == TypeKind::kReference
+          ? types_->ElementOf(held)
+          : held;
   const TypeKind kind = types_->KindOf(container);
   if (kind == TypeKind::kSlice || kind == TypeKind::kArray) {
     // Indexing with a range produces a slice of the same element type.

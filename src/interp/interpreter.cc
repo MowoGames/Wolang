@@ -262,6 +262,28 @@ class Interpreter {
       return Value::Aggregate(std::move(pair));
     }
 
+    // An array is its elements at a stride, and has no field offsets
+    // for the loop below to walk: a `[4]int` inside a struct written to
+    // memory was being skipped entirely, which is how a struct came back
+    // with the array part zeroed in this tier and right in the others
+    // (D168).
+    if (layouts_ != nullptr && described.kind == TypeKind::kArray) {
+      const TypeId element = types_.ElementOf(type);
+      const uint32_t stride = layouts_->StrideOf(type);
+      std::vector<Value> elements;
+      for (uint64_t i = 0; i < described.length; ++i) {
+        elements.push_back(LoadThroughPointer(
+            function,
+            Value::Int(pointer.integer() + i * stride, IntWidth::k64,
+                       /*is_signed=*/false),
+            element, id, outcome));
+        if (!outcome->ok()) {
+          return elements.back();
+        }
+      }
+      return Value::Aggregate(std::move(elements));
+    }
+
     // The same, read back: an aggregate is its fields at their offsets.
     if (layouts_ != nullptr && layouts_->IsSupported(type) &&
         layouts_->ClassOf(type) == abi::ValueClass::kAggregate) {
@@ -358,6 +380,25 @@ class Interpreter {
       const size_t size = std::min<size_t>(
           std::max(layouts_->SizeOf(type), 1u), sizeof(which));
       std::memcpy(address, &which, size);
+      return Value::Void();
+    }
+    if (value.kind() == Value::Kind::kAggregate && layouts_ != nullptr &&
+        type.is_valid() &&
+        types_.KindOf(type) == TypeKind::kArray) {
+      // Elements at a stride rather than fields at offsets (D168).
+      const TypeId element = types_.ElementOf(type);
+      const uint32_t stride = layouts_->StrideOf(type);
+      const std::span<const Value> elements = value.elements();
+      for (size_t i = 0; i < elements.size(); ++i) {
+        const Value at = Value::Int(pointer.integer() + i * stride,
+                                    IntWidth::k64, /*is_signed=*/false);
+        const Value written = StoreThroughPointer(function, at,
+                                                  elements[i], id,
+                                                  outcome, element);
+        if (!outcome->ok()) {
+          return written;
+        }
+      }
       return Value::Void();
     }
     if (value.kind() == Value::Kind::kAggregate && layouts_ != nullptr &&
@@ -1136,10 +1177,20 @@ class Interpreter {
         }
         if (base.kind() == Value::Kind::kSlot ||
             base.kind() == Value::Kind::kPlace) {
+          // Into the array, or along from an element?
+          //
+          // `&xs[3]` and then `+ 2` points at element five, so two
+          // element steps in a row add up. But `rows[1][2]` on a
+          // `[2][3]int` steps *into* the row the first index chose, and
+          // adding there walks off the end of the outer array -- which
+          // is what it did (D168).
+          const TypeId base_type = AddressedType(function, inst, 0);
+          const bool nested =
+              types_.KindOf(base_type) == TypeKind::kArray;
           return Extend(frame, base,
                         static_cast<uint32_t>(index.integer()),
-                        /*is_element=*/true,
-                        AddressedType(function, inst, 0));
+                        /*is_element=*/true, base_type,
+                        /*into=*/nested);
         }
         if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
           return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
@@ -1529,14 +1580,18 @@ class Interpreter {
                       const Value& base,
                       uint32_t step,
                       bool is_element,
-                      TypeId root_type) {
+                      TypeId root_type,
+                      bool into = false) {
     std::vector<PlaceStep> path;
     if (base.kind() == Value::Kind::kPlace) {
       path = base.path();
       // An element step onto an element step adds: a pointer to element
       // three plus two points at element five. Which is the whole of what
       // pointer arithmetic means, and the compiled tiers get it for free.
-      if (is_element && !path.empty() && path.back().is_element) {
+      // Unless what the base names is itself an array, in which case this
+      // step goes into it (D168).
+      if (!into && is_element && !path.empty() &&
+          path.back().is_element) {
         path.back().index += step;
       } else {
         path.push_back(PlaceStep{step, is_element});
