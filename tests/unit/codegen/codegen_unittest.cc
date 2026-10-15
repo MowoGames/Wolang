@@ -2495,6 +2495,88 @@ fun Edges() -> int {
   WOLANG_EXPECT_EQ(f.Run("Edges", {}), "-1101");
 }
 
+WOLANG_TEST(CodegenTest, DestroysASharedHandleOnce) {
+  // Two names for one object: the destructor runs when the last of them
+  // goes away, not when the first does. Before the count, the second
+  // drop was a second free (D193).
+  Fixture f(R"(
+var gone: int = 0
+
+class Noisy {
+  var id: int = 0
+
+  deinit {
+    gone = gone + 1
+  }
+}
+
+fun Borrows(noisy: Noisy) -> int {
+  // A second holder, and a scope that ends before the caller's does.
+  var copy = noisy
+  return copy.id
+}
+
+fun Shares() -> int {
+  gone = 0
+  const id = Borrows(Noisy(7))
+  // The object is gone exactly once by here.
+  return id * 10 + gone
+}
+
+fun Nested() -> int {
+  gone = 0
+  var outer = 0
+  const noisy = Noisy(3)
+  outer = outer + Borrows(noisy)
+  return outer * 10 + gone
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Shares", {}), "71");
+  WOLANG_EXPECT_EQ(f.Run("Nested", {}), "31");
+}
+
+WOLANG_TEST(CodegenTest, CallsAFunctionWithMoreArgumentsThanRegisters) {
+  // A host call to a function whose arguments do not all fit in
+  // registers. The body has read the rest off the stack since D154; the
+  // trampoline that a host enters through wrote past the end of its
+  // register table until the same was done there.
+  Fixture f(R"(
+fun Eleven(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int,
+           i: int, j: int, k: int) -> int {
+  return a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8 +
+         i * 9 + j * 10 + k * 11
+}
+
+fun Mixed(a: f64, b: int, c: f64, d: int, e: f64, f: int, g: f64, h: int,
+          i: f64, j: int, k: f64, l: int) -> int {
+  // Integers out, so that what comes back is exact.
+  return a as int + b + c as int + d + e as int + f + g as int + h +
+         i as int + j + k as int + l
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Eleven", {Fixture::Int(1), Fixture::Int(1),
+                                    Fixture::Int(1), Fixture::Int(1),
+                                    Fixture::Int(1), Fixture::Int(1),
+                                    Fixture::Int(1), Fixture::Int(1),
+                                    Fixture::Int(1), Fixture::Int(1),
+                                    Fixture::Int(1)}),
+                   "66");
+  WOLANG_EXPECT_EQ(f.Run("Eleven", {Fixture::Int(0), Fixture::Int(0),
+                                    Fixture::Int(0), Fixture::Int(0),
+                                    Fixture::Int(0), Fixture::Int(0),
+                                    Fixture::Int(0), Fixture::Int(0),
+                                    Fixture::Int(0), Fixture::Int(0),
+                                    Fixture::Int(3)}),
+                   "33");
+  WOLANG_EXPECT_EQ(f.Run("Mixed", {Fixture::Float(1.0), Fixture::Int(2),
+                                   Fixture::Float(3.0), Fixture::Int(4),
+                                   Fixture::Float(5.0), Fixture::Int(6),
+                                   Fixture::Float(7.0), Fixture::Int(8),
+                                   Fixture::Float(9.0), Fixture::Int(10),
+                                   Fixture::Float(11.0), Fixture::Int(12)}),
+                   "78");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

@@ -179,31 +179,17 @@ class FunctionEmitter {
     if (returned.is_valid() && !layouts_.IsSupported(returned)) {
       return "returns " + Describe(returned);
     }
-    const bool indirect = returned.is_valid() &&
-                          layouts_.ClassOf(returned) ==
-                              abi::ValueClass::kAggregate;
-
     const std::span<const ir::InstId> params =
         function_.ParamsOf(function_.entry());
-    // An aggregate result is returned through a hidden first argument, the
-    // way this ABI does it, so it costs one of the six.
-    uint32_t integers = indirect ? 1 : 0;
-    uint32_t floats = 0;
     for (ir::InstId param : params) {
       const TypeId type = function_.Get(param).type;
       if (!layouts_.IsSupported(type)) {
         return "takes " + Describe(type);
       }
-      if (layouts_.ClassOf(type) == abi::ValueClass::kFloat) {
-        ++floats;
-      } else {
-        ++integers;
-      }
     }
-    if (integers > std::size(kArgumentRegisters) ||
-        floats > std::size(kFloatArgumentRegisters)) {
-      return "takes more arguments than registers";
-    }
+    // More arguments than registers is not a reason to refuse: the body
+    // reads the rest off the stack (D154) and the trampoline puts them
+    // there (D194).
 
     for (const ir::Inst& inst : function_.instructions) {
       if (inst.type.is_valid() && !layouts_.IsSupported(inst.type)) {
@@ -283,10 +269,13 @@ class FunctionEmitter {
         ++integers;
       }
     }
-    if (integers > std::size(kArgumentRegisters) ||
-        floats > std::size(kFloatArgumentRegisters)) {
-      return "calls something with more arguments than registers";
-    }
+    // Arguments past the registers go in the outgoing area this frame
+    // reserved for them, which `EmitCall` fills (D154). Refusing the
+    // whole function was left behind from before that worked, and left
+    // every program with a call of seven arguments to the interpreter
+    // on this machine (D197).
+    (void)integers;
+    (void)floats;
     return {};
   }
 
@@ -847,10 +836,55 @@ class FunctionEmitter {
       assembler_.Mov(IWidth::k64, kArgumentRegisters[integers++],
                      Register::kRdx);
     }
+    // How many do not fit: the body reads those off the stack (D154),
+    // and this is the side that puts them there. A host call to a
+    // function of eleven arguments wrote past the end of the register
+    // table before this counted.
+    uint32_t spilled = 0;
+    {
+      uint32_t counted_integers = integers;
+      uint32_t counted_floats = floats;
+      for (const ir::InstId param : params) {
+        if (layouts_.ClassOf(TypeOf(param)) == abi::ValueClass::kFloat) {
+          if (counted_floats < std::size(kFloatArgumentRegisters)) {
+            ++counted_floats;
+            continue;
+          }
+        } else if (counted_integers < std::size(kArgumentRegisters)) {
+          ++counted_integers;
+          continue;
+        }
+        ++spilled;
+      }
+    }
+    // Sixteen-byte aligned, because the three pushes above left it that
+    // way and the call below needs it kept.
+    const uint32_t spill_bytes = abi::AlignUp(spilled * 8, 16);
+    if (spill_bytes != 0) {
+      assembler_.SubImmediate(IWidth::k64, Register::kRsp, spill_bytes);
+    }
+
+    uint32_t placed = 0;
     for (size_t i = 0; i < params.size(); ++i) {
       const TypeId type = TypeOf(params[i]);
       const Address slot{arguments, static_cast<int32_t>(i * 8)};
-      if (layouts_.ClassOf(type) == abi::ValueClass::kFloat) {
+      const bool is_float =
+          layouts_.ClassOf(type) == abi::ValueClass::kFloat;
+      const bool on_stack =
+          is_float ? floats >= std::size(kFloatArgumentRegisters)
+                   : integers >= std::size(kArgumentRegisters);
+      if (on_stack) {
+        // Through a scratch register: the value is in the array and has
+        // to be in a word of the outgoing area.
+        assembler_.Load(IWidth::k64, Register::kR11, slot);
+        assembler_.Store(
+            IWidth::k64,
+            Address{Register::kRsp, static_cast<int32_t>(placed * 8)},
+            Register::kR11);
+        ++placed;
+        continue;
+      }
+      if (is_float) {
         assembler_.LoadFloat(FloatWidthOf(type),
                              kFloatArgumentRegisters[floats++], slot);
       } else {
@@ -859,6 +893,11 @@ class FunctionEmitter {
     }
 
     assembler_.CallRelative(body_label_);
+    if (spill_bytes != 0) {
+      // Back where it was, so the pushes above are still where they were
+      // put.
+      assembler_.AddImmediate(IWidth::k64, Register::kRsp, spill_bytes);
+    }
 
     assembler_.Pop(Register::kRdx);
     if (!indirect && returned.is_valid()) {
@@ -1206,7 +1245,10 @@ class FunctionEmitter {
       }
 
       case ir::Opcode::kConstNull: {
-        const Register area = UseArea(id, 0);
+        // Scratch one, not zero: zero is the accumulator, and the tag
+        // written below would otherwise overwrite the address it is to
+        // be written to (D196).
+        const Register area = UseArea(id, 1);
         assembler_.Xor(IWidth::k32, kAccumulator, kAccumulator);
         assembler_.Store(IWidth::k8, Address{area, 0}, kAccumulator);
         return;
@@ -1461,13 +1503,19 @@ class FunctionEmitter {
                                      "index is outside the length");
         assembler_.Jcc(Condition::kAboveEqual, trap);
 
-        assembler_.Mov(IWidth::k64, kAccumulator, index);
+        // The offset goes in scratch one rather than the accumulator,
+        // because a spilled destination *is* the accumulator -- it is the
+        // first scratch -- and `mov reg, base` would then throw the
+        // offset away and `add reg, reg` would answer twice the base
+        // (D196).
+        const Register offset = Scratch(1);
+        assembler_.Mov(IWidth::k64, offset, index);
         assembler_.MovImmediate(IWidth::k64, Scratch(2), stride);
-        assembler_.Imul(IWidth::k64, kAccumulator, Scratch(2));
+        assembler_.Imul(IWidth::k64, offset, Scratch(2));
         const Register address = AddressOf(operands[0], 3);
         const Register reg = DestInt(id, 0);
         assembler_.Mov(IWidth::k64, reg, address);
-        assembler_.Add(IWidth::k64, reg, kAccumulator);
+        assembler_.Add(IWidth::k64, reg, offset);
         FinishInt(id, reg);
         return;
       }
@@ -1475,7 +1523,9 @@ class FunctionEmitter {
       case ir::Opcode::kOptionalWrap: {
         const ir::InstId inside = function_.OperandsOf(inst)[0];
         const abi::Layout& layout = layouts_.Of(inst.type);
-        const Register area = UseArea(id, 0);
+        // Scratch one rather than zero, which is the accumulator the tag
+        // goes in (D196).
+        const Register area = UseArea(id, 1);
         assembler_.MovImmediate(IWidth::k32, kAccumulator, 1);
         assembler_.Store(IWidth::k8, Address{area, 0}, kAccumulator);
         StoreInto(inside, area,
@@ -1662,10 +1712,13 @@ class FunctionEmitter {
       return;
     }
 
-    const Register receiver = UseInt(all[0], 0);
-    assembler_.Mov(IWidth::k64, kAccumulator, receiver);
-    assembler_.Load(IWidth::k64, kArgumentRegisters[0],
-                       Address{kAccumulator, 0});
+    // Operand zero is the token -- the number that says which class the
+    // object is -- and lowering has already read it out of the object.
+    // This read it a second time, as if the token were the handle, and
+    // called the lookup with whatever the first field happened to hold
+    // (D197).
+    const Register token = UseInt(all[0], 0);
+    assembler_.Mov(IWidth::k64, kArgumentRegisters[0], token);
     assembler_.MovImmediate(IWidth::k64, kArgumentRegisters[1],
                             inst.payload.integer);
     assembler_.MovImmediate(
@@ -1832,7 +1885,17 @@ class FunctionEmitter {
         break;
       default: {
         const Register reg = DestInt(id, 0);
-        assembler_.Mov(IWidth::k64, reg, Register::kRax);
+        // Only as wide as the type: this ABI lets a function that
+        // answers a `bool` or an `s32` leave whatever it likes in the
+        // rest of the register, and a `bool` whose high bits were
+        // someone else's arithmetic is a `bool` that is true after it
+        // was set false (D198).
+        if (layouts_.ClassOf(returned) == abi::ValueClass::kInteger &&
+            layouts_.BitsOf(returned) < 64) {
+          Canonicalize(Register::kRax, returned, reg);
+        } else {
+          assembler_.Mov(IWidth::k64, reg, Register::kRax);
+        }
         FinishInt(id, reg);
         break;
       }

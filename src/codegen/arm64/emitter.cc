@@ -879,12 +879,57 @@ class FunctionEmitter {
       assembler_.Mov(IWidth::k64, kIndirectResult, Register::kX2);
     }
 
+    // What goes in a register and what goes above the frame. The body
+    // reads the ones past the registers off the stack (D154), and this
+    // is the other side of that: a host calling a function of eleven
+    // arguments used to write past the end of the register table.
     uint32_t integers = 0;
     uint32_t floats = 0;
+    uint32_t spilled = 0;
     for (size_t i = 0; i < params.size(); ++i) {
       const TypeId type = TypeOf(params[i]);
+      const abi::ValueClass value_class = layouts_.ClassOf(type);
+      if (value_class == abi::ValueClass::kFloat) {
+        if (floats < std::size(kFloatArgumentRegisters)) {
+          ++floats;
+          continue;
+        }
+      } else if (integers < std::size(kArgumentRegisters)) {
+        ++integers;
+        continue;
+      }
+      ++spilled;
+    }
+    // Sixteen-byte aligned, which the call expects of the stack pointer.
+    const uint32_t spill_bytes = (spilled * 8 + 15) / 16 * 16;
+    if (spill_bytes != 0) {
+      assembler_.SubImm(IWidth::k64, Register::kSp, Register::kSp,
+                        spill_bytes);
+    }
+
+    integers = 0;
+    floats = 0;
+    spilled = 0;
+    for (size_t i = 0; i < params.size(); ++i) {
+      const TypeId type = TypeOf(params[i]);
+      const abi::ValueClass value_class = layouts_.ClassOf(type);
       const int32_t slot = static_cast<int32_t>(i * 8);
-      if (layouts_.ClassOf(type) == abi::ValueClass::kFloat) {
+      const bool on_stack =
+          value_class == abi::ValueClass::kFloat
+              ? floats >= std::size(kFloatArgumentRegisters)
+              : integers >= std::size(kArgumentRegisters);
+      if (on_stack) {
+        // Through a scratch register: the value is in the array and has
+        // to be in a word of the outgoing area, and there is no memory
+        // to memory move.
+        const Register scratch = Register::kX10;
+        assembler_.Ldr(IWidth::k64, scratch, Register::kX9, slot);
+        assembler_.Str(IWidth::k64, scratch, Register::kSp,
+                       static_cast<int32_t>(spilled * 8));
+        ++spilled;
+        continue;
+      }
+      if (value_class == abi::ValueClass::kFloat) {
         assembler_.LdrFloat(FloatWidthOf(type),
                             kFloatArgumentRegisters[floats++], Register::kX9,
                             slot);
@@ -895,6 +940,12 @@ class FunctionEmitter {
     }
 
     assembler_.Bl(body_label_);
+    if (spill_bytes != 0) {
+      // Back where it was, so that the result and the context are still
+      // where this frame put them.
+      assembler_.AddImm(IWidth::k64, Register::kSp, Register::kSp,
+                        spill_bytes);
+    }
 
     if (!indirect && returned.is_valid()) {
       assembler_.Ldr(IWidth::k64, Register::kX9, Register::kSp, 24);
@@ -1991,7 +2042,17 @@ class FunctionEmitter {
         break;
       default: {
         const Register reg = DestInt(id, 0);
-        assembler_.Mov(IWidth::k64, reg, Register::kX0);
+        // Only as wide as the type: this ABI lets a function that
+        // answers a `bool` or an `s32` leave whatever it likes in the
+        // rest of the register, and a `bool` whose high bits were
+        // someone else's arithmetic is a `bool` that is true after it
+        // was set false (D198).
+        if (layouts_.ClassOf(returned) == abi::ValueClass::kInteger &&
+            layouts_.BitsOf(returned) < 64) {
+          Canonicalize(Register::kX0, returned, reg);
+        } else {
+          assembler_.Mov(IWidth::k64, reg, Register::kX0);
+        }
         FinishInt(id, reg);
         break;
       }

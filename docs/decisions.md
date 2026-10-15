@@ -2372,3 +2372,84 @@ Both back ends have the same arithmetic in their own instructions, and
 the reference tier still divides -- so every case is compared against a
 division by the differential fuzzer and by the test that walks eighty
 values through six divisors.
+
+**D193. A class is counted, not leaked.** `class` allocated and never
+gave anything back unless the class had a `deinit`. Now every object
+carries a count of how many places hold it, and the last one to let go
+runs the destructor and frees it.
+
+The count lives in the word *in front of* the object rather than inside
+it: no layout changes, so a field is where it always was and the three
+tiers go on agreeing about offsets without being told anything. The
+compiler only ever sees the address it was given.
+
+Where the counting happens: `new` answers with one, a store into a place
+that outlives the expression takes a reference, a value on its way out of
+a function keeps one, and a binding releases what it holds when its scope
+ends. A value that arrived already counted -- from `new` or from a call --
+is handed on rather than counted again, which is what stopped the first
+attempt from ever reaching zero.
+
+What is *not* counted: an argument. A function borrows what it is handed,
+because the caller is holding it for the duration of the call, and
+counting there would be two atomic-shaped operations per call for nothing.
+A callee that keeps what it was given does so with a store, and the store
+is what takes the reference.
+
+Two things still leak, and both are written down rather than hidden: a
+cycle, which is what reference counting cannot see; and a handle
+overwritten in a field rather than dropped, because releasing the old
+value would mean reading the place back first. Leaking there is the right
+way round -- the other mistake frees something that is still in use.
+
+`Owns` and `Releases` are deliberately different questions. `Owns` is
+"does handing this on give it away", which is what makes a `World` passed
+to the functions that work on it a borrow rather than a move (D87).
+`Releases` is "does this binding hold a reference". Conflating them made
+every class parameter a move and quietly freed a world halfway through
+the function that was using it.
+
+**D194. The trampoline takes stack arguments too.** The body has read
+arguments past the registers off the stack since D154. The trampoline a
+host call enters had not been told: it wrote past the end of its register
+table, which the sanitizer called a global buffer overflow and a release
+build would have called a wrong answer. The x86-64 side had an honest
+refusal in front of it instead -- "takes more arguments than registers",
+which left every such function to the interpreter.
+
+**D195. A byte operation needs REX.** Without the prefix, registers four
+to seven in an x86-64 byte operation name `ah`, `ch`, `dh` and `bh` --
+the *high* byte of another register. The assembler forced it for a store
+and for `setcc` and not for the dozen other instructions that have a byte
+form. Forced in the one helper now, because a dozen call sites is a dozen
+chances to forget.
+
+**D196. Scratch zero is the accumulator.** Three places in the x86-64
+emitter asked for scratch zero and then wrote the accumulator, which is
+the same register: the address of an array element became twice the base
+of the array, and wrapping a value in an optional stored the tag to the
+address the tag had just overwritten. A program that put either in a
+place the allocator had to spill crashed, and the crash was in generated
+code with no source line on it.
+
+Found by running the x86-64 build under Rosetta on an Apple Silicon
+machine and then dumping what it emitted: `wolang asm --raw` prints the
+bytes, and a disassembler says the rest. That is now the way this tier is
+checked without a second machine -- the whole suite ran, and 94 tests in
+it crashed.
+
+**D197. What the x86-64 tier had quietly stopped doing.** Two more from
+the same session: a virtual call read the token out of the object a
+second time, as if the token were the handle, and called the lookup with
+whatever the first field happened to hold -- lowering has read it already,
+and the other back end passes it straight through. And a call with more
+arguments than registers refused the whole function, from before the
+outgoing area worked.
+
+**D198. A narrow answer is only as wide as its type.** A function that
+answers a `bool` or an `s32` may leave anything it likes in the rest of
+the register, and both back ends took the whole sixty-four bits. So
+`wolang_world_alive` answered false and the program saw true, because the
+high bits were someone else's arithmetic. The result is now narrowed to
+its type where it is taken, which is one instruction and the difference
+between right and nearly right.

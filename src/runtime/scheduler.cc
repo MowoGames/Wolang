@@ -98,6 +98,19 @@ int64_t wolang_sched_run() {
   return steps;
 }
 
+// How many references an object has, kept in the word *in front of* it.
+//
+// In front rather than inside, so that no layout changes: a field is
+// where it always was, and the three tiers go on agreeing about offsets
+// without being told anything. The compiler only ever sees the address
+// it was given (D193).
+constexpr uint64_t kCountBytes = 16;
+
+uint64_t* CountOf(void* object) {
+  return reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(object) -
+                                     kCountBytes);
+}
+
 void* wolang_object_alloc(uint64_t size) {
   // Zeroed, so that a field the constructor does not write reads as zero
   // rather than as whatever was there. The interpreter traps on reading an
@@ -106,17 +119,49 @@ void* wolang_object_alloc(uint64_t size) {
   //
   // From the innermost `arena` block when there is one, which is how a
   // request handler pays for its allocations once.
-  return wolang_arena_alloc(size);
+  void* base = wolang_arena_alloc(size + kCountBytes);
+  if (base == nullptr) {
+    return nullptr;
+  }
+  auto* object = static_cast<uint8_t*>(base) + kCountBytes;
+  // One reference: whoever asked for it. Sixteen bytes rather than eight
+  // so that what comes back is still aligned for anything.
+  *CountOf(object) = 1;
+  return object;
+}
+
+void wolang_object_retain(void* object) {
+  if (object == nullptr || wolang_arena_owns(object)) {
+    return;
+  }
+  ++*CountOf(object);
+}
+
+int32_t wolang_object_release(void* object) {
+  // Whether this was the last reference, which is the caller's cue to
+  // run the destructor and give the storage back. The decision is here
+  // and the destructor is in the generated code, because a destructor is
+  // a method and only the compiler knows how to call one.
+  if (object == nullptr || wolang_arena_owns(object)) {
+    return 0;
+  }
+  uint64_t& count = *CountOf(object);
+  if (count == 0) {
+    return 0;
+  }
+  --count;
+  return count == 0 ? 1 : 0;
 }
 
 void wolang_object_free(void* object) {
   // Storage an open `arena` block handed out is reclaimed by the block,
   // not by this: a destructor that runs inside one would otherwise free a
   // pointer the allocator never gave anyone (D113).
-  if (wolang_arena_owns(object)) {
+  if (object == nullptr || wolang_arena_owns(object)) {
     return;
   }
-  std::free(object);
+  // Back to the word in front, which is where the allocation began.
+  std::free(static_cast<uint8_t*>(object) - kCountBytes);
 }
 
 int64_t wolang_sched_join(int32_t handle) {

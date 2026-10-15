@@ -1609,12 +1609,13 @@ class Lowerer {
         const InstId slot = builder.Add(Opcode::kAlloca, type);
         builder.Add(Opcode::kStore, TypeId{}, {slot, value});
         locals_.push_back(Local{param.name, slot, InstId{}, type});
-        RememberOwner(param.name, slot, declared, /*live=*/true);
+        RememberOwner(param.name, slot, declared, /*live=*/true,
+                      /*in_slot=*/true, /*is_parameter=*/true);
         continue;
       }
       locals_.push_back(Local{param.name, InstId{}, value, type});
       RememberOwner(param.name, value, declared, /*live=*/true,
-                    /*in_slot=*/false);
+                    /*in_slot=*/false, /*is_parameter=*/true);
     }
 
     const TypeId signature = module_->functions[index].type;
@@ -1985,6 +1986,14 @@ class Lowerer {
                 ? Coerce(Value(stmt.expr), TypeOf(stmt.expr), return_type_,
                          stmt.expr)
                 : InstId{};
+        // On its way out: the caller will hold it, and the releases
+        // below must not take it with them. Unless it arrived already
+        // counted -- `new` answers with one, and so does a call -- in
+        // which case this hands that reference on rather than adding
+        // another (D193).
+        if (value.is_valid() && !IsFreshHandle(value)) {
+          Retain(value, return_type_);
+        }
         RunDeferred(0);
         // Every arena this return is leaving goes with it.
         ReleaseArenas(0);
@@ -2069,7 +2078,7 @@ class Lowerer {
     // scope exit to read it from (D133).
     if (!mutable_binding && !in_task_ &&
         !HasFlag(pattern->flags, PatternFlags::kMutable) &&
-        !Owns(type)) {
+        !Releases(type)) {
       locals_.push_back(Local{pattern->name, InstId{}, value, type});
       return;
     }
@@ -2141,8 +2150,9 @@ class Lowerer {
                      InstId held,
                      TypeId type,
                      bool live,
-                     bool in_slot = true) {
-    if (!Owns(type)) {
+                     bool in_slot = true,
+                     bool is_parameter = false) {
+    if (is_parameter ? !Owns(type) : !Releases(type)) {
       return;
     }
     const InstId flag =
@@ -2207,26 +2217,105 @@ class Lowerer {
       return;
     }
     const TypeId type = Erase(raw);
+    if (!types_->IsHandle(type)) {
+      if (const Member* deinit = FindDestructor(type)) {
+        const uint32_t index = MethodIndex(type, *deinit);
+        if (index != 0xFFFFFFFFu) {
+          builder_->Call(index, types_->void_type(), {value});
+        }
+      }
+      return;
+    }
+
+    // A class is a handle to a heap object (D61), and several handles
+    // may be to the same one. So this is a release: the runtime says
+    // whether that was the last reference, and only then does the
+    // destructor run and the storage go back (D193).
+    const Symbol released = interner_->Intern("wolang_object_release");
+    const uint32_t release = DeclareExternal(
+        released,
+        types_->Function({types_->u64()},
+                         types_->Int(IntWidth::k32, /*is_signed=*/true)));
+    module_->functions[release].foreign_symbol = released;
+    const InstId last = builder_->Call(
+        release, types_->Int(IntWidth::k32, /*is_signed=*/true),
+        {AsDeclared(release, 0, value)});
+    const InstId zero =
+        builder_->ConstInt(types_->Int(IntWidth::k32, /*is_signed=*/true),
+                           0);
+    const InstId gone =
+        builder_->Add(Opcode::kNe, types_->bool_type(), {last, zero});
+    const BlockId destroy = builder_->AddBlock("drop.last");
+    const BlockId after = builder_->AddBlock("drop.after");
+    builder_->Branch(gone, destroy, after);
+    builder_->SetCurrent(destroy);
     if (const Member* deinit = FindDestructor(type)) {
       const uint32_t index = MethodIndex(type, *deinit);
       if (index != 0xFFFFFFFFu) {
         builder_->Call(index, types_->void_type(), {value});
       }
     }
-    if (types_->IsHandle(type)) {
-      // The object the handle was to. A class is a handle to a heap
-      // object (D61), and this is the other half of that sentence.
-      //
-      // The handle is cast to a word first: one declaration of the free
-      // serves every class, and a verifier that compares types exactly
-      // would otherwise want one per class.
-      const Symbol name = interner_->Intern("wolang_object_free");
-      const uint32_t free = DeclareExternal(
-          name, types_->Function({types_->u64()}, types_->void_type()));
-      module_->functions[free].foreign_symbol = name;
-      builder_->Call(free, types_->void_type(),
-                     {AsDeclared(free, 0, value)});
+    // The handle is cast to a word first: one declaration of the free
+    // serves every class, and a verifier that compares types exactly
+    // would otherwise want one per class.
+    const Symbol name = interner_->Intern("wolang_object_free");
+    const uint32_t free = DeclareExternal(
+        name, types_->Function({types_->u64()}, types_->void_type()));
+    module_->functions[free].foreign_symbol = name;
+    builder_->Call(free, types_->void_type(),
+                   {AsDeclared(free, 0, value)});
+    builder_->Jump(after, {});
+    builder_->SetCurrent(after);
+  }
+
+  // Whether |value| is a reference nobody holds yet.
+  //
+  // `new` answers with a count of one, and a function retains what it
+  // returns: in both cases the value *is* a reference, and whoever puts
+  // it somewhere takes it rather than adding to it (D193).
+  bool IsFreshHandle(InstId value) const {
+    const Function& current = module_->functions[current_function_];
+    if (!current.Contains(value)) {
+      return false;
     }
+    switch (current.Get(value).opcode) {
+      case Opcode::kNew:
+      case Opcode::kCall:
+      case Opcode::kCallIndirect:
+      case Opcode::kVirtualCall:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // One more reference to |value|, when it is a handle.
+  //
+  // Where this goes: a store into a place that outlives the expression,
+  // and a value on its way out of the function. Everything else borrows
+  // -- an argument is alive because the caller is holding it (D193).
+  void Retain(InstId value, TypeId raw) {
+    if (!value.is_valid() || !raw.is_valid()) {
+      return;
+    }
+    // The handle itself, not something carrying one: `IsHandle` looks
+    // through `?` and `!`, and a `Store!` is a pair whose first word is
+    // which error it is. Retaining that pair as if it were an address
+    // is a crash (D193).
+    const TypeId held = Erase(raw);
+    const TypeKind kind = types_->KindOf(held);
+    if (kind != TypeKind::kNamed && kind != TypeKind::kInstance) {
+      return;
+    }
+    if (!types_->IsHandle(held)) {
+      return;
+    }
+    const Symbol name = interner_->Intern("wolang_object_retain");
+    const uint32_t retain = DeclareExternal(
+        name, types_->Function({types_->u64()}, types_->void_type()));
+    module_->functions[retain].foreign_symbol = name;
+    builder_->Call(retain, types_->void_type(),
+                   {AsDeclared(retain, 0, value)});
   }
 
   // The destructor of |type| or of something it derives from.
@@ -2255,6 +2344,27 @@ class Lowerer {
       return true;
     }
     return FindDestructor(Erase(type)) != nullptr;
+  }
+
+  // Whether a *binding* of |type| releases what it holds when its scope
+  // ends.
+  //
+  // Wider than `Owns`: every class, not only one with a destructor,
+  // because a handle is to a heap object (D61) and one that nobody holds
+  // any more should go back. Narrower in where it applies: a parameter
+  // is not asked this, because `Owns` is also what decides that handing
+  // a value to a function *moves* it (D87), and a world passed to the
+  // functions that work on it is borrowed. So this is the question
+  // "does this binding hold a reference", and `Owns` stays the question
+  // "does handing it on give it away" (D193).
+  bool Releases(TypeId type) {
+    if (Owns(type)) {
+      return true;
+    }
+    const TypeId held = Erase(type);
+    const TypeKind kind = types_->KindOf(held);
+    return (kind == TypeKind::kNamed || kind == TypeKind::kInstance) &&
+           types_->IsHandle(held);
   }
 
   // Drops the entries a scope owned, after its exit has been emitted.
@@ -3820,6 +3930,25 @@ class Lowerer {
   void WritePlace(const Place& place, InstId value) {
     if (!value.is_valid() || !place.addressable()) {
       return;
+    }
+    // A place outlives the expression that filled it, so what goes in
+    // gets a reference of its own (D193). The old value is *not*
+    // released here: that would need the place read back first, and a
+    // handle overwritten rather than dropped is a leak rather than a
+    // use-after-free -- which is the right way round for a first
+    // collector.
+    //
+    // By what is being *stored*, not by what the place says it holds: a
+    // field place answers with its owner's type in some shapes, and
+    // retaining a number as if it were an object is a crash rather than
+    // a leak.
+    //
+    // And not when the value arrived already counted: `new` starts at
+    // one and a function retains what it returns, so a place taking one
+    // of those takes that reference rather than adding another. A value
+    // read out of somewhere else is a second holder and does (D193).
+    if (!IsFreshHandle(value)) {
+      Retain(value, ValueType(value));
     }
     builder_->Add(Opcode::kStore, TypeId{},
                   {AddressOfPlace(place), value});

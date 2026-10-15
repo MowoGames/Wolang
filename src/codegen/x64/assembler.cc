@@ -87,7 +87,19 @@ void Assembler::Prefix(Width width) {
 // REX carries the fourth bit of each register number and the "this is 64
 // bits" flag. It is also what makes `sil`, `dil` and friends addressable,
 // which is why a byte operation on one of those forces it.
+//
+// Forced here rather than at each call site, because every instruction
+// that has a byte form needs it and a dozen call sites is a dozen
+// chances to forget: without the prefix, register 4 to 7 in a byte
+// operation names `ah`, `ch`, `dh` or `bh` -- the *high* byte of another
+// register. The processor does exactly what it is told, the value lands
+// in a register nobody meant, and what crashes is whatever ran next
+// (D195).
 void Assembler::Rex(Width width, uint8_t reg, uint8_t rm, bool force) {
+  if (width == Width::k8 &&
+      ((reg >= 4 && reg < 8) || (rm >= 4 && rm < 8))) {
+    force = true;
+  }
   uint8_t rex = 0;
   if (width == Width::k64) {
     rex |= 0x08;

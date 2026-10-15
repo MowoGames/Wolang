@@ -49,6 +49,13 @@ int64_t wolang_sched_run();
 extern "C" void* wolang_object_alloc(uint64_t size);
 extern "C" void wolang_object_free(void* object);
 
+// One more reference to |object|, and one fewer. `release` answers 1
+// when that was the last one, which is the caller's cue to run the
+// destructor and then free it -- a destructor is a method, and only the
+// compiler knows how to call one (D193).
+void wolang_object_retain(void* object);
+int32_t wolang_object_release(void* object);
+
 // Whether the task behind |handle| has finished.
 bool wolang_sched_done(int32_t handle);
 

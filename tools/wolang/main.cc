@@ -95,6 +95,9 @@ struct Options {
   bool new_library = false;
   // `test` only: run the dependencies' tests as well.
   bool test_all = false;
+  // `asm` only: the bytes themselves, as hex, so that a disassembler can
+  // be pointed at what the dev tier actually emitted. What found D195.
+  bool raw = false;
   // `run` only: sample where the time goes, and how often to sample.
   bool profile = false;
   int hertz = 1000;
@@ -1575,6 +1578,23 @@ int RunAsm(const Options& options) {
           }
         }
         std::fprintf(stdout, "@%s: %u bytes\n", name.c_str(), bytes);
+        if (options.raw) {
+          // Where this function's bytes begin: the listing is in
+          // emission order, so the ones before it say how far in it is.
+          uint64_t at = compiled->code_begin();
+          for (const std::pair<std::string, uint32_t>& entry :
+               compiled->Listing()) {
+            if (entry.first == name) {
+              break;
+            }
+            at += entry.second;
+          }
+          const auto* emitted = reinterpret_cast<const uint8_t*>(at);
+          for (uint32_t i = 0; i < bytes; ++i) {
+            std::fprintf(stdout, "%02x%s", emitted[i],
+                         (i + 1) % 16 == 0 || i + 1 == bytes ? "\n" : " ");
+          }
+        }
         continue;
       }
       // A foreign declaration is not "left to the interpreter": it has no
@@ -2723,6 +2743,10 @@ int Run(int argc, char** argv) {
     const std::string_view argument = argv[i];
     if (argument == "--aot") {
       options.fuzz_aot = true;
+      continue;
+    }
+    if (argument == "--raw") {
+      options.raw = true;
       continue;
     }
     if (argument == "--emit-object") {
