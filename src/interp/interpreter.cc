@@ -202,6 +202,37 @@ class Interpreter {
       return Value::Int(raw, IntWidth::k64, /*is_signed=*/false);
     }
 
+    // An enum that carries values, read back: the tag says which variant
+    // it is, and that variant's values are at the offsets the layout gave
+    // them (D111).
+    if (layouts_ != nullptr && layouts_->IsSupported(type) &&
+        layouts_->IsTagged(type)) {
+      uint32_t which = 0;
+      std::memcpy(&which, address, sizeof(which));
+      std::vector<Value> carried;
+      for (uint32_t position = 0;; ++position) {
+        const TypeId field = layouts_->VariantFieldType(type, which,
+                                                        position);
+        if (!field.is_valid()) {
+          break;
+        }
+        const uint64_t at =
+            pointer.integer() +
+            layouts_->VariantFieldOffset(type, which, position);
+        carried.push_back(LoadThroughPointer(
+            function, Value::Int(at, IntWidth::k64, /*is_signed=*/false),
+            field, id, outcome));
+        if (!outcome->ok()) {
+          return carried.back();
+        }
+      }
+      std::vector<Value> pair;
+      pair.push_back(Value::Int(which, IntWidth::k32,
+                                /*is_signed=*/false));
+      pair.push_back(Value::Aggregate(std::move(carried)));
+      return Value::Aggregate(std::move(pair));
+    }
+
     // The same, read back: an aggregate is its fields at their offsets.
     if (layouts_ != nullptr && layouts_->IsSupported(type) &&
         layouts_->ClassOf(type) == abi::ValueClass::kAggregate) {
@@ -252,6 +283,40 @@ class Interpreter {
     // the layout gives, which is the same answer the compiled tiers get
     // from the same store. A class with a slice in it is the ordinary case
     // -- it was only ever unsupported because nothing had one yet.
+    // An enum that carries values: the tag, and the payload at the
+    // offsets the layout gave *that variant*. Not the field offsets of an
+    // aggregate -- every variant's values start at the same place, which
+    // is what makes one read site work for all of them (D89) and what the
+    // plain field loop below cannot express (D111).
+    if (value.kind() == Value::Kind::kAggregate && layouts_ != nullptr &&
+        type.is_valid() && layouts_->IsTagged(type) &&
+        value.elements().size() == 2) {
+      const std::span<const Value> pair = value.elements();
+      const Value tag = Value::Int(pair[0].integer(), IntWidth::k32,
+                                   /*is_signed=*/false);
+      const Value written =
+          StoreThroughPointer(function, pointer, tag, id, outcome);
+      if (!outcome->ok()) {
+        return written;
+      }
+      const auto which = static_cast<uint32_t>(pair[0].integer());
+      const std::span<const Value> carried = pair[1].elements();
+      for (size_t i = 0; i < carried.size(); ++i) {
+        const Value at = Value::Int(
+            pointer.integer() +
+                layouts_->VariantFieldOffset(type, which,
+                                             static_cast<uint32_t>(i)),
+            IntWidth::k64, /*is_signed=*/false);
+        const Value one = StoreThroughPointer(
+            function, at, carried[i], id, outcome,
+            layouts_->VariantFieldType(type, which,
+                                       static_cast<uint32_t>(i)));
+        if (!outcome->ok()) {
+          return one;
+        }
+      }
+      return Value::Void();
+    }
     if (value.kind() == Value::Kind::kAggregate && layouts_ != nullptr &&
         type.is_valid()) {
       const abi::Layout& layout = layouts_->Of(type);
@@ -306,7 +371,8 @@ class Interpreter {
       default:
         return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
                     "wrote a type through a pointer that this tier cannot "
-                    "lay out");
+                    "lay out: " +
+                        value.Describe());
     }
   }
 
@@ -703,11 +769,25 @@ class Interpreter {
         return carried.elements()[position];
       }
 
-      case ir::Opcode::kLocalAddress:
+      case ir::Opcode::kLocalAddress: {
         // A slot *is* where the value is in this tier: there are no
         // frame addresses here, and a place is a path (D94). What crosses
         // the C boundary is bounced into real memory by the marshaller.
-        return Operand(frame, inst, 0);
+        //
+        // As a *place* rather than as the bare slot, because a slot is an
+        // index into the frame that produced it: handing one to a callee
+        // -- which is what `&mut x` is for -- made the index mean a slot
+        // of the callee's own frame (D111). A place names its frame.
+        const Value& slot = Operand(frame, inst, 0);
+        if (slot.kind() == Value::Kind::kSlot) {
+          // The type is what the address points *at*: the place carries
+          // it so that marshalling across the C boundary copies the whole
+          // value out and not a pointer's worth of it.
+          return Value::Place(frame, slot.slot(), {},
+                              types_.ElementOf(inst.type));
+        }
+        return slot;
+      }
 
       case ir::Opcode::kGlobalAddress: {
         // The runtime owns the storage, so the address is the same one
@@ -827,11 +907,20 @@ class Interpreter {
           const TypeId pointer = function.Contains(target)
                                      ? function.Get(target).type
                                      : TypeId{};
-          const TypeId written =
+          TypeId written =
               pointer.is_valid() &&
                       types_.KindOf(pointer) == TypeKind::kPointer
                   ? types_.ElementOf(pointer)
                   : TypeId{};
+          // The value's own type when the address does not say: an
+          // element address inside `soa` storage is typed as the field it
+          // points at, and a store of a whole record through one left the
+          // interpreter with nothing to lay the record out by (D111).
+          if (!written.is_valid()) {
+            const ir::InstId source = function.OperandsOf(inst)[1];
+            written = function.Contains(source) ? function.Get(source).type
+                                                : TypeId{};
+          }
           return StoreThroughPointer(function, slot,
                                      Operand(frame, inst, 1), id, outcome,
                                      written);

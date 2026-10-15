@@ -1209,3 +1209,66 @@ the next decision here and not a small one: a function value would become
 a pair -- code and environment -- which changes its layout, the indirect
 call in three back ends, what crosses to C, and who frees the
 environment. Said plainly rather than left as "later".
+
+**D107. `WrappingAdd`, `WrappingSub` and `WrappingMul`.** Everything else
+in this language traps on overflow, which is right for a program counting
+damage and wrong for one hashing a key or stepping a generator: those want
+the low bits of a wrapped result. The three have no body -- what they
+stand for is the instruction the compiler already writes for its own
+address arithmetic -- and they are what made `std.random` and a decent
+hash writable in Wolang rather than in C.
+
+Two things fell out of writing `std.sort` over them. A closure passed to a
+generic now gets its parameter types from the parameter with the type
+variables filled in by the arguments before it -- `Sort(items, |a, b| a <
+b)` binds `T` from `items` and the closure from `T`. And a generic that
+calls itself records that its own parameter stands for itself: inference
+has nothing to do there, recording it as "no arguments" left the call with
+no instantiation to find, and a recursive `Quicksort` lowered to an
+`undef`.
+
+**D108. An import used only by an enum's payload counts as used.** `Array(items: List<Json>)`
+is the only mention of `List` in a module, and the unused-import warning
+did not see it: variant payload types are resolved where the enum is
+checked, and that walk did not record the names it used.
+
+**D109. A method on a reference is the method of what it refers to.**
+Without it an owning value could not be lent at all: handing a `Builder`
+to a helper moves it (D87), so the way to let the helper write into one is
+`&mut Builder` -- and a reference with no members made that unusable. A
+reference to a class holds the handle, so the handle is loaded out of it;
+a reference to a value type already is the address a method takes. `&x`
+borrows rather than moves, and a reference is a pointer in the IR, which
+is what keeps a `&mut Builder` parameter and the `&mut builder` passed to
+it the same type.
+
+**D110. `+` joins two strings.** Interpolation covers most of it --
+`"{a}{b}"` is the same call -- but a program building a string from pieces
+it has in hand reads better with `+`, and every user tries it first. A
+string plus a number is still an error, with a message that says which
+two things `+` takes.
+
+**D111. Five places where lowering believed the checker's recorded type.**
+The checker records the type the *context* wanted at an expression. That
+is what makes `Accepts(T?, T)` work, and lowering read it as "what this
+expression is" in five places -- each of which produced a value of the
+wrong shape with no diagnostic anywhere:
+
+- a call whose result is used where a `T?` is expected was typed `T?`
+  while the function returned a `T`;
+- a field read in the same position was typed `T?`, so an enum's bytes
+  were read as an optional's;
+- `return value` where `T?` was declared emitted no wrap at all (D100).
+
+The rule now: an instruction's type is what *produces* it -- the callee's
+result, the member's type, the value's own type -- and the conversion to
+what the context wanted is a `Coerce` like every other.
+
+Three more bugs came out of the same work, each found by writing
+`std.json` rather than by a test expecting them: the drop flags of one
+function were still in scope while the next was lowered, so a flag's
+instruction id meant something else entirely; `local.addr` in the
+reference tier answered with a frame-relative slot, which meant a
+different slot in the callee it was passed to; and storing or loading a
+tagged enum through a pointer used an aggregate's field offsets, where an
+enum's payload is at the offsets *that variant* gave it.

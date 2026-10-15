@@ -1,0 +1,694 @@
+// JSON.
+//
+// A document is a value, and a value is one of six things -- which is
+// exactly what an enum with payloads is for (D89). The recursion goes
+// through a `List`, whose value is a handle, so a tree costs one
+// allocation per array and object and nothing per number.
+//
+// Parsing answers a `Json!`: a malformed document is a thing that
+// happens to a server every day, not a reason to stop the program.
+
+need std.list.{List, ListNew}
+need std.text.{Bytes, BuilderNew, Builder}
+/// Which of the six a value is, as a number: `0` null, `1` bool, `2`
+/// number, `3` text, `4` array, `5` object.
+///
+/// For a program that switches on the shape of a document it did not
+/// write, which is most of what reading JSON is.
+offer fun Kind(value: Json) -> int {
+  return match value {
+    Json.Null => 0,
+    Json.Bool(_held) => 1,
+    Json.Number(_held) => 2,
+    Json.Text(_held) => 3,
+    Json.Array(_items) => 4,
+    Json.Object(_fields) => 5,
+  }
+}
+
+error Malformed
+
+/// One of the six things a JSON value can be.
+offer enum Json {
+  Null,
+  Bool(value: bool),
+  Number(value: float),
+  Text(value: text),
+  Array(items: List<Json>),
+  Object(fields: List<Field>),
+}
+
+/// A member of an object: its name and its value.
+offer struct Field {
+  var name: text
+  var value: Json
+}
+
+// ------------------------------------------------------------ reading ---
+
+// Where the parser is: the bytes, and how far in.
+struct Cursor {
+  var bytes: []u8
+  var at: int
+}
+
+fun AtEnd(cursor: Cursor) -> bool {
+  return cursor.at >= cursor.bytes.len
+}
+
+fun Peek(cursor: Cursor) -> u8 {
+  if AtEnd(cursor) {
+    return 0
+  }
+  return cursor.bytes[cursor.at]
+}
+
+fun SkipSpace(cursor: Cursor) -> Cursor {
+  var walk = cursor
+  while !AtEnd(walk) {
+    const byte = walk.bytes[walk.at]
+    if byte == 32 || byte == 9 || byte == 10 || byte == 13 {
+      walk.at = walk.at + 1
+    } else {
+      return walk
+    }
+  }
+  return walk
+}
+
+// What a parse step answers: the value, and where it stopped.
+struct Step {
+  var value: Json
+  var cursor: Cursor
+  var ok: bool
+}
+
+fun Fail(cursor: Cursor) -> Step {
+  return Step(Json.Null, cursor, false)
+}
+
+/// Reads one value from `input`.
+offer fun Parse(input: text) -> Json! uses unsafe {
+  const start = Cursor(Bytes(input), 0)
+  const step = ParseValue(SkipSpace(start))
+  if !step.ok {
+    return Malformed
+  }
+  // Trailing bytes other than space mean the document said two things.
+  const rest = SkipSpace(step.cursor)
+  if !AtEnd(rest) {
+    return Malformed
+  }
+  return step.value
+}
+
+fun ParseValue(cursor: Cursor) -> Step uses unsafe {
+  if AtEnd(cursor) {
+    return Fail(cursor)
+  }
+  const byte = Peek(cursor)
+  // `{`, `[`, `"`, `t`, `f`, `n`, or a number.
+  if byte == 123 {
+    return ParseObject(cursor)
+  }
+  if byte == 91 {
+    return ParseArray(cursor)
+  }
+  if byte == 34 {
+    const read = ParseText(cursor)
+    if !read.ok {
+      return Fail(cursor)
+    }
+    return Step(Json.Text(read.value), read.cursor, true)
+  }
+  if byte == 116 {
+    return ParseWord(cursor, "true", Json.Bool(true))
+  }
+  if byte == 102 {
+    return ParseWord(cursor, "false", Json.Bool(false))
+  }
+  if byte == 110 {
+    return ParseWord(cursor, "null", Json.Null)
+  }
+  return ParseNumber(cursor)
+}
+
+fun ParseWord(cursor: Cursor, word: text, value: Json) -> Step uses unsafe {
+  const spelling = Bytes(word)
+  var walk = cursor
+  var i = 0
+  while i < spelling.len {
+    if AtEnd(walk) || walk.bytes[walk.at] != spelling[i] {
+      return Fail(cursor)
+    }
+    walk.at = walk.at + 1
+    i = i + 1
+  }
+  return Step(value, walk, true)
+}
+
+// What reading a string answers.
+struct TextStep {
+  var value: text
+  var cursor: Cursor
+  var ok: bool
+}
+
+fun ParseText(cursor: Cursor) -> TextStep uses unsafe {
+  if Peek(cursor) != 34 {
+    return TextStep("", cursor, false)
+  }
+  var walk = cursor
+  walk.at = walk.at + 1
+  var builder = BuilderNew()
+  while !AtEnd(walk) {
+    const byte = walk.bytes[walk.at]
+    walk.at = walk.at + 1
+    if byte == 34 {
+      return TextStep(builder.Release(), walk, true)
+    }
+    if byte != 92 {
+      builder.AppendByte(byte)
+      continue
+    }
+    // An escape: the one place a JSON string is not its own bytes.
+    if AtEnd(walk) {
+      return TextStep("", cursor, false)
+    }
+    const what = walk.bytes[walk.at]
+    walk.at = walk.at + 1
+    if what == 110 {
+      builder.AppendByte(10)
+    } else if what == 116 {
+      builder.AppendByte(9)
+    } else if what == 114 {
+      builder.AppendByte(13)
+    } else if what == 98 {
+      builder.AppendByte(8)
+    } else if what == 102 {
+      builder.AppendByte(12)
+    } else if what == 117 {
+      // `\u0041`: four hex digits, written out as UTF-8 here rather than
+      // in a helper, because handing the builder to one would hand over
+      // what it owns (D87).
+      const read = ParseEscape(walk)
+      if !read.ok {
+        return TextStep("", cursor, false)
+      }
+      walk = read.cursor
+      const value = read.value
+      if value < 128 {
+        builder.AppendByte(value as u8)
+      } else if value < 2048 {
+        builder.AppendByte((192 + value / 64) as u8)
+        builder.AppendByte((128 + value % 64) as u8)
+      } else {
+        builder.AppendByte((224 + value / 4096) as u8)
+        builder.AppendByte((128 + value / 64 % 64) as u8)
+        builder.AppendByte((128 + value % 64) as u8)
+      }
+    } else {
+      // `\"`, `\\`, `\/` and anything else: the byte itself.
+      builder.AppendByte(what)
+    }
+  }
+  return TextStep("", cursor, false)
+}
+
+// What reading past a four-digit escape answers: the code point and
+// where it ended.
+struct EscapeStep {
+  var value: int
+  var cursor: Cursor
+  var ok: bool
+}
+
+fun ParseEscape(cursor: Cursor) -> EscapeStep {
+  var walk = cursor
+  var value = 0
+  var i = 0
+  while i < 4 {
+    if AtEnd(walk) {
+      return EscapeStep(0, cursor, false)
+    }
+    const digit = HexDigit(walk.bytes[walk.at])
+    if digit < 0 {
+      return EscapeStep(0, cursor, false)
+    }
+    value = value * 16 + digit
+    walk.at = walk.at + 1
+    i = i + 1
+  }
+  return EscapeStep(value, walk, true)
+}
+
+fun HexDigit(byte: u8) -> int {
+  if byte >= 48 && byte <= 57 {
+    return (byte - 48) as int
+  }
+  if byte >= 97 && byte <= 102 {
+    return (byte - 87) as int
+  }
+  if byte >= 65 && byte <= 70 {
+    return (byte - 55) as int
+  }
+  return -1
+}
+
+fun ParseNumber(cursor: Cursor) -> Step {
+  var walk = cursor
+  var sign = 1.0
+  if Peek(walk) == 45 {
+    sign = -1.0
+    walk.at = walk.at + 1
+  }
+  var digits = 0
+  var whole = 0.0
+  while !AtEnd(walk) {
+    const byte = walk.bytes[walk.at]
+    if byte < 48 || byte > 57 {
+      break
+    }
+    whole = whole * 10.0 + ((byte - 48) as float)
+    walk.at = walk.at + 1
+    digits = digits + 1
+  }
+  if digits == 0 {
+    return Fail(cursor)
+  }
+  if Peek(walk) == 46 {
+    walk.at = walk.at + 1
+    var scale = 0.1
+    var fraction = 0
+    while !AtEnd(walk) {
+      const byte = walk.bytes[walk.at]
+      if byte < 48 || byte > 57 {
+        break
+      }
+      whole = whole + ((byte - 48) as float) * scale
+      scale = scale * 0.1
+      walk.at = walk.at + 1
+      fraction = fraction + 1
+    }
+    if fraction == 0 {
+      return Fail(cursor)
+    }
+  }
+  const marker = Peek(walk)
+  if marker == 101 || marker == 69 {
+    walk.at = walk.at + 1
+    var negative = false
+    if Peek(walk) == 45 {
+      negative = true
+      walk.at = walk.at + 1
+    } else if Peek(walk) == 43 {
+      walk.at = walk.at + 1
+    }
+    var power = 0
+    var seen = 0
+    while !AtEnd(walk) {
+      const byte = walk.bytes[walk.at]
+      if byte < 48 || byte > 57 {
+        break
+      }
+      power = power * 10 + (byte - 48) as int
+      walk.at = walk.at + 1
+      seen = seen + 1
+    }
+    if seen == 0 {
+      return Fail(cursor)
+    }
+    var i = 0
+    while i < power {
+      if negative {
+        whole = whole * 0.1
+      } else {
+        whole = whole * 10.0
+      }
+      i = i + 1
+    }
+  }
+  return Step(Json.Number(sign * whole), walk, true)
+}
+
+fun ParseArray(cursor: Cursor) -> Step uses unsafe {
+  var walk = cursor
+  walk.at = walk.at + 1
+  var items = ListNew<Json>()
+  walk = SkipSpace(walk)
+  if Peek(walk) == 93 {
+    walk.at = walk.at + 1
+    return Step(Json.Array(items), walk, true)
+  }
+  loop {
+    const step = ParseValue(SkipSpace(walk))
+    if !step.ok {
+      return Fail(cursor)
+    }
+    items.Push(step.value)
+    walk = SkipSpace(step.cursor)
+    const byte = Peek(walk)
+    if byte == 44 {
+      walk.at = walk.at + 1
+      continue
+    }
+    if byte == 93 {
+      walk.at = walk.at + 1
+      return Step(Json.Array(items), walk, true)
+    }
+    return Fail(cursor)
+  }
+}
+
+fun ParseObject(cursor: Cursor) -> Step uses unsafe {
+  var walk = cursor
+  walk.at = walk.at + 1
+  var fields = ListNew<Field>()
+  walk = SkipSpace(walk)
+  if Peek(walk) == 125 {
+    walk.at = walk.at + 1
+    return Step(Json.Object(fields), walk, true)
+  }
+  loop {
+    walk = SkipSpace(walk)
+    const name = ParseText(walk)
+    if !name.ok {
+      return Fail(cursor)
+    }
+    walk = SkipSpace(name.cursor)
+    if Peek(walk) != 58 {
+      return Fail(cursor)
+    }
+    walk.at = walk.at + 1
+    const step = ParseValue(SkipSpace(walk))
+    if !step.ok {
+      return Fail(cursor)
+    }
+    fields.Push(Field(name.value, step.value))
+    walk = SkipSpace(step.cursor)
+    const byte = Peek(walk)
+    if byte == 44 {
+      walk.at = walk.at + 1
+      continue
+    }
+    if byte == 125 {
+      walk.at = walk.at + 1
+      return Step(Json.Object(fields), walk, true)
+    }
+    return Fail(cursor)
+  }
+}
+
+// ------------------------------------------------------------ writing ---
+
+/// `value` as JSON text.
+offer fun Write(value: Json) -> text uses unsafe {
+  var builder = BuilderNew()
+  // Lent rather than handed over: a builder owns its bytes, so a helper
+  // that writes into one takes a reference to it (D109).
+  WriteInto(&mut builder, value)
+  return builder.Release()
+}
+
+fun WriteInto(builder: &mut Builder, value: Json) uses unsafe {
+  match value {
+    Json.Null => builder.Append("null"),
+    Json.Bool(held) => builder.Append(TextOfBool(held)),
+    Json.Number(held) => builder.Append(TextOfNumber(held)),
+    Json.Text(held) => WriteText(builder, held),
+    Json.Array(items) => WriteArray(builder, items),
+    Json.Object(fields) => WriteObject(builder, fields),
+  }
+}
+
+fun TextOfBool(value: bool) -> text {
+  if value {
+    return "true"
+  }
+  return "false"
+}
+
+// A whole number is written without a point, which is what every reader
+// on the other side expects of an id or a count.
+fun TextOfNumber(value: float) -> text {
+  const whole = value as int
+  if (whole as float) == value {
+    return "{whole}"
+  }
+  return "{value}"
+}
+
+fun WriteText(builder: &mut Builder, value: text) uses unsafe {
+  builder.AppendByte(34)
+  const bytes = Bytes(value)
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == 34 || byte == 92 {
+      builder.AppendByte(92)
+      builder.AppendByte(byte)
+    } else if byte == 10 {
+      builder.Append("\\n")
+    } else if byte == 13 {
+      builder.Append("\\r")
+    } else if byte == 9 {
+      builder.Append("\\t")
+    } else if byte < 32 {
+      // A control byte, as a four-digit escape.
+      builder.Append("\\u00")
+      builder.AppendByte(HexByte((byte / 16) as int))
+      builder.AppendByte(HexByte((byte % 16) as int))
+    } else {
+      builder.AppendByte(byte)
+    }
+    i = i + 1
+  }
+  builder.AppendByte(34)
+}
+
+fun HexByte(value: int) -> u8 {
+  if value < 10 {
+    return (48 + value) as u8
+  }
+  return (87 + value) as u8
+}
+
+fun WriteArray(builder: &mut Builder, items: List<Json>) uses unsafe {
+  builder.AppendByte(91)
+  var i = 0
+  while i < items.Len() {
+    if i != 0 {
+      builder.AppendByte(44)
+    }
+    WriteInto(builder, items.At(i))
+    i = i + 1
+  }
+  builder.AppendByte(93)
+}
+
+fun WriteObject(builder: &mut Builder, fields: List<Field>) uses unsafe {
+  builder.AppendByte(123)
+  var i = 0
+  while i < fields.Len() {
+    if i != 0 {
+      builder.AppendByte(44)
+    }
+    const field = fields.At(i)
+    WriteText(builder, field.name)
+    builder.AppendByte(58)
+    WriteInto(builder, field.value)
+    i = i + 1
+  }
+  builder.AppendByte(125)
+}
+
+// ------------------------------------------------------------ reading ---
+
+/// The member of an object called `name`, or nothing.
+offer fun Member(value: Json, name: text) -> Json? uses unsafe {
+  match value {
+    Json.Object(fields) => {
+      var i = 0
+      while i < fields.Len() {
+        const field = fields.At(i)
+        if field.name == name {
+          return field.value
+        }
+        i = i + 1
+      }
+      return null
+    },
+    _ => { return null },
+  }
+}
+
+/// Element `at` of an array, or nothing.
+offer fun At(value: Json, at: int) -> Json? uses unsafe {
+  match value {
+    Json.Array(items) => {
+      if at < 0 || at >= items.Len() {
+        return null
+      }
+      return items.At(at)
+    },
+    _ => { return null },
+  }
+}
+
+/// How many elements an array has, or how many members an object has.
+offer fun Len(value: Json) -> int uses unsafe {
+  return match value {
+    Json.Array(items) => items.Len(),
+    Json.Object(fields) => fields.Len(),
+    _ => 0,
+  }
+}
+
+/// The number this is, or `fallback`.
+offer fun AsNumber(value: Json, fallback: float) -> float {
+  return match value {
+    Json.Number(held) => held,
+    _ => fallback,
+  }
+}
+
+/// The whole number this is, or `fallback`.
+offer fun AsInt(value: Json, fallback: int) -> int {
+  return match value {
+    Json.Number(held) => held as int,
+    _ => fallback,
+  }
+}
+
+/// The string this is, or `fallback`.
+offer fun AsText(value: Json, fallback: text) -> text {
+  return match value {
+    Json.Text(held) => held,
+    _ => fallback,
+  }
+}
+
+/// The boolean this is, or `fallback`.
+offer fun AsBool(value: Json, fallback: bool) -> bool {
+  return match value {
+    Json.Bool(held) => held,
+    _ => fallback,
+  }
+}
+
+offer fun IsNull(value: Json) -> bool {
+  return match value {
+    Json.Null => true,
+    _ => false,
+  }
+}
+
+// ----------------------------------------------------------- building ---
+
+/// An empty object, to put members in.
+offer fun Object() -> Json uses unsafe {
+  return Json.Object(ListNew<Field>())
+}
+
+/// An empty array, to put values in.
+offer fun Array() -> Json uses unsafe {
+  return Json.Array(ListNew<Json>())
+}
+
+/// Puts a member in an object. The object is the value it answers with,
+/// so calls chain: `Put(Put(Object(), "a", ..), "b", ..)`.
+offer fun Put(object: Json, name: text, value: Json) -> Json uses unsafe {
+  match object {
+    Json.Object(fields) => {
+      fields.Push(Field(name, value))
+      return Json.Object(fields)
+    },
+    _ => { return object },
+  }
+}
+
+/// Adds a value to an array.
+offer fun Push(array: Json, value: Json) -> Json uses unsafe {
+  match array {
+    Json.Array(items) => {
+      items.Push(value)
+      return Json.Array(items)
+    },
+    _ => { return array },
+  }
+}
+
+offer fun Number(value: float) -> Json => Json.Number(value)
+offer fun OfInt(value: int) -> Json => Json.Number(value as float)
+offer fun OfText(value: text) -> Json => Json.Text(value)
+offer fun OfBool(value: bool) -> Json => Json.Bool(value)
+offer fun Null() -> Json => Json.Null
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun ReadsADocument() -> bool uses unsafe {
+  const document = Parse(
+      "\{\"name\": \"wolang\", \"stars\": 42, \"fast\": true, " +
+      "\"tags\": [\"systems\", \"games\"], \"missing\": null\}")
+  match document {
+    Ok(value) => {
+      const name = AsText(Member(value, "name") ?? Null(), "")
+      const stars = AsInt(Member(value, "stars") ?? Null(), 0)
+      const fast = AsBool(Member(value, "fast") ?? Null(), false)
+      const tags = Member(value, "tags") ?? Null()
+      const second = AsText(At(tags, 1) ?? Null(), "")
+      const missing = IsNull(Member(value, "missing") ?? OfInt(1))
+      const absent = Member(value, "nothing") == null
+      return name == "wolang" && stars == 42 && fast && Len(tags) == 2 &&
+             second == "games" && missing && absent
+    },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun RefusesADocumentThatIsNotOne() -> bool uses unsafe {
+  var refused = 0
+  const broken = ["\{", "[1,", "\{\"a\"\}", "tru", "1.", "",
+                  "\{\} \{\}"]
+  var i = 0
+  while i < 7 {
+    match Parse(broken[i]) {
+      Ok(_value) => refused = refused,
+      Malformed => refused = refused + 1,
+    }
+    i = i + 1
+  }
+  return refused == 7
+}
+
+@Test
+fun WritesWhatItRead() -> bool uses unsafe {
+  const source =
+      "\{\"a\":[1,2,3],\"b\":\{\"c\":\"d\"\},\"e\":true,\"f\":null\}"
+  match Parse(source) {
+    Ok(value) => { return Write(value) == source },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun BuildsADocument() -> bool uses unsafe {
+  var items = Array()
+  items = Push(items, OfInt(1))
+  items = Push(items, OfText("two"))
+  var object = Object()
+  object = Put(object, "items", items)
+  object = Put(object, "ok", OfBool(true))
+  return Write(object) == "\{\"items\":[1,\"two\"],\"ok\":true\}"
+}
+
+@Test
+fun EscapesWhatItMust() -> bool uses unsafe {
+  const written = Write(OfText("a\"b\\c\nd"))
+  match Parse(written) {
+    Ok(value) => { return AsText(value, "") == "a\"b\\c\nd" },
+    Malformed => { return false },
+  }
+}

@@ -359,6 +359,11 @@ class Checker {
   TypeId Adapt(TypeId found, TypeId expected, SourceSpan span);
   // True when a value of |found| may be used where |expected| is wanted.
   bool Accepts(TypeId expected, TypeId found) const;
+  // Whether |type| is one of the two string types, which `+` joins.
+  bool IsTextLike(TypeId type) const {
+    return types_->KindOf(type) == TypeKind::kString ||
+           types_->KindOf(type) == TypeKind::kStr;
+  }
   // The type of a numeric literal with a unit suffix.
   TypeId QuantityOfUnit(const NumberLiteral& number,
                         TypeId numeric,
@@ -881,6 +886,12 @@ TypeId Checker::CheckBinary(const Expr& expr) {
     // common thing done with a string, and demanding an owned one on both
     // sides would make it an error.
     right_expectation = TypeId{};
+  } else if (expr.op == TokenKind::kPlus && IsTextLike(left)) {
+    // `s + x`: what the right side has to be is said by the operator
+    // rather than by the left, so that `s + 1` reads as "`+` joins two
+    // strings or adds two numbers" instead of as a mismatch against
+    // `text` (D110).
+    right_expectation = TypeId{};
   }
   const TypeId right =
       Check(expr.rhs, right_expectation, /*keep_open=*/true);
@@ -982,6 +993,30 @@ TypeId Checker::CheckBinary(const Expr& expr) {
         result_.direct_effects.Add(
             types_->BuiltinEffectId(BuiltinEffect::kUnsafe));
         return left;
+      }
+      // `a + b` on strings is the two of them joined.
+      //
+      // Interpolation covers most of it -- `"{a}{b}"` is the same thing --
+      // but a program that builds a string from pieces it has in hand
+      // reads better with `+`, and every user tries it first (D110).
+      if (expr.op == TokenKind::kPlus &&
+          (IsTextLike(left) || IsTextLike(right))) {
+        if (IsTextLike(left) && IsTextLike(right)) {
+          return types_->KindOf(left) == TypeKind::kString ||
+                         types_->KindOf(right) == TypeKind::kString
+                     ? types_->string_type()
+                     : types_->str();
+        }
+        if (!types_->IsError(left) && !types_->IsError(right)) {
+          std::string message =
+              "`+` joins two strings or adds two numbers, found `";
+          message.append(Describe(left));
+          message.append("` and `");
+          message.append(Describe(right));
+          message.append("`");
+          Report(kBadOperand, std::move(message), expr.span);
+        }
+        return types_->error();
       }
       if (!types_->IsNumeric(left) || !types_->IsNumeric(right)) {
         if (!types_->IsError(left) && !types_->IsError(right)) {
@@ -1652,8 +1687,17 @@ TypeId Checker::CheckField(const Expr& expr) {
   // the whole expression is optional again.
   const bool through_optional =
       expr.kind != ExprKind::kField && types_->IsOptional(object);
-  const TypeId subject =
-      through_optional ? types_->ElementOf(object) : object;
+  TypeId subject = through_optional ? types_->ElementOf(object) : object;
+  // A member reached through a reference is the member of what it refers
+  // to.
+  //
+  // Without this an owning value could not be lent at all: handing a
+  // `Builder` to a helper moves it (D87), so the way to let the helper
+  // write into it is `&mut Builder` -- and a reference with no members
+  // made that unusable (D109).
+  if (types_->KindOf(subject) == TypeKind::kReference) {
+    subject = types_->ElementOf(subject);
+  }
   TypeId named = types_->StripWrappers(subject);
 
   // `Holder<int>` keeps its members on `Holder`, with the instance's
@@ -3299,6 +3343,19 @@ void Checker::CheckItem(ItemId id) {
           at_module_level_ = false;
           CheckItem(member);
           at_module_level_ = outer;
+        }
+        // What a variant carries is resolved here as well, so that an
+        // import used only by a payload counts as used: `Array(items:
+        // List<Json>)` is the only mention of `List` in a module, and
+        // reporting it as unused was wrong (D108).
+        if (ast_.Contains(member) &&
+            ast_.Get(member).kind == ItemKind::kVariant) {
+          for (ParamId carried : ast_.Get(ast_.Get(member).params)) {
+            if (ast_.Contains(carried) &&
+                ast_.Get(carried).type.is_valid()) {
+              resolver_.Resolve(ast_, ast_.Get(carried).type);
+            }
+          }
         }
       }
       self_type_ = previous_self;

@@ -590,6 +590,12 @@ class Checker {
       case ExprKind::kTry:
       case ExprKind::kCast:
       case ExprKind::kUnary:
+        // `&x` and `&mut x` borrow rather than take: a reference is how an
+        // owning value is lent to something, and reading it as a move made
+        // the next use of the name a use after move (D109).
+        if (expr.op == TokenKind::kAmp) {
+          return Borrowed(expr.lhs);
+        }
         return Expression(expr.lhs);
 
       case ExprKind::kField:

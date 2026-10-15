@@ -1125,6 +1125,12 @@ class Lowerer {
     locals_.clear();
     loops_.clear();
     deferred_.clear();
+    // The drop flags belong to the body being lowered. Left behind, a
+    // flag of the *previous* function was found by name here, and its
+    // instruction id meant something else entirely in this one -- which
+    // the dev tier turned into a store through whatever was at that
+    // index (D111).
+    owners_.clear();
     arenas_.clear();
     scope_depth_ = 0;
     in_task_ = false;
@@ -1154,6 +1160,7 @@ class Lowerer {
     locals_.clear();
     loops_.clear();
     deferred_.clear();
+    owners_.clear();
     arenas_.clear();
     scope_depth_ = 0;
     in_task_ = false;
@@ -1415,6 +1422,7 @@ class Lowerer {
     locals_.clear();
     loops_.clear();
     deferred_.clear();
+    owners_.clear();
     arenas_.clear();
     scope_depth_ = 0;
     in_task_ = false;
@@ -1455,6 +1463,7 @@ class Lowerer {
     locals_.clear();
     loops_.clear();
     deferred_.clear();
+    owners_.clear();
     scope_depth_ = 0;
 
     const BlockId entry = builder.AddBlock("entry");
@@ -1711,6 +1720,13 @@ class Lowerer {
         return types_->default_int();
       case TypeKind::kFloatLiteral:
         return types_->default_float();
+      case TypeKind::kReference:
+        // A reference is an address at run time, and the IR has one kind
+        // of address: erasing it here is what keeps a `&mut Builder`
+        // parameter and the `&mut builder` passed to it the same type
+        // (D109).
+        return types_->Pointer(Erase(types_->ElementOf(type)),
+                               types_->Get(type).is_mutable);
       case TypeKind::kOptional:
         return types_->Optional(Erase(types_->ElementOf(type)));
       case TypeKind::kSlice:
@@ -2486,6 +2502,12 @@ class Lowerer {
     if (opcode == Opcode::kUndef) {
       return builder_->Undef(type);
     }
+    // `a + b` on strings is the two of them joined, which is the same
+    // call an interpolated string makes (D110).
+    if (opcode == Opcode::kAdd && IsView(TypeOf(expr.lhs)) &&
+        IsView(TypeOf(expr.rhs))) {
+      return ConcatText(left, right);
+    }
     // Two strings are equal when they hold the same bytes. A pair of
     // pointers is not an answer to that, so this is a call -- and
     // comparing the pairs, which is what it used to do, said that two
@@ -2850,7 +2872,16 @@ class Lowerer {
     }
     const InstId object = Value(expr.lhs);
     const TypeId owner = TypeOf(expr.lhs);
-    return builder_->Extract(type, object, FieldIndex(owner, expr.name));
+    // The field's own type, not the one the context wanted: a field read
+    // where a `T?` is expected is recorded as `T?` by the checker, and
+    // taking that as the *extract's* type left the value unwrapped --
+    // with the tag of the enum read as the tag of the optional (D111).
+    const Member* member = FindAnyMember(owner, expr.name);
+    const TypeId held =
+        member != nullptr ? Erase(Apply(member->type)) : Erase(type);
+    return Coerce(
+        builder_->Extract(held, object, FieldIndex(owner, expr.name)),
+        held, type);
   }
 
   // `p?.x` reads the field only when the optional holds a value, and the
@@ -2998,6 +3029,14 @@ class Lowerer {
       }
       case ExprKind::kField: {
         const TypeId owner = Erase(TypeOf(expr.lhs));
+        // What this step reads is the *field's* type. The checker records
+        // the type the context wanted at the expression, so a field read
+        // where a `T?` is expected is recorded as `T?` -- and a step
+        // typed that way read the enum's bytes as an optional's (D111).
+        const Member* read = FindAnyMember(owner, expr.name);
+        const TypeId field_type = read != nullptr
+                                      ? Erase(Apply(read->type))
+                                      : Erase(TypeOf(id));
         // A field of an element of `soa` storage: the arrays are per
         // field, so where it is depends on how many records there are.
         if (const Place element = SoaElement(expr.lhs);
@@ -3008,7 +3047,7 @@ class Lowerer {
           // -- because that is what the offsets are computed from.
           field.path.back().field =
               FieldIndex(element.soa_record, expr.name);
-          field.path.back().type = Erase(TypeOf(id));
+          field.path.back().type = field_type;
           return field;
         }
         if (types_->IsHandle(owner)) {
@@ -3017,7 +3056,7 @@ class Lowerer {
           place.pointer = Value(expr.lhs);
           place.root_type = owner;
           place.path.push_back(Step{FieldIndex(owner, expr.name), InstId{},
-                                    InstId{}, Erase(TypeOf(id))});
+                                    InstId{}, field_type});
           return place;
         }
         Place base = PlaceOf(expr.lhs);
@@ -3025,7 +3064,7 @@ class Lowerer {
           return place;
         }
         base.path.push_back(Step{FieldIndex(TypeAt(base), expr.name),
-                                 InstId{}, InstId{}, Erase(TypeOf(id))});
+                                 InstId{}, InstId{}, field_type});
         return base;
       }
       case ExprKind::kIndex: {
@@ -3560,8 +3599,7 @@ class Lowerer {
       if (generic.is_valid()) {
         const uint32_t specialization = Instantiate(generic, id);
         if (specialization != 0xFFFFFFFFu) {
-          return builder_->Call(specialization, type,
-                                std::move(arguments));
+          return CallAs(specialization, type, std::move(arguments));
         }
         // Inference did not reach a concrete type for every parameter,
         // which only happens in a body that is itself generic and not
@@ -3578,13 +3616,12 @@ class Lowerer {
             Context{imported.file, imported.resolution, imported.ast,
                     imported.typed, {}});
         if (specialization != 0xFFFFFFFFu) {
-          return builder_->Call(specialization, type,
-                                std::move(arguments));
+          return CallAs(specialization, type, std::move(arguments));
         }
       }
       const uint32_t callee = IndexOfName(name);
       if (callee != 0xFFFFFFFFu) {
-        return builder_->Call(callee, type, std::move(arguments));
+        return CallAs(callee, type, std::move(arguments));
       }
 
       const Binding* binding = resolution().Find(name);
@@ -3627,7 +3664,7 @@ class Lowerer {
             !module_->functions[target].foreign_symbol.is_valid()) {
           module_->functions[target].foreign_symbol = name;
         }
-        return builder_->Call(target, type, std::move(arguments));
+        return CallAs(target, type, std::move(arguments));
       }
     }
     // Through a value: the callee is whatever the expression evaluated to.
@@ -3976,6 +4013,26 @@ class Lowerer {
 
   // A call to a method, when that is what this is. |arguments| holds the
   // written arguments; the receiver goes in front of them, as an address.
+  // A call whose value is what the *callee* returns, adapted to what the
+  // context wanted.
+  //
+  // The checker records the type the context wanted at an expression, so
+  // a call whose result is used where a `T?` is expected is recorded as
+  // `T?` while the function returns a `T`. Taking the recorded type as
+  // the call's own made the IR disagree with the function it was calling
+  // (D111) -- and the wrap that bridges the two belongs where every other
+  // conversion is.
+  InstId CallAs(uint32_t callee, TypeId wanted, std::vector<InstId> args) {
+    const TypeId declared =
+        callee < module_->functions.size()
+            ? Erase(types_->ElementOf(module_->functions[callee].type))
+            : TypeId{};
+    const TypeId result = declared.is_valid() ? declared : Erase(wanted);
+    const InstId value =
+        builder_->Call(callee, result, std::move(args));
+    return Coerce(value, result, wanted);
+  }
+
   InstId LowerMethodCall(const Expr& expr,
                          TypeId type,
                          std::vector<InstId>* arguments) {
@@ -4005,6 +4062,20 @@ class Lowerer {
     }
     if (!owner.is_valid() || !receiver.is_valid()) {
       return InstId{};
+    }
+
+    // A method on a reference is the method of what it refers to (D109).
+    //
+    // A reference is a pointer by the time it gets here (see `Erase`).
+    // What the receiver *is* depends on the type: a reference to a class
+    // holds the handle, so the handle is loaded out of it; a reference to
+    // a value type already is the address a method of one takes.
+    if (types_->KindOf(owner) == TypeKind::kPointer) {
+      const TypeId referenced = Erase(types_->ElementOf(owner));
+      if (types_->IsHandle(referenced)) {
+        receiver = builder_->Add(Opcode::kLoad, referenced, {receiver});
+      }
+      owner = referenced;
     }
 
     const Member* member = resolution().FindMember(owner, name);
@@ -4105,7 +4176,7 @@ class Lowerer {
         return call;
       }
     }
-    return builder_->Call(index, type, std::move(with_receiver));
+    return CallAs(index, type, std::move(with_receiver));
   }
 
   InstId LowerBlockValue(ExprId id, const Expr& expr, TypeId type) {
@@ -4817,6 +4888,8 @@ class Lowerer {
       locals_.clear();
       loops_.clear();
       deferred_.clear();
+      owners_.clear();
+    owners_.clear();
       scope_depth_ = 0;
       const BlockId entry = builder.AddBlock("entry");
       builder.SetCurrent(entry);
@@ -4875,6 +4948,7 @@ class Lowerer {
     locals_.clear();
     loops_.clear();
     deferred_.clear();
+    owners_.clear();
     scope_depth_ = 0;
 
     const BlockId entry = builder.AddBlock("entry");
@@ -4979,6 +5053,18 @@ class Lowerer {
                : builder_->Call(callee, nothing, {handle, step_value});
   }
 
+  // The component a query argument names. `mut T` resolves to a mutable
+  // reference to it, and `Erase` turns a reference into the address it is
+  // -- so what names the column is under one or the other (D101).
+  TypeId ComponentOf(TypeId type) {
+    TypeId named = Erase(type);
+    while (types_->KindOf(named) == TypeKind::kReference ||
+           types_->KindOf(named) == TypeKind::kPointer) {
+      named = Erase(types_->ElementOf(named));
+    }
+    return named;
+  }
+
   bool IsQuery(TypeId type) const {
     return type.is_valid() && types_->KindOf(type) == TypeKind::kInstance &&
            types_->Get(type).base == types_->query();
@@ -5000,12 +5086,8 @@ class Lowerer {
           continue;
         }
         const TypeRef& filter = ast().Get(argument);
-        TypeId component = Erase(resolver_.Resolve(ast(), argument));
-        // `mut T` resolves to a mutable reference to the component; what
-        // names the column is the component itself.
-        if (types_->KindOf(component) == TypeKind::kReference) {
-          component = Erase(types_->ElementOf(component));
-        }
+        const TypeId component =
+            ComponentOf(resolver_.Resolve(ast(), argument));
         if (!component.is_valid()) {
           continue;
         }
@@ -5086,11 +5168,8 @@ class Lowerer {
     // the element, because an instance of a built-in has no element -- the
     // components *are* its arguments.
     const std::vector<TypeId> named = types_->ArgumentsOf(query);
-    TypeId component =
-        named.empty() ? TypeId{} : Erase(Apply(named.front()));
-    if (types_->KindOf(component) == TypeKind::kReference) {
-      component = Erase(types_->ElementOf(component));
-    }
+    const TypeId component =
+        named.empty() ? TypeId{} : ComponentOf(Apply(named.front()));
 
     // Where every matching entity's component is, asked for once, and
     // then a loop that is arithmetic: a call per entity was most of what

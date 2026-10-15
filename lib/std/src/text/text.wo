@@ -104,8 +104,25 @@ offer class Builder {
   }
 
   /// What has been built, as a view of the builder's own bytes.
+  ///
+  /// The view lasts as long as the builder does: appending more may move
+  /// the bytes, and the destructor gives them back. A string that has to
+  /// outlive the builder is `Release`.
   fun Text() -> text uses unsafe {
     return BytesAsText(bytes, count)
+  }
+
+  /// What has been built, as bytes that outlive the builder.
+  ///
+  /// The storage goes with the string and the builder starts again empty
+  /// -- which is what a function that *returns* what it built needs, and
+  /// what `Text` cannot give. Nothing frees the bytes yet: the same
+  /// latitude every string that is built takes today (D67).
+  fun Release() -> text uses unsafe {
+    const held = BytesAsText(bytes, count)
+    bytes = ArrayNew<u8>(0)
+    count = 0
+    return held
   }
 
   fun Clear() {
