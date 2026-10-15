@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include "wolang/codegen/aot.h"
+#include "wolang/lsp/server.h"
 #include "wolang/runtime/env.h"
 #include "wolang/codegen/compiler.h"
 #include "wolang/abi/layout.h"
@@ -118,6 +119,7 @@ void PrintUsage() {
       "  test <paths>    run every function marked `@Test`\n"
       "  modules <dir>   print the module graph of a package\n"
       "  doc <dir>       write what a package offers, as Markdown\n"
+      "  lsp             speak the Language Server Protocol on stdin\n"
       "  systems <dir>   print what systems access and when they run\n"
       "  fuzz            generate programs and compare the tiers\n"
       "  version         print the version and exit\n"
@@ -1727,6 +1729,11 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "doc") {
     return RunDoc(options);
+  }
+  if (options.command == "lsp") {
+    // The editor's end of the compiler: the same queries `check` and
+    // `fmt` use, over a pipe (D117).
+    return lsp::Serve();
   }
   if (options.command == "systems") {
     return RunSystems(options);

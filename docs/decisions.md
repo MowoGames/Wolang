@@ -1343,3 +1343,23 @@ renders where the code lives.
 Only what another module can name: a private helper is an implementation
 detail by definition, and `docs/api/*.md` is what the four libraries
 offer today -- regenerated with one command rather than written by hand.
+
+**D117. The editor's end is a protocol over the queries that already
+exist.** `wolang lsp` speaks the Language Server Protocol on stdin and
+answers with what the compiler already knows: the diagnostics `check`
+produces, the types the checker recorded, the declaration the resolution
+points at, the text the formatter writes. Nothing in it is a second front
+end, which is the only way an editor and a build can agree about a file.
+
+Whole-document sync rather than incremental edits: the compiler holds the
+text, and an incremental edit would be a second copy of it to keep in
+step. Its own small JSON reader rather than `std.json` -- that one is
+Wolang, and this is the compiler talking over a pipe before any Wolang has
+run.
+
+What it answers today: diagnostics on open and on change, hover with the
+type and the doc comment, go to definition for anything the file
+resolution knows, the file's symbols, formatting, and completion from
+file scope. A completion that knew about locals needs a scope per
+position, which the checker does not record yet -- said here rather than
+left as a surprise.

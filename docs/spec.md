@@ -1044,3 +1044,26 @@ polling, keep-alive, and an arena per request so everything a handler
 allocates goes back at the end of the turn. On this machine it serves
 **39 000 requests a second over 500 connections** compiled in memory, and
 **42 800** as a binary built with `wolang build`.
+
+## Editors
+
+```sh
+wolang lsp      # speaks the Language Server Protocol on stdin and stdout
+```
+
+Point an editor's language client at that command for files matching
+`*.wo`. It answers with diagnostics as you type, the type and doc comment
+of what is under the cursor, go to definition, the file's symbols, and
+whole-file formatting with the same formatter `wolang fmt` uses.
+
+For Neovim:
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "wolang",
+  callback = function()
+    vim.lsp.start({ name = "wolang", cmd = { "wolang", "lsp" },
+                    root_dir = vim.fs.root(0, { "wolang.toml" }) })
+  end,
+})
+```
