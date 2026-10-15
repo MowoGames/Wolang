@@ -1,0 +1,12 @@
+{
+  // Sublime Text with the LSP package: this makes `wolang lsp` the
+  // server for `.wo` files. Put this file in `Packages/User/`.
+  "clients": {
+    "wolang": {
+      "enabled": true,
+      "command": ["wolang", "lsp"],
+      "selector": "source.wolang",
+      "languageId": "wolang"
+    }
+  }
+}

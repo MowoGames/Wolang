@@ -1,0 +1,15 @@
+id = "wolang"
+name = "Wolang"
+description = "Wolang language support, over `wolang lsp`."
+version = "0.1.0"
+schema_version = 1
+authors = ["Mowo Games"]
+repository = "https://github.com/MowoGames/Wolang"
+
+[language_servers.wolang]
+name = "Wolang"
+languages = ["Wolang"]
+
+[grammars.wolang]
+repository = "https://github.com/MowoGames/Wolang"
+commit = "HEAD"

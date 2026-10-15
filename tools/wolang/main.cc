@@ -59,6 +59,10 @@ struct Options {
   // bug, which is otherwise the hardest thing to tell apart.
   bool interpret = false;
   bool show_trivia = false;
+  // `fmt` only: read the file from standard input and write the result to
+  // standard output, which is what an editor that formats a buffer it has
+  // not saved needs.
+  bool from_stdin = false;
   bool show_spans = false;
   // `fuzz` only: also build each program into a binary and run it, which
   // is the only way to compare the ahead-of-time tier (D98). Slower by
@@ -377,7 +381,51 @@ int RunSyntaxCommand(const Options& options) {
   return Report(database.sources(), all, render);
 }
 
+// `fmt --stdin`: the buffer an editor has, formatted back to it.
+//
+// The same formatter the file-based path runs, and the same refusal when
+// the text does not parse -- except that an editor gets its text back
+// unchanged rather than an error, because a buffer mid-edit is the
+// normal case and losing it would be unforgivable.
+int RunFormatStdin(const Options& options) {
+  std::string text;
+  char buffer[4096];
+  while (std::size_t read =
+             std::fread(buffer, 1, sizeof(buffer), stdin)) {
+    text.append(buffer, read);
+  }
+
+  Database database;
+  const FileId file = database.AddFile("<stdin>", text);
+  const TokenizedFile* tokens = database.Tokens(file);
+  const ParsedFile* parsed = database.Parse(file);
+  if (tokens == nullptr || parsed == nullptr) {
+    std::fwrite(text.data(), 1, text.size(), stdout);
+    return 0;
+  }
+  bool syntax_error = false;
+  for (const Diagnostic& diagnostic : tokens->diagnostics) {
+    syntax_error |= diagnostic.severity == Severity::kError;
+  }
+  for (const Diagnostic& diagnostic : parsed->diagnostics) {
+    syntax_error |= diagnostic.severity == Severity::kError;
+  }
+  if (syntax_error) {
+    std::fwrite(text.data(), 1, text.size(), stdout);
+    return 0;
+  }
+  const std::string formatted =
+      Format(database.sources(), database.interner(), tokens->tokens,
+             parsed->ast);
+  std::fwrite(formatted.data(), 1, formatted.size(), stdout);
+  (void)options;
+  return 0;
+}
+
 int RunFormat(const Options& options) {
+  if (options.from_stdin) {
+    return RunFormatStdin(options);
+  }
   Database database;
   DiagnosticEngine load_diagnostics;
   std::vector<FileId> files;
@@ -1691,7 +1739,9 @@ int Run(int argc, char** argv) {
       options.optimization = argument[2] - '0';
       continue;
     }
-    if (argument == "--unoptimized") {
+    if (argument == "--stdin") {
+      options.from_stdin = true;
+    } else if (argument == "--unoptimized") {
       options.unoptimized = true;
     } else if (argument == "--source") {
       options.show_source = true;
@@ -1738,8 +1788,9 @@ int Run(int argc, char** argv) {
   }
 
   const bool needs_inputs =
+      (options.command == "fmt" && !options.from_stdin) ||
       options.command == "check" || options.command == "tokens" ||
-      options.command == "ast" || options.command == "fmt" ||
+      options.command == "ast" ||
       options.command == "ir" || options.command == "modules" ||
       options.command == "systems" ||
       options.command == "run" || options.command == "test" ||

@@ -1,0 +1,70 @@
+{
+  "name": "wolang",
+  "displayName": "Wolang",
+  "description": "Wolang language support: highlighting, diagnostics, hover, go to definition, symbols, formatting and completion.",
+  "version": "0.1.0",
+  "publisher": "mowogames",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "https://github.com/MowoGames/Wolang" },
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages"],
+  "main": "./out/extension.js",
+  "activationEvents": ["onLanguage:wolang"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "wolang",
+        "aliases": ["Wolang", "wolang"],
+        "extensions": [".wo"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "wolang",
+        "scopeName": "source.wolang",
+        "path": "./syntaxes/wolang.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Wolang",
+      "properties": {
+        "wolang.path": {
+          "type": "string",
+          "default": "wolang",
+          "description": "The wolang executable. `wolang lsp` is what this extension speaks to."
+        },
+        "wolang.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Log the traffic between the editor and the language server."
+        }
+      }
+    },
+    "taskDefinitions": [
+      {
+        "type": "wolang",
+        "required": ["command"],
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "check, test, build or run"
+          },
+          "package": { "type": "string", "description": "The package directory." }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": { "vscode-languageclient": "^9.0.1" },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.3.3"
+  }
+}

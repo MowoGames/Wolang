@@ -1,0 +1,15 @@
+# Wolang for Helix. Append to `~/.config/helix/languages.toml`.
+
+[language-server.wolang]
+command = "wolang"
+args = ["lsp"]
+
+[[language]]
+name = "wolang"
+scope = "source.wolang"
+injection-regex = "wolang"
+file-types = ["wo"]
+comment-token = "//"
+indent = { tab-width = 2, unit = "  " }
+language-servers = ["wolang"]
+formatter = { command = "wolang", args = ["fmt", "--stdin"] }

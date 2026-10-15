@@ -1,0 +1,88 @@
+%YAML 1.2
+---
+# Wolang highlighting for Sublime Text. Put this in `Packages/User/`.
+#
+# The real parser is in the compiler; this is here so that a file looks
+# right before the language server has answered.
+name: Wolang
+file_extensions: [wo]
+scope: source.wolang
+
+contexts:
+  main:
+    - include: comments
+    - include: strings
+    - include: numbers
+    - include: declarations
+    - include: keywords
+    - include: types
+
+  comments:
+    - match: ///.*$
+      scope: comment.block.documentation.wolang
+    - match: //.*$
+      scope: comment.line.double-slash.wolang
+    - match: /\*
+      scope: punctuation.definition.comment.wolang
+      push:
+        - meta_scope: comment.block.wolang
+        - match: \*/
+          pop: true
+
+  strings:
+    - match: 'r"'
+      scope: punctuation.definition.string.begin.wolang
+      push:
+        - meta_scope: string.quoted.double.raw.wolang
+        - match: '"'
+          pop: true
+    - match: '"'
+      scope: punctuation.definition.string.begin.wolang
+      push:
+        - meta_scope: string.quoted.double.wolang
+        - match: \\(u\{[0-9A-Fa-f]{1,6}\}|.)
+          scope: constant.character.escape.wolang
+        - match: '\{'
+          scope: punctuation.section.embedded.begin.wolang
+          push:
+            - meta_scope: meta.embedded.wolang
+            - match: '\}'
+              pop: true
+        - match: '"'
+          pop: true
+
+  numbers:
+    - match: \b0x[0-9A-Fa-f_]+\b
+      scope: constant.numeric.hex.wolang
+    - match: \b0b[01_]+\b
+      scope: constant.numeric.binary.wolang
+    - match: \b[0-9][0-9_]*(\.[0-9][0-9_]*)?([eE][-+]?[0-9]+)?[a-zA-Z]*\b
+      scope: constant.numeric.wolang
+
+  declarations:
+    - match: \b(fun|task|system)\s+([A-Za-z_][A-Za-z0-9_]*)
+      captures:
+        1: keyword.declaration.wolang
+        2: entity.name.function.wolang
+    - match: \b(class|struct|enum|ability|component|tag|machine|type)\s+([A-Za-z_][A-Za-z0-9_]*)
+      captures:
+        1: keyword.declaration.wolang
+        2: entity.name.type.wolang
+    - match: '@[A-Za-z_][A-Za-z0-9_]*'
+      scope: entity.name.function.decorator.wolang
+
+  keywords:
+    - match: \b(if|else|match|loop|while|for|foreach|in|return|break|continue|defer|spawn|wait|on|enter|exit|state|always)\b
+      scope: keyword.control.wolang
+    - match: \b(fun|task|class|struct|enum|ability|component|tag|machine|system|type|var|const|extend|extern|signal|effect|dimension|unit|deinit|derived|virtual|override|offer|priv|need)\b
+      scope: keyword.declaration.wolang
+    - match: \b(as|mut|uses|where|unsafe|arena|comptime|self|error|with|without|before|after|aos|soa)\b
+      scope: keyword.other.wolang
+    - match: \b(true|false|null)\b
+      scope: constant.language.wolang
+
+  types:
+    - match: \b(int|float|bool|text|str|Text|void|never|s8|s16|s32|s64|u8|u16|u32|u64|f32|f64)\b
+      scope: support.type.primitive.wolang
+    - match: \b[A-Z][A-Za-z0-9_]*\b
+      scope: entity.name.type.wolang

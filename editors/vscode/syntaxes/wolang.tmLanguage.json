@@ -1,0 +1,164 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Wolang",
+  "scopeName": "source.wolang",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#characters" },
+    { "include": "#attributes" },
+    { "include": "#numbers" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#effects" },
+    { "include": "#calls" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.documentation.wolang",
+          "match": "///.*$"
+        },
+        { "name": "comment.line.double-slash.wolang", "match": "//.*$" },
+        {
+          "name": "comment.block.wolang",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.raw.wolang",
+          "begin": "r\"",
+          "end": "\""
+        },
+        {
+          "name": "string.quoted.double.wolang",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.wolang",
+              "match": "\\\\([ntr0\\\\\"'{}]|u\\{[0-9A-Fa-f]{1,6}\\})"
+            },
+            {
+              "name": "meta.embedded.wolang",
+              "begin": "\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": { "name": "punctuation.section.embedded.begin.wolang" }
+              },
+              "endCaptures": {
+                "0": { "name": "punctuation.section.embedded.end.wolang" }
+              },
+              "patterns": [
+                { "include": "#keywords" },
+                { "include": "#numbers" },
+                { "include": "#calls" },
+                { "include": "#operators" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "characters": {
+      "name": "string.quoted.single.wolang",
+      "match": "'(\\\\([ntr0\\\\\"']|u\\{[0-9A-Fa-f]{1,6}\\})|[^'])'"
+    },
+    "attributes": {
+      "name": "entity.name.function.decorator.wolang",
+      "match": "@[A-Za-z_][A-Za-z0-9_]*"
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.wolang",
+          "match": "\\b0x[0-9A-Fa-f_]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.wolang",
+          "match": "\\b0b[01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.wolang",
+          "match": "\\b[0-9][0-9_]*(\\.[0-9][0-9_]*)?([eE][-+]?[0-9]+)?[a-zA-Z]*\\b"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(fun|task|system)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.wolang" },
+            "2": { "name": "entity.name.function.wolang" }
+          }
+        },
+        {
+          "match": "\\b(class|struct|enum|ability|component|tag|machine|type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.wolang" },
+            "2": { "name": "entity.name.type.wolang" }
+          }
+        },
+        {
+          "match": "\\b(need)\\s+([A-Za-z_][A-Za-z0-9_.]*)",
+          "captures": {
+            "1": { "name": "keyword.control.import.wolang" },
+            "2": { "name": "entity.name.namespace.wolang" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.wolang",
+          "match": "\\b(if|else|match|loop|while|for|foreach|in|return|break|continue|defer|spawn|wait|on|enter|exit|state|always)\\b"
+        },
+        {
+          "name": "keyword.declaration.wolang",
+          "match": "\\b(fun|task|class|struct|enum|ability|component|tag|machine|system|type|var|const|extend|extern|signal|effect|dimension|unit|deinit|derived|virtual|override|offer|priv|need)\\b"
+        },
+        {
+          "name": "keyword.other.wolang",
+          "match": "\\b(as|mut|uses|where|unsafe|arena|comptime|self|error|with|without|before|after|aos|soa)\\b"
+        },
+        {
+          "name": "constant.language.wolang",
+          "match": "\\b(true|false|null)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.wolang",
+          "match": "\\b(int|float|bool|text|str|Text|s8|s16|s32|s64|u8|u16|u32|u64|f32|f64|void|never)\\b"
+        },
+        {
+          "name": "entity.name.type.wolang",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "effects": {
+      "name": "support.type.effect.wolang",
+      "match": "\\b(io|unsafe|net|fs|rand|time|gpu)\\b(?=\\s*[,)\\{]|\\s*$)"
+    },
+    "calls": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "captures": { "1": { "name": "entity.name.function.call.wolang" } }
+    },
+    "operators": {
+      "name": "keyword.operator.wolang",
+      "match": "(=>|->|\\?\\?|\\?|==|!=|<=|>=|&&|\\|\\||<<|>>|[-+*/%&|^!<>=~]|\\.\\.)"
+    }
+  }
+}
