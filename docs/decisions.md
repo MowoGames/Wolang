@@ -1571,3 +1571,42 @@ response otherwise. The server does 39 700 requests a second in the JIT
 and 42 900 as an ahead-of-time binary, in 2 MB of resident memory, and
 28 500 with a log line per request -- which is what a line to standard
 error costs.
+
+**D135. A port, one listener per thread.** `ServeMany(app, port, most,
+threads)` runs the same application from several threads, each with its
+own listener on the same port through `SO_REUSEPORT`: the kernel spreads
+connections across the queues, so no two threads wake for the same one.
+Sharing a single listener instead makes every thread wake for every
+connection, which is the thundering herd. Zero threads means one per
+core, and a system without `SO_REUSEPORT` falls back to one listener --
+which still works with one thread.
+
+What a program keeps in a module-level `var` is now shared across those
+threads, and whether that is safe is the program's business: a counter
+wants `AtomicAdd` and a table wants a `Mutex`. Said out loud rather than
+left to be discovered.
+
+**D136. What `ab` found.** Three bugs, in a morning, from pointing a real
+benchmarking client at the server.
+
+A **1.0 client left hanging**: we answered `Connection: keep-alive` to
+everyone, and an HTTP/1.0 client that did not ask for it waits for the
+connection to close to know the response ended. The version is now part
+of the request, and it decides what happens when the client says nothing.
+
+A **global holding arena memory**: the cached date string was built
+inside a request's `arena` block, so the block reclaimed it and the
+global pointed at memory the next request wrote over -- which `ab` saw as
+responses of differing length. The date lives in a global *buffer* now,
+and the lesson generalizes: a global that holds a string built inside an
+`arena` block is a dangling pointer the moment the block ends.
+
+A **global with no initializer was no global at all**: `var date_bytes:
+[40]u8` never got storage, because the declaration path checked for an
+initializer before checking for mutability -- so reading it called a
+function with no body. A `var` with no initializer is storage that starts
+as its type's zero, which is what the runtime's storage already is.
+
+With all three fixed: 53 900 requests a second on one thread and 58 900
+on eight, with keep-alive and no failures -- and `ab` itself is the
+bottleneck at that point.

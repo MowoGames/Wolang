@@ -227,15 +227,18 @@ class Lowerer {
         //
         // Reading one used to lower to an undefined value, which is to say
         // a program that named a constant computed with nothing.
-        if (!item.name.is_valid() || !item.init.is_valid()) {
-          break;
-        }
         // A module-level `var` has storage: it can be written, so a
         // function that recomputes the value is the wrong shape for it
         // (D88). The initializer still becomes a function, which the
-        // file's init calls once.
-        if (HasFlag(item.flags, ItemFlags::kMutable)) {
+        // file's init calls once -- and a `var` with *no* initializer is
+        // still storage, starting as its type's zero. Checking the
+        // initializer first meant such a one became no global at all,
+        // and reading it called a function with no body (D136).
+        if (item.name.is_valid() && HasFlag(item.flags, ItemFlags::kMutable)) {
           DeclareGlobal(id, item);
+          break;
+        }
+        if (!item.name.is_valid() || !item.init.is_valid()) {
           break;
         }
         const Binding* binding = resolution().Find(item.name);
@@ -2963,6 +2966,9 @@ class Lowerer {
     const BlockId entry = builder.AddBlock("entry");
     builder.SetCurrent(entry);
     for (const Global& global : globals_) {
+      if (!global.has_initializer) {
+        continue;
+      }
       const InstId address = builder.Add(
           Opcode::kGlobalAddress,
           types_->Pointer(global.type, /*is_mutable=*/true), {});
@@ -2987,8 +2993,11 @@ class Lowerer {
     // that is a checking-time answer rather than a signature one -- so the
     // binding may have no type here and the initializer does.
     TypeId type = Erase(binding->type);
-    if (!type.is_valid() || types_->IsError(type)) {
+    if ((!type.is_valid() || types_->IsError(type)) && item.init.is_valid()) {
       type = TypeOf(item.init);
+    }
+    if (!type.is_valid() || types_->IsError(type)) {
+      return;
     }
 
     Function initializer;
@@ -3003,9 +3012,14 @@ class Lowerer {
     module_->functions.push_back(std::move(initializer));
 
     globals_.push_back(Global{
-        item.name, (static_cast<uint64_t>(binding->file) << 32) |
-                       binding->item,
-        type, index});
+        item.name,
+        (static_cast<uint64_t>(binding->file) << 32) | binding->item, type,
+        index,
+        // A `var` with no initializer starts as its type's zero, which is
+        // what the runtime's storage already holds -- so there is nothing
+        // to call, and calling the initializer that was never given a
+        // body trapped with "no body to run" (D136).
+        item.init.is_valid()});
   }
 
   // What |name| holds, or an invalid id when it is not a global.
@@ -5826,6 +5840,9 @@ class Lowerer {
     TypeId type;
     // The function that works out its first value.
     uint32_t initializer = 0;
+    // Whether the source gave it one. A `var` with none is its type's
+    // zero, which the runtime's storage already is (D136).
+    bool has_initializer = true;
   };
   std::vector<Global> globals_;
   // Whether the function being lowered is a `task`.

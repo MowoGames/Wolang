@@ -9,10 +9,12 @@ need std.env.{Get}
 need std.io.{Print}
 need std.json.{AsText, Malformed, Member, Null, OfInt, OfText, Object,
                 Parse, Put, Write}
-need http.{AppNew, Authorize, ServeApp, BadRequest, Created, Field, JsonOf,
+need std.log.{Level, SetLevel}
+need http.{AppNew, Authorize, Cors, Logged, SecurityHeaders, ServeApp,
+           ServeMany, Timing, BadRequest, Created, Field, JsonOf,
            NoContent, Ok, OkJson, Param, Problem, Query, QueryInt,
            Request, RequireToken, Response, RouterNew, ServeUnder,
-           ServeWithDefaults, Unprocessable, WithCache, WithCookie}
+           ParseSigned, Unprocessable, WithCache, WithCookie}
 
 fun Home(_request: Request) -> Response uses unsafe {
   return Ok("wolang\n")
@@ -124,9 +126,23 @@ fun main() uses io, unsafe {
   // `WOLANG_QUIET` turns the usual layers off, which is how the same
   // example serves as a benchmark: a line per request to standard error
   // is most of what a small response costs.
+  // `WOLANG_QUIET=1` says nothing per request, which is how the same
+  // example serves as a benchmark: a line to standard error is most of
+  // what a small response costs.
   if Get("WOLANG_QUIET", "") == "1" {
-    const _quiet = ServeApp(app, 8080, 512)
+    SetLevel(Level.Warning)
+  } else {
+    app.Use(Timing)
+    app.Then(Logged)
+  }
+  app.Then(SecurityHeaders)
+  app.Then(Cors)
+
+  // `WOLANG_THREADS=0` is one per core, anything else is that many.
+  const threads = ParseSigned(Get("WOLANG_THREADS", "1"), 1)
+  if threads != 1 {
+    const _many = ServeMany(app, 8080, 512, threads)
     return
   }
-  const _code = ServeWithDefaults(app, 8080, 512)
+  const _code = ServeApp(app, 8080, 512)
 }

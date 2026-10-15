@@ -23,6 +23,45 @@ extern "C" fun setsockopt(
 offer const kFamilyInet: s32 = 2
 offer const kStream: s32 = 1
 
+/// The same, with the port shared between threads.
+///
+/// `SO_REUSEPORT` gives each listener its own accept queue on the same
+/// port and lets the kernel spread connections across them: one listener
+/// per thread is what makes a multi-threaded server scale, and sharing
+/// one listener instead makes every thread wake for every connection
+/// (D135).
+offer fun ListenShared(port: int, backlog: int) -> s32 uses unsafe {
+  const fd = socket(kFamilyInet, kStream, 0)
+  if fd < 0 {
+    return fd
+  }
+  var yes: [4]u8
+  yes[0] = 1
+  // `SOL_SOCKET` is 0xffff on this platform; 4 is `SO_REUSEADDR` and
+  // 0x0200 is `SO_REUSEPORT`.
+  const _reuse_address = setsockopt(fd, 65535, 4, &yes[0], 4)
+  if setsockopt(fd, 65535, 512, &yes[0], 4) < 0 {
+    // A system without it: the caller gets one listener, which still
+    // works with one thread.
+    const _closed = close(fd)
+    return Listen(port, backlog)
+  }
+  var address: [16]u8
+  address[0] = 16
+  address[1] = kFamilyInet as u8
+  address[2] = (port / 256 % 256) as u8
+  address[3] = (port % 256) as u8
+  if bind(fd, &address[0], 16) < 0 {
+    const _closed = close(fd)
+    return -1
+  }
+  if listen(fd, backlog as s32) < 0 {
+    const _closed = close(fd)
+    return -2
+  }
+  return fd
+}
+
 /// Opens a listening socket on `port`, or a negative number on failure.
 ///
 /// The address is built byte by byte because a `sockaddr_in` is a C struct

@@ -9,6 +9,7 @@
 
 need std.list.{ListNew}
 need std.log.{At, Level}
+need std.thread.{Parallelism, Spawn, Thread}
 
 /// Routes and the layers around them.
 offer class App {
@@ -108,6 +109,61 @@ offer fun ServeWithDefaults(app: App, port: int, most: int) -> s32
   held.layers.Then(SecurityHeaders)
   held.layers.Then(Cors)
   return ServeApp(held, port, most)
+}
+
+// --------------------------------------------------------- many threads ---
+
+// What the threads serve, and on what. Globals for the same reason the
+// application is one: a thread's body takes no arguments (D135).
+var serving_port: int = 0
+var serving_most: int = 256
+
+fun ServeOneThread() uses io, unsafe {
+  // One listener per thread, on the same port: the kernel spreads
+  // connections across them, so no two threads wake for the same one.
+  const listener = ListenShared(serving_port, 512)
+  if listener < 0 {
+    At(Level.Error, "cannot listen on port {serving_port}")
+    return
+  }
+  const _code = RunServerOn(listener, serving_most, Handle,
+                            running.limits)
+}
+
+/// Serves `app` on `port` from `threads` threads at once.
+///
+/// Zero threads means one per core. Every thread runs the same
+/// application: a handler that keeps state in a module-level `var` is
+/// sharing it across threads, and whether that is safe is the program's
+/// business -- a counter wants `std.thread.AtomicAdd` and a table wants
+/// a `Mutex` (D135).
+offer fun ServeMany(app: App, port: int, most: int, threads: int) -> s32
+    uses io, unsafe {
+  running = app
+  serving_port = port
+  serving_most = most
+  var wanted = threads
+  if wanted <= 0 {
+    wanted = Parallelism()
+  }
+  At(Level.Info, "serving on port {port} from {wanted} threads")
+
+  var started: [64]Thread
+  var count = 0
+  var i = 1
+  while i < wanted && i < 64 {
+    started[count] = Spawn(ServeOneThread)
+    count = count + 1
+    i = i + 1
+  }
+  // This thread serves too, so a one-thread server spawns nothing.
+  ServeOneThread()
+  var j = 0
+  while j < count {
+    started[j].Join()
+    j = j + 1
+  }
+  return 0
 }
 
 // ------------------------------------------------------------- tests ---

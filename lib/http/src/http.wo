@@ -8,7 +8,7 @@
 
 need std.io.{Print}
 need std.mem.{BytesFromRaw}
-need std.text.{Bytes, BuilderNew}
+need std.text.{Bytes, BuilderNew, TextFromRaw}
 need std.time.{HttpDate, WallClock}
 
 // `socket.wo` is the same module -- a package's files link into one -- so
@@ -50,6 +50,11 @@ offer struct Request {
   var params: [8]Pair
   var param_count: int = 0
   var length: int = 0
+  // Which version the client spoke. It decides what happens to the
+  // connection when the client says nothing: 1.1 keeps it, 1.0 closes
+  // it, and a 1.0 client left waiting for an end that never comes is
+  // what `ab` reported as a timeout (D136).
+  var http_11: bool = true
 }
 
 /// An empty request, to fill in.
@@ -59,7 +64,7 @@ offer struct Request {
 offer fun RequestNew() -> Request {
   var headers: [24]Pair
   var params: [8]Pair
-  return Request("", "", "", "", headers, 0, params, 0, 0)
+  return Request("", "", "", "", headers, 0, params, 0, 0, true)
 }
 
 /// What a handler answers with.
@@ -244,6 +249,12 @@ offer fun ParseRequest(bytes: []u8, received: int) -> Request uses unsafe {
   }
   const target_end = SpanTo(bytes, method_end + 1, 32)
   request.method = Slice(bytes, 0, method_end) as text
+  // `HTTP/1.1` or `HTTP/1.0`, after the target. Anything else is read as
+  // 1.0, which is the cautious reading: close when in doubt.
+  if target_end + 8 <= bytes.len {
+    request.http_11 = bytes[target_end + 6] == 49 &&
+                      bytes[target_end + 8] == 49
+  }
   // The target is `/path?query`, and the query is whatever follows the
   // first `?`.
   const question = SpanToAny(bytes, method_end + 1, 63, 32)
@@ -456,10 +467,14 @@ fun Answer(
     return false
   }
   // What the client wants to happen to the connection after this. A 1.1
-  // client that says nothing means keep it.
-  var holding = keep_alive
-  if SameName(Header(&request, "Connection", ""), "close") {
+  // client that says nothing means keep it; a 1.0 client that says
+  // nothing means close it (D136).
+  var holding = keep_alive && request.http_11
+  const said = Header(&request, "Connection", "")
+  if SameName(said, "close") {
     holding = false
+  } else if keep_alive && SameName(said, "keep-alive") {
+    holding = true
   }
   const answer = handle(request)
   // A `HEAD` asks for the headers a `GET` would give, body length and
@@ -516,22 +531,36 @@ offer fun WriteAnswer(connection: s32, answer: Response, with_body: bool,
   return WriteAll(connection, message.Text())
 }
 
-// The date, and the second it was written for. An HTTP date has
-// one-second resolution, so a server answering thousands of requests a
-// second can write it once and hand out the same string -- which is
-// several allocations and a calendar calculation per request saved
-// (D134).
+// The date, and the second it was written for.
+//
+// An HTTP date has one-second resolution, so a server answering
+// thousands of requests a second writes it once and hands out the same
+// bytes -- a calendar calculation and several allocations per response
+// saved (D134).
+//
+// In a *buffer*, not in a string: a string built inside a request's
+// `arena` block belongs to that block, so a global holding one points at
+// reclaimed memory as soon as the request is over. Which is exactly what
+// happened, and what `ab` saw as responses of differing length (D136).
+var date_bytes: [40]u8
+var date_length: int = 0
 var date_second: s64 = -1
-var date_text: text = ""
 
 /// The date header, in the format HTTP wants.
 offer fun Date() -> text uses unsafe {
   const now = WallClock().seconds
   if now != date_second {
     date_second = now
-    date_text = HttpDate(now)
+    const built = HttpDate(now)
+    const bytes = Bytes(built)
+    var i = 0
+    while i < bytes.len && i < 40 {
+      date_bytes[i] = bytes[i]
+      i = i + 1
+    }
+    date_length = i
   }
-  return date_text
+  return TextFromRaw(&date_bytes[0], date_length)
 }
 
 fun Reason(status: int) -> text {
@@ -671,7 +700,16 @@ offer fun RunPolled(port: int, most: int,
 offer fun RunServer(port: int, most: int,
                     handle: fun(Request) -> Response,
                     limits: Limits) -> s32 uses io, unsafe {
-  const listener = Listen(port, 128)
+  return RunServerOn(Listen(port, 128), most, handle, limits)
+}
+
+/// The same loop, on a listener the caller opened.
+///
+/// What a multi-threaded server needs: each thread opens its own
+/// listener on the same port and runs this (D135).
+offer fun RunServerOn(listener: s32, most: int,
+                      handle: fun(Request) -> Response,
+                      limits: Limits) -> s32 uses io, unsafe {
   if listener < 0 {
     Print("http: cannot listen")
     return listener
