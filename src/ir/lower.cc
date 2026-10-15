@@ -2479,14 +2479,24 @@ class Lowerer {
 
   InstId LowerUnary(const Expr& expr, TypeId type) {
     const InstId operand = Value(expr.lhs);
+    // What arithmetic produces is what it was given, not what the context
+    // wanted: `-total` where an `int?` is expected is a negation of an
+    // `int`, and the wrap to the optional is a `Coerce` like every other
+    // one (D111).
+    const TypeId held =
+        operand.is_valid() && ValueType(operand).is_valid()
+            ? ValueType(operand)
+            : Erase(type);
     switch (expr.op) {
       case TokenKind::kMinus:
-        return builder_->Add(Opcode::kNeg, type, {operand});
+        return Coerce(builder_->Add(Opcode::kNeg, held, {operand}), held,
+                      type);
       case TokenKind::kBang:
         return builder_->Add(Opcode::kLogicalNot, types_->bool_type(),
                              {operand});
       case TokenKind::kTilde:
-        return builder_->Add(Opcode::kBitNot, type, {operand});
+        return Coerce(builder_->Add(Opcode::kBitNot, held, {operand}),
+                      held, type);
       case TokenKind::kStar:
         // Reading through a pointer is the same load as reading a slot: the
         // operand is an address either way.
@@ -2549,8 +2559,15 @@ class Lowerer {
                                     builder_->ConstInt(word, ~uint64_t{0}));
     }
     const bool compare = opcode >= Opcode::kEq && opcode <= Opcode::kGe;
-    return builder_->Add(opcode, compare ? types_->bool_type() : type,
-                         {left, right});
+    if (compare) {
+      return builder_->Add(opcode, types_->bool_type(), {left, right});
+    }
+    // Typed by what it operates on rather than by what the context
+    // wanted: `sign * whole` where a `float?` is expected multiplies two
+    // floats, and the wrap is a `Coerce` like every other one (D111).
+    const TypeId held = ValueType(left).is_valid() ? ValueType(left)
+                                                   : Erase(type);
+    return Coerce(builder_->Add(opcode, held, {left, right}), held, type);
   }
 
   static Opcode BinaryOpcode(TokenKind op) {
@@ -3615,10 +3632,12 @@ class Lowerer {
         (interner_->Text(ast().Get(expr.lhs).name) == "SoaNew" ||
          interner_->Text(ast().Get(expr.lhs).name) == "ArrayNew") &&
         arguments.size() == 1 &&
-        types_->KindOf(Erase(type)) == TypeKind::kSlice) {
+        types_->KindOf(Unwrapped(type)) == TypeKind::kSlice) {
       const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
       const InstId count = Widen(arguments[0], word);
-      return builder_->Add(Opcode::kSoaNew, Erase(type), {count});
+      const TypeId made = Unwrapped(type);
+      return Coerce(builder_->Add(Opcode::kSoaNew, made, {count}), made,
+                    type);
     }
 
     // `BytesFromRaw(data, length)` is not a call: a slice *is* a pointer
@@ -3884,7 +3903,11 @@ class Lowerer {
         called != "ViewFromRaw") {
       return InstId{};
     }
-    const TypeId slice = Erase(type);
+    // What the pair *is*, not what the context wanted: a call whose
+    // result is used where a `text?` is expected is recorded as `text?`,
+    // and reading that as the result type made the intrinsic
+    // unrecognisable -- so it lowered to a call with no body (D111).
+    const TypeId slice = Unwrapped(type);
     if (types_->KindOf(slice) != TypeKind::kSlice &&
         types_->KindOf(slice) != TypeKind::kStr) {
       return InstId{};
@@ -3895,9 +3918,9 @@ class Lowerer {
       return InstId{};
     }
     const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
-    return builder_->Add(
-        Opcode::kMakeStruct, slice,
-        {arguments[0], Widen(arguments[1], word)});
+    return Coerce(builder_->Add(Opcode::kMakeStruct, slice,
+                                {arguments[0], Widen(arguments[1], word)}),
+                  slice, type);
   }
 
   // What a signal's `Connect`, `Disconnect` or `Emit` becomes.

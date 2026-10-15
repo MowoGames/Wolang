@@ -800,8 +800,15 @@ TypeId Checker::CheckUnary(const Expr& expr, TypeId expected) {
   const bool preserves_type = expr.op == TokenKind::kMinus ||
                               expr.op == TokenKind::kTilde ||
                               expr.op == TokenKind::kBang;
-  const TypeId operand =
-      Check(expr.lhs, preserves_type ? expected : TypeId{});
+  // An optional expectation says nothing about the operand: `-total`
+  // where an `int?` is wanted is still arithmetic on an `int`, and
+  // passing the optional down made the operand an optional and then
+  // reported `-` as needing a number (D114).
+  TypeId wanted = preserves_type ? expected : TypeId{};
+  if (wanted.is_valid() && types_->IsOptional(wanted)) {
+    wanted = types_->ElementOf(wanted);
+  }
+  const TypeId operand = Check(expr.lhs, wanted);
   switch (expr.op) {
     case TokenKind::kMinus:
       if (!types_->IsNumeric(operand) && !types_->IsError(operand)) {
@@ -2272,14 +2279,22 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       // caller makes, and `unsafe` is how this language records a promise.
       // `std` will offer the checked version; this is the floor it needs.
       const bool views = IsBytesAndText(source, type);
-      if (views) {
+      // An address as a number: comparing one with zero, hashing one,
+      // handing one to C as a word. `unsafe`, because a number is not an
+      // address and the promise that this one is belongs to the caller
+      // (D115).
+      const bool address =
+          (types_->KindOf(source) == TypeKind::kPointer ||
+           types_->KindOf(source) == TypeKind::kReference) &&
+          types_->IsInteger(type);
+      if (views || address) {
         result_.direct_effects.Add(
             types_->BuiltinEffectId(BuiltinEffect::kUnsafe));
       }
       // `as` is a numeric conversion and nothing else. It is the escape
       // hatch D33 left open by removing implicit widening, not a
       // reinterpretation of arbitrary bits -- that is what `unsafe` is for.
-      if (!views && type.is_valid() && source.is_valid() &&
+      if (!views && !address && type.is_valid() && source.is_valid() &&
           !types_->IsError(source) && !types_->IsError(type) &&
           types_->KindOf(source) != TypeKind::kNever && source != type &&
           !(types_->IsNumeric(source) && types_->IsNumeric(type))) {

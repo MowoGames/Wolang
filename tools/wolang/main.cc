@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include "wolang/codegen/aot.h"
+#include "wolang/runtime/env.h"
 #include "wolang/codegen/compiler.h"
 #include "wolang/abi/layout.h"
 #include "wolang/codegen/foreign.h"
@@ -1350,7 +1351,18 @@ int RunBuild(const Options& options) {
 
 int Run(int argc, char** argv) {
   Options options;
+  // Everything after `--` belongs to the program being run, not to the
+  // driver: `wolang run app -- --port 9000` passes two arguments on
+  // (D115).
+  int mine = argc;
   for (int i = 1; i < argc; ++i) {
+    if (std::string_view(argv[i]) == "--") {
+      mine = i;
+      runtime::wolang_args_set(argc - i - 1, argv + i + 1);
+      break;
+    }
+  }
+  for (int i = 1; i < mine; ++i) {
     const std::string_view argument = argv[i];
     if (argument == "--aot") {
       options.fuzz_aot = true;

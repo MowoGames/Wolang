@@ -1749,6 +1749,15 @@ void Translator::EmitEntryPoint() {
   LLVMBasicBlockRef shell =
       LLVMAppendBasicBlockInContext(ctx_, main, "entry");
   LLVMPositionBuilderAtEnd(b_, shell);
+  // The arguments, handed to the runtime before anything runs: a program
+  // that reads them asks the runtime, and the entry point is the one
+  // place that has them (D115).
+  LLVMValueRef remember =
+      Declaration("wolang_args_set", LLVMVoidTypeInContext(ctx_),
+                  {i32, Ptr()});
+  LLVMValueRef given[2] = {LLVMGetParam(main, 0), LLVMGetParam(main, 1)};
+  LLVMBuildCall2(b_, LLVMGlobalGetValueType(remember), remember, given, 2,
+                 "");
   LLVMBuildCall2(b_, LLVMGlobalGetValueType(start), start, nullptr, 0, "");
   LLVMBuildRet(b_, Const(0, i32));
 }

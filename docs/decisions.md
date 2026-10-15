@@ -1312,3 +1312,23 @@ a header before it: the arena knows its chunks, the check is a walk over a
 handful of ranges, and it happens only on a free. The arena stack is also
 per thread now, which it had to be the moment a stage of systems ran in
 threads (D97).
+
+**D114. An optional expectation is not an arithmetic one.** `-total` where
+an `int?` is wanted is a negation of an `int`; passing the optional down
+made the operand an optional and then reported `-` as needing a number.
+The expectation is stripped of its optional before it reaches an
+arithmetic operand -- which is the checking-side twin of D111, where the
+same confusion made lowering emit the operation at the wrong type.
+
+**D115. Arguments are given to the runtime, and an address can be a
+number.** A program's arguments come from whatever started it -- `main`'s
+`argv` in a binary, whatever followed `--` when the driver ran it -- so
+the entry point hands them over and everything else asks the runtime.
+`std.env` is that, plus the environment: `Lookup` answers with an optional
+because a variable set to nothing and one that is not there mean different
+things.
+
+`p as u64` is now allowed in `unsafe` code. Comparing an address with
+zero, hashing one, handing one to C as a word: all three were
+unspellable, and the promise that a number is an address is exactly what
+`unsafe` records.

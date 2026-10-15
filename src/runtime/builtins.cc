@@ -4,6 +4,7 @@
 
 #include "wolang/runtime/arena.h"
 #include "wolang/runtime/classes.h"
+#include "wolang/runtime/env.h"
 #include "wolang/runtime/files.h"
 #include "wolang/runtime/globals.h"
 #include "wolang/runtime/poll.h"
@@ -100,6 +101,11 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_query_close)},
       {"wolang_stage_add", reinterpret_cast<void*>(&wolang_stage_add)},
       {"wolang_stage_run", reinterpret_cast<void*>(&wolang_stage_run)},
+      {"wolang_args_count",
+       reinterpret_cast<void*>(&wolang_args_count)},
+      {"wolang_args_at", reinterpret_cast<void*>(&wolang_args_at)},
+      {"wolang_env_get", reinterpret_cast<void*>(&wolang_env_get)},
+      {"wolang_env_set", reinterpret_cast<void*>(&wolang_env_set)},
       {"wolang_report", reinterpret_cast<void*>(&wolang_report)},
       {"wolang_thread_spawn",
        reinterpret_cast<void*>(&wolang_thread_spawn)},
