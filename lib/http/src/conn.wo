@@ -377,7 +377,7 @@ fun RefusesSomethingTooBig() -> bool uses unsafe {
 }
 
 @Test
-fun KeepsWhatCameAfterARequest() -> bool uses unsafe {
+fun KeepsWhatCameAfterARequest() -> bool uses io, unsafe {
   var pool = ConnectionsNew(2, LimitsDefault())
   const slot = pool.Open(7)
   const second = pool.Open(9)

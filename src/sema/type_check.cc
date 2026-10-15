@@ -2717,10 +2717,17 @@ void Checker::BindPattern(PatternId id, TypeId type,
         name = path.back();
       }
       std::vector<TypeId> carried;
-      if (const Member* member = resolution_->FindMember(
-              types_->StripWrappers(type), name);
-          member != nullptr && member->kind == MemberKind::kVariant &&
-          types_->KindOf(member->type) == TypeKind::kFunction) {
+      // `Ok(value)` on a `T!` is the built-in variant: what it carries is
+      // the `T`. Without this the binding got an error type, which
+      // propagates silently -- so the first thing to notice was a
+      // reference to it, a long way from the cause (D144).
+      if (types_->KindOf(type) == TypeKind::kFallible &&
+          interner_->Text(name) == "Ok") {
+        carried.push_back(types_->ElementOf(type));
+      } else if (const Member* member = resolution_->FindMember(
+                     types_->StripWrappers(type), name);
+                 member != nullptr && member->kind == MemberKind::kVariant &&
+                 types_->KindOf(member->type) == TypeKind::kFunction) {
         carried = types_->ArgumentsOf(member->type);
       }
       size_t position = 0;

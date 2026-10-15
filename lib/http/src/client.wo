@@ -1,0 +1,356 @@
+// Calling somebody else's API.
+//
+// A server is half of HTTP; a program that cannot call one is a program
+// that cannot use anything. This is the other half: a URL, a request, a
+// response read back -- over `std.net`, which is the same socket floor
+// the server stands on (D144).
+//
+// No TLS. `https` needs a TLS library, and this language has no business
+// implementing one: a package binding OpenSSL or BoringSSL through
+// `[link]` is where that belongs, and until there is one `Fetch` says so
+// rather than pretending.
+
+need std.net.{Connect, Socket}
+need std.text.{Bytes, BuilderNew, IndexOf, Length, StartsWith,
+               Substring, Trim}
+
+// What went wrong with a call that never got an answer.
+//
+// `BadUrl` is a URL this does not understand, `NeedsTls` is `https`,
+// `Unreachable` is a host that refused or is not there, `Truncated` is a
+// connection that closed mid-answer, and `NotHttp` is an answer that is
+// not one.
+offer error BadUrl, NeedsTls, Unreachable, Truncated, NotHttp
+
+/// A URL taken apart.
+offer struct Url {
+  var host: text = ""
+  var port: int = 80
+  /// The path and the query together, which is what a request line
+  /// carries.
+  var target: text = "/"
+  var secure: bool = false
+}
+
+/// `http://host:port/path?query` taken apart.
+offer fun ParseUrl(url: text) -> Url! uses unsafe {
+  var rest = url
+  var parsed = Url("", 80, "/", false)
+  if StartsWith(rest, "http://") {
+    rest = Substring(rest, 7, Length(rest))
+  } else if StartsWith(rest, "https://") {
+    parsed.secure = true
+    parsed.port = 443
+    rest = Substring(rest, 8, Length(rest))
+  } else if IndexOf(rest, "://") >= 0 {
+    return BadUrl
+  }
+
+  const slash = IndexOf(rest, "/")
+  var authority = rest
+  if slash >= 0 {
+    authority = Substring(rest, 0, slash)
+    parsed.target = Substring(rest, slash, Length(rest))
+  }
+  if Length(authority) == 0 {
+    return BadUrl
+  }
+
+  const colon = IndexOf(authority, ":")
+  if colon >= 0 {
+    parsed.host = Substring(authority, 0, colon)
+    const said = ParseSigned(
+        Substring(authority, colon + 1, Length(authority)), -1)
+    if said <= 0 || said > 65535 {
+      return BadUrl
+    }
+    parsed.port = said
+  } else {
+    parsed.host = authority
+  }
+  if Length(parsed.host) == 0 {
+    return BadUrl
+  }
+  return parsed
+}
+
+/// What came back. `Reply` rather than `Answer`, because a server's
+/// answer is already called that (D144).
+offer struct Reply {
+  var status: int = 0
+  var body: text = ""
+  var headers: [24]Pair
+  var header_count: int = 0
+}
+
+/// The header called `name`, or `fallback`. Case does not matter.
+offer fun ReplyHeader(answer: &Reply, name: text, fallback: text) -> text
+    uses unsafe {
+  var i = 0
+  while i < answer.header_count {
+    if SameName(answer.headers[i].name, name) {
+      return answer.headers[i].value
+    }
+    i = i + 1
+  }
+  return fallback
+}
+
+/// `GET url`.
+offer fun Fetch(url: text) -> Reply! uses io, unsafe {
+  return Send("GET", url, "", "")
+}
+
+/// `POST url` with a JSON body.
+offer fun PostJson(url: text, body: text) -> Reply! uses io, unsafe {
+  return Send("POST", url, body, "application/json")
+}
+
+/// One request, one answer.
+///
+/// `Connection: close` on the way out, because a client that holds a
+/// connection has to decide when to let it go -- and a function that
+/// answers once has nowhere to keep it. A client that wants keep-alive
+/// uses `Open` and `Ask` below.
+offer fun Send(method: text, url: text, body: text, kind: text)
+    -> Reply! uses io, unsafe {
+  const target = ParseUrl(url)?
+  if target.secure {
+    return NeedsTls
+  }
+  var connection = Connect(target.host, target.port)
+  if !connection.IsOpen() {
+    return Unreachable
+  }
+  const answer = Ask(&mut connection, target, method, body, kind, false)
+  connection.Close()
+  return answer?
+}
+
+/// A connection held open, for a program making several calls.
+offer fun Open(url: text) -> Socket! uses io, unsafe {
+  const target = ParseUrl(url)?
+  if target.secure {
+    return NeedsTls
+  }
+  var connection = Connect(target.host, target.port)
+  if !connection.IsOpen() {
+    return Unreachable
+  }
+  return connection
+}
+
+/// One request on a connection the caller owns.
+offer fun Ask(connection: &mut Socket, target: Url, method: text,
+              body: text, kind: text, keep_alive: bool) -> Reply!
+    uses io, unsafe {
+  var request = BuilderNew()
+  request.Append("{method} {target.target} HTTP/1.1\r\n")
+  request.Append("Host: {target.host}\r\n")
+  if keep_alive {
+    request.Append("Connection: keep-alive\r\n")
+  } else {
+    request.Append("Connection: close\r\n")
+  }
+  if Length(kind) != 0 {
+    request.Append("Content-Type: {kind}\r\n")
+  }
+  if Length(body) != 0 {
+    request.Append("Content-Length: {body.len}\r\n")
+  }
+  request.Append("Accept: */*\r\n\r\n")
+  if Length(body) != 0 {
+    request.Append(body)
+  }
+  if !connection.Send(request.Text()) {
+    return Unreachable
+  }
+
+  // The head first, then as much body as the length says. A read may
+  // stop anywhere, which is the whole reason this is a loop (D144).
+  var received = BuilderNew()
+  var head = -1
+  var length = -1
+  var seen = 0
+  loop {
+    const piece = connection.Receive(8192)
+    if piece.len == 0 {
+      break
+    }
+    received.Append(piece)
+    seen = seen + piece.len
+    const whole = received.Text()
+    if head < 0 {
+      const blank = IndexOf(whole, "\r\n\r\n")
+      if blank >= 0 {
+        head = blank + 4
+        length = ContentLength(Substring(whole, 0, head))
+      }
+    }
+    if head >= 0 && length >= 0 && seen >= head + length {
+      break
+    }
+  }
+
+  // `Release` rather than `Text`: what comes back is *views* into these
+  // bytes -- the status line, each header, the body -- so they have to
+  // outlive the builder. One allocation per call, reclaimed by the
+  // enclosing `arena` block when there is one, which is what a handler
+  // making a call has (D144).
+  const whole = received.Release()
+  if head < 0 {
+    return Truncated
+  }
+  return ParseReply(whole, head, length)
+}
+
+// What the head says the body's length is, or -1 when it says nothing.
+fun ContentLength(head: text) -> int uses unsafe {
+  var at = 0
+  const bytes = Bytes(head)
+  while at < bytes.len {
+    var end = at
+    while end < bytes.len && bytes[end] != 13 && bytes[end] != 10 {
+      end = end + 1
+    }
+    const line = Substring(head, at, end)
+    const colon = IndexOf(line, ":")
+    if colon > 0 {
+      const name = Substring(line, 0, colon)
+      if SameName(name, "Content-Length") {
+        return ParseSigned(
+            Trim(Substring(line, colon + 1, Length(line))), -1)
+      }
+    }
+    at = end
+    while at < bytes.len && (bytes[at] == 13 || bytes[at] == 10) {
+      at = at + 1
+    }
+  }
+  return -1
+}
+
+/// What a response's bytes mean.
+offer fun ParseReply(whole: text, head: int, length: int) -> Reply!
+    uses unsafe {
+  var answer = ReplyNew()
+  const bytes = Bytes(whole)
+  // `HTTP/1.1 200 OK`: the status is the second word.
+  const first = IndexOf(whole, "\r\n")
+  if first < 0 {
+    return NotHttp
+  }
+  const status_line = Substring(whole, 0, first)
+  const space = IndexOf(status_line, " ")
+  if space < 0 {
+    return NotHttp
+  }
+  const after = Substring(status_line, space + 1, Length(status_line))
+  const second = IndexOf(after, " ")
+  var number = after
+  if second >= 0 {
+    number = Substring(after, 0, second)
+  }
+  answer.status = ParseSigned(number, -1)
+  if answer.status < 100 || answer.status > 599 {
+    return NotHttp
+  }
+
+  // The headers, up to the blank line.
+  var at = first + 2
+  while at < head - 2 {
+    var end = at
+    while end < bytes.len && bytes[end] != 13 && bytes[end] != 10 {
+      end = end + 1
+    }
+    const line = Substring(whole, at, end)
+    const colon = IndexOf(line, ":")
+    if colon > 0 && answer.header_count < kMostHeaders {
+      answer.headers[answer.header_count] =
+          Pair(Substring(line, 0, colon),
+               Trim(Substring(line, colon + 1, Length(line))))
+      answer.header_count = answer.header_count + 1
+    }
+    at = end
+    while at < bytes.len && (bytes[at] == 13 || bytes[at] == 10) {
+      at = at + 1
+    }
+  }
+
+  var size = Length(whole) - head
+  if length >= 0 && length < size {
+    size = length
+  }
+  if size > 0 {
+    answer.body = Substring(whole, head, head + size)
+  }
+  return answer
+}
+
+/// An empty answer, to fill in.
+offer fun ReplyNew() -> Reply {
+  var headers: [24]Pair
+  return Reply(0, "", headers, 0)
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun TakesUrlsApart() -> bool uses unsafe {
+  match ParseUrl("http://example.com/users?page=2") {
+    Ok(target) => {
+      if target.host != "example.com" || target.port != 80 ||
+         target.target != "/users?page=2" || target.secure {
+        return false
+      }
+    },
+    _ => { return false },
+  }
+  match ParseUrl("http://127.0.0.1:8080") {
+    Ok(target) => {
+      if target.host != "127.0.0.1" || target.port != 8080 ||
+         target.target != "/" {
+        return false
+      }
+    },
+    _ => { return false },
+  }
+  match ParseUrl("https://example.com") {
+    Ok(target) => {
+      if !target.secure || target.port != 443 {
+        return false
+      }
+    },
+    _ => { return false },
+  }
+  match ParseUrl("ftp://example.com") {
+    BadUrl => { return true },
+    _ => { return false },
+  }
+}
+
+@Test
+fun ReadsAResponse() -> bool uses unsafe {
+  const whole = "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n" +
+                "Content-Length: 13\r\nServer: wolang\r\n\r\n" +
+                "\{\"ok\":true\}\n"
+  const head = IndexOf(whole, "\r\n\r\n") + 4
+  match ParseReply(whole, head, 13) {
+    Ok(answer) => {
+      return answer.status == 201 && answer.header_count == 3 &&
+             ReplyHeader(&answer, "content-type", "") ==
+                 "application/json" &&
+             ReplyHeader(&answer, "missing", "none") == "none" &&
+             answer.body.len == 12
+    },
+    _ => { return false },
+  }
+}
+
+@Test
+fun RefusesWhatIsNotHttp() -> bool uses unsafe {
+  match ParseReply("not a response at all\r\n\r\n", 25, -1) {
+    NotHttp => { return true },
+    _ => { return false },
+  }
+}

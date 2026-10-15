@@ -1753,3 +1753,23 @@ journal touches none of it.
 What it does not do is make threads deterministic: they interleave as the
 machine decides, and a program whose outcome depends on that is not fixed
 by this. Said out loud rather than discovered.
+
+**D144. A client, because serving is half of HTTP.** `Fetch(url)`,
+`PostJson(url, body)`, and `Open`/`Ask` for a program making several
+calls on one connection -- over `std.net`, which is the same socket floor
+the server stands on. A URL is taken apart into a host, a port and a
+target; the answer is read until `Content-Length` says it is whole, which
+is a loop because a read stops wherever it likes.
+
+Two things are said out loud rather than pretended. There is no TLS:
+`https` answers `NeedsTls`, because a TLS implementation is not something
+this language should contain and a package binding one through `[link]`
+is where it belongs. And a reply's bytes are one allocation that the
+reply's parts are views into -- so they outlive the call, and a program
+making many calls puts them in an `arena`.
+
+Writing it found a checker bug that had been hiding behind error
+propagation: `Ok(value)` in a `match` on a `T!` never got a type, because
+`Ok` is not a declared member of anything. An error type is accepted
+everywhere, so nothing complained until a *reference* to such a binding
+turned up -- `&<error>` against `&Thing`, a long way from the cause.
