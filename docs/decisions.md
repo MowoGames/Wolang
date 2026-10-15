@@ -1514,3 +1514,27 @@ The honest parts are the limits: a struct by value, a variadic and a type
 with no mapping are **reported** rather than dropped, a pointer to an
 opaque struct is an address, and a callback parameter is an address too.
 175 declarations out of the system's `math.h` compile as they are.
+
+**D131. Three machines, because there are three answers.** The compiler
+has an interpreter, an ARM64 tier and an x86-64 tier, and they have to
+agree. A laptop can check two of them, which is the whole reason there is
+a CI file: Linux x86-64 and macOS ARM64, debug and release, with the
+sanitizers on one of them. Every job runs the unit tests, each library's
+own tests, the differential fuzzer with the run number as its seed -- so
+the programs differ run to run -- the examples, and the formatter against
+itself. A second job links the embedding library into a C program and
+runs a script through it, because an embedding API that is not called
+from C is a guess.
+
+**D132. A package starts with one command.** `wolang new game` writes a
+manifest, a source file with a `main` and a test next to it, a README and
+a `.gitignore` -- four files a person reads rather than twenty they skip.
+`--lib` writes a library instead. Finding the standard library is the
+only hard part: `WOLANG_STD` if it is set, a tree the new package sits
+inside, `<prefix>/lib/std` next to an installed compiler, and the tree
+this compiler was built from -- in that order.
+
+`wolang test .` now runs the tests of what was *asked for* rather than of
+everything it depends on, which is what makes a new package's output one
+line instead of seventy-four. `--all` asks for the rest. And `cmake
+--install` lays out exactly what `new` looks for.

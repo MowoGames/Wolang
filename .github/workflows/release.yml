@@ -1,0 +1,88 @@
+# What a release is: a binary per platform, the standard library beside
+# it, and an archive a person can unpack and use.
+#
+# Triggered by a tag, so that making a release is pushing one.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, without the v"
+        required: true
+
+jobs:
+  artifacts:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: wolang-linux-x86_64
+            os: ubuntu-24.04
+          - name: wolang-macos-arm64
+            os: macos-14
+          - name: wolang-macos-x86_64
+            os: macos-13
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y ninja-build
+          else
+            brew install ninja
+          fi
+
+      - name: Build
+        run: |
+          cmake --preset release
+          cmake --build --preset release -j
+
+      - name: Check it runs
+        run: |
+          build/release/tools/wolang/wolang --version
+          build/release/tools/wolang/wolang test lib/std
+
+      # The binary, the standard library it needs, and the runtime
+      # archive `wolang build` hands to the linker.
+      - name: Assemble
+        shell: bash
+        run: |
+          out="${{ matrix.name }}"
+          mkdir -p "$out/bin" "$out/lib" "$out/include"
+          cp build/release/tools/wolang/wolang "$out/bin/"
+          cp -R lib/std lib/http lib/game lib/core "$out/lib/"
+          cp build/release/src/libwolang_runtime.a "$out/lib/" || true
+          cp build/release/src/libwolang_embed.a "$out/lib/" || true
+          cp -R include/wolang/embed "$out/include/"
+          cp README.md LICENSE "$out/" 2>/dev/null || cp README.md "$out/"
+          tar -czf "$out.tar.gz" "$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}.tar.gz
+
+  publish:
+    needs: artifacts
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.tar.gz
+          generate_release_notes: true

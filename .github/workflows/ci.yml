@@ -1,0 +1,122 @@
+# What has to be true of every commit.
+#
+# Three machines, because the compiler has three answers that have to
+# agree: the interpreter, the ARM64 tier and the x86-64 tier. A laptop
+# can only check two of them, which is the whole reason this file exists
+# (D131).
+
+name: ci
+
+on:
+  push:
+    branches: [main, alpha]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            preset: debug
+          - name: linux-x86_64-release
+            os: ubuntu-24.04
+            preset: release
+          - name: macos-arm64
+            os: macos-14
+            preset: debug
+          - name: macos-arm64-asan
+            os: macos-14
+            preset: asan
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y ninja-build
+          else
+            brew install ninja
+          fi
+
+      # The ahead-of-time backend is optional, and the build says so when
+      # it is missing: a machine with no LLVM still builds everything the
+      # tests need.
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} -j
+
+      - name: Unit tests
+        run: ctest --preset ${{ matrix.preset }}
+
+      - name: Library tests
+        run: |
+          W=build/${{ matrix.preset }}/tools/wolang/wolang
+          $W test lib/std
+          $W test lib/http
+          $W test lib/game
+          $W test lib/core
+
+      # The differential fuzzer: the same program through every tier, and
+      # any disagreement is a miscompilation. The one test that has found
+      # more bugs than the rest of the suite put together.
+      - name: Fuzz the tiers against each other
+        run: |
+          W=build/${{ matrix.preset }}/tools/wolang/wolang
+          $W fuzz --seed ${{ github.run_number }} --count 200
+
+      - name: Examples
+        run: |
+          W=build/${{ matrix.preset }}/tools/wolang/wolang
+          $W check examples/server examples/systems examples/package
+          $W check examples/embed/script
+          $W run examples/hello.wo
+
+      - name: Formatting
+        if: matrix.preset == 'debug'
+        run: |
+          W=build/${{ matrix.preset }}/tools/wolang/wolang
+          $W fmt --check lib examples benchmarks
+
+      - name: Documentation is current
+        if: matrix.preset == 'debug'
+        run: |
+          W=build/${{ matrix.preset }}/tools/wolang/wolang
+          $W doc lib/std lib/http lib/game -o /tmp/api
+          test -s /tmp/api/std.text.md
+
+  embed:
+    name: embed the language in C
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Configure and build
+        run: |
+          cmake --preset debug
+          cmake --build --preset debug -j
+      # A host that links the library and calls a script: the thing an
+      # embedding API has to actually do (D128).
+      - name: Build and run the C host
+        run: |
+          cc -I include examples/embed/host.c -L build/debug/src \
+             -Wl,-rpath,"$PWD/build/debug/src" -lwolang_embed -lstdc++ \
+             -o /tmp/host
+          /tmp/host examples/embed/script

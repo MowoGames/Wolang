@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <span>
@@ -69,6 +70,13 @@ struct Options {
   // `bind` only: which declarations to keep, and where the headers are.
   std::string bind_prefix;
   std::vector<std::string> bind_includes;
+  // `new` only: a library has no `main` and no `run`.
+  bool new_library = false;
+  // `test` only: run the dependencies' tests as well.
+  bool test_all = false;
+  // How this binary was invoked, which is how `new` finds the standard
+  // library next to an installed compiler.
+  std::string program;
   bool show_spans = false;
   // `fuzz` only: also build each program into a binary and run it, which
   // is the only way to compare the ahead-of-time tier (D98). Slower by
@@ -131,6 +139,9 @@ void PrintUsage() {
       "  test <paths>    run every function marked `@Test`\n"
       "  modules <dir>   print the module graph of a package\n"
       "  doc <dir>       write what a package offers, as Markdown\n"
+      "  bind <header>   write Wolang declarations for a C header\n"
+      "  new <dir>       start a package: a manifest, a source file, a "
+      "test\n"
       "  lsp             speak the Language Server Protocol on stdin\n"
       "  systems <dir>   print what systems access and when they run\n"
       "  fuzz            generate programs and compare the tiers\n"
@@ -154,7 +165,12 @@ void PrintUsage() {
       "  --check         `fmt` only: fail if a file is not formatted\n"
       "  --write         `fmt` only: rewrite the file in place\n"
       "  --no-cache      ignore and do not write the on-disk cache\n"
-      "  --interpret     `run` only: do not use the compiled tier\n",
+      "  --interpret     `run` only: do not use the compiled tier\n"
+      "  --stdin         `fmt` only: read the file from standard input\n"
+      "  --prefix <p>    `bind` only: keep declarations starting with p\n"
+      "  -I <dir>        `bind` only: where the headers are\n"
+      "  --lib           `new` only: a library rather than a program\n"
+      "  --all           `test` only: the dependencies' tests too\n",
       std::string(kVersion).c_str());
 }
 
@@ -823,11 +839,34 @@ int RunTests(const Options& options) {
   const std::vector<const ir::Module*> modules =
       CollectModules(&database, files);
 
+  // The tests of the packages that were *asked for*, not of everything
+  // they depend on: `wolang test .` in a new package should run its own
+  // test and not the standard library's seventy-three. `--all` is how to
+  // ask for the rest (D132).
+  std::vector<std::string> wanted;
+  for (const std::string& input : options.inputs) {
+    std::error_code failed_path;
+    wanted.push_back(
+        std::filesystem::weakly_canonical(input, failed_path).string());
+  }
+  const auto asked_for = [&](FileId file) {
+    if (options.test_all || wanted.empty()) {
+      return true;
+    }
+    const std::string where(database.sources().Path(file));
+    for (const std::string& root : wanted) {
+      if (!root.empty() && where.rfind(root, 0) == 0) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   int ran = 0;
   int failed = 0;
   for (FileId file : files) {
     const LoweredFile* lowered = database.Lowered(file);
-    if (lowered == nullptr) {
+    if (lowered == nullptr || !asked_for(file)) {
       continue;
     }
     for (Symbol name : lowered->tests) {
@@ -1397,6 +1436,200 @@ int RunSystems(const Options& options) {
 // The third tier: the same IR the dev tier runs, through LLVM, into an
 // object file -- and then through the system's linker, with the runtime
 // archive, into something that needs no compiler to run (D98).
+// `wolang new game`: a package that builds, runs and has a test.
+//
+// What it writes is what a package is: a manifest, a source file, and a
+// test next to the code it tests. Not a framework and not a directory
+// tree -- the first thing a person does to a new package is read it, and
+// four files they can read beats twenty they skip (D132).
+int RunNew(const Options& options) {
+  const std::string directory = options.inputs.front();
+  std::error_code failed;
+  if (std::filesystem::exists(directory, failed)) {
+    std::fprintf(stderr, "wolang: %s already exists\n", directory.c_str());
+    return 2;
+  }
+  // The package's name is the directory's last part, which is what a
+  // person meant by naming the directory.
+  std::string name =
+      std::filesystem::path(directory).filename().string();
+  if (name.empty()) {
+    name = "package";
+  }
+  // A name has to be an identifier: a package called `my-game` would not
+  // be nameable in a `need`.
+  for (char& held : name) {
+    if (!((held >= 'a' && held <= 'z') || (held >= 'A' && held <= 'Z') ||
+          (held >= '0' && held <= '9') || held == '_')) {
+      held = '_';
+    }
+  }
+
+  std::filesystem::create_directories(directory + "/src", failed);
+  if (failed) {
+    std::fprintf(stderr, "wolang: cannot make %s: %s\n", directory.c_str(),
+                 failed.message().c_str());
+    return 2;
+  }
+
+  // Where the standard library is, as this binary can find it. In order:
+  // what the environment says, a tree the new package sits inside, the
+  // one next to the compiler itself, and the tree this compiler was
+  // built from. A relative path when the package is inside the tree --
+  // that is what makes the compiler's own examples movable -- and an
+  // absolute one otherwise (D132).
+  const std::filesystem::path here =
+      std::filesystem::absolute(directory, failed);
+  std::string standard;
+  if (const char* said = std::getenv("WOLANG_STD")) {
+    standard = said;
+  }
+  if (standard.empty()) {
+    for (std::filesystem::path up = here; !up.empty() && up != up.root_path();
+         up = up.parent_path()) {
+      if (std::filesystem::exists(up / "lib" / "std" / "wolang.toml",
+                                  failed)) {
+        standard =
+            std::filesystem::relative(up / "lib" / "std", here, failed)
+                .string();
+        break;
+      }
+    }
+  }
+  if (standard.empty()) {
+    // An installed compiler: `<prefix>/bin/wolang` and
+    // `<prefix>/lib/std`.
+    const std::filesystem::path own =
+        std::filesystem::weakly_canonical(options.program, failed);
+    const std::filesystem::path beside =
+        own.parent_path().parent_path() / "lib" / "std";
+    if (std::filesystem::exists(beside / "wolang.toml", failed)) {
+      standard = beside.string();
+    }
+  }
+#ifdef WOLANG_LIBRARY_DIRECTORY
+  if (standard.empty()) {
+    const std::filesystem::path built =
+        std::filesystem::path(WOLANG_LIBRARY_DIRECTORY) / "std";
+    if (std::filesystem::exists(built / "wolang.toml", failed)) {
+      standard = built.string();
+    }
+  }
+#endif
+  if (standard.empty()) {
+    standard = "../lib/std";
+  }
+
+  const auto write = [&](const std::string& path,
+                         const std::string& contents) {
+    std::ofstream out(directory + "/" + path, std::ios::binary);
+    if (!out) {
+      return false;
+    }
+    out << contents;
+    return true;
+  };
+
+  std::string manifest = "[package]\nname = \"" + name +
+                         "\"\nversion = \"0.1.0\"\nsource = \"src\"\n"
+                         "\n[dependencies]\nstd = { path = \"" +
+                         standard + "\" }\n";
+  if (options.new_library) {
+    manifest.append("\n# A library's own tests run with `wolang test .`\n");
+  }
+
+  std::string source;
+  if (options.new_library) {
+    source =
+        "// " + name + ": what this package offers.\n"
+        "//\n"
+        "// `offer` is what makes a declaration visible outside this\n"
+        "// module; everything else is private to it.\n"
+        "\n"
+        "/// Adds two numbers. The documentation comment is what\n"
+        "/// `wolang doc` writes and what an editor shows on hover.\n"
+        "offer fun Add(left: int, right: int) -> int {\n"
+        "  return left + right\n"
+        "}\n"
+        "\n"
+        "// ------------------------------------------------------------- "
+        "tests ---\n"
+        "//\n"
+        "// Next to the code they test, and run in every tier: `wolang "
+        "test`\n"
+        "// runs each one interpreted and compiled and compares the two.\n"
+        "\n"
+        "@Test\n"
+        "fun AddsTwoNumbers() -> bool {\n"
+        "  return Add(2, 2) == 4 && Add(-1, 1) == 0\n"
+        "}\n";
+  } else {
+    source =
+        "// " + name + "\n"
+        "//\n"
+        "// `wolang run .` runs this; `wolang test .` runs the test at\n"
+        "// the bottom; `wolang build . -o " + name +
+        "` makes a binary that\n"
+        "// needs no compiler.\n"
+        "\n"
+        "need std.io.{Print}\n"
+        "\n"
+        "fun Greeting(name: text) -> text uses unsafe {\n"
+        "  return \"hello, {name}\"\n"
+        "}\n"
+        "\n"
+        "fun main() uses io, unsafe {\n"
+        "  Print(Greeting(\"world\"))\n"
+        "}\n"
+        "\n"
+        "// ------------------------------------------------------------- "
+        "tests ---\n"
+        "\n"
+        "@Test\n"
+        "fun GreetsByName() -> bool uses unsafe {\n"
+        "  return Greeting(\"wolang\") == \"hello, wolang\"\n"
+        "}\n";
+  }
+
+  const std::string ignore =
+      "# What a build leaves behind.\n"
+      "/target/\n"
+      "/build/\n"
+      ".wolang-cache/\n";
+
+  const std::string readme =
+      "# " + name + "\n"
+      "\n"
+      "```sh\n" +
+      (options.new_library
+           ? "wolang test .      # run the tests, in every tier\n"
+             "wolang check .     # types, effects, borrows\n"
+             "wolang doc . -o docs/api\n"
+           : "wolang run .       # run it\n"
+             "wolang test .      # run the tests, in every tier\n"
+             "wolang build . -o " + name + "   # a binary\n") +
+      "```\n";
+
+  if (!write("wolang.toml", manifest) || !write("src/main.wo", source) ||
+      !write(".gitignore", ignore) || !write("README.md", readme)) {
+    std::fprintf(stderr, "wolang: cannot write into %s\n",
+                 directory.c_str());
+    return 2;
+  }
+
+  std::fprintf(stdout,
+               "%s: a %s called `%s`\n"
+               "  %s/wolang.toml\n"
+               "  %s/src/main.wo\n"
+               "\n"
+               "  cd %s && wolang %s .\n",
+               directory.c_str(),
+               options.new_library ? "library" : "program", name.c_str(),
+               directory.c_str(), directory.c_str(), directory.c_str(),
+               options.new_library ? "test" : "run");
+  return 0;
+}
+
 // `wolang bind sdl.h`: C declarations as Wolang.
 //
 // The system's preprocessor expands the header first, because a header is
@@ -1827,6 +2060,7 @@ int RunDoc(const Options& options) {
 
 int Run(int argc, char** argv) {
   Options options;
+  options.program = argc > 0 ? argv[0] : "wolang";
   // Everything after `--` belongs to the program being run, not to the
   // driver: `wolang run app -- --port 9000` passes two arguments on
   // (D115).
@@ -1895,6 +2129,16 @@ int Run(int argc, char** argv) {
       options.no_cache = true;
     } else if (argument == "--interpret") {
       options.interpret = true;
+    } else if (argument == "--version" || argument == "-V" ||
+               argument == "--help" || argument == "-h") {
+      // Asked for before a command, which is where a person types it.
+      if (options.command.empty()) {
+        options.command = std::string(argument);
+      }
+    } else if (argument == "--lib") {
+      options.new_library = true;
+    } else if (argument == "--all") {
+      options.test_all = true;
     } else if (argument.size() > 1 && argument[0] == '-') {
       std::fprintf(stderr, "wolang: unknown option %.*s\n",
                    static_cast<int>(argument.size()), argument.data());
@@ -1906,6 +2150,15 @@ int Run(int argc, char** argv) {
     }
   }
 
+  if (options.command == "--version" || options.command == "-V" ||
+      options.command == "version") {
+    std::fprintf(stdout, "wolang %s\n", std::string(kVersion).c_str());
+    return 0;
+  }
+  if (options.command == "--help" || options.command == "-h") {
+    PrintUsage();
+    return 0;
+  }
   if (options.command.empty() || options.command == "help") {
     PrintUsage();
     return options.command.empty() ? 2 : 0;
@@ -1924,7 +2177,7 @@ int Run(int argc, char** argv) {
       options.command == "run" || options.command == "test" ||
       options.command == "asm" || options.command == "bench" ||
       options.command == "build" || options.command == "doc" ||
-      options.command == "bind";
+      options.command == "bind" || options.command == "new";
   if (needs_inputs && options.inputs.empty()) {
     std::fprintf(stderr, "wolang: %s needs at least one path\n",
                  options.command.c_str());
@@ -1964,6 +2217,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "bind") {
     return RunBind(options);
+  }
+  if (options.command == "new") {
+    return RunNew(options);
   }
   if (options.command == "lsp") {
     // The editor's end of the compiler: the same queries `check` and

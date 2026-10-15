@@ -45,7 +45,11 @@ endif()
 # Where the runtime archive ends up, so that `wolang build` can hand it
 # to the linker without being told.
 target_compile_definitions(wolang_core PRIVATE
-    WOLANG_RUNTIME_ARCHIVE="$<TARGET_FILE:wolang_runtime>")
+    WOLANG_RUNTIME_ARCHIVE="$<TARGET_FILE:wolang_runtime>"
+    # Where the standard library is in this tree, so that `wolang new`
+    # can point a package at it. An installed compiler finds it next to
+    # itself instead (D132).
+    WOLANG_LIBRARY_DIRECTORY="${PROJECT_SOURCE_DIR}/lib")
 add_dependencies(wolang_core wolang_runtime)
 
 wolang_configure_target(wolang_core)

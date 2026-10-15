@@ -52,6 +52,35 @@ if(WOLANG_BUILD_TESTS AND PROJECT_IS_TOP_LEVEL)
     add_subdirectory(tests)
 endif()
 
+# What an installed Wolang is: the driver, the libraries it compiles
+# against, the runtime archive `wolang build` hands to the linker, and the
+# embedding header and library. The layout is the one `wolang new` looks
+# for -- `<prefix>/bin/wolang` beside `<prefix>/lib/std` (D132).
+if(PROJECT_IS_TOP_LEVEL)
+    include(GNUInstallDirs)
+
+    if(WOLANG_BUILD_TOOLS)
+        install(TARGETS wolang_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
+
+    install(TARGETS wolang_runtime wolang_embed
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(TARGETS wolang_embed_shared
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(DIRECTORY
+            ${PROJECT_SOURCE_DIR}/lib/std
+            ${PROJECT_SOURCE_DIR}/lib/http
+            ${PROJECT_SOURCE_DIR}/lib/game
+            ${PROJECT_SOURCE_DIR}/lib/core
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        PATTERN "*.wo"
+        PATTERN "wolang.toml")
+    install(FILES ${PROJECT_SOURCE_DIR}/include/wolang/embed/wolang.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/wolang/embed)
+    install(DIRECTORY ${PROJECT_SOURCE_DIR}/editors
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/wolang)
+endif()
+
 if(PROJECT_IS_TOP_LEVEL)
     message(STATUS "")
     message(STATUS "Wolang ${PROJECT_VERSION}")
