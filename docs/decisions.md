@@ -2122,3 +2122,62 @@ the type, both operands are cast to it, and the inliner casts a returned
 value that does not match the call's type. The second is the one that
 mattered -- an operator whose operands disagree has no meaning in this
 IR, and the verifier said so as soon as anything looked.
+
+**D174. The logo is a script.** `assets/make_art.py` draws the mark, the
+wordmark and the mascot, and writes both the SVG a page embeds and the
+PNGs an extension ships. One source for both, so they cannot drift; a
+scanline rasteriser and a PNG writer in a hundred lines, so the build
+needs no drawing library. The mark is a wolf's head whose ears are the
+outer peaks of a W, which is the two things the name is.
+
+**D175. A `.vsix` without npm.** A Visual Studio Code package is a zip
+with two manifests in it, so `tools/package/make_vsix.py` is a zip with
+two manifests in it. What it packages is an extension written in plain
+JavaScript with no dependencies -- a framed JSON-RPC client and the
+translation between what LSP says and what the editor's API wants, which
+is two hundred lines.
+
+What that buys: the extension builds and installs on a machine with no
+npm, no network and no login. What it costs: `vscode-languageclient`
+would have done the two hundred lines. The trade is worth it for a
+language whose whole point is that the compiler answers every question --
+an extension that cannot be built is one nobody can try.
+
+**D176. Zones come from the system.** A time zone is not arithmetic: it
+is a database of what each government decided, revised several times a
+year, and every machine already has a copy that everything else on it
+agrees with. `ZoneOffset`, `ZoneName`, `CivilIn` and `EpochIn` ask that
+copy. `EpochIn` asks twice -- the offset depends on the moment and the
+moment is what is being worked out -- which is what gets the hour after a
+clock change right.
+
+`ParseIso` reads the one format worth building in, because it is the one
+every machine writes.
+
+**D177. Deflate, written here.** `std.compress` is a real compressor --
+a hash chain of three-byte matches, fixed Huffman codes -- and a
+decompressor that reads stored, fixed and dynamic blocks. Bound to zlib
+it would have been shorter; written here it is arithmetic over bytes
+with a published format, which is the same argument as the hashes
+(D170).
+
+The test that matters is not the round trip: it is that the system's
+`gzip -t` says the output is valid and `gzip -dc` prints the input back,
+and that what the system's gzip wrote reads here.
+
+`std.mem.Suffix` came out of it: `Prefix` had no other half, so a reader
+walking a buffer had to copy what was left. Both are intrinsics, because
+only the tiers know how far along an element is.
+
+**D178. `[]u8!` is a slice that may fail.** The element of a slice is
+parsed without suffixes now, so `!` and `?` belong to the whole type --
+which is what a function signature means by it every time. A slice of
+optionals is `[](T?)`, and a type in brackets is that type: `(T)` is `T`
+and `(T,)` is a tuple of one.
+
+**D179. The rest of a filesystem, and a child's world.** Where the
+program is, where the person's things are, where something temporary
+belongs, what a path really is with `.` and `..` worked out, copying,
+appending, walking a tree, and taking one away. And for a child process:
+somewhere to run and something to add to its environment -- added rather
+than replacing, because a child with no `PATH` cannot find anything.

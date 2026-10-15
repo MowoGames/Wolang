@@ -150,7 +150,7 @@ fun ReportsAMissingFile() -> bool uses unsafe {
 // call, and the point of having them here is that a program should not
 // have to declare `stat` itself (D149).
 
-need std.text.{Bytes, BuilderNew, TextFromRaw}
+need std.text.{BuilderNew, Bytes, Length, TextFromRaw}
 
 extern "C" fun wolang_fs_kind(path: *u8, length: u64) -> s32
 extern "C" fun wolang_fs_size(path: *u8, length: u64) -> s64
@@ -327,4 +327,224 @@ fun MakesMovesAndRemoves() -> bool uses unsafe {
                   Remove("wolang-fs-test/a") && Remove(root)
   return sized && changed && moved && gone && removed &&
          listing == "two.txt\n"
+}
+
+// ------------------------------------------- where things are, and trees ---
+//
+// The rest of what a program does to a filesystem: where it is, where
+// the person's things are, what a path really is, copying, appending,
+// walking a tree, and a temporary name nothing else has (D179).
+
+extern "C" fun wolang_fs_current(into: *mut u8, room: u64) -> s64
+extern "C" fun wolang_fs_set_current(path: *u8, length: u64) -> s32
+extern "C" fun wolang_fs_home(into: *mut u8, room: u64) -> s64
+extern "C" fun wolang_fs_temp_directory(into: *mut u8, room: u64) -> s64
+extern "C" fun wolang_fs_temp_name(prefix: *u8, length: u64,
+                                   into: *mut u8, room: u64) -> s64
+extern "C" fun wolang_fs_absolute(path: *u8, length: u64, into: *mut u8,
+                                  room: u64) -> s64
+extern "C" fun wolang_fs_copy(from: *u8, from_length: u64, to: *u8,
+                              to_length: u64, over: s32) -> s32
+extern "C" fun wolang_fs_remove_tree(path: *u8, length: u64) -> s32
+extern "C" fun wolang_fs_walk(path: *u8, length: u64, into: *mut u8,
+                              room: u64) -> s64
+extern "C" fun wolang_fs_append(path: *u8, length: u64, bytes: *u8,
+                                count: u64) -> s32
+
+/// How much room a path answer is given. Longer than any system allows.
+const kPathRoom: int = 4096
+
+// What every "give me a path" call below does with its answer.
+fun Answered(written: s64, room: []u8) -> text uses unsafe {
+  if written < 0 {
+    return ""
+  }
+  var builder = BuilderNew()
+  var i = 0
+  while i < written as int {
+    builder.AppendByte(room[i])
+    i = i + 1
+  }
+  return builder.Release()
+}
+
+/// The directory the program is running in.
+offer fun Current() -> text uses unsafe {
+  var room = ArrayNew<u8>(kPathRoom)
+  const held = Answered(wolang_fs_current(&mut room[0],
+                                          kPathRoom as u64), room)
+  Free(room)
+  return held
+}
+
+/// Moves the program to `path`. False when it is not a directory.
+offer fun SetCurrent(path: text) -> bool uses unsafe {
+  const bytes = Bytes(path)
+  if bytes.len == 0 {
+    return false
+  }
+  return wolang_fs_set_current(&bytes[0], bytes.len as u64) == 0
+}
+
+/// The person's home directory, or "".
+offer fun Home() -> text uses unsafe {
+  var room = ArrayNew<u8>(kPathRoom)
+  const held = Answered(wolang_fs_home(&mut room[0], kPathRoom as u64),
+                        room)
+  Free(room)
+  return held
+}
+
+/// Where temporary things belong on this machine.
+offer fun TempDirectory() -> text uses unsafe {
+  var room = ArrayNew<u8>(kPathRoom)
+  const held = Answered(
+      wolang_fs_temp_directory(&mut room[0], kPathRoom as u64), room)
+  Free(room)
+  return held
+}
+
+/// A path in the temporary directory that nothing else has.
+///
+/// The name, not the file: a caller that wants it to exist writes to
+/// it, and one that wants a directory calls `MakeDirectory`.
+offer fun TempName(prefix: text) -> text uses unsafe {
+  const bytes = Bytes(prefix)
+  var room = ArrayNew<u8>(kPathRoom)
+  var written: s64 = -1
+  if bytes.len == 0 {
+    written = wolang_fs_temp_name(0 as *u8, 0, &mut room[0],
+                                  kPathRoom as u64)
+  } else {
+    written = wolang_fs_temp_name(&bytes[0], bytes.len as u64,
+                                  &mut room[0], kPathRoom as u64)
+  }
+  const held = Answered(written, room)
+  Free(room)
+  return held
+}
+
+/// `path` with `.` and `..` worked out, whether or not it is there yet.
+offer fun Absolute(path: text) -> text uses unsafe {
+  const bytes = Bytes(path)
+  if bytes.len == 0 {
+    return Current()
+  }
+  var room = ArrayNew<u8>(kPathRoom)
+  const held = Answered(
+      wolang_fs_absolute(&bytes[0], bytes.len as u64, &mut room[0],
+                         kPathRoom as u64), room)
+  Free(room)
+  return held
+}
+
+/// Copies a file. `over` says whether an existing one may be replaced.
+offer fun Copy(from: text, to: text, over: bool) -> bool uses unsafe {
+  const left = Bytes(from)
+  const right = Bytes(to)
+  if left.len == 0 || right.len == 0 {
+    return false
+  }
+  var replace: s32 = 0
+  if over {
+    replace = 1
+  }
+  return wolang_fs_copy(&left[0], left.len as u64, &right[0],
+                        right.len as u64, replace) == 0
+}
+
+/// Takes a directory and everything in it away.
+///
+/// A separate verb from `Remove`, which takes away one file or one
+/// empty directory: deleting a tree is something a program should have
+/// to say it means.
+offer fun RemoveTree(path: text) -> bool uses unsafe {
+  const bytes = Bytes(path)
+  if bytes.len == 0 {
+    return false
+  }
+  return wolang_fs_remove_tree(&bytes[0], bytes.len as u64) == 0
+}
+
+/// Every path under `path`, one per line, as `List` answers for one
+/// directory.
+offer fun Walk(path: text) -> text uses unsafe {
+  const bytes = Bytes(path)
+  if bytes.len == 0 {
+    return ""
+  }
+  const kRoom = 1048576
+  var room = ArrayNew<u8>(kRoom)
+  const held = Answered(
+      wolang_fs_walk(&bytes[0], bytes.len as u64, &mut room[0],
+                     kRoom as u64), room)
+  Free(room)
+  return held
+}
+
+/// Adds to the end of a file, making it when it is not there.
+offer fun Append(path: text, value: text) -> bool uses unsafe {
+  const bytes = Bytes(path)
+  const held = Bytes(value)
+  if bytes.len == 0 {
+    return false
+  }
+  if held.len == 0 {
+    return wolang_fs_append(&bytes[0], bytes.len as u64, 0 as *u8,
+                            0) == 0
+  }
+  return wolang_fs_append(&bytes[0], bytes.len as u64, &held[0],
+                          held.len as u64) == 0
+}
+
+/// The whole of a text file.
+offer fun ReadText(path: text, limit: int) -> text uses unsafe {
+  const bytes = ReadAll(path, limit)
+  var builder = BuilderNew()
+  var i = 0
+  while i < bytes.len {
+    builder.AppendByte(bytes[i])
+    i = i + 1
+  }
+  Free(bytes)
+  return builder.Release()
+}
+
+/// Writes text to a file, replacing what was there.
+offer fun WriteText(path: text, value: text) -> bool uses unsafe {
+  return WriteAll(path, Bytes(value))
+}
+
+@Test
+fun FindsItsWayAround() -> bool uses unsafe {
+  const here = Current()
+  const home = Home()
+  const temp = TempDirectory()
+  const named = TempName("wolang-test")
+  // An absolute path of something that is not there yet still works.
+  const made = Absolute(temp + "/not-here/file.txt")
+  return Length(here) > 0 && Length(home) > 0 && Length(temp) > 0 &&
+         Length(named) > Length(temp) && Length(made) > 0 &&
+         Exists(here)
+}
+
+@Test
+fun CopiesAppendsAndWalks() -> bool uses unsafe {
+  const root = TempName("wolang-tree")
+  if !MakeDirectory(root + "/inner", true) {
+    return false
+  }
+  const first = root + "/inner/one.txt"
+  if !WriteText(first, "hello") {
+    RemoveTree(root)
+    return false
+  }
+  const appended = Append(first, " again")
+  const read = ReadText(first, 4096)
+  const copied = Copy(first, root + "/two.txt", true)
+  const walked = Walk(root)
+  const answer = appended && read == "hello again" && copied &&
+                 Length(walked) > 0 && Exists(root + "/two.txt") &&
+                 RemoveTree(root) && !Exists(root)
+  return answer
 }

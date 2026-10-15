@@ -44,6 +44,32 @@ int64_t wolang_fs_list(const uint8_t* path,
                        uint8_t* into,
                        uint64_t room);
 
+
+// Where the program is, where the person's things are, and where
+// something temporary belongs. Each answers how many bytes it wrote, or
+// -1 -- including when the room was too small, which a caller fixes by
+// asking again with more (D179).
+int64_t wolang_fs_current(uint8_t* into, uint64_t room);
+int32_t wolang_fs_set_current(const uint8_t* path, uint64_t length);
+int64_t wolang_fs_home(uint8_t* into, uint64_t room);
+int64_t wolang_fs_temp_directory(uint8_t* into, uint64_t room);
+int64_t wolang_fs_temp_name(const uint8_t* prefix, uint64_t length,
+                            uint8_t* into, uint64_t room);
+
+// What a path really is, with `.` and `..` resolved, whether or not it
+// is there yet.
+int64_t wolang_fs_absolute(const uint8_t* path, uint64_t length,
+                           uint8_t* into, uint64_t room);
+
+int32_t wolang_fs_copy(const uint8_t* from, uint64_t from_length,
+                       const uint8_t* to, uint64_t to_length,
+                       int32_t over);
+int32_t wolang_fs_remove_tree(const uint8_t* path, uint64_t length);
+int64_t wolang_fs_walk(const uint8_t* path, uint64_t length,
+                       uint8_t* into, uint64_t room);
+int32_t wolang_fs_append(const uint8_t* path, uint64_t length,
+                         const uint8_t* bytes, uint64_t count);
+
 }  // extern "C"
 
 }  // namespace runtime

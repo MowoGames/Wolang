@@ -25,6 +25,24 @@ int32_t wolang_spawn(const uint8_t* command,
                      uint64_t errors_room,
                      uint64_t* errors_written);
 
+// The same, with somewhere to run and something to add to the child's
+// environment -- `NAME=value` lines, added to what this process has
+// (D179).
+int32_t wolang_spawn_in(const uint8_t* command,
+                        uint64_t length,
+                        const uint8_t* input,
+                        uint64_t input_length,
+                        const uint8_t* directory,
+                        uint64_t directory_length,
+                        const uint8_t* environment,
+                        uint64_t environment_length,
+                        uint8_t* out,
+                        uint64_t out_room,
+                        uint64_t* out_written,
+                        uint8_t* errors,
+                        uint64_t errors_room,
+                        uint64_t* errors_written);
+
 }  // extern "C"
 
 }  // namespace runtime

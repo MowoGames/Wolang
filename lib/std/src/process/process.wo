@@ -5,7 +5,7 @@
 // it. A program that builds a command out of something a user typed has a
 // hole, and `uses unsafe` is where that responsibility is recorded.
 
-need std.text.{Bytes, BuilderNew, TextFromRaw}
+need std.text.{BuilderNew, Bytes, IndexOf, Length, TextFromRaw}
 
 extern "C" fun exit(code: s32)
 extern "C" fun getpid() -> s32
@@ -181,4 +181,115 @@ fun KeepsQuotedWordsWhole() -> bool uses unsafe {
   // One argument with a blank in it, which is what the quoting is for.
   const said = Start("echo 'one argument'")
   return said.code == 0 && said.out == "one argument\n"
+}
+
+extern "C" fun wolang_spawn_in(command: *u8, length: u64, input: *u8,
+                               input_length: u64, directory: *u8,
+                               directory_length: u64, environment: *u8,
+                               environment_length: u64, out: *mut u8,
+                               out_room: u64, out_written: *mut u64,
+                               errors: *mut u8, errors_room: u64,
+                               errors_written: *mut u64) -> s32
+
+/// Everything a caller may say about how a program runs.
+///
+/// Built up and handed to `StartCommand`, the way an HTTP call is
+/// built up and handed to `Perform` (D151):
+/// the command, what to write to it, where to run it, and what to add
+/// to its environment.
+offer struct Command {
+  var command: text = ""
+  var input: text = ""
+  var directory: text = ""
+  /// `NAME=value` lines, added to what this process has rather than
+  /// replacing it -- a child with no `PATH` cannot find anything.
+  var environment: text = ""
+}
+
+offer fun CommandNew(command: text) -> Command {
+  return Command(command, "", "", "")
+}
+
+offer fun WithInput(run: Command, input: text) -> Command {
+  var held = run
+  held.input = input
+  return held
+}
+
+offer fun WithDirectory(run: Command, directory: text) -> Command {
+  var held = run
+  held.directory = directory
+  return held
+}
+
+/// One more `NAME=value` for the child.
+offer fun WithVariable(run: Command, name: text, value: text)
+    -> Command uses unsafe {
+  var held = run
+  if Length(held.environment) != 0 {
+    held.environment = held.environment + "\n"
+  }
+  held.environment = held.environment + name + "=" + value
+  return held
+}
+
+/// Runs what the `Command` describes.
+offer fun StartCommand(run: Command) -> Said uses unsafe {
+  const command = Bytes(run.command)
+  if command.len == 0 {
+    return Said(-1, "", "")
+  }
+  var out = ArrayNew<u8>(kMostOutput)
+  var errors = ArrayNew<u8>(kMostOutput)
+  var out_written: u64 = 0
+  var errors_written: u64 = 0
+
+  const input = Bytes(run.input)
+  const directory = Bytes(run.directory)
+  const environment = Bytes(run.environment)
+  var input_at: *u8 = &out[0]
+  var input_length: u64 = 0
+  if input.len != 0 {
+    input_at = &input[0]
+    input_length = input.len as u64
+  }
+  var directory_at: *u8 = &out[0]
+  var directory_length: u64 = 0
+  if directory.len != 0 {
+    directory_at = &directory[0]
+    directory_length = directory.len as u64
+  }
+  var environment_at: *u8 = &out[0]
+  var environment_length: u64 = 0
+  if environment.len != 0 {
+    environment_at = &environment[0]
+    environment_length = environment.len as u64
+  }
+
+  const code = wolang_spawn_in(
+      &command[0], command.len as u64, input_at, input_length,
+      directory_at, directory_length, environment_at,
+      environment_length, &mut out[0], kMostOutput as u64,
+      &mut out_written, &mut errors[0], kMostOutput as u64,
+      &mut errors_written)
+
+  var said = BuilderNew()
+  said.Append(TextFromRaw(&out[0], out_written as int))
+  var complained = BuilderNew()
+  complained.Append(TextFromRaw(&errors[0], errors_written as int))
+  Free(out)
+  Free(errors)
+  return Said(code as int, said.Release(), complained.Release())
+}
+
+@Test
+fun RunsSomewhereWithSomething() -> bool uses unsafe {
+  // `pwd` in a directory that is not this one, and a variable the
+  // child can see and this process cannot.
+  var run = CommandNew("sh -c 'pwd; echo $WOLANG_TEST_MARK'")
+  run = WithDirectory(run, "/tmp")
+  run = WithVariable(run, "WOLANG_TEST_MARK", "seen")
+  const said = StartCommand(run)
+  return said.code == 0 && IndexOf(said.out, "tmp") >= 0 &&
+         IndexOf(said.out, "seen") >= 0
 }

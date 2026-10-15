@@ -148,16 +148,20 @@ std::string DrainHandle(HANDLE handle) {
 
 }  // namespace
 
-extern "C" int32_t wolang_spawn(const uint8_t* command,
-                                uint64_t length,
-                                const uint8_t* input,
-                                uint64_t input_length,
-                                uint8_t* out,
-                                uint64_t out_room,
-                                uint64_t* out_written,
-                                uint8_t* errors,
-                                uint64_t errors_room,
-                                uint64_t* errors_written) {
+extern "C" int32_t wolang_spawn_in(const uint8_t* command,
+                                   uint64_t length,
+                                   const uint8_t* input,
+                                   uint64_t input_length,
+                                   const uint8_t* directory,
+                                   uint64_t directory_length,
+                                   const uint8_t* environment,
+                                   uint64_t environment_length,
+                                   uint8_t* out,
+                                   uint64_t out_room,
+                                   uint64_t* out_written,
+                                   uint8_t* errors,
+                                   uint64_t errors_room,
+                                   uint64_t* errors_written) {
   if (command == nullptr || length == 0) {
     return -1;
   }
@@ -166,6 +170,38 @@ extern "C" int32_t wolang_spawn(const uint8_t* command,
   if (words.empty()) {
     return -1;
   }
+  // This system takes the whole environment or none of it, so the
+  // additions are merged with this process's own and handed over as one
+  // block (D179).
+  std::string block;
+  if (environment != nullptr && environment_length != 0) {
+    std::string held(reinterpret_cast<const char*>(environment),
+                     static_cast<size_t>(environment_length));
+    for (char& c : held) {
+      if (c == '\n') {
+        c = 0;
+      }
+    }
+    block.assign(held);
+    block.push_back(0);
+    if (const char* existing = ::GetEnvironmentStringsA();
+        existing != nullptr) {
+      const char* walk = existing;
+      while (*walk != 0) {
+        const size_t size = std::strlen(walk);
+        block.append(walk, size);
+        block.push_back(0);
+        walk += size + 1;
+      }
+      ::FreeEnvironmentStringsA(const_cast<char*>(existing));
+    }
+    block.push_back(0);
+  }
+  const std::string where =
+      directory != nullptr && directory_length != 0
+          ? std::string(reinterpret_cast<const char*>(directory),
+                        static_cast<size_t>(directory_length))
+          : std::string();
   std::string line = Joined(words);
 
   SECURITY_ATTRIBUTES inherit = {};
@@ -197,9 +233,10 @@ extern "C" int32_t wolang_spawn(const uint8_t* command,
   start.hStdOutput = from_child_write;
   start.hStdError = from_errors_write;
   PROCESS_INFORMATION made = {};
-  const BOOL started =
-      ::CreateProcessA(nullptr, line.data(), nullptr, nullptr, TRUE, 0,
-                       nullptr, nullptr, &start, &made);
+  const BOOL started = ::CreateProcessA(
+      nullptr, line.data(), nullptr, nullptr, TRUE, 0,
+      block.empty() ? nullptr : block.data(),
+      where.empty() ? nullptr : where.c_str(), &start, &made);
   ::CloseHandle(to_child_read);
   ::CloseHandle(from_child_write);
   ::CloseHandle(from_errors_write);
@@ -235,8 +272,6 @@ extern "C" int32_t wolang_spawn(const uint8_t* command,
   return static_cast<int32_t>(code);
 }
 
-#else
-
 extern "C" int32_t wolang_spawn(const uint8_t* command,
                                 uint64_t length,
                                 const uint8_t* input,
@@ -247,6 +282,27 @@ extern "C" int32_t wolang_spawn(const uint8_t* command,
                                 uint8_t* errors,
                                 uint64_t errors_room,
                                 uint64_t* errors_written) {
+  return wolang_spawn_in(command, length, input, input_length, nullptr,
+                         0, nullptr, 0, out, out_room, out_written,
+                         errors, errors_room, errors_written);
+}
+
+#else
+
+extern "C" int32_t wolang_spawn_in(const uint8_t* command,
+                                   uint64_t length,
+                                   const uint8_t* input,
+                                   uint64_t input_length,
+                                   const uint8_t* directory,
+                                   uint64_t directory_length,
+                                   const uint8_t* environment,
+                                   uint64_t environment_length,
+                                   uint8_t* out,
+                                   uint64_t out_room,
+                                   uint64_t* out_written,
+                                   uint8_t* errors,
+                                   uint64_t errors_room,
+                                   uint64_t* errors_written) {
   if (command == nullptr || length == 0) {
     return -1;
   }
@@ -255,6 +311,33 @@ extern "C" int32_t wolang_spawn(const uint8_t* command,
   if (words.empty()) {
     return -1;
   }
+  // `NAME=value` lines, which is what the child's environment is made
+  // of: added to what this process has rather than replacing it, because
+  // a child with no `PATH` cannot find anything (D179).
+  std::vector<std::string> added;
+  if (environment != nullptr && environment_length != 0) {
+    std::string held(reinterpret_cast<const char*>(environment),
+                     static_cast<size_t>(environment_length));
+    size_t start = 0;
+    while (start <= held.size()) {
+      const size_t end = held.find('\n', start);
+      const std::string line = held.substr(
+          start, end == std::string::npos ? std::string::npos
+                                          : end - start);
+      if (!line.empty()) {
+        added.push_back(line);
+      }
+      if (end == std::string::npos) {
+        break;
+      }
+      start = end + 1;
+    }
+  }
+  const std::string where =
+      directory != nullptr && directory_length != 0
+          ? std::string(reinterpret_cast<const char*>(directory),
+                        static_cast<size_t>(directory_length))
+          : std::string();
   std::vector<char*> argv;
   argv.reserve(words.size() + 1);
   for (const std::string& word : words) {
@@ -297,6 +380,19 @@ extern "C" int32_t wolang_spawn(const uint8_t* command,
     ::close(from_child[1]);
     ::close(from_errors[0]);
     ::close(from_errors[1]);
+    if (!where.empty()) {
+      if (::chdir(where.c_str()) != 0) {
+        ::_exit(127);
+      }
+    }
+    for (const std::string& line : added) {
+      const size_t equals = line.find('=');
+      if (equals == std::string::npos) {
+        continue;
+      }
+      ::setenv(line.substr(0, equals).c_str(),
+               line.substr(equals + 1).c_str(), 1);
+    }
     ::execvp(argv[0], argv.data());
     // Only reached when the program is not there, and the parent reads
     // the code rather than the message.
@@ -342,6 +438,21 @@ extern "C" int32_t wolang_spawn(const uint8_t* command,
     return -WTERMSIG(status);
   }
   return -1;
+}
+
+extern "C" int32_t wolang_spawn(const uint8_t* command,
+                                uint64_t length,
+                                const uint8_t* input,
+                                uint64_t input_length,
+                                uint8_t* out,
+                                uint64_t out_room,
+                                uint64_t* out_written,
+                                uint8_t* errors,
+                                uint64_t errors_room,
+                                uint64_t* errors_written) {
+  return wolang_spawn_in(command, length, input, input_length, nullptr,
+                         0, nullptr, 0, out, out_room, out_written,
+                         errors, errors_room, errors_written);
 }
 
 #endif  // the system
