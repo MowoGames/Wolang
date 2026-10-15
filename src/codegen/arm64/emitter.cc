@@ -168,23 +168,15 @@ class FunctionEmitter {
     }
     const std::span<const ir::InstId> params =
         function_.ParamsOf(function_.entry());
-    uint32_t integers = 0;
-    uint32_t floats = 0;
     for (ir::InstId param : params) {
       const TypeId type = function_.Get(param).type;
       if (!layouts_.IsSupported(type)) {
         return "takes " + Describe(type);
       }
-      if (layouts_.ClassOf(type) == abi::ValueClass::kFloat) {
-        ++floats;
-      } else {
-        ++integers;
-      }
     }
-    if (integers > std::size(kArgumentRegisters) ||
-        floats > std::size(kFloatArgumentRegisters)) {
-      return "takes more arguments than registers";
-    }
+    // Nothing about the number of arguments: what does not fit the
+    // registers goes on the stack, which this tier now lays out for both
+    // sides of a call (D154).
 
     const TypeId returned = types_.ElementOf(function_.type);
     if (returned.is_valid() && !layouts_.IsSupported(returned)) {
@@ -296,8 +288,55 @@ class FunctionEmitter {
     }
   }
 
+  // The bytes a call in this function needs below the stack pointer.
+  //
+  // Eight integer and eight float registers carry arguments here; past
+  // those, everything goes on the stack in the order it was written,
+  // eight bytes each.
+  uint32_t OutgoingBytes() const {
+    uint32_t most = 0;
+    for (const ir::Inst& inst : function_.instructions) {
+      if (inst.opcode != ir::Opcode::kCall &&
+          inst.opcode != ir::Opcode::kCallIndirect &&
+          inst.opcode != ir::Opcode::kVirtualCall) {
+        continue;
+      }
+      const std::span<const ir::InstId> all = function_.OperandsOf(inst);
+      const size_t first =
+          inst.opcode == ir::Opcode::kCall ? 0 : 1;
+      uint32_t integers = 0;
+      uint32_t floats = 0;
+      uint32_t spilled = 0;
+      for (size_t i = first; i < all.size(); ++i) {
+        const abi::ValueClass value_class =
+            layouts_.ClassOf(TypeOf(all[i]));
+        if (value_class == abi::ValueClass::kVoid) {
+          continue;
+        }
+        if (value_class == abi::ValueClass::kFloat) {
+          if (floats < std::size(kFloatArgumentRegisters)) {
+            ++floats;
+            continue;
+          }
+        } else if (integers < std::size(kArgumentRegisters)) {
+          ++integers;
+          continue;
+        }
+        ++spilled;
+      }
+      most = std::max(most, spilled * 8);
+    }
+    return most;
+  }
+
   std::string LayOutFrame() {
     uint32_t offset = 0;
+    // Room for whatever a call in this function has to pass on the
+    // stack, at the very bottom of the frame: this ABI wants the first
+    // such argument at the stack pointer itself. Sized by the hungriest
+    // call, because they do not happen at the same time (D154).
+    outgoing_bytes_ = abi::AlignUp(OutgoingBytes(), 16);
+    offset += outgoing_bytes_;
     saved_integers_ = allocation_.integers_used;
     saved_floats_ = allocation_.floats_used;
     saved_base_ = offset;
@@ -876,9 +915,52 @@ class FunctionEmitter {
         function_.ParamsOf(function_.entry());
     uint32_t integers = 0;
     uint32_t floats = 0;
+    uint32_t spilled = 0;
     for (ir::InstId param : params) {
       const TypeId type = TypeOf(param);
       const abi::ValueClass value_class = layouts_.ClassOf(type);
+
+      // Past the registers: the caller left it above this frame -- the
+      // frame record and the frame itself are between the stack pointer
+      // and where it put them (D154).
+      const bool on_stack =
+          value_class == abi::ValueClass::kFloat
+              ? floats >= std::size(kFloatArgumentRegisters)
+              : (value_class != abi::ValueClass::kVoid &&
+                 integers >= std::size(kArgumentRegisters));
+      if (on_stack) {
+        const int32_t where = static_cast<int32_t>(
+            16 + frame_bytes_ + spilled * 8);
+        ++spilled;
+        if (value_class == abi::ValueClass::kFloat) {
+          const FloatRegister scratch = FloatRegister::kV16;
+          assembler_.LdrFloat(FWidth::k64, scratch, Register::kSp, where);
+          if (Info(param).allocation.in_register()) {
+            assembler_.FMov(FWidth::k64,
+                            FloatPoolRegister(Info(param).allocation.reg),
+                            scratch);
+          } else {
+            FinishFloat(param, scratch);
+          }
+          continue;
+        }
+        const Register scratch = Scratch(1);
+        assembler_.Ldr(IWidth::k64, scratch, Register::kSp, where);
+        if (value_class == abi::ValueClass::kAggregate) {
+          const Register area = Scratch(2);
+          AreaAddress(area, Info(param).area);
+          CopyBytes(area, 0, scratch, 0, layouts_.SizeOf(type), 3);
+          continue;
+        }
+        if (Info(param).allocation.in_register()) {
+          assembler_.Mov(IWidth::k64,
+                         PoolRegister(Info(param).allocation.reg), scratch);
+        } else {
+          FinishInt(param, scratch);
+        }
+        continue;
+      }
+
       if (value_class == abi::ValueClass::kFloat) {
         const FloatRegister source = kFloatArgumentRegisters[floats++];
         if (Info(param).allocation.in_register()) {
@@ -1680,28 +1762,9 @@ class FunctionEmitter {
 
     uint32_t integers = 0;
     uint32_t floats = 0;
+    uint32_t spilled = 0;
     for (size_t index = 1; index < all.size(); ++index) {
-      const ir::InstId operand = all[index];
-      const TypeId type = TypeOf(operand);
-      switch (layouts_.ClassOf(type)) {
-        case abi::ValueClass::kFloat: {
-          const FloatRegister source = UseFloat(operand, 0);
-          assembler_.FMov(FWidth::k64, kFloatArgumentRegisters[floats++],
-                          source);
-          break;
-        }
-        case abi::ValueClass::kAggregate:
-          AreaAddress(kArgumentRegisters[integers++], Info(operand).area);
-          break;
-        case abi::ValueClass::kVoid:
-          break;
-        default: {
-          const Register source = UseInt(operand, 0);
-          assembler_.Mov(IWidth::k64, kArgumentRegisters[integers++],
-                         source);
-          break;
-        }
-      }
+      PassArgument(all[index], &integers, &floats, &spilled);
     }
 
     const Register target = kCallScratch;
@@ -1709,6 +1772,53 @@ class FunctionEmitter {
                    static_cast<int32_t>(virtual_target_));
     assembler_.Blr(target);
     StoreResult(id, returned, indirect);
+  }
+
+  // One argument into the place this ABI wants it: a register while
+  // there is one, and the outgoing area at the stack pointer after that
+  // (D154).
+  void PassArgument(ir::InstId operand, uint32_t* integers,
+                    uint32_t* floats, uint32_t* spilled) {
+    const TypeId type = TypeOf(operand);
+    const abi::ValueClass value_class = layouts_.ClassOf(type);
+    if (value_class == abi::ValueClass::kVoid) {
+      return;
+    }
+    const bool on_stack =
+        value_class == abi::ValueClass::kFloat
+            ? *floats >= std::size(kFloatArgumentRegisters)
+            : *integers >= std::size(kArgumentRegisters);
+    if (on_stack) {
+      const int32_t where = static_cast<int32_t>(*spilled * 8);
+      ++*spilled;
+      if (value_class == abi::ValueClass::kFloat) {
+        assembler_.StrFloat(FWidth::k64, UseFloat(operand, 0),
+                            Register::kSp, where);
+        return;
+      }
+      if (value_class == abi::ValueClass::kAggregate) {
+        const Register area = Scratch(0);
+        AreaAddress(area, Info(operand).area);
+        assembler_.Str(IWidth::k64, area, Register::kSp, where);
+        return;
+      }
+      assembler_.Str(IWidth::k64, UseInt(operand, 0), Register::kSp,
+                     where);
+      return;
+    }
+    switch (value_class) {
+      case abi::ValueClass::kFloat:
+        assembler_.FMov(FWidth::k64, kFloatArgumentRegisters[(*floats)++],
+                        UseFloat(operand, 0));
+        break;
+      case abi::ValueClass::kAggregate:
+        AreaAddress(kArgumentRegisters[(*integers)++], Info(operand).area);
+        break;
+      default:
+        assembler_.Mov(IWidth::k64, kArgumentRegisters[(*integers)++],
+                       UseInt(operand, 0));
+        break;
+    }
   }
 
   void EmitCall(ir::InstId id, const ir::Inst& inst) {
@@ -1731,29 +1841,10 @@ class FunctionEmitter {
 
     uint32_t integers = 0;
     uint32_t floats = 0;
+    uint32_t spilled = 0;
     for (size_t index = indirect_callee ? 1 : 0; index < all.size();
          ++index) {
-      const ir::InstId operand = all[index];
-      const TypeId type = TypeOf(operand);
-      switch (layouts_.ClassOf(type)) {
-        case abi::ValueClass::kFloat: {
-          const FloatRegister source = UseFloat(operand, 0);
-          assembler_.FMov(FWidth::k64, kFloatArgumentRegisters[floats++],
-                          source);
-          break;
-        }
-        case abi::ValueClass::kAggregate:
-          AreaAddress(kArgumentRegisters[integers++], Info(operand).area);
-          break;
-        case abi::ValueClass::kVoid:
-          break;
-        default: {
-          const Register source = UseInt(operand, 0);
-          assembler_.Mov(IWidth::k64, kArgumentRegisters[integers++],
-                         source);
-          break;
-        }
-      }
+      PassArgument(all[index], &integers, &floats, &spilled);
     }
 
     if (indirect_callee) {
@@ -2656,6 +2747,7 @@ class FunctionEmitter {
   bool indirect_ = false;
   uint32_t indirect_base_ = 0;
   uint32_t frame_bytes_ = 0;
+  uint32_t outgoing_bytes_ = 0;
   // Every `alloca`'s area, which the prologue zeroes.
   std::vector<std::pair<uint32_t, uint32_t>> slots_;
 

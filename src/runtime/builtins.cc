@@ -14,6 +14,7 @@
 #include "wolang/runtime/trap.h"
 #include "wolang/runtime/world.h"
 #include "wolang/runtime/signal.h"
+#include "wolang/runtime/spawn.h"
 #include "wolang/runtime/text.h"
 
 #include "wolang/runtime/scheduler.h"
@@ -151,6 +152,7 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_args_count)},
       {"wolang_args_at", reinterpret_cast<void*>(&wolang_args_at)},
       {"wolang_resolve", reinterpret_cast<void*>(&wolang_resolve)},
+      {"wolang_spawn", reinterpret_cast<void*>(&wolang_spawn)},
       {"wolang_env_get", reinterpret_cast<void*>(&wolang_env_get)},
       {"wolang_env_set", reinterpret_cast<void*>(&wolang_env_set)},
       {"wolang_report", reinterpret_cast<void*>(&wolang_report)},

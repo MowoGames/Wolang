@@ -1877,3 +1877,43 @@ called a block unreachable from the entry. The builder can now be
 poisoned: after such a join, everything appended is dropped until the
 next block begins. An empty unreachable block is something both the
 verifier and the passes already ignore.
+
+**D153. Another program, with pipes.** `std.process.Run` hands a string
+to the shell and answers an exit code: enough for a build step, wrong for
+a tool. `Start` and `StartWith` are `fork` and `exec` with three pipes --
+the output, the error stream and the code, and the input written to it --
+and no shell, because a command built out of a string is where the oldest
+hole in computing lives. The command is split on blanks with quoted runs
+kept whole, which is how a path with a space in it survives without a
+shell being involved.
+
+Two lowering bugs came out of writing the binding. What goes into a place
+is of the *place's* type: `var p: *u8 = &xs[0]` makes a pointer that may
+be written where the place holds one that may not, and a slot whose
+stores disagree with its own type is one the passes promote into a block
+parameter that disagrees too. Both the declaration and the assignment now
+coerce, which is the same rule as D127 one level down.
+
+**D154. Arguments past the registers.** Eight integer registers carry
+arguments on arm64 and six on x86-64. Past those, the dev tier indexed
+its table of argument registers without checking -- so a call with more
+arguments read whatever followed the table in memory and passed nonsense,
+in silence, while the tier's own refusal list claimed such a function was
+skipped. Two bugs that hid each other: the refusal made the garbage rare,
+and the garbage made the refusal look prudent.
+
+Both now do what the ABI says. A frame reserves an outgoing area at the
+stack pointer, sized by the hungriest call in the function, and arguments
+past the registers are stored there; a parameter past the registers is
+read from above the frame, where the caller left it. The refusal is gone,
+because there is nothing left to refuse.
+
+The interpreter's way out of the language had the same bound and reported
+it as "symbol was not found", which sends a person looking in the wrong
+place. It builds one thunk per number of stack arguments -- so the copies
+are a fixed sequence of immediate-offset stores rather than arithmetic on
+the stack pointer -- and says `kTooManyArguments` when there are more
+than it will build for.
+
+This is what `glTexImage2D` needs (nine arguments), and what every
+windowing and graphics binding needs after it.

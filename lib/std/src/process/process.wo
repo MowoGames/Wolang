@@ -5,7 +5,7 @@
 // it. A program that builds a command out of something a user typed has a
 // hole, and `uses unsafe` is where that responsibility is recorded.
 
-need std.text.{BuilderNew}
+need std.text.{Bytes, BuilderNew, TextFromRaw}
 
 extern "C" fun exit(code: s32)
 extern "C" fun getpid() -> s32
@@ -75,4 +75,110 @@ fun RunsACommand() -> bool uses unsafe {
 fun SleepsAndComesBack() -> bool uses unsafe {
   Sleep(1)
   return true
+}
+
+// ------------------------------------------------ starting another program ---
+//
+// `Run` hands a string to the shell, which is enough for a build step
+// and wrong for everything else: a tool wants the output, the error
+// stream and the code, and a command built out of user input must not
+// reach a shell at all (D153).
+
+need std.mem.{ArrayNew, Free}
+
+extern "C" fun wolang_spawn(command: *u8, length: u64, input: *u8,
+                            input_length: u64, out: *mut u8,
+                            out_room: u64, out_written: *mut u64,
+                            errors: *mut u8, errors_room: u64,
+                            errors_written: *mut u64) -> s32
+
+/// What another program did.
+offer struct Said {
+  /// Its exit code, or a negative number when the system stopped it or
+  /// it could not be started at all.
+  var code: int = -1
+  var out: text = ""
+  var errors: text = ""
+}
+
+/// How much of each stream to keep. A program that says more than this
+/// has the rest dropped, which beats a tool that grows without bound.
+offer const kMostOutput: int = 1048576
+
+/// Runs `command` and collects what it said.
+///
+/// No shell: the command is split on blanks with quoted runs kept
+/// whole, and the program is started directly. Which is the difference
+/// between running `git` and running whatever a `;` in an argument says
+/// (D153).
+offer fun Start(command: text) -> Said uses unsafe {
+  return StartWith(command, "")
+}
+
+/// The same, with `input` written to the program's standard input.
+offer fun StartWith(command: text, input: text) -> Said uses unsafe {
+  const bytes = Bytes(command)
+  if bytes.len == 0 {
+    return Said(-1, "", "")
+  }
+  var out = ArrayNew<u8>(kMostOutput)
+  var errors = ArrayNew<u8>(kMostOutput)
+  var out_written: u64 = 0
+  var errors_written: u64 = 0
+
+  const given = Bytes(input)
+  var input_at: *u8 = &out[0]
+  var input_length: u64 = 0
+  if given.len != 0 {
+    input_at = &given[0]
+    input_length = given.len as u64
+  }
+
+  const code = wolang_spawn(&bytes[0], bytes.len as u64, input_at,
+                            input_length, &mut out[0],
+                            kMostOutput as u64, &mut out_written,
+                            &mut errors[0], kMostOutput as u64,
+                            &mut errors_written)
+
+  // Copied out, because the buffers go back and the text must not.
+  var said = BuilderNew()
+  said.Append(TextFromRaw(&out[0], out_written as int))
+  var complained = BuilderNew()
+  complained.Append(TextFromRaw(&errors[0], errors_written as int))
+  Free(out)
+  Free(errors)
+  return Said(code as int, said.Release(), complained.Release())
+}
+
+/// Whether `command` exists and ran without complaint.
+offer fun Works(command: text) -> bool uses unsafe {
+  return Start(command).code == 0
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun CollectsWhatAProgramSaid() -> bool uses unsafe {
+  const said = Start("echo hello from the child")
+  const failed = Start("sh -c 'exit 3'")
+  const missing = Start("this-program-does-not-exist")
+  return said.code == 0 && said.out == "hello from the child\n" &&
+         said.errors == "" && failed.code == 3 && missing.code == 127
+}
+
+@Test
+fun WritesToAProgramsInput() -> bool uses unsafe {
+  // `cat` gives back whatever it was given, which is the shortest round
+  // trip through a pipe there is.
+  const said = StartWith("cat", "through the pipe")
+  const counted = StartWith("wc -c", "12345")
+  return said.code == 0 && said.out == "through the pipe" &&
+         counted.code == 0 && counted.out.len > 0
+}
+
+@Test
+fun KeepsQuotedWordsWhole() -> bool uses unsafe {
+  // One argument with a blank in it, which is what the quoting is for.
+  const said = Start("echo 'one argument'")
+  return said.code == 0 && said.out == "one argument\n"
 }

@@ -703,16 +703,19 @@ WOLANG_TEST(CodegenTest, SaysWhatItCannotCompile) {
   // A tier that compiles what it can has to say what it did not, or "why
   // is this slow" has no answer.
   Fixture f(R"(
+class Held { var value: int = 0 }
+
 fun Many(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int,
          i: int, j: int) -> int => a + j
 
+fun Keeps(held: Held) -> int => held.value
+
 fun Count(n: int) -> int => n + 1
 )");
-  // Ten arguments, eight registers. A string is not on the list any
-  // more: owned or borrowed, it is a pointer and a length, and both are
-  // registers (D127).
-  WOLANG_EXPECT_EQ(f.Skipped("Many"),
-                   "takes more arguments than registers");
+  // Ten arguments is no longer one of the reasons: what does not fit the
+  // registers goes on the stack (D154). A class is -- it needs the
+  // collector, which this tier does not emit.
+  WOLANG_EXPECT_EQ(f.Skipped("Many"), "");
   WOLANG_EXPECT_EQ(f.Skipped("Count"), "");
 }
 
@@ -2308,6 +2311,57 @@ fun EveryFlipFires() -> int {
   WOLANG_EXPECT_EQ(f.Run("FollowsAlways", {}), "110");
   WOLANG_EXPECT_EQ(f.Run("ComesBack", {}), "11");
   WOLANG_EXPECT_EQ(f.Run("EveryFlipFires", {}), "11");
+}
+
+WOLANG_TEST(CodegenTest, PassesArgumentsPastTheRegisters) {
+  // Eight integer registers carry arguments on arm64 and six on x86-64,
+  // and the dev tier indexed its table of them without checking -- so a
+  // call with more arguments than that read whatever followed the table
+  // and passed nonsense, in silence. What makes this a test rather than a
+  // fixed bound is that the two machines have different bounds and the
+  // third tier has none (D154).
+  Fixture f(R"(
+fun Ten(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int,
+        i: int, j: int) -> int {
+  return a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8 +
+         i * 9 + j * 10
+}
+
+fun TenFloats(a: float, b: float, c: float, d: float, e: float, f: float,
+              g: float, h: float, i: float, j: float) -> float {
+  return a + b * 2.0 + c * 3.0 + d * 4.0 + e * 5.0 + f * 6.0 + g * 7.0 +
+         h * 8.0 + i * 9.0 + j * 10.0
+}
+
+fun Mixed(a: int, b: float, c: int, d: float, e: int, f: float, g: int,
+          h: float, i: int, j: float, k: int, l: float) -> int {
+  return a + c + e + g + i + k + (b + d + f + h + j + l) as int
+}
+
+fun Calls() -> int {
+  return Ten(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+}
+
+fun CallsWithFloats() -> int {
+  return TenFloats(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+                   10.0) as int
+}
+
+fun CallsMixed() -> int {
+  return Mixed(1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5)
+}
+
+fun NestedCalls() -> int {
+  // A call inside a call: the outgoing area is reused, and the inner one
+  // must be done with it before the outer one starts filling it.
+  return Ten(Ten(1, 1, 1, 1, 1, 1, 1, 1, 1, 1), 2, 3, 4, 5, 6, 7, 8, 9,
+             10)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Calls", {}), "385");
+  WOLANG_EXPECT_EQ(f.Run("CallsWithFloats", {}), "385");
+  WOLANG_EXPECT_EQ(f.Run("CallsMixed", {}), "45");
+  WOLANG_EXPECT_EQ(f.Run("NestedCalls", {}), "439");
 }
 
 }  // namespace

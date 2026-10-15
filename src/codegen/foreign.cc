@@ -5,8 +5,9 @@
 
 #include <dlfcn.h>
 
-#include <string>
 #include <cstring>
+#include <map>
+#include <string>
 #include <vector>
 
 #include "wolang/codegen/arm64/assembler.h"
@@ -19,6 +20,12 @@ namespace wolang {
 namespace codegen {
 namespace {
 
+// How many arguments past the registers a call out of the language can
+// pass. Twenty-four is more than any C function a person binds by hand
+// wants, and the cap exists so that the thunks a program builds stay a
+// handful rather than one per shape it happens to call (D154).
+constexpr uint32_t kMostSpilled = 24;
+
 #if defined(__aarch64__) || defined(_M_ARM64)
 
 using arm64::Assembler;
@@ -30,18 +37,84 @@ using IWidth = arm64::Width;
 constexpr uint32_t kMaxRegisterArguments = 8;
 
 // void Thunk(void* target, const uint64_t* integers,
-//            const uint64_t* floats, uint64_t* result, uint64_t flags)
+//            const uint64_t* floats, uint64_t* result, uint64_t flags,
+//            const uint64_t* spilled)
 //
 // Every argument register is loaded whether the callee reads it or not: the
 // ABI lets a caller pass more than is taken, and one thunk is worth more
 // than a cache of them. A variadic callee is the exception, and the C
 // boundary does not admit one.
 using Thunk = void (*)(const void*, const uint64_t*, const uint64_t*,
-                       uint64_t*, uint64_t);
+                       uint64_t*, uint64_t, const uint64_t*);
 
 class Caller : public interp::ForeignCaller {
  public:
-  bool Build() {
+  bool Build() { return Thunked(0) != nullptr; }
+
+  interp::ForeignOutcome Call(
+      std::string_view symbol,
+      std::span<const interp::ForeignArgument> arguments,
+      bool returns_float,
+      uint64_t* result) override {
+    uint64_t integers[kMaxRegisterArguments] = {};
+    uint64_t floats[kMaxRegisterArguments] = {};
+    std::vector<uint64_t> spilled;
+    uint32_t integer_count = 0;
+    uint32_t float_count = 0;
+    for (const interp::ForeignArgument& argument : arguments) {
+      if (argument.is_float) {
+        if (float_count < kMaxRegisterArguments) {
+          floats[float_count++] = argument.bits;
+          continue;
+        }
+      } else if (integer_count < kMaxRegisterArguments) {
+        integers[integer_count++] = argument.bits;
+        continue;
+      }
+      // Past the registers this ABI has: the rest go on the stack, in
+      // the order they were written (D154).
+      spilled.push_back(argument.bits);
+    }
+    if (spilled.size() > kMostSpilled) {
+      return interp::ForeignOutcome::kTooManyArguments;
+    }
+
+    const Thunk thunk = Thunked(static_cast<uint32_t>(spilled.size()));
+    if (thunk == nullptr) {
+      return interp::ForeignOutcome::kTooManyArguments;
+    }
+    const std::string name(symbol);
+    void* target = runtime::LookupSymbol(name);
+    if (target == nullptr) {
+      target = ::dlsym(RTLD_DEFAULT, name.c_str());
+    }
+    if (target == nullptr) {
+      return interp::ForeignOutcome::kNoSymbol;
+    }
+
+    uint64_t raw = 0;
+    thunk(target, integers, floats, &raw, returns_float ? 1 : 0,
+          spilled.empty() ? nullptr : spilled.data());
+    *result = raw;
+    return interp::ForeignOutcome::kCalled;
+  }
+
+ private:
+  // One thunk per number of stack arguments, built the first time that
+  // many are passed. Which is how the copies can be a fixed sequence of
+  // immediate-offset loads and stores rather than a loop that has to do
+  // arithmetic on the stack pointer.
+  Thunk Thunked(uint32_t spilled) {
+    if (spilled > kMostSpilled) {
+      return nullptr;
+    }
+    if (auto found = thunks_.find(spilled); found != thunks_.end()) {
+      return found->second.is_installed()
+                 ? reinterpret_cast<Thunk>(
+                       const_cast<void*>(found->second.AddressOf(0)))
+                 : nullptr;
+    }
+
     Assembler a;
     a.StpPreIndex(Register::kX29, Register::kX30, Register::kSp, -32);
     a.AddImm(IWidth::k64, Register::kX29, Register::kSp, 0);
@@ -52,6 +125,20 @@ class Caller : public interp::ForeignCaller {
     a.Mov(IWidth::k64, Register::kX16, Register::kX0);
     a.Mov(IWidth::k64, Register::kX9, Register::kX1);
     a.Mov(IWidth::k64, Register::kX10, Register::kX2);
+    a.Mov(IWidth::k64, Register::kX11, Register::kX5);
+
+    // Room for the stack arguments, kept a multiple of sixteen because
+    // this ABI requires the stack pointer to be.
+    const uint32_t room = ((spilled * 8) + 15) / 16 * 16;
+    if (room != 0) {
+      a.SubImm(IWidth::k64, Register::kSp, Register::kSp, room);
+      for (uint32_t i = 0; i < spilled; ++i) {
+        a.Ldr(IWidth::k64, Register::kX12, Register::kX11,
+              static_cast<int32_t>(i * 8));
+        a.Str(IWidth::k64, Register::kX12, Register::kSp,
+              static_cast<int32_t>(i * 8));
+      }
+    }
 
     for (uint32_t i = 0; i < kMaxRegisterArguments; ++i) {
       a.LdrFloat(FWidth::k64, static_cast<FloatRegister>(i), Register::kX10,
@@ -63,6 +150,11 @@ class Caller : public interp::ForeignCaller {
     }
     a.Blr(Register::kX16);
 
+    if (room != 0) {
+      // Back to the frame, so that what was saved below it is where this
+      // expects to find it.
+      a.AddImm(IWidth::k64, Register::kSp, Register::kSp, room);
+    }
     a.Ldr(IWidth::k64, Register::kX9, Register::kSp, 16);
     a.Ldr(IWidth::k64, Register::kX10, Register::kSp, 24);
     const arm64::Label floating = a.CreateLabel();
@@ -82,53 +174,14 @@ class Caller : public interp::ForeignCaller {
     if (!words.empty()) {
       std::memcpy(code.data(), words.data(), code.size());
     }
-    return block_.Install(code);
+    CodeBlock& block = thunks_[spilled];
+    if (!block.Install(code)) {
+      return nullptr;
+    }
+    return reinterpret_cast<Thunk>(const_cast<void*>(block.AddressOf(0)));
   }
 
-  bool Call(std::string_view symbol,
-            std::span<const interp::ForeignArgument> arguments,
-            bool returns_float,
-            uint64_t* result) override {
-    if (!block_.is_installed()) {
-      return false;
-    }
-    const std::string name(symbol);
-    void* target = runtime::LookupSymbol(name);
-    if (target == nullptr) {
-      target = ::dlsym(RTLD_DEFAULT, name.c_str());
-    }
-    if (target == nullptr) {
-      return false;
-    }
-
-    uint64_t integers[kMaxRegisterArguments] = {};
-    uint64_t floats[kMaxRegisterArguments] = {};
-    uint32_t integer_count = 0;
-    uint32_t float_count = 0;
-    for (const interp::ForeignArgument& argument : arguments) {
-      if (argument.is_float) {
-        if (float_count >= kMaxRegisterArguments) {
-          return false;
-        }
-        floats[float_count++] = argument.bits;
-        continue;
-      }
-      if (integer_count >= kMaxRegisterArguments) {
-        return false;
-      }
-      integers[integer_count++] = argument.bits;
-    }
-
-    const auto thunk =
-        reinterpret_cast<Thunk>(const_cast<void*>(block_.AddressOf(0)));
-    uint64_t raw = 0;
-    thunk(target, integers, floats, &raw, returns_float ? 1 : 0);
-    *result = raw;
-    return true;
-  }
-
- private:
-  CodeBlock block_;
+  std::map<uint32_t, CodeBlock> thunks_;
 };
 
 #elif defined(__x86_64__) || defined(_M_X64)
@@ -147,20 +200,81 @@ constexpr uint32_t kMaxIntegerArguments = 6;
 constexpr uint32_t kMaxFloatArguments = 8;
 
 using Thunk = void (*)(const void*, const uint64_t*, const uint64_t*,
-                       uint64_t*, uint64_t);
+                       uint64_t*, uint64_t, const uint64_t*);
 
 class Caller : public interp::ForeignCaller {
  public:
-  bool Build() {
+  bool Build() { return Thunked(0) != nullptr; }
+
+  interp::ForeignOutcome Call(
+      std::string_view symbol,
+      std::span<const interp::ForeignArgument> arguments,
+      bool returns_float,
+      uint64_t* result) override {
+    uint64_t integers[kMaxIntegerArguments] = {};
+    uint64_t floats[kMaxFloatArguments] = {};
+    std::vector<uint64_t> spilled;
+    uint32_t integer_count = 0;
+    uint32_t float_count = 0;
+    for (const interp::ForeignArgument& argument : arguments) {
+      if (argument.is_float) {
+        if (float_count < kMaxFloatArguments) {
+          floats[float_count++] = argument.bits;
+          continue;
+        }
+      } else if (integer_count < kMaxIntegerArguments) {
+        integers[integer_count++] = argument.bits;
+        continue;
+      }
+      spilled.push_back(argument.bits);
+    }
+    if (spilled.size() > kMostSpilled) {
+      return interp::ForeignOutcome::kTooManyArguments;
+    }
+
+    const Thunk thunk = Thunked(static_cast<uint32_t>(spilled.size()));
+    if (thunk == nullptr) {
+      return interp::ForeignOutcome::kTooManyArguments;
+    }
+    const std::string name(symbol);
+    void* target = runtime::LookupSymbol(name);
+    if (target == nullptr) {
+      target = ::dlsym(RTLD_DEFAULT, name.c_str());
+    }
+    if (target == nullptr) {
+      return interp::ForeignOutcome::kNoSymbol;
+    }
+
+    uint64_t raw = 0;
+    thunk(target, integers, floats, &raw, returns_float ? 1 : 0,
+          spilled.empty() ? nullptr : spilled.data());
+    *result = raw;
+    return interp::ForeignOutcome::kCalled;
+  }
+
+ private:
+  Thunk Thunked(uint32_t spilled) {
+    if (spilled > kMostSpilled) {
+      return nullptr;
+    }
+    if (auto found = thunks_.find(spilled); found != thunks_.end()) {
+      return found->second.is_installed()
+                 ? reinterpret_cast<Thunk>(
+                       const_cast<void*>(found->second.AddressOf(0)))
+                 : nullptr;
+    }
+
     Assembler a;
-    const Register result_slot = Register::kRsp;
     a.Push(Register::kRbp);
     a.Mov(IWidth::k64, Register::kRbp, Register::kRsp);
     // Sixteen bytes, which is also what keeps the stack aligned for the
     // call below -- this ABI requires that and some callees check it.
     a.SubImmediate(IWidth::k64, Register::kRsp, 16);
-    a.Store(IWidth::k64, Address{result_slot, 0}, Register::kRcx);
-    a.Store(IWidth::k64, Address{result_slot, 8}, Register::kR8);
+    // Below the frame pointer rather than at the stack pointer, because
+    // pushing the stack arguments moves the stack pointer and these two
+    // have to still be findable afterwards (D154).
+    a.Store(IWidth::k64, Address{Register::kRbp, -8}, Register::kRcx);
+    a.Store(IWidth::k64, Address{Register::kRbp, -16}, Register::kR8);
 
     // The target and the integer array go where no argument register is,
     // so that loading the arguments cannot overwrite either.
@@ -171,6 +285,21 @@ class Caller : public interp::ForeignCaller {
     for (uint32_t i = 0; i < kMaxFloatArguments; ++i) {
       a.LoadFloat(FWidth::k64, static_cast<XmmRegister>(i),
                   Address{Register::kRdx, static_cast<int32_t>(i * 8)});
+    }
+    // Then the stack arguments, while the pointer to them is still in
+    // `r9` -- the sixth integer argument register. Pushed back to front,
+    // so that the first one ends up at the lowest address, and with a
+    // pad when there is an odd number of them so that the stack stays
+    // aligned.
+    if (spilled != 0) {
+      if ((spilled % 2) != 0) {
+        a.Push(Register::kRax);
+      }
+      for (uint32_t i = spilled; i > 0; --i) {
+        a.Load(IWidth::k64, Register::kRax,
+               Address{Register::kR9, static_cast<int32_t>((i - 1) * 8)});
+        a.Push(Register::kRax);
+      }
     }
     static constexpr Register kIntegerArguments[kMaxIntegerArguments] = {
         Register::kRdi, Register::kRsi, Register::kRdx,
@@ -185,8 +314,8 @@ class Caller : public interp::ForeignCaller {
     a.MovImmediate(IWidth::k32, Register::kRax, kMaxFloatArguments);
     a.CallRegister(Register::kR10);
 
-    a.Load(IWidth::k64, Register::kRcx, Address{result_slot, 0});
-    a.Load(IWidth::k64, Register::kR8, Address{result_slot, 8});
+    a.Load(IWidth::k64, Register::kRcx, Address{Register::kRbp, -8});
+    a.Load(IWidth::k64, Register::kR8, Address{Register::kRbp, -16});
     const x64::Label floating = a.CreateLabel();
     const x64::Label done = a.CreateLabel();
     a.Test(IWidth::k64, Register::kR8, Register::kR8);
@@ -202,53 +331,14 @@ class Caller : public interp::ForeignCaller {
     a.Ret();
     a.Resolve();
 
-    return block_.Install(a.bytes());
+    CodeBlock& block = thunks_[spilled];
+    if (!block.Install(a.bytes())) {
+      return nullptr;
+    }
+    return reinterpret_cast<Thunk>(const_cast<void*>(block.AddressOf(0)));
   }
 
-  bool Call(std::string_view symbol,
-            std::span<const interp::ForeignArgument> arguments,
-            bool returns_float,
-            uint64_t* result) override {
-    if (!block_.is_installed()) {
-      return false;
-    }
-    const std::string name(symbol);
-    void* target = runtime::LookupSymbol(name);
-    if (target == nullptr) {
-      target = ::dlsym(RTLD_DEFAULT, name.c_str());
-    }
-    if (target == nullptr) {
-      return false;
-    }
-
-    uint64_t integers[kMaxIntegerArguments] = {};
-    uint64_t floats[kMaxFloatArguments] = {};
-    uint32_t integer_count = 0;
-    uint32_t float_count = 0;
-    for (const interp::ForeignArgument& argument : arguments) {
-      if (argument.is_float) {
-        if (float_count >= kMaxFloatArguments) {
-          return false;
-        }
-        floats[float_count++] = argument.bits;
-        continue;
-      }
-      if (integer_count >= kMaxIntegerArguments) {
-        return false;
-      }
-      integers[integer_count++] = argument.bits;
-    }
-
-    const auto thunk =
-        reinterpret_cast<Thunk>(const_cast<void*>(block_.AddressOf(0)));
-    uint64_t raw = 0;
-    thunk(target, integers, floats, &raw, returns_float ? 1 : 0);
-    *result = raw;
-    return true;
-  }
-
- private:
-  CodeBlock block_;
+  std::map<uint32_t, CodeBlock> thunks_;
 };
 
 #endif  // the host

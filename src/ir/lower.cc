@@ -1753,6 +1753,20 @@ class Lowerer {
       return builder_->Add(Opcode::kCast, target, {value});
     }
 
+    // A pointer that may be written where one that may not is wanted.
+    // The same address; what differs is a promise the checker already
+    // held us to. Written down because the IR's types are compared
+    // exactly, and a branch that produced one where a slot held the
+    // other was a type mismatch the verifier was right to report
+    // (D153).
+    if (source_type.is_valid() && source_type != target &&
+        types_->KindOf(source_type) == TypeKind::kPointer &&
+        types_->KindOf(target) == TypeKind::kPointer &&
+        Erase(types_->ElementOf(source_type)) ==
+            Erase(types_->ElementOf(target))) {
+      return builder_->Add(Opcode::kCast, target, {value});
+    }
+
     // A derived handle where its base is wanted. Nothing happens at run
     // time -- a base's fields are the first fields of what derives from it
     // (D84), so the address is the same address -- but the IR says so,
@@ -2038,7 +2052,11 @@ class Lowerer {
     // promote the ones that can be is simpler than deciding here.
     const InstId slot = builder_->Add(Opcode::kAlloca, Erase(type));
     if (value.is_valid()) {
-      builder_->Add(Opcode::kStore, TypeId{}, {slot, value});
+      // Of the slot's type, for the same reason an assignment is
+      // (D153): `var p: *u8 = &xs[0]` makes a pointer that may be
+      // written, and the slot holds one that may not.
+      builder_->Add(Opcode::kStore, TypeId{},
+                    {slot, Coerce(value, ValueType(value), Erase(type))});
     }
     locals_.push_back(Local{pattern->name, slot, InstId{}, Erase(type)});
     // The *unerased* type decides who frees: erasing is what loses the
@@ -3763,7 +3781,16 @@ class Lowerer {
 
   InstId LowerAssign(const Expr& expr) {
     const InstId value = Value(expr.rhs);
-    WritePlace(PlaceOf(expr.lhs), value);
+    const Place place = PlaceOf(expr.lhs);
+    // What goes into a place is of the place's type: `p = &xs[0]` makes
+    // a pointer that may be written and the place may hold one that may
+    // not, and a slot whose stores disagree with it is one the passes
+    // then promote into a block parameter that disagrees too (D153).
+    const TypeId held = TypeAt(place);
+    WritePlace(place,
+               held.is_valid()
+                   ? Coerce(value, ValueType(value), held, expr.rhs)
+                   : value);
     // An assignment is a statement, so it produces nothing a caller can use.
     return InstId{};
   }

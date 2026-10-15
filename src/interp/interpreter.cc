@@ -603,9 +603,16 @@ class Interpreter {
                   "language");
     }
     uint64_t result = 0;
-    if (!foreign_->Call(symbol, raw, returns_float, &result)) {
-      return Trap(outcome, TrapKind::kNoBody, "@" + symbol,
-                  "is `extern`, and its symbol was not found");
+    switch (foreign_->Call(symbol, raw, returns_float, &result)) {
+      case ForeignOutcome::kCalled:
+        break;
+      case ForeignOutcome::kNoSymbol:
+        return Trap(outcome, TrapKind::kNoBody, "@" + symbol,
+                    "is `extern`, and its symbol was not found");
+      case ForeignOutcome::kTooManyArguments:
+        return Trap(outcome, TrapKind::kNoBody, "@" + symbol,
+                    "is `extern`, and takes more arguments than a call "
+                    "out of the language can pass");
     }
     CopyBack(&bounced);
 
