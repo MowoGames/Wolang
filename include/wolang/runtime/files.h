@@ -24,6 +24,26 @@ int32_t wolang_open_read(const char* path, uint64_t length);
 // Opens a file for writing, making it or emptying it first.
 int32_t wolang_open_write(const char* path, uint64_t length);
 
+// The rest of a filesystem (D149). Paths arrive as a view with a
+// length, the way every string in this language does.
+int32_t wolang_fs_kind(const uint8_t* path, uint64_t length);
+int64_t wolang_fs_size(const uint8_t* path, uint64_t length);
+int64_t wolang_fs_changed(const uint8_t* path, uint64_t length);
+int32_t wolang_fs_remove(const uint8_t* path, uint64_t length);
+int32_t wolang_fs_rename(const uint8_t* from,
+                         uint64_t from_length,
+                         const uint8_t* to,
+                         uint64_t to_length);
+int32_t wolang_fs_make_directory(const uint8_t* path,
+                                 uint64_t length,
+                                 int32_t parents);
+// The names in a directory, separated by line breaks. How many bytes
+// were written, or -1 when the buffer is too small.
+int64_t wolang_fs_list(const uint8_t* path,
+                       uint64_t length,
+                       uint8_t* into,
+                       uint64_t room);
+
 }  // extern "C"
 
 }  // namespace runtime

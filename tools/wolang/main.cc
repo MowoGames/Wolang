@@ -643,13 +643,18 @@ void OpenLinkedLibraries(Database* database) {
         tries.push_back(library);
       } else {
 #if defined(__APPLE__)
-        tries.push_back("lib" + library + ".dylib");
+        const std::string decorated = "lib" + library + ".dylib";
 #else
-        tries.push_back("lib" + library + ".so");
+        const std::string decorated = "lib" + library + ".so";
 #endif
+        // The named paths *first*: a bare name goes through the loader's
+        // own search, which on macOS finds a shim for `libcrypto` and
+        // warns that it is being loaded unsafely. A manifest that says
+        // where the library is means it (D150).
         for (const std::string& path : package->manifest.link_paths) {
-          tries.push_back(path + "/" + tries.front());
+          tries.push_back(path + "/" + decorated);
         }
+        tries.push_back(decorated);
       }
       for (const std::string& candidate : tries) {
         if (::dlopen(candidate.c_str(), RTLD_NOW | RTLD_GLOBAL) != nullptr) {

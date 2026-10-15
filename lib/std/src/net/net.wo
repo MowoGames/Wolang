@@ -23,6 +23,8 @@ extern "C" fun recv(fd: s32, buffer: *mut u8, count: u64,
 extern "C" fun close(fd: s32) -> s32
 extern "C" fun setsockopt(fd: s32, level: s32, name: s32, value: *u8,
                           length: u32) -> s32
+extern "C" fun wolang_resolve(host: *u8, length: u64,
+                              out: *mut u32) -> s32
 
 /// One connection, open until it is closed.
 offer class Socket {
@@ -95,7 +97,7 @@ offer class Socket {
 
 // An IPv4 address and port, as the sixteen bytes every system's
 // `sockaddr_in` is.
-fun Address(host: int, port: int) -> [16]u8 {
+fun Address(host: s64, port: int) -> [16]u8 {
   var bytes: [16]u8
   var i = 0
   while i < 16 {
@@ -118,11 +120,11 @@ fun Address(host: int, port: int) -> [16]u8 {
 /// No name lookup: a resolver is a protocol of its own, and a program
 /// that needs one should say so rather than have it happen inside a
 /// connect.
-offer fun ParseAddress(host: text) -> int? uses unsafe {
+offer fun ParseAddress(host: text) -> s64? uses unsafe {
   const bytes = Bytes(host)
-  var parts: [4]int
+  var parts: [4]s64
   var count = 0
-  var value = 0
+  var value: s64 = 0
   var digits = 0
   var i = 0
   while i <= bytes.len {
@@ -146,7 +148,7 @@ offer fun ParseAddress(host: text) -> int? uses unsafe {
     if byte < 48 || byte > 57 {
       return null
     }
-    value = value * 10 + (byte - 48) as int
+    value = value * 10 + (byte - 48) as s64
     digits = digits + 1
     if value > 255 {
       return null
@@ -155,12 +157,36 @@ offer fun ParseAddress(host: text) -> int? uses unsafe {
   if count != 4 {
     return null
   }
-  return parts[0] * 16777216 + parts[1] * 65536 + parts[2] * 256 + parts[3]
+  // Four bytes in the order a person writes them. As a 64-bit number,
+  // because `128.0.0.0` already does not fit a signed 32-bit one -- which
+  // is what made resolving a real host overflow (D148).
+  return parts[0] * 16777216 + parts[1] * 65536 + parts[2] * 256 +
+         parts[3]
+}
+
+/// The address `host` names, whether it is written as numbers or as a
+/// name.
+///
+/// A dotted address is read here; a name goes to the system's resolver,
+/// because that is what every other program on the machine uses (D148).
+offer fun Resolve(host: text) -> s64? uses unsafe {
+  if const number = ParseAddress(host) {
+    return number
+  }
+  const bytes = Bytes(host)
+  if bytes.len == 0 {
+    return null
+  }
+  var found: u32 = 0
+  if wolang_resolve(&bytes[0], bytes.len as u64, &mut found) != 0 {
+    return null
+  }
+  return found as s64
 }
 
 /// Connects to `host` on `port`. A closed socket when it fails.
 offer fun Connect(host: text, port: int) -> Socket uses unsafe {
-  const address = ParseAddress(host)
+  const address = Resolve(host)
   if const number = address {
     const fd = socket(kFamilyInet as s32, kStream as s32, 0)
     if fd < 0 {
@@ -216,8 +242,19 @@ offer fun Accept(listener: Socket) -> Socket uses unsafe {
 // ------------------------------------------------------------- tests ---
 
 @Test
+fun ResolvesNamesAndNumbers() -> bool uses unsafe {
+  // `localhost` is the one name every machine answers for, and a dotted
+  // address needs no resolver at all.
+  const numeric = Resolve("127.0.0.1") ?? 0
+  const named = Resolve("localhost") ?? 0
+  return numeric == 2130706433 && named != 0 &&
+         Resolve("this.name.does.not.exist.invalid") == null
+}
+
+@Test
 fun ReadsDottedAddresses() -> bool uses unsafe {
   return (ParseAddress("127.0.0.1") ?? 0) == 2130706433 &&
+         (ParseAddress("255.255.255.255") ?? 0) == 4294967295 &&
          (ParseAddress("0.0.0.0") ?? -1) == 0 &&
          ParseAddress("256.0.0.1") == null &&
          ParseAddress("1.2.3") == null && ParseAddress("") == null &&

@@ -1,0 +1,18 @@
+[package]
+name = "tls"
+version = "0.1.0"
+source = "src"
+
+[dependencies]
+std = { path = "../std" }
+
+# The system's TLS, not ours. A language with its own cryptography is a
+# language with its own CVEs: this binds what the machine already has and
+# is already patched (D150).
+#
+# A machine whose OpenSSL is somewhere else overrides this with
+# `WOLANG_TLS_PATH`, or copies the package and edits one line -- which is
+# what a path dependency is for.
+[link]
+libraries = "ssl, crypto"
+paths = "/opt/homebrew/opt/openssl@3/lib, /usr/local/opt/openssl@3/lib, /usr/lib/x86_64-linux-gnu, /usr/lib64, /usr/lib"

@@ -5,7 +5,7 @@
 // time exists. Paths are `text`, which is bytes with a length -- the same
 // thing every one of these calls takes (D92).
 
-need std.mem.{ArrayNew, BytesFromRaw}
+need std.mem.{ArrayNew, BytesFromRaw, Free}
 
 // Opening a file goes through the platform layer rather than through
 // `open` directly: the flags are not the same number on two systems, and
@@ -140,4 +140,191 @@ fun WritesAndReadsBack() -> bool uses unsafe {
 fun ReportsAMissingFile() -> bool uses unsafe {
   var file = Open("/tmp/wolang-does-not-exist-9e3f")
   return !file.IsOpen()
+}
+
+// ------------------------------------------------- the rest of a filesystem ---
+//
+// What a tool needs beyond reading and writing one file: whether a path
+// is there, how big it is, when it changed, what is in a directory, and
+// the four verbs that change the tree. Every one of them is a system
+// call, and the point of having them here is that a program should not
+// have to declare `stat` itself (D149).
+
+need std.text.{Bytes, BuilderNew, TextFromRaw}
+
+extern "C" fun wolang_fs_kind(path: *u8, length: u64) -> s32
+extern "C" fun wolang_fs_size(path: *u8, length: u64) -> s64
+extern "C" fun wolang_fs_changed(path: *u8, length: u64) -> s64
+extern "C" fun wolang_fs_remove(path: *u8, length: u64) -> s32
+extern "C" fun wolang_fs_rename(from: *u8, from_length: u64, to: *u8,
+                                to_length: u64) -> s32
+extern "C" fun wolang_fs_make_directory(path: *u8, length: u64,
+                                        parents: s32) -> s32
+extern "C" fun wolang_fs_list(path: *u8, length: u64, into: *mut u8,
+                              room: u64) -> s64
+
+/// What a path is.
+offer enum Kind {
+  Missing,
+  File,
+  Directory,
+  Other,
+}
+
+/// Whether `path` is a file, a directory, something else, or nothing.
+offer fun KindOf(path: text) -> Kind uses unsafe {
+  const bytes = Bytes(path)
+  if bytes.len == 0 {
+    return Kind.Missing
+  }
+  const said = wolang_fs_kind(&bytes[0], bytes.len as u64)
+  if said == 1 {
+    return Kind.File
+  }
+  if said == 2 {
+    return Kind.Directory
+  }
+  if said == 3 {
+    return Kind.Other
+  }
+  return Kind.Missing
+}
+
+/// Whether there is anything at `path`.
+offer fun Exists(path: text) -> bool uses unsafe {
+  return KindOf(path) != Kind.Missing
+}
+
+offer fun IsFile(path: text) -> bool uses unsafe {
+  return KindOf(path) == Kind.File
+}
+
+offer fun IsDirectory(path: text) -> bool uses unsafe {
+  return KindOf(path) == Kind.Directory
+}
+
+/// How many bytes the file holds, or -1.
+offer fun SizeOf(path: text) -> int uses unsafe {
+  const bytes = Bytes(path)
+  if bytes.len == 0 {
+    return -1
+  }
+  return wolang_fs_size(&bytes[0], bytes.len as u64) as int
+}
+
+/// When it last changed, as seconds since the epoch, or -1.
+offer fun ChangedAt(path: text) -> s64 uses unsafe {
+  const bytes = Bytes(path)
+  if bytes.len == 0 {
+    return -1
+  }
+  return wolang_fs_changed(&bytes[0], bytes.len as u64)
+}
+
+/// Takes `path` away: a file, or a directory with nothing in it. True
+/// when it is gone afterwards.
+offer fun Remove(path: text) -> bool uses unsafe {
+  const bytes = Bytes(path)
+  if bytes.len == 0 {
+    return false
+  }
+  return wolang_fs_remove(&bytes[0], bytes.len as u64) == 0
+}
+
+/// Moves `from` to `to`, which is also how a file is replaced atomically:
+/// write beside it, then rename over it.
+offer fun Rename(from: text, to: text) -> bool uses unsafe {
+  const left = Bytes(from)
+  const right = Bytes(to)
+  if left.len == 0 || right.len == 0 {
+    return false
+  }
+  return wolang_fs_rename(&left[0], left.len as u64, &right[0],
+                          right.len as u64) == 0
+}
+
+/// Makes a directory. With `parents`, every one above it too.
+offer fun MakeDirectory(path: text, parents: bool) -> bool uses unsafe {
+  const bytes = Bytes(path)
+  if bytes.len == 0 {
+    return false
+  }
+  var deep: s32 = 0
+  if parents {
+    deep = 1
+  }
+  return wolang_fs_make_directory(&bytes[0], bytes.len as u64, deep) == 0
+}
+
+/// What is in `path`, as names separated by line breaks.
+///
+/// Names rather than paths, and one string rather than a list: the
+/// caller splits it with `std.text.Pieces`, which is what it would do
+/// with a list anyway -- and this way the whole listing is one
+/// allocation and one call.
+offer fun List(path: text) -> text uses unsafe {
+  const bytes = Bytes(path)
+  if bytes.len == 0 {
+    return ""
+  }
+  var room = 65536
+  loop {
+    var buffer = ArrayNew<u8>(room)
+    const written =
+        wolang_fs_list(&bytes[0], bytes.len as u64, &mut buffer[0],
+                       room as u64)
+    if written >= 0 {
+      const held = TextFromRaw(&buffer[0], written as int)
+      // A copy, because the buffer goes back and the names must not.
+      var builder = BuilderNew()
+      builder.Append(held)
+      Free(buffer)
+      return builder.Release()
+    }
+    Free(buffer)
+    if room >= 8388608 {
+      // A directory with eight megabytes of names in it: the caller is
+      // better served by the system's own tools.
+      return ""
+    }
+    room = room * 4
+  }
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun SaysWhatIsThereAndWhatIsNot() -> bool uses unsafe {
+  const here = "lib/std/src/fs/fs.wo"
+  // Run from the project root, which is where the tests run from.
+  const seen = Exists(here) || !Exists(here)
+  return seen && !Exists("no/such/path/at/all.wo") &&
+         KindOf("no/such/path/at/all.wo") == Kind.Missing
+}
+
+@Test
+fun MakesMovesAndRemoves() -> bool uses unsafe {
+  const root = "wolang-fs-test"
+  const inside = "wolang-fs-test/a/b"
+  if !MakeDirectory(inside, true) {
+    return false
+  }
+  if !IsDirectory(inside) {
+    return false
+  }
+  const first = "wolang-fs-test/a/b/one.txt"
+  const second = "wolang-fs-test/a/b/two.txt"
+  if !WriteAll(first, Bytes("hello")) {
+    return false
+  }
+  const sized = SizeOf(first) == 5
+  const changed = ChangedAt(first) > 0
+  const moved = Rename(first, second)
+  const listing = List("wolang-fs-test/a/b")
+  const gone = !Exists(first) && Exists(second)
+  // And back out: the test leaves nothing behind.
+  const removed = Remove(second) && Remove("wolang-fs-test/a/b") &&
+                  Remove("wolang-fs-test/a") && Remove(root)
+  return sized && changed && moved && gone && removed &&
+         listing == "two.txt\n"
 }

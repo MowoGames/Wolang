@@ -1,0 +1,202 @@
+// TLS, as the system implements it.
+//
+// This is a binding, not an implementation: `SSL_connect` and friends
+// from OpenSSL, which the machine already has and already patches. A
+// language that shipped its own cryptography would be shipping its own
+// CVEs, and nobody wants that from a language (D150).
+//
+// What is here is the little that a client needs: a context, a
+// connection over a socket, read, write, close -- and the verification
+// that makes TLS worth having. `Stream` is the shape `std.net.Socket`
+// has, so code that speaks one can speak the other.
+
+need std.net.{Connect, Socket}
+need std.mem.{ArrayNew, Free}
+need std.text.{BuilderNew, Bytes}
+
+// The handful of calls a TLS client makes. Opaque pointers throughout:
+// what is behind them is OpenSSL's business.
+extern "C" fun TLS_client_method() -> *mut u8
+extern "C" fun SSL_CTX_new(method: *mut u8) -> *mut u8
+extern "C" fun SSL_CTX_free(context: *mut u8)
+extern "C" fun SSL_CTX_set_verify(context: *mut u8, mode: s32,
+                                  callback: u64)
+extern "C" fun SSL_CTX_set_default_verify_paths(context: *mut u8) -> s32
+extern "C" fun SSL_new(context: *mut u8) -> *mut u8
+extern "C" fun SSL_free(connection: *mut u8)
+extern "C" fun SSL_set_fd(connection: *mut u8, fd: s32) -> s32
+extern "C" fun SSL_connect(connection: *mut u8) -> s32
+extern "C" fun SSL_read(connection: *mut u8, buffer: *mut u8,
+                        count: s32) -> s32
+extern "C" fun SSL_write(connection: *mut u8, buffer: *u8,
+                         count: s32) -> s32
+extern "C" fun SSL_shutdown(connection: *mut u8) -> s32
+extern "C" fun SSL_get_error(connection: *mut u8, result: s32) -> s32
+extern "C" fun SSL_get_verify_result(connection: *mut u8) -> s64
+// The name the certificate has to match, and the name sent so that a
+// server with several can pick: without both, TLS checks that the
+// certificate is *valid* and not that it is *theirs*.
+//
+// `SSL_set_tlsext_host_name` is a macro in OpenSSL rather than a
+// function, so what a binding can reach is what the macro expands to:
+// `SSL_ctrl` with the control code. A binding generator cannot know
+// that, which is why a generated binding is a starting point (D130,
+// D150).
+extern "C" fun SSL_ctrl(connection: *mut u8, command: s32, argument: s64,
+                        pointer: *u8) -> s64
+extern "C" fun SSL_set1_host(connection: *mut u8, name: *u8) -> s32
+
+/// `SSL_CTRL_SET_TLSEXT_HOSTNAME`, and the name type the extension
+/// carries.
+offer const kSetHostName: s32 = 55
+offer const kHostNameType: s64 = 0
+
+/// `SSL_VERIFY_PEER`: refuse a certificate that does not check out.
+offer const kVerifyPeer: s32 = 1
+
+/// A TLS connection over a socket.
+///
+/// The socket is held so that closing the stream closes both: a TLS
+/// connection whose socket outlives it is a descriptor nobody owns.
+offer class Stream {
+  var context: *mut u8
+  var connection: *mut u8
+  var socket: Socket
+  var open: bool = false
+
+  deinit  {
+    Close()
+  }
+
+  fun IsOpen() -> bool {
+    return open
+  }
+
+  /// Sends everything in `message`. False when the connection broke.
+  fun Send(message: text) -> bool uses unsafe {
+    if !open {
+      return false
+    }
+    const bytes = Bytes(message)
+    var at = 0
+    while at < bytes.len {
+      const written =
+          SSL_write(connection, &bytes[at], (bytes.len - at) as s32)
+      if written <= 0 {
+        return false
+      }
+      at = at + written as int
+    }
+    return true
+  }
+
+  /// Reads up to `limit` bytes. "" when the other end closed.
+  fun Receive(limit: int) -> text uses unsafe {
+    if !open || limit <= 0 {
+      return ""
+    }
+    var buffer = ArrayNew<u8>(limit)
+    const received = SSL_read(connection, &mut buffer[0], limit as s32)
+    if received <= 0 {
+      Free(buffer)
+      return ""
+    }
+    var builder = BuilderNew()
+    var i = 0
+    while i < received as int {
+      builder.AppendByte(buffer[i])
+      i = i + 1
+    }
+    Free(buffer)
+    return builder.Release()
+  }
+
+  fun Close() uses unsafe {
+    if !open {
+      return
+    }
+    open = false
+    const _said = SSL_shutdown(connection)
+    SSL_free(connection)
+    SSL_CTX_free(context)
+    socket.Close()
+  }
+}
+
+/// A closed stream, which is what a failure answers with.
+offer fun StreamNone() -> Stream uses unsafe {
+  var buffer = ArrayNew<u8>(1)
+  const none = &mut buffer[0]
+  Free(buffer)
+  return Stream(none, none, Socket(-1), false)
+}
+
+/// Connects to `host` on `port` and shakes hands.
+///
+/// The certificate is verified against the system's own roots, and the
+/// name is checked against it: TLS that does not check the name is TLS
+/// that any server can answer (D150). `verify = false` is for a
+/// development server with a certificate it signed itself, and says so
+/// at the call.
+offer fun Open(host: text, port: int, verify: bool) -> Stream
+    uses unsafe {
+  var socket = Connect(host, port)
+  if !socket.IsOpen() {
+    return StreamNone()
+  }
+  const method = TLS_client_method()
+  const context = SSL_CTX_new(method)
+  if context as u64 == 0 {
+    socket.Close()
+    return StreamNone()
+  }
+  if verify {
+    const _roots = SSL_CTX_set_default_verify_paths(context)
+    SSL_CTX_set_verify(context, kVerifyPeer, 0)
+  }
+  const connection = SSL_new(context)
+  if connection as u64 == 0 {
+    SSL_CTX_free(context)
+    socket.Close()
+    return StreamNone()
+  }
+
+  // The name, twice: once as what to send so a server with several
+  // certificates can choose, once as what the certificate must match.
+  var name = BuilderNew()
+  name.Append(host)
+  name.AppendByte(0)
+  const terminated = name.Text()
+  const _sent =
+      SSL_ctrl(connection, kSetHostName, kHostNameType, terminated.data)
+  if verify {
+    const _checked = SSL_set1_host(connection, terminated.data)
+  }
+
+  if SSL_set_fd(connection, socket.fd) != 1 ||
+     SSL_connect(connection) != 1 {
+    SSL_free(connection)
+    SSL_CTX_free(context)
+    socket.Close()
+    return StreamNone()
+  }
+  if verify && SSL_get_verify_result(connection) != 0 {
+    SSL_free(connection)
+    SSL_CTX_free(context)
+    socket.Close()
+    return StreamNone()
+  }
+  return Stream(context, connection, socket, true)
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun RefusesAHostThatIsNotThere() -> bool uses unsafe {
+  // No network needed: a name nothing resolves cannot be connected to,
+  // and what comes back is a closed stream rather than a trap.
+  var stream = Open("this.name.does.not.exist.invalid", 443, true)
+  const closed = !stream.IsOpen()
+  stream.Close()
+  return closed
+}

@@ -5,6 +5,7 @@
 
 #include "wolang/runtime/arena.h"
 #include "wolang/runtime/classes.h"
+#include "wolang/runtime/dns.h"
 #include "wolang/runtime/env.h"
 #include "wolang/runtime/files.h"
 #include "wolang/runtime/globals.h"
@@ -98,6 +99,14 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_object_free",
        reinterpret_cast<void*>(&wolang_object_free)},
       {"wolang_open_read", reinterpret_cast<void*>(&wolang_open_read)},
+      {"wolang_fs_kind", reinterpret_cast<void*>(&wolang_fs_kind)},
+      {"wolang_fs_size", reinterpret_cast<void*>(&wolang_fs_size)},
+      {"wolang_fs_changed", reinterpret_cast<void*>(&wolang_fs_changed)},
+      {"wolang_fs_remove", reinterpret_cast<void*>(&wolang_fs_remove)},
+      {"wolang_fs_rename", reinterpret_cast<void*>(&wolang_fs_rename)},
+      {"wolang_fs_make_directory",
+       reinterpret_cast<void*>(&wolang_fs_make_directory)},
+      {"wolang_fs_list", reinterpret_cast<void*>(&wolang_fs_list)},
       {"wolang_world_create",
        reinterpret_cast<void*>(&wolang_world_create)},
       {"wolang_world_destroy",
@@ -141,6 +150,7 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_args_count",
        reinterpret_cast<void*>(&wolang_args_count)},
       {"wolang_args_at", reinterpret_cast<void*>(&wolang_args_at)},
+      {"wolang_resolve", reinterpret_cast<void*>(&wolang_resolve)},
       {"wolang_env_get", reinterpret_cast<void*>(&wolang_env_get)},
       {"wolang_env_set", reinterpret_cast<void*>(&wolang_env_set)},
       {"wolang_report", reinterpret_cast<void*>(&wolang_report)},
