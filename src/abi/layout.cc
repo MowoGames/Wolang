@@ -76,13 +76,30 @@ bool LayoutStore::IsScalar(TypeId type) const {
          value_class == ValueClass::kFloat;
 }
 
+std::span<const Member> LayoutStore::Members(TypeId type) const {
+  // This file first, then whatever else was registered: a type's members
+  // are the same wherever they are read from, and the file being laid out
+  // may never have named the type (D125).
+  const std::span<const Member> own = resolution_.MembersOf(type);
+  if (!own.empty()) {
+    return own;
+  }
+  for (const FileResolution* other : also_) {
+    const std::span<const Member> theirs = other->MembersOf(type);
+    if (!theirs.empty()) {
+      return theirs;
+    }
+  }
+  return own;
+}
+
 bool LayoutStore::IsTagOnly(TypeId type) const {
   const TypeKind kind = types_.KindOf(type);
   if (kind != TypeKind::kNamed && kind != TypeKind::kInstance) {
     return false;
   }
   bool has_variant = false;
-  for (const Member& member : resolution_.MembersOf(type)) {
+  for (const Member& member : Members(type)) {
     if (HasStorage(member.kind)) {
       return false;
     }
@@ -98,7 +115,7 @@ bool LayoutStore::IsTagged(TypeId type) const {
   if (kind != TypeKind::kNamed && kind != TypeKind::kInstance) {
     return false;
   }
-  for (const Member& member : resolution_.MembersOf(type)) {
+  for (const Member& member : Members(type)) {
     // A variant that carries values has a function type: the values it
     // takes, and the enum it produces.
     if (member.kind == MemberKind::kVariant &&
@@ -133,7 +150,7 @@ TypeId LayoutStore::VariantFieldType(TypeId type,
                                      uint32_t index,
                                      uint32_t position) const {
   uint32_t seen = 0;
-  for (const Member& member : resolution_.MembersOf(type)) {
+  for (const Member& member : Members(type)) {
     if (member.kind != MemberKind::kVariant) {
       continue;
     }
@@ -170,7 +187,7 @@ uint32_t LayoutStore::VariantFieldOffset(TypeId type,
 
 uint32_t LayoutStore::PayloadOffsetOf(TypeId type) {
   uint32_t align = 4;
-  for (const Member& member : resolution_.MembersOf(type)) {
+  for (const Member& member : Members(type)) {
     if (member.kind != MemberKind::kVariant ||
         types_.KindOf(member.type) != TypeKind::kFunction) {
       continue;
@@ -185,7 +202,7 @@ uint32_t LayoutStore::PayloadOffsetOf(TypeId type) {
 
 uint32_t LayoutStore::PayloadSizeOf(TypeId type) {
   uint32_t largest = 0;
-  for (const Member& member : resolution_.MembersOf(type)) {
+  for (const Member& member : Members(type)) {
     if (member.kind != MemberKind::kVariant ||
         types_.KindOf(member.type) != TypeKind::kFunction) {
       continue;
@@ -230,7 +247,7 @@ bool LayoutStore::IsSupported(TypeId type) const {
   // cannot see it (D89).
   if (IsTagged(type)) {
     uint32_t index = 0;
-    for (const Member& member : resolution_.MembersOf(type)) {
+    for (const Member& member : Members(type)) {
       if (member.kind != MemberKind::kVariant) {
         continue;
       }
@@ -267,7 +284,7 @@ bool LayoutStore::HasHeader(TypeId type) const {
   }
   TypeId current = type;
   while (current.is_valid()) {
-    for (const Member& member : resolution_.MembersOf(current)) {
+    for (const Member& member : Members(current)) {
       if (member.kind == MemberKind::kMethod &&
           (member.is_virtual || member.is_override)) {
         return true;
@@ -282,7 +299,7 @@ uint32_t LayoutStore::InheritedFieldCount(TypeId type) const {
   uint32_t count = 0;
   TypeId current = resolution_.BaseOf(type);
   while (current.is_valid()) {
-    for (const Member& member : resolution_.MembersOf(current)) {
+    for (const Member& member : Members(current)) {
       if (HasStorage(member.kind)) {
         ++count;
       }
@@ -342,7 +359,7 @@ uint32_t LayoutStore::FieldCount(TypeId type) const {
       // descriptor first when anything in the chain is virtual.
       uint32_t count = HasHeader(type) ? 1u : 0u;
       for (TypeId current : Chain(resolution_, type)) {
-        for (const Member& member : resolution_.MembersOf(current)) {
+        for (const Member& member : Members(current)) {
           if (HasStorage(member.kind)) {
             ++count;
           }
@@ -389,7 +406,7 @@ TypeId LayoutStore::FieldType(TypeId type, uint32_t index) const {
         seen = 1;
       }
       for (TypeId current : Chain(resolution_, type)) {
-        for (const Member& member : resolution_.MembersOf(current)) {
+        for (const Member& member : Members(current)) {
           if (!HasStorage(member.kind)) {
             continue;
           }

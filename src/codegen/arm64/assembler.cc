@@ -404,10 +404,41 @@ void Assembler::LoadStore(uint32_t scaled,
   }
   // The unscaled form reaches a small negative offset, which a frame laid
   // out below the frame pointer needs.
-  WOLANG_CHECK(offset >= -256 && offset <= 255);
-  Emit(unscaled | ((static_cast<uint32_t>(offset) & 0x1FFu) << 12) |
-       (Num(base) << 5) | rt);
-  (void)scaled;
+  if (offset >= -256 && offset <= 255) {
+    Emit(unscaled | ((static_cast<uint32_t>(offset) & 0x1FFu) << 12) |
+         (Num(base) << 5) | rt);
+    return;
+  }
+  // Neither form reaches it, so the address is computed instead.
+  //
+  // In x17, which the emitter keeps out of the allocator's pool for
+  // exactly this, through the immediate forms of add and subtract --
+  // which are the only ones that may name the stack pointer, and a frame
+  // offset's base always is the stack pointer. Two instructions cover
+  // every offset up to sixteen megabytes, which is well past the frame
+  // this tier allows (D124).
+  const bool down = offset < 0;
+  const uint32_t away = static_cast<uint32_t>(down ? -offset : offset);
+  WOLANG_CHECK(away < (1u << 24));
+  const uint32_t low = away & 0xFFFu;
+  const uint32_t high = away >> 12;
+  Register from = base;
+  if (high != 0) {
+    if (down) {
+      SubImmShifted(Width::k64, Register::kX17, from, high);
+    } else {
+      AddImmShifted(Width::k64, Register::kX17, from, high);
+    }
+    from = Register::kX17;
+  }
+  if (low != 0 || high == 0) {
+    if (down) {
+      SubImm(Width::k64, Register::kX17, from, low);
+    } else {
+      AddImm(Width::k64, Register::kX17, from, low);
+    }
+  }
+  Emit(scaled | (Num(Register::kX17) << 5) | rt);
 }
 
 namespace {

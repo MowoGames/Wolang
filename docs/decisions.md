@@ -1424,3 +1424,54 @@ Writing them found two miscompilations. An inlined `WrappingAdd` lost its
 "do not trap" flag, because the inliner copied an instruction field by
 field and that field was not in the list -- so a hash overflowed where it
 is supposed to wrap.
+
+**D122. A request is read whole before a handler sees it.** The old loop
+parsed whatever one `read` returned, which works until a body crosses a
+packet boundary -- that is, until someone posts something. Every
+connection now has a buffer of its own: bytes accumulate until
+`Content-Length` says the request is all there, the handler runs, and
+what arrived after it stays for the next turn, which is what makes
+pipelining work. Limits come with it -- a head of 16 KiB and a request of
+one megabyte by default, both answered with `413` rather than by growing
+-- and so do the two things the loop has to know before there is a
+`Request` to ask: the length, and whether the client said `Connection:
+close`. `HEAD` is a `GET` whose body is not written, and the length still
+says what it would have been.
+
+**D123. A method is not reachable by its bare name.** A method lives in
+the module's function table under its owner's name, and it was *also*
+findable by its bare name -- so a plain call to a function called the
+same thing went to the method, with no receiver. The verifier caught it
+and nothing else did: `Bytes(value)` in a file with a class that has a
+`Bytes` method called the method.
+
+**D124. An offset too large for either addressing form is computed.**
+A frame with a four-kilobyte buffer in it puts the locals after it out of
+reach of both the scaled and the unscaled form, and the assembler
+insisted one of them fit. It now folds the offset into x17 -- the
+register the emitter keeps out of the allocator's pool for exactly this
+-- through the immediate add and subtract, which are the only forms that
+may name the stack pointer.
+
+**D125. A layout is a question about a type, not about a file.** The file
+being run may never have named the `List<int>` another file of the
+package built, and a member table lives in a file's resolution: the type
+came back with no fields at all, a field address fell back to offset
+zero, and one field was written over another. A layout store now sees
+every checked file's tables, and a field it cannot find is a trap rather
+than a guess.
+
+**D126. Mounting a router is prefixing its routes.** A route is a pattern
+and a function, so `app.Mount("/api/v1", &api)` copies them with the
+prefix in front -- and the match stays one walk over segments instead of
+one walk per level. `OPTIONS` and `405` both answer with the methods a
+path has routes for.
+
+**D127. The IR has one string type.** Owned or borrowed, a string is a
+pointer and a length; who frees it is tracked beside the value, in the
+ownership flags, and not in the type. Keeping two made a branch that
+yielded an interpolated string into a variable the checker typed as owned
+a type mismatch -- which the verifier reported and which stopped the
+whole module from compiling. Erasing `string` to `str` also widened what
+the dev tier accepts: a function returning an owned string is now
+compiled rather than left to the interpreter.

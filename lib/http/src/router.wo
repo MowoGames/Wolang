@@ -10,7 +10,7 @@
 // nothing but a pair in a list.
 
 need std.list.{List, ListNew}
-need std.text.{Bytes}
+need std.text.{BuilderNew, Bytes, EndsWith, StartsWith, Substring}
 
 /// One route: which method, which pattern, and what answers it.
 offer struct Route {
@@ -22,6 +22,8 @@ offer struct Route {
 /// A list of routes, tried in order.
 offer class Router {
   var routes: List<Route>
+  var fallback: fun(Request) -> Response = NotFoundHandler
+  var has_fallback: bool = false
 
   /// Adds a route. Answers nothing: a router is built once, at the top of
   /// a program, so the calls read as a list rather than as a chain.
@@ -46,14 +48,102 @@ offer class Router {
     Add("DELETE", pattern, handle)
   }
 
+  fun Patch(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+    Add("PATCH", pattern, handle)
+  }
+
+  /// A route for `HEAD`. Rarely needed: a `GET` route answers `HEAD` by
+  /// itself, with the body left off (D122).
+  fun Head(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+    Add("HEAD", pattern, handle)
+  }
+
+  fun Options(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+    Add("OPTIONS", pattern, handle)
+  }
+
+  /// One handler for every method on a pattern.
+  fun Any(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+    Add("*", pattern, handle)
+  }
+
+  /// What answers when nothing else matches. Without one, `404`.
+  fun Otherwise(handle: fun(Request) -> Response) uses unsafe {
+    fallback = handle
+    has_fallback = true
+  }
+
+  /// Another router's routes, with `prefix` in front of each.
+  ///
+  /// Copied rather than nested: a route is a pattern and a function, so
+  /// mounting is prefixing -- and the match stays one walk over segments
+  /// instead of a walk per level (D126).
+  fun Mount(prefix: text, inner: &Router) uses unsafe {
+    var i = 0
+    while i < inner.routes.Len() {
+      const route = inner.routes.At(i)
+      Add(route.method, Together(prefix, route.pattern), route.handle)
+      i = i + 1
+    }
+  }
+
+  /// The methods a path has routes for, as `GET, POST`.
+  ///
+  /// What `405` and `OPTIONS` both have to say, and the one question a
+  /// list of routes cannot answer without walking it twice.
+  fun Allowed(path: text) -> text uses unsafe {
+    var builder = BuilderNew()
+    var found = 0
+    var i = 0
+    while i < routes.Len() {
+      const route = routes.At(i)
+      var probe = RequestNew()
+      if Matches(route.pattern, path, &mut probe) {
+        if found != 0 {
+          builder.Append(", ")
+        }
+        builder.Append(route.method)
+        found = found + 1
+      }
+      i = i + 1
+    }
+    if found != 0 {
+      builder.Append(", HEAD, OPTIONS")
+    }
+    return builder.Release()
+  }
+
   /// How many routes there are.
   fun Len() -> int {
     return routes.Len()
   }
 }
 
+/// What a router answers with when it has no route and no fallback.
+offer fun NotFoundHandler(_request: Request) -> Response {
+  return NotFound()
+}
+
 offer fun RouterNew() -> Router uses unsafe {
-  return Router(ListNew<Route>())
+  return Router(ListNew<Route>(), NotFoundHandler, false)
+}
+
+/// Two path pieces with one slash between them.
+offer fun Together(prefix: text, pattern: text) -> text uses unsafe {
+  if prefix.len == 0 || prefix == "/" {
+    return pattern
+  }
+  var head = prefix
+  if EndsWith(head, "/") {
+    head = Substring(head, 0, head.len - 1)
+  }
+  if pattern.len == 0 || pattern == "/" {
+    return head
+  }
+  if StartsWith(pattern, "/") {
+    return head + pattern
+  }
+  return head + "/" + pattern
 }
 
 /// Finds the route for `request`, fills in its path parameters, and
@@ -75,14 +165,30 @@ offer fun Dispatch(router: &Router, request: Request) -> Response
     subject.param_count = 0
     if Matches(route.pattern, subject.path, &mut subject) {
       matched_path = true
-      if route.method == subject.method {
+      if route.method == subject.method || route.method == "*" {
+        return route.handle(subject)
+      }
+      // A `HEAD` is answered by the `GET` route; the body is left off
+      // when the answer is written (D122).
+      if SameName(subject.method, "HEAD") && route.method == "GET" {
         return route.handle(subject)
       }
     }
     i = i + 1
   }
   if matched_path {
-    return Status(405, "method not allowed\n")
+    // `OPTIONS` on a path that exists is answered by saying what may be
+    // done to it, which is the whole of what the method is for.
+    if SameName(subject.method, "OPTIONS") {
+      return WithHeader(NoContent(), "Allow",
+                        router.Allowed(subject.path))
+    }
+    return WithHeader(Status(405, "method not allowed\n"), "Allow",
+                      router.Allowed(subject.path))
+  }
+  if router.has_fallback {
+    subject.param_count = 0
+    return router.fallback(subject)
   }
   return NotFound()
 }
@@ -165,7 +271,7 @@ fun SliceOf(bytes: []u8, from: int, to: int) -> []u8 uses unsafe {
 // router in one -- and a module-level `var` is what the language has for
 // "one of these, for the program" (D88). Set by `ServeRoutes`, read by
 // the handler it installs.
-var serving: Router = Router(ListNew<Route>())
+var serving: Router = Router(ListNew<Route>(), NotFoundHandler, false)
 
 fun Installed(request: Request) -> Response uses io, unsafe {
   return Dispatch(&serving, request)

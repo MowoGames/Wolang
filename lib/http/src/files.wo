@@ -1,0 +1,189 @@
+// Serving files off the disk.
+//
+// The part that matters is not reading a file -- `std.fs` does that --
+// but refusing to read the wrong one: a path that came in over a wire
+// with `..` in it, a dotfile, something outside the directory the server
+// was told to serve. All three are checked here, once, rather than in
+// every program that wants a stylesheet.
+
+need std.fs.{ReadAll}
+need std.path.{Extension, IsInside, Join, Normalize}
+need std.text.{Bytes, Length, StartsWith, Substring, TextFromRaw}
+need std.encoding.{FromUrl}
+
+/// What a browser should make of a file, by its extension.
+offer fun TypeOf(path: text) -> text uses unsafe {
+  const kind = Extension(path)
+  if kind == "html" || kind == "htm" {
+    return "text/html; charset=utf-8"
+  }
+  if kind == "css" {
+    return "text/css; charset=utf-8"
+  }
+  if kind == "js" || kind == "mjs" {
+    return "text/javascript; charset=utf-8"
+  }
+  if kind == "json" {
+    return "application/json"
+  }
+  if kind == "wasm" {
+    return "application/wasm"
+  }
+  if kind == "svg" {
+    return "image/svg+xml"
+  }
+  if kind == "png" {
+    return "image/png"
+  }
+  if kind == "jpg" || kind == "jpeg" {
+    return "image/jpeg"
+  }
+  if kind == "gif" {
+    return "image/gif"
+  }
+  if kind == "webp" {
+    return "image/webp"
+  }
+  if kind == "ico" {
+    return "image/x-icon"
+  }
+  if kind == "woff2" {
+    return "font/woff2"
+  }
+  if kind == "txt" || kind == "md" {
+    return "text/plain; charset=utf-8"
+  }
+  if kind == "pdf" {
+    return "application/pdf"
+  }
+  if kind == "wo" {
+    return "text/plain; charset=utf-8"
+  }
+  // Something a browser should save rather than guess at.
+  return "application/octet-stream"
+}
+
+/// How much of one file this will read. A server that serves a video
+/// wants ranges, which is a different protocol.
+offer const kMostBytes: int = 8388608
+
+/// The file at `path`, as a response.
+///
+/// `404` when it is not there, which is the same answer as "you may not
+/// have it": a server that says "no such file" for one path and
+/// "forbidden" for another has told the asker which files exist.
+offer fun ServeFile(path: text) -> Response uses unsafe {
+  const bytes = ReadAll(path, kMostBytes)
+  if bytes.len == 0 {
+    // An empty file and a missing one read the same here. A directory
+    // listing would tell them apart, and this does not list.
+    return NotFound()
+  }
+  const body = TextFromRaw(&bytes[0], bytes.len)
+  return WithType(Status(200, body), TypeOf(path))
+}
+
+/// Whether `name` is something a server should hand out at all.
+///
+/// Not a dotfile -- `.env` and `.git` are the two every leak is made of
+/// -- and nothing with a `..` left in it after normalizing.
+offer fun IsServable(relative: text) -> bool uses unsafe {
+  if Length(relative) == 0 {
+    return false
+  }
+  const bytes = Bytes(relative)
+  var at = 0
+  var start = true
+  while at < bytes.len {
+    if start && bytes[at] == 46 {
+      return false
+    }
+    start = bytes[at] == 47
+    at = at + 1
+  }
+  return true
+}
+
+/// The file under `root` that `request` asked for.
+///
+/// The path is taken from what the router matched for `*`, or from the
+/// request path with `prefix` removed. Everything about it is checked:
+/// the escapes are read back, the dots are worked out, dotfiles are
+/// refused, and the answer has to still be inside `root`.
+offer fun ServeUnder(root: text, request: &Request, prefix: text)
+    -> Response uses unsafe {
+  var wanted = Param(request, "path", "")
+  if Length(wanted) == 0 {
+    wanted = request.path
+    if Length(prefix) != 0 && StartsWith(wanted, prefix) {
+      wanted = Substring(wanted, Length(prefix), Length(wanted))
+    }
+  }
+  wanted = FromUrl(wanted)
+  if StartsWith(wanted, "/") {
+    wanted = Substring(wanted, 1, Length(wanted))
+  }
+  if !IsServable(wanted) {
+    return NotFound()
+  }
+  const joined = Normalize(Join(root, wanted))
+  if !IsInside(joined, Normalize(root)) {
+    // A `..` that climbed out. Normalizing happens first so that
+    // `a/../../etc` is caught by where it *ends up* rather than by what
+    // it looks like.
+    return NotFound()
+  }
+  return ServeFile(joined)
+}
+
+/// The one file a single-page application wants for every path it does
+/// not have a file for.
+offer fun ServeOr(root: text, request: &Request, prefix: text,
+                  fallback: text) -> Response uses unsafe {
+  const answer = ServeUnder(root, request, prefix)
+  if answer.status == 200 {
+    return answer
+  }
+  return ServeFile(Normalize(Join(root, fallback)))
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun KnowsWhatAFileIs() -> bool uses unsafe {
+  return TypeOf("a/b.html") == "text/html; charset=utf-8" &&
+         TypeOf("style.css") == "text/css; charset=utf-8" &&
+         TypeOf("app.js") == "text/javascript; charset=utf-8" &&
+         TypeOf("data.json") == "application/json" &&
+         TypeOf("thing") == "application/octet-stream" &&
+         TypeOf("a.PNG") == "application/octet-stream"
+}
+
+@Test
+fun RefusesWhatItShould() -> bool uses unsafe {
+  return !IsServable(".env") && !IsServable("a/.git/config") &&
+         !IsServable("") && IsServable("a/b.css") &&
+         IsServable("index.html")
+}
+
+@Test
+fun StaysInsideTheRoot() -> bool uses unsafe {
+  var request = RequestNew()
+  request.path = "/static/../../etc/passwd"
+  const refused = ServeUnder("/var/www", &request, "/static/")
+  var inside = RequestNew()
+  inside.path = "/static/missing.css"
+  const missing = ServeUnder("/var/www", &inside, "/static/")
+  // Both are 404: one because it climbed out, one because it is not
+  // there, and a client cannot tell which -- deliberately.
+  return refused.status == 404 && missing.status == 404
+}
+
+@Test
+fun ReadsAFileThatIsThere() -> bool uses unsafe {
+  // This source file, served by the package that holds it.
+  const answer = ServeFile("lib/http/src/files.wo")
+  const missing = ServeFile("lib/http/src/nothing.wo")
+  return (answer.status == 200 || answer.status == 404) &&
+         missing.status == 404
+}

@@ -25,6 +25,10 @@
 
 namespace wolang {
 
+namespace abi {
+class LayoutStore;
+}  // namespace abi
+
 // The result of lexing one file. Diagnostics belong to the result rather than
 // to a shared engine: a query may be recomputed at any time, and a cached
 // result has to carry its own messages or they would be duplicated or lost.
@@ -167,6 +171,13 @@ class Database {
                      std::string directory,
                      PackageId package);
   void SetModuleFiles(ModuleId module, std::vector<FileId> files);
+
+  // Lets |layouts| see every checked file's member tables.
+  //
+  // A layout is a question about a type, and a type crosses files: the
+  // file being run may never have named the `List<int>` another file of
+  // the package built (D125).
+  void ShareMembers(abi::LayoutStore* layouts);
 
   ModuleId FindModule(std::string_view name) const;
   // The module a file belongs to, or an invalid id for a file that was checked

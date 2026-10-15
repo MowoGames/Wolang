@@ -53,6 +53,20 @@ class LayoutStore {
   LayoutStore(const TypeStore& types, const FileResolution& resolution)
       : types_(types), resolution_(resolution) {}
 
+  // Another file's member tables, for a type this one does not name.
+  //
+  // A layout is a question about a *type*, and a type crosses files: a
+  // `List<int>` built in one file of a package is laid out by whichever
+  // file is being run, which may never have mentioned `List`. Without
+  // this, such a type came back with no fields at all -- and a field
+  // address then fell back to offset zero, which wrote one field over
+  // another (D125).
+  void Also(const FileResolution* resolution) {
+    if (resolution != nullptr && resolution != &resolution_) {
+      also_.push_back(resolution);
+    }
+  }
+
   ValueClass ClassOf(TypeId type) const;
   // True when a value of |type| is held in a register.
   bool IsScalar(TypeId type) const;
@@ -148,7 +162,11 @@ class LayoutStore {
   Layout ComputeFields(TypeId type);
 
   const TypeStore& types_;
+  // The members of |type|, from whichever file knows them.
+  std::span<const Member> Members(TypeId type) const;
+
   const FileResolution& resolution_;
+  std::vector<const FileResolution*> also_;
   std::unordered_map<uint32_t, Layout> cache_;
   // The storage a class points at, kept apart from the handle's layout.
   std::unordered_map<uint32_t, Layout> objects_;

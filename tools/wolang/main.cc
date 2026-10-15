@@ -644,6 +644,7 @@ int RunProgram(const Options& options) {
   // `main` may spawn, and running what it spawned is a call into here.
   abi::LayoutStore program_layouts(database.types(),
                                    program_file->resolution);
+  database.ShareMembers(&program_layouts);
   const std::vector<const ir::Module*> modules =
       CollectModules(&database, files);
   TaskHost host;
@@ -744,6 +745,7 @@ int RunTests(const Options& options) {
       const FileResolution& resolution =
           checked != nullptr ? checked->resolution : kNoResolution;
       abi::LayoutStore layouts(database.types(), resolution);
+      database.ShareMembers(&layouts);
       const interp::Outcome outcome = interp::RunNamed(
           database.interner(), database.types(), lowered->unoptimized, name,
           {}, {}, nullptr, foreign.get(), &layouts, modules);
@@ -908,6 +910,7 @@ int RunBench(const Options& options) {
 
     // A benchmark may spawn, so the scheduler needs its way back in.
     abi::LayoutStore layouts(database.types(), checked->resolution);
+    database.ShareMembers(&layouts);
     TaskHost host;
     host.database = &database;
     host.module = &lowered->module;
@@ -1148,6 +1151,7 @@ int RunFuzz(const Options& options) {
 
     const Symbol probe = database.interner().Intern("Probe");
     abi::LayoutStore layouts(database.types(), checked_file->resolution);
+    database.ShareMembers(&layouts);
     const std::unique_ptr<interp::ForeignCaller> foreign =
         codegen::MakeForeignCaller();
     const interp::Outcome reference = interp::RunNamed(

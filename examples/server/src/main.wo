@@ -8,8 +8,10 @@
 need std.io.{Print}
 need std.json.{AsText, Malformed, Member, Null, OfInt, OfText, Object,
                 Parse, Put, Write}
-need http.{BadRequest, Created, NotFound, Ok, OkJson, Param, Query, Request,
-           Response, RouterNew, ServeRoutes}
+need http.{AppNew, Authorize, BadRequest, Created, Field, JsonOf,
+           NoContent, Ok, OkJson, Param, Problem, Query, QueryInt,
+           Request, RequireToken, Response, RouterNew, ServeUnder,
+           ServeWithDefaults, Unprocessable, WithCache, WithCookie}
 
 fun Home(_request: Request) -> Response uses unsafe {
   return Ok("wolang\n")
@@ -54,18 +56,69 @@ fun CreateUser(request: Request) -> Response uses unsafe {
 }
 
 fun Missing(_request: Request) -> Response uses unsafe {
-  return NotFound()
+  return Problem(404, "not found", "no route for that path")
+}
+
+// A page of something, which is what `?page=&size=` is for -- and the
+// place a typed query parameter earns its keep.
+fun ListUsers(request: Request) -> Response uses unsafe {
+  const page = QueryInt(&request, "page", 1)
+  const size = QueryInt(&request, "size", 20)
+  if size < 1 || size > 100 {
+    return Unprocessable("size has to be between 1 and 100\n")
+  }
+  var body = Object()
+  body = Put(body, "page", OfInt(page))
+  body = Put(body, "size", OfInt(size))
+  body = Put(body, "total", OfInt(0))
+  return WithCache(JsonOf(body), 30)
+}
+
+// A form submission, which is a body of `a=1&b=2` rather than JSON.
+fun SignIn(request: Request) -> Response uses unsafe {
+  const name = Field(&request, "name", "")
+  const password = Field(&request, "password", "")
+  if name == "" || password == "" {
+    return BadRequest("a name and a password\n")
+  }
+  // A real one checks the password; this one shows what the answer looks
+  // like when it passes.
+  return WithCookie(NoContent(), "session", "token-for-{name}", 3600)
+}
+
+// Something only a request with the right token may do, through the
+// layer rather than through a check here.
+fun Secret(_request: Request) -> Response uses unsafe {
+  return Ok("the secret\n")
+}
+
+// Everything under `/static/` off the disk, with the path checked.
+fun Static(request: Request) -> Response uses unsafe {
+  return ServeUnder("examples/server/public", &request, "/static/")
 }
 
 fun main() uses io, unsafe {
-  var router = RouterNew()
-  router.Get("/", Home)
-  router.Get("/health", Health)
-  router.Get("/hello", Hello)
-  router.Get("/users/:id", User)
-  router.Post("/users", CreateUser)
-  router.Get("/*", Missing)
+  var api = RouterNew()
+  api.Get("/users", ListUsers)
+  api.Get("/users/:id", User)
+  api.Post("/users", CreateUser)
+
+  var app = AppNew()
+  // Anything the token layer is told about needs it; with no token set,
+  // the layer lets everything through, which is what makes it safe to
+  // install unconditionally.
+  RequireToken("")
+  app.Use(Authorize)
+  app.Get("/", Home)
+  app.Get("/health", Health)
+  app.Get("/hello", Hello)
+  app.Post("/sign-in", SignIn)
+  app.Get("/secret", Secret)
+  app.Get("/static/*", Static)
+  // The same routes under a prefix, which is what versioning an API is.
+  app.Mount("/api/v1", &api)
+  app.Otherwise(Missing)
 
   Print("server: http://127.0.0.1:8080")
-  const _code = ServeRoutes(8080, 256, router)
+  const _code = ServeWithDefaults(app, 8080, 256)
 }

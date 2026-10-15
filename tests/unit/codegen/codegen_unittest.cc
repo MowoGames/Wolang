@@ -500,6 +500,46 @@ fun Probe() -> int {
   WOLANG_EXPECT_EQ(f.Run("Probe"), "6");
 }
 
+WOLANG_TEST(CodegenTest, ReachesAFarOffsetInALargeFrame) {
+  // A frame with a four-kilobyte buffer in it puts the locals after it
+  // out of reach of both addressing forms, and the assembler used to
+  // insist one of them fit. The address is computed instead (D124).
+  Fixture f(R"(
+fun Probe() -> int {
+  var buffer: [4096]u8
+  var total = 0
+  buffer[0] = 7
+  buffer[4095] = 9
+  total = (buffer[0] as int) + (buffer[4095] as int)
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Probe"), "16");
+}
+
+WOLANG_TEST(CodegenTest, DoesNotLetAMethodShadowAFunction) {
+  // A method lives in the module's function table under its owner's name
+  // *and* was findable by its bare name, so a plain call to a function
+  // called the same thing went to the method -- with no receiver, which
+  // the verifier caught and nothing else did (D123).
+  Fixture f(R"(
+fun Twice(n: int) -> int => n * 2
+
+class Box {
+  var value: int = 3
+
+  fun Twice(n: int) -> int => n * 10 + value
+}
+
+fun Probe() -> int {
+  const box = Box(3)
+  return Twice(4) + box.Twice(4)
+}
+)");
+  // Eight from the function, forty-three from the method.
+  WOLANG_EXPECT_EQ(f.Run("Probe"), "51");
+}
+
 WOLANG_TEST(CodegenTest, KeepsATagOnlyEnumThroughAGlobal) {
   // The interpreter holds an enum with no payload as a one-field
   // aggregate, and memory holds it as a number: a global one had to be
@@ -591,12 +631,16 @@ WOLANG_TEST(CodegenTest, SaysWhatItCannotCompile) {
   // A tier that compiles what it can has to say what it did not, or "why
   // is this slow" has no answer.
   Fixture f(R"(
-fun Greet(name: text) -> Text => "hello, {name}"
+fun Many(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int,
+         i: int, j: int) -> int => a + j
 
 fun Count(n: int) -> int => n + 1
 )");
-  // An owned string means allocating one, and this tier has no heap.
-  WOLANG_EXPECT_EQ(f.Skipped("Greet"), "returns `Text`");
+  // Ten arguments, eight registers. A string is not on the list any
+  // more: owned or borrowed, it is a pointer and a length, and both are
+  // registers (D127).
+  WOLANG_EXPECT_EQ(f.Skipped("Many"),
+                   "takes more arguments than registers");
   WOLANG_EXPECT_EQ(f.Skipped("Count"), "");
 }
 

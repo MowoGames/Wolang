@@ -1,0 +1,289 @@
+// Reading a request: typed values out of what arrived as bytes.
+//
+// `Query(request, "page", "1")` gives text, which is what the wire has;
+// a handler wants a number, a flag, a JSON document or a form field.
+// Each of these takes a fallback rather than answering an optional: a
+// handler that has to decide what a missing `page` means should say so at
+// the call, and `QueryInt(request, "page", 1)` says it.
+
+need std.json.{AsText, Json, Member, Null, Parse}
+need std.text.{Bytes, Length, StartsWith, Substring, Trim}
+need std.encoding.{FromUrl}
+
+/// The query parameter called `name` as a number, or `fallback`.
+offer fun QueryInt(request: &Request, name: text, fallback: int) -> int
+    uses unsafe {
+  const held = Query(request, name, "")
+  if Length(held) == 0 {
+    return fallback
+  }
+  return ParseSigned(held, fallback)
+}
+
+/// The query parameter as a flag: `true`, `1`, `yes` and `on` are true.
+offer fun QueryBool(request: &Request, name: text, fallback: bool) -> bool
+    uses unsafe {
+  const held = Query(request, name, "")
+  if Length(held) == 0 {
+    return fallback
+  }
+  return held == "true" || held == "1" || held == "yes" || held == "on"
+}
+
+/// The path parameter called `name` as a number.
+offer fun ParamInt(request: &Request, name: text, fallback: int) -> int
+    uses unsafe {
+  const held = Param(request, name, "")
+  if Length(held) == 0 {
+    return fallback
+  }
+  return ParseSigned(held, fallback)
+}
+
+/// The query parameter with `%20` and `+` read back.
+offer fun QueryText(request: &Request, name: text, fallback: text) -> text
+    uses unsafe {
+  const held = Query(request, name, "")
+  if Length(held) == 0 {
+    return fallback
+  }
+  return FromUrl(held)
+}
+
+/// A number, with a sign, or `fallback` when it is not one.
+///
+/// `ParseInt` in this package stops at the first byte that is not a
+/// digit, which is what a `Content-Length` deserves and not what a query
+/// parameter does: `page=x` should mean "no number here" rather than
+/// zero.
+offer fun ParseSigned(value: text, fallback: int) -> int uses unsafe {
+  const bytes = Bytes(value)
+  if bytes.len == 0 {
+    return fallback
+  }
+  var at = 0
+  var negative = false
+  if bytes[0] == 45 || bytes[0] == 43 {
+    negative = bytes[0] == 45
+    at = 1
+  }
+  if at >= bytes.len {
+    return fallback
+  }
+  var total = 0
+  while at < bytes.len {
+    if bytes[at] < 48 || bytes[at] > 57 {
+      return fallback
+    }
+    total = total * 10 + (bytes[at] - 48) as int
+    at = at + 1
+  }
+  if negative {
+    return 0 - total
+  }
+  return total
+}
+
+/// What the request says its body is.
+offer fun ContentType(request: &Request) -> text uses unsafe {
+  return Header(request, "Content-Type", "")
+}
+
+/// Whether the body says it is JSON.
+offer fun IsJson(request: &Request) -> bool uses unsafe {
+  const kind = ContentType(request)
+  return StartsWith(kind, "application/json") ||
+         StartsWith(kind, "application/problem+json")
+}
+
+/// The body as JSON, or the error the parser gave.
+///
+/// A handler that wants to answer `400` rather than `500` for a bad
+/// document matches on this: the body came from outside, so "this is not
+/// JSON" is an answer and not a fault.
+offer fun JsonBody(request: &Request) -> Json! uses unsafe {
+  return Parse(request.body)
+}
+
+/// The field called `name` from a form-encoded body.
+///
+/// `a=1&b=two`, which is what a browser form sends: the same shape as a
+/// query string, so the same walk with the escapes read back.
+offer fun Field(request: &Request, name: text, fallback: text) -> text
+    uses unsafe {
+  const bytes = Bytes(request.body)
+  var at = 0
+  while at < bytes.len {
+    var end = at
+    while end < bytes.len && bytes[end] != 38 {
+      end = end + 1
+    }
+    var equals = at
+    while equals < end && bytes[equals] != 61 {
+      equals = equals + 1
+    }
+    if equals < end {
+      const key = FromUrl(Substring(request.body, at, equals))
+      if key == name {
+        return FromUrl(Substring(request.body, equals + 1, end))
+      }
+    }
+    at = end + 1
+  }
+  return fallback
+}
+
+/// The token from `Authorization: Bearer <token>`, or "".
+offer fun Bearer(request: &Request) -> text uses unsafe {
+  const said = Header(request, "Authorization", "")
+  if !StartsWith(said, "Bearer ") {
+    return ""
+  }
+  return Trim(Substring(said, 7, Length(said)))
+}
+
+/// The cookie called `name`, or `fallback`.
+///
+/// One header with `a=1; b=2` in it, which is how a browser sends them.
+offer fun Cookie(request: &Request, name: text, fallback: text) -> text
+    uses unsafe {
+  const jar = Header(request, "Cookie", "")
+  const bytes = Bytes(jar)
+  var at = 0
+  while at < bytes.len {
+    // Past the spaces after a `;`.
+    while at < bytes.len && (bytes[at] == 32 || bytes[at] == 59) {
+      at = at + 1
+    }
+    var end = at
+    while end < bytes.len && bytes[end] != 59 {
+      end = end + 1
+    }
+    var equals = at
+    while equals < end && bytes[equals] != 61 {
+      equals = equals + 1
+    }
+    if equals < end && Substring(jar, at, equals) == name {
+      return Substring(jar, equals + 1, end)
+    }
+    at = end + 1
+  }
+  return fallback
+}
+
+/// Whether the client said it would take `kind`.
+///
+/// A plain substring search rather than a full parse of the header's
+/// weights: a handler asking "will this client take JSON" wants a yes or
+/// a no, and `*/*` is a yes.
+offer fun Accepts(request: &Request, kind: text) -> bool uses unsafe {
+  const said = Header(request, "Accept", "")
+  if Length(said) == 0 {
+    return true
+  }
+  const bytes = Bytes(said)
+  const wanted = Bytes(kind)
+  var at = 0
+  while at + wanted.len <= bytes.len {
+    var same = true
+    var i = 0
+    while i < wanted.len {
+      if bytes[at + i] != wanted[i] {
+        same = false
+        break
+      }
+      i = i + 1
+    }
+    if same {
+      return true
+    }
+    at = at + 1
+  }
+  // `*/*` and `application/*` both say yes to anything of that kind.
+  return Length(said) != 0 && Contains(said, "*/*")
+}
+
+fun Contains(haystack: text, needle: text) -> bool uses unsafe {
+  const bytes = Bytes(haystack)
+  const wanted = Bytes(needle)
+  if wanted.len == 0 {
+    return true
+  }
+  var at = 0
+  while at + wanted.len <= bytes.len {
+    var same = true
+    var i = 0
+    while i < wanted.len {
+      if bytes[at + i] != wanted[i] {
+        same = false
+        break
+      }
+      i = i + 1
+    }
+    if same {
+      return true
+    }
+    at = at + 1
+  }
+  return false
+}
+
+// ------------------------------------------------------------- tests ---
+
+fun Asked(text_of: text) -> Request uses unsafe {
+  const bytes = Bytes(text_of)
+  return ParseRequest(bytes, bytes.len)
+}
+
+@Test
+fun ReadsNumbersAndFlags() -> bool uses unsafe {
+  const request = Asked("GET /x?page=3&all=yes&bad=x HTTP/1.1\r\n\r\n")
+  return QueryInt(&request, "page", 1) == 3 &&
+         QueryInt(&request, "missing", 7) == 7 &&
+         QueryInt(&request, "bad", 9) == 9 &&
+         QueryBool(&request, "all", false) &&
+         !QueryBool(&request, "missing", false) &&
+         ParseSigned("-42", 0) == -42 && ParseSigned("", 5) == 5
+}
+
+@Test
+fun ReadsAFormBody() -> bool uses unsafe {
+  const request = Asked("POST /x HTTP/1.1\r\n" +
+                        "Content-Type: application/x-www-form-urlencoded\r\n" +
+                        "Content-Length: 27\r\n\r\n" +
+                        "name=a+b&note=%D1%81&n=3")
+  return Field(&request, "name", "") == "a b" &&
+         Field(&request, "note", "") == "с" &&
+         Field(&request, "n", "") == "3" &&
+         Field(&request, "missing", "none") == "none"
+}
+
+@Test
+fun ReadsTokensAndCookies() -> bool uses unsafe {
+  const request = Asked("GET / HTTP/1.1\r\nAuthorization: Bearer abc\r\n" +
+                        "Cookie: session=xyz; theme=dark\r\n" +
+                        "Accept: application/json\r\n\r\n")
+  return Bearer(&request) == "abc" &&
+         Cookie(&request, "session", "") == "xyz" &&
+         Cookie(&request, "theme", "") == "dark" &&
+         Cookie(&request, "missing", "none") == "none" &&
+         Accepts(&request, "application/json") &&
+         !Accepts(&request, "text/html")
+}
+
+@Test
+fun ReadsAJsonBody() -> bool uses unsafe {
+  const body = "\{\"name\": \"a\"\}"
+  const request = Asked("POST / HTTP/1.1\r\nContent-Type: application/json" +
+                        "\r\nContent-Length: 13\r\n\r\n" + body)
+  if !IsJson(&request) {
+    return false
+  }
+  const parsed = JsonBody(&request)
+  var named = ""
+  match parsed {
+    Ok(document) => named = AsText(Member(document, "name") ?? Null(), ""),
+    _Malformed => named = "",
+  }
+  return named == "a"
+}

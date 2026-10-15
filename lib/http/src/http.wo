@@ -9,6 +9,7 @@
 need std.io.{Print}
 need std.mem.{BytesFromRaw}
 need std.text.{Bytes, BuilderNew}
+need std.time.{HttpDate, WallClock}
 
 // `socket.wo` is the same module -- a package's files link into one -- so
 // the floor it declares needs no import here.
@@ -340,34 +341,113 @@ fun Slice(bytes: []u8, from: int, to: int) -> []u8 uses unsafe {
 /// request allocates -- its response, the strings it interpolated -- comes
 /// from there and goes back at the end of the turn. Keep-alive is what
 /// makes that worth doing, because the connection outlives the arena.
-offer fun Serve(connection: s32, handle: fun(Request) -> Response) -> int uses io, unsafe {
-  var buffer: [4096]u8
+offer fun Serve(connection: s32, handle: fun(Request) -> Response) -> int
+    uses io, unsafe {
+  return ServeWith(connection, handle, LimitsDefault())
+}
+
+/// The same, with limits of the caller's choosing.
+///
+/// One connection, served until the client stops asking or breaks the
+/// rules: every request is read whole before the handler sees it, and
+/// what arrived after it stays for the next turn (D122).
+offer fun ServeWith(connection: s32, handle: fun(Request) -> Response,
+                    limits: Limits) -> int uses io, unsafe {
+  var pool = ConnectionsNew(1, limits)
+  const slot = pool.Open(connection as int)
   var served = 0
   loop {
-    const received = Read(connection, &buffer[0], 4096)
-    if received <= 0 {
-      // The client closed, or asked for something that did not arrive.
-      const _closed = Close(connection)
-      return served
+    const turn = Turn(&mut pool, slot, handle)
+    if turn > 0 {
+      served = served + 1
+      if !pool.IsClosing(slot) {
+        continue
+      }
     }
+    const _closed = Close(connection)
+    return served
+  }
+}
+
+/// One turn on one connection: read what is there, answer every whole
+/// request in it, and say whether the connection is still worth holding.
+///
+/// `1` when a request was answered, `0` when more is wanted, and `-1`
+/// when the connection is finished. A server that polls calls this once
+/// per readable connection; a blocking one calls it in a loop.
+offer fun Turn(pool: &mut Connections, slot: int,
+               handle: fun(Request) -> Response) -> int uses io, unsafe {
+  const fd = pool.Fd(slot)
+  if fd < 0 {
+    return -1
+  }
+  const received = pool.Fill(slot)
+  if received < 0 {
+    // -2 is "no room and not allowed to grow", which is a request bigger
+    // than the server takes rather than a broken connection.
+    if received == -2 {
+      const _said = WriteAnswer(fd as s32, Status(413, "too large\n"),
+                                true, false)
+    }
+    return -1
+  }
+  if received == 0 && pool.Filled(slot) == 0 {
+    return -1
+  }
+
+  var answered = 0
+  loop {
+    const length =
+        RequestLength(pool.Bytes(slot), pool.Filled(slot), pool.limits)
+    if length == -1 {
+      // Not all here yet. The next read continues where this one stopped.
+      if answered > 0 {
+        return 1
+      }
+      return 0
+    }
+    if length == -3 {
+      const _said = WriteAnswer(fd as s32, Status(413, "too large\n"),
+                                true, false)
+      pool.SetClosing(slot, true)
+      return -1
+    }
+    if length <= 0 {
+      const _said = WriteAnswer(fd as s32, BadRequest("bad request\n"),
+                                true, false)
+      pool.SetClosing(slot, true)
+      return -1
+    }
+
     var ok = false
     arena {
-      ok = Answer(connection, buffer, received, handle)
+      ok = Answer(fd as s32, pool.Bytes(slot), length, handle,
+                  pool.limits.keep_alive)
     }
+    pool.Consume(slot, length)
+    answered = answered + 1
     if !ok {
-      const _closed = Close(connection)
-      return served
+      pool.SetClosing(slot, true)
+      return 1
     }
-    served = served + 1
+    if pool.Filled(slot) == 0 {
+      return 1
+    }
+    // Another request arrived in the same read: answer it now rather than
+    // waiting for the client to say something it already said.
   }
 }
 
 /// One request: parse it, hand it to the handler, write the answer.
+///
+/// Answers whether the connection is worth keeping: false when the
+/// request was not one, or when either side asked for it to close.
 fun Answer(
     connection: s32,
     buffer: []u8,
     received: int,
-    handle: fun(Request) -> Response) -> bool uses io, unsafe {
+    handle: fun(Request) -> Response,
+    keep_alive: bool) -> bool uses io, unsafe {
   const request = ParseRequest(buffer, received)
   if request.length == 0 {
     const _bad = WriteAll(
@@ -375,8 +455,21 @@ fun Answer(
         "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
     return false
   }
+  // What the client wants to happen to the connection after this. A 1.1
+  // client that says nothing means keep it.
+  var holding = keep_alive
+  if SameName(Header(&request, "Connection", ""), "close") {
+    holding = false
+  }
   const answer = handle(request)
-  return WriteResponse(connection, answer)
+  // A `HEAD` asks for the headers a `GET` would give, body length and
+  // all, and gets none of the body.
+  const with_body = !SameName(request.method, "HEAD") &&
+                    answer.status != 204 && answer.status != 304
+  if !WriteAnswer(connection, answer, with_body, holding) {
+    return false
+  }
+  return holding
 }
 
 /// Writes a response: the status line, the headers it carries, and the
@@ -387,11 +480,29 @@ fun Answer(
 /// acknowledged -- which costs more than building the string does.
 offer fun WriteResponse(connection: s32, answer: Response) -> bool
     uses io, unsafe {
+  return WriteAnswer(connection, answer, /*with_body=*/true,
+                     /*keep_alive=*/true)
+}
+
+/// The same, told whether to write the body and whether the connection
+/// stays open.
+///
+/// A `HEAD` is a `GET` whose body is not written -- the length still says
+/// what it would have been, which is the whole point of asking -- and a
+/// client that said `Connection: close` is told the server agrees before
+/// the socket goes away (D122).
+offer fun WriteAnswer(connection: s32, answer: Response, with_body: bool,
+                      keep_alive: bool) -> bool uses io, unsafe {
   var message = BuilderNew()
   message.Append("HTTP/1.1 {answer.status} {Reason(answer.status)}\r\n")
   message.Append("Content-Length: {answer.body.len}\r\n")
   message.Append("Content-Type: {answer.kind}\r\n")
-  message.Append("Connection: keep-alive\r\n")
+  if keep_alive {
+    message.Append("Connection: keep-alive\r\n")
+  } else {
+    message.Append("Connection: close\r\n")
+  }
+  message.Append("Date: {Date()}\r\n")
   var i = 0
   while i < answer.header_count {
     const held = answer.headers[i]
@@ -399,8 +510,15 @@ offer fun WriteResponse(connection: s32, answer: Response) -> bool
     i = i + 1
   }
   message.Append("\r\n")
-  message.Append(answer.body)
+  if with_body {
+    message.Append(answer.body)
+  }
   return WriteAll(connection, message.Text())
+}
+
+/// The date header, in the format HTTP wants.
+offer fun Date() -> text uses unsafe {
+  return HttpDate(WallClock().seconds)
 }
 
 fun Reason(status: int) -> text {
@@ -433,6 +551,60 @@ fun Reason(status: int) -> text {
   }
   if status == 422 {
     return "Unprocessable Content"
+  }
+  if status == 301 {
+    return "Moved Permanently"
+  }
+  if status == 302 {
+    return "Found"
+  }
+  if status == 303 {
+    return "See Other"
+  }
+  if status == 304 {
+    return "Not Modified"
+  }
+  if status == 307 {
+    return "Temporary Redirect"
+  }
+  if status == 308 {
+    return "Permanent Redirect"
+  }
+  if status == 206 {
+    return "Partial Content"
+  }
+  if status == 402 {
+    return "Payment Required"
+  }
+  if status == 406 {
+    return "Not Acceptable"
+  }
+  if status == 408 {
+    return "Request Timeout"
+  }
+  if status == 410 {
+    return "Gone"
+  }
+  if status == 413 {
+    return "Content Too Large"
+  }
+  if status == 415 {
+    return "Unsupported Media Type"
+  }
+  if status == 429 {
+    return "Too Many Requests"
+  }
+  if status == 501 {
+    return "Not Implemented"
+  }
+  if status == 502 {
+    return "Bad Gateway"
+  }
+  if status == 503 {
+    return "Service Unavailable"
+  }
+  if status == 504 {
+    return "Gateway Timeout"
   }
   if status == 500 {
     return "Internal Server Error"
@@ -471,7 +643,21 @@ offer fun Run(port: int, handle: fun(Request) -> Response) -> s32 uses io, unsaf
 /// `most` is how many ready descriptors one wait may report. Everything
 /// else waits for the next turn, which is what keeps one noisy client
 /// from starving the rest.
-offer fun RunPolled(port: int, most: int, handle: fun(Request) -> Response) -> s32 uses io, unsafe {
+offer fun RunPolled(port: int, most: int,
+                    handle: fun(Request) -> Response) -> s32
+    uses io, unsafe {
+  return RunServer(port, most, handle, LimitsDefault())
+}
+
+/// The polled server, with limits of the caller's choosing.
+///
+/// One loop, one thread, and a poller that says which connections have
+/// something to say (D95). Each connection has a buffer of its own, so a
+/// request that arrives in pieces is put together rather than parsed in
+/// halves (D122).
+offer fun RunServer(port: int, most: int,
+                    handle: fun(Request) -> Response,
+                    limits: Limits) -> s32 uses io, unsafe {
   const listener = Listen(port, 128)
   if listener < 0 {
     Print("http: cannot listen")
@@ -482,6 +668,7 @@ offer fun RunPolled(port: int, most: int, handle: fun(Request) -> Response) -> s
     Print("http: cannot poll")
     return -1
   }
+  var pool = ConnectionsNew(most, limits)
   const _listening = SetNonBlocking(listener)
   if !poller.Watch(listener) {
     Print("http: cannot watch the listener")
@@ -507,34 +694,57 @@ offer fun RunPolled(port: int, most: int, handle: fun(Request) -> Response) -> s
             break
           }
           const _client = SetNonBlocking(connection)
-          if !poller.Watch(connection) {
+          const slot = pool.Open(connection as int)
+          if slot < 0 || !poller.Watch(connection) {
+            // Nowhere to put it: refuse rather than hold a connection
+            // whose bytes have no home. That is the server's back
+            // pressure, and saying so beats a silent close.
+            const _said = WriteAnswer(
+                connection, Status(503, "too many connections\n"), true,
+                false)
+            if slot >= 0 {
+              pool.Release(slot)
+            }
             const _closed = Close(connection)
           }
         }
         continue
       }
-      // One request per turn from each ready connection, so a client
-      // that keeps asking does not hold the loop.
-      if !ServeOnce(fd, handle) {
+      const slot = pool.Find(fd)
+      if slot < 0 {
         const _forgotten = poller.Forget(fd)
-        const _closed = Close(fd)
+        const _closed = Close(fd as s32)
+        continue
+      }
+      // One turn per ready connection, so a client that keeps asking
+      // does not hold the loop.
+      const turn = Turn(&mut pool, slot, handle)
+      if turn < 0 || pool.IsClosing(slot) {
+        pool.Release(slot)
+        const _forgotten = poller.Forget(fd)
+        const _closed = Close(fd as s32)
       }
     }
   }
 }
 
-/// Reads one request from `connection` and answers it. False when the
-/// connection is done with -- closed, broken, or asking for something
-/// this server will not parse.
-fun ServeOnce(connection: int, handle: fun(Request) -> Response) -> bool uses io, unsafe {
-  var buffer: [4096]u8
-  const received = Read(connection as s32, &buffer[0], 4096)
-  if received <= 0 {
-    return false
-  }
-  var ok = false
-  arena {
-    ok = Answer(connection as s32, buffer, received, handle)
-  }
-  return ok
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun KeepsOrClosesAsTheClientAsked() -> bool uses unsafe {
+  const closing = "GET / HTTP/1.1\r\nConnection: close\r\n\r\n"
+  const bytes = Bytes(closing)
+  const request = ParseRequest(bytes, bytes.len)
+  return SameName(Header(&request, "connection", ""), "close") &&
+         !SameName(Header(&request, "connection", ""), "keep-alive")
+}
+
+@Test
+fun ReadsABodyThatArrivedWhole() -> bool uses unsafe {
+  // What a split read puts together: the length says five, and five are
+  // here.
+  const text = "POST /x HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello"
+  const bytes = Bytes(text)
+  const request = ParseRequest(bytes, bytes.len)
+  return request.body == "hello" && request.method == "POST"
 }

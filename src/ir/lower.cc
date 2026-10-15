@@ -1016,7 +1016,8 @@ class Lowerer {
     Remember(function.source_file, function.source_item,
              module_->functions.size());
     indices_.push_back(Declared{id, module_->functions.size(),
-                                ast().Get(id).name, file_index()});
+                                ast().Get(id).name, file_index(),
+                                /*is_member=*/true});
     module_->functions.push_back(std::move(function));
   }
 
@@ -1051,7 +1052,8 @@ class Lowerer {
 
   uint32_t IndexOfName(Symbol name) const {
     for (const Declared& declared : indices_) {
-      if (declared.file == file_index() && declared.name == name) {
+      if (declared.file == file_index() && declared.name == name &&
+          !declared.is_member) {
         return static_cast<uint32_t>(declared.index);
       }
     }
@@ -1813,6 +1815,14 @@ class Lowerer {
         return types_->default_int();
       case TypeKind::kFloatLiteral:
         return types_->default_float();
+      case TypeKind::kString:
+        // Owned or borrowed, a string is a pointer and a length: the IR
+        // has one string type, and who frees it is tracked beside the
+        // value rather than in it. Keeping two made a branch that
+        // yielded an interpolated string into a variable the checker
+        // typed as owned a type mismatch the verifier was right to
+        // report (D127).
+        return types_->str();
       case TypeKind::kReference:
         // A reference is an address at run time, and the IR has one kind
         // of address: erasing it here is what keeps a `&mut Builder`
@@ -4427,8 +4437,13 @@ class Lowerer {
     const BlockId yes = builder_->AddBlock("if.then");
     const BlockId no = builder_->AddBlock("if.else");
     const BlockId join = builder_->AddBlock("if.join");
-    const InstId result = produces ? builder_->AddParam(join, type)
-                                   : InstId{};
+    // The join's parameter is erased like every other type in the IR: a
+    // variable the checker typed as an owned string and an arm that
+    // yields the two words one is are the same type here, and leaving
+    // the parameter unerased made them differ (D127).
+    const InstId result = produces
+                              ? builder_->AddParam(join, Erase(type))
+                              : InstId{};
 
     builder_->Branch(condition, yes, no);
 
@@ -4445,9 +4460,16 @@ class Lowerer {
     }
     // `Value` lowers the block and yields its final expression; `Lower`
     // does the same without a result. Calling both would run the body twice.
-    const InstId then_value = produces ? Value(expr.rhs) : InstId{};
+    InstId then_value = produces ? Value(expr.rhs) : InstId{};
     if (!produces) {
       Lower(expr.rhs);
+    }
+    // What an arm produces is whatever produced it, and the join's
+    // parameter is what the expression's type says: a branch yielding a
+    // borrowed string where the variable is an owned one needs the
+    // conversion written down, not assumed (D127).
+    if (produces && then_value.is_valid()) {
+      then_value = Coerce(then_value, ValueType(then_value), type);
     }
     if (!builder_->Terminated()) {
       builder_->Jump(join, produces ? std::vector<InstId>{then_value}
@@ -4465,6 +4487,9 @@ class Lowerer {
       }
     } else if (produces) {
       else_value = builder_->Undef(type);
+    }
+    if (produces && else_value.is_valid()) {
+      else_value = Coerce(else_value, ValueType(else_value), type);
     }
     if (!builder_->Terminated()) {
       builder_->Jump(join, produces ? std::vector<InstId>{else_value}
@@ -4494,7 +4519,7 @@ class Lowerer {
       if (!join.is_valid()) {
         join = builder_->AddBlock("match.join");
         if (produces) {
-          result = builder_->AddParam(join, type);
+          result = builder_->AddParam(join, Erase(type));
         }
       }
       return join;
@@ -5733,6 +5758,10 @@ class Lowerer {
     size_t index = 0;
     Symbol name;
     uint32_t file = 0;
+    // A method, which is reached through its owner and not by its bare
+    // name: `Bytes(value)` is the imported function even when a class in
+    // the same file has a `Bytes` method (D123).
+    bool is_member = false;
   };
   std::vector<Declared> indices_;
   // Every function of this module by the declaration it came from, which is

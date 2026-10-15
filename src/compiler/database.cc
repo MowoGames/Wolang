@@ -1524,6 +1524,22 @@ ModuleId Database::AddModule(std::string name,
   return id;
 }
 
+void Database::ShareMembers(abi::LayoutStore* layouts) {
+  if (layouts == nullptr) {
+    return;
+  }
+  // Every file that has been checked, in whatever order they come: a
+  // member table is the same answer wherever it is read from, so the
+  // first file that has one wins and the rest cost a pointer each.
+  for (const Module& module : modules_) {
+    for (FileId file : module.files) {
+      if (const CheckedFile* checked = Checked(file)) {
+        layouts->Also(&checked->resolution);
+      }
+    }
+  }
+}
+
 void Database::SetModuleFiles(ModuleId module, std::vector<FileId> files) {
   if (!module.is_valid() || module.index >= modules_.size()) {
     return;

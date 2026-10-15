@@ -1,0 +1,318 @@
+// Middleware: what happens around a handler.
+//
+// Two lists rather than a chain of wrappers. A `before` sees the request
+// and may answer it instead of the handler -- which is what
+// authentication, a rate limit and a size check all are -- and an `after`
+// sees the answer and may change it, which is what logging, CORS and
+// cache headers are.
+//
+// No wrapping, because wrapping needs a closure that captures the next
+// layer and this language has none yet (D106). Two lists give the same
+// order of events, and the shape is honest about what a layer can do: an
+// `after` cannot decline to call the handler, and it does not need to.
+
+need std.list.{List, ListNew}
+need std.log.{At, Enabled, Level}
+need std.time.{Elapsed, Instant, Now}
+
+/// What runs before a handler. A response means "answer this and stop".
+offer struct Before {
+  var run: fun(&mut Request) -> Response?
+}
+
+/// What runs after a handler, and may change what it said.
+offer struct After {
+  var run: fun(&Request, Response) -> Response
+}
+
+/// The layers an application runs around every request.
+offer class Layers {
+  var opening: List<Before>
+  var closing: List<After>
+
+  /// Adds a layer that runs before the handler.
+  fun Use(run: fun(&mut Request) -> Response?) uses unsafe {
+    opening.Push(Before(run))
+  }
+
+  /// Adds a layer that runs after it.
+  fun Then(run: fun(&Request, Response) -> Response) uses unsafe {
+    closing.Push(After(run))
+  }
+
+  fun Len() -> int {
+    return opening.Len() + closing.Len()
+  }
+}
+
+offer fun LayersNew() -> Layers uses unsafe {
+  return Layers(ListNew<Before>(), ListNew<After>())
+}
+
+/// Runs `handle` with `layers` around it.
+///
+/// The `before` layers run in the order they were added, and the first
+/// one that answers wins -- the handler does not run at all. The `after`
+/// layers run in reverse, so the first layer added is the outermost one,
+/// which is the order every other server does it in and the one that
+/// makes a logger added first see the final answer.
+offer fun Through(layers: &Layers, request: Request,
+                  handle: fun(Request) -> Response) -> Response
+    uses io, unsafe {
+  var subject = request
+  var answer = Status(0, "")
+  var answered = false
+  var i = 0
+  while i < layers.opening.Len() {
+    const layer = layers.opening.At(i)
+    if const said = layer.run(&mut subject) {
+      answer = said
+      answered = true
+      break
+    }
+    i = i + 1
+  }
+  if !answered {
+    answer = handle(subject)
+  }
+  var j = layers.closing.Len()
+  while j > 0 {
+    const layer = layers.closing.At(j - 1)
+    answer = layer.run(&subject, answer)
+    j = j - 1
+  }
+  return answer
+}
+
+// ------------------------------------------------------------ the layers ---
+
+// When the turn started, so a logger can say how long it took. A global
+// because a layer takes a request and nothing else -- and the loop this
+// serves is one request at a time per thread.
+var started: Instant = Instant(0, 0)
+
+/// A layer pair that writes one line per request.
+///
+/// `Timing` goes in `before` and `Logged` in `after`; `Logger(layers)`
+/// installs both, which is what a program actually wants.
+offer fun Timing(_request: &mut Request) -> Response? uses unsafe {
+  started = Now()
+  return null
+}
+
+offer fun Logged(request: &Request, answer: Response) -> Response
+    uses io, unsafe {
+  if Enabled(Level.Info) {
+    const took = Elapsed(started, Now()) / 1000
+    At(Level.Info, "{request.method} {request.path} -> {answer.status} " +
+                   "({took}us)")
+  }
+  return answer
+}
+
+/// Writes one line per request, with how long it took.
+offer fun Logger(layers: &mut Layers) uses unsafe {
+  layers.Use(Timing)
+  layers.Then(Logged)
+}
+
+// What CORS allows. Set by `AllowOrigin`, read by the layer: a layer is a
+// function of a request, so what it is configured with lives here.
+var allowed_origin: text = "*"
+var allowed_methods: text = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+var allowed_headers: text = "Content-Type, Authorization"
+var allow_credentials: bool = false
+
+/// What the CORS layer allows. "*" is the default and means anyone.
+offer fun AllowOrigin(origin: text) {
+  allowed_origin = origin
+}
+
+offer fun AllowMethods(methods: text) {
+  allowed_methods = methods
+}
+
+offer fun AllowHeaders(headers: text) {
+  allowed_headers = headers
+}
+
+/// Whether a browser may send cookies. With credentials, "*" is not a
+/// legal origin -- the browser rejects the pair -- so a program that
+/// turns this on has to name an origin.
+offer fun AllowCredentials(allow: bool) {
+  allow_credentials = allow
+}
+
+/// Answers a preflight request itself, and marks every other answer.
+offer fun Cors(_request: &Request, answer: Response) -> Response
+    uses unsafe {
+  var held = WithHeader(answer, "Access-Control-Allow-Origin",
+                        allowed_origin)
+  held = WithHeader(held, "Access-Control-Allow-Methods", allowed_methods)
+  held = WithHeader(held, "Access-Control-Allow-Headers", allowed_headers)
+  if allow_credentials {
+    held = WithHeader(held, "Access-Control-Allow-Credentials", "true")
+  }
+  if allowed_origin != "*" {
+    // Caches have to know the answer depends on who asked.
+    held = WithHeader(held, "Vary", "Origin")
+  }
+  return held
+}
+
+/// The other half: `OPTIONS` is answered without reaching a handler.
+offer fun Preflight(request: &mut Request) -> Response? uses unsafe {
+  if SameName(request.method, "OPTIONS") {
+    return NoContent()
+  }
+  return null
+}
+
+/// The headers a browser should be told about every answer.
+offer fun SecurityHeaders(_request: &Request, answer: Response)
+    -> Response uses unsafe {
+  var held = WithHeader(answer, "X-Content-Type-Options", "nosniff")
+  held = WithHeader(held, "X-Frame-Options", "DENY")
+  held = WithHeader(held, "Referrer-Policy", "no-referrer")
+  return held
+}
+
+// The token a request has to carry, and how many requests a client may
+// make. Both are the layer's configuration, and both live here for the
+// same reason the CORS settings do.
+var expected_token: text = ""
+
+/// Requires `Authorization: Bearer <token>` on every request.
+///
+/// One token for the whole server: a program with users looks them up
+/// itself, and this is for the case where a service talks to a service.
+offer fun RequireToken(token: text) {
+  expected_token = token
+}
+
+offer fun Authorize(request: &mut Request) -> Response? uses unsafe {
+  if expected_token.len == 0 {
+    return null
+  }
+  const token = Bearer(&(*request))
+  if token == expected_token {
+    return null
+  }
+  return WithHeader(Status(401, "unauthorized\n"), "WWW-Authenticate",
+                    "Bearer")
+}
+
+// A token bucket, shared by every client: how many requests are left and
+// when the window started. Per-client limiting needs a table keyed by
+// address, which needs the address, which the accept loop has and a
+// handler does not -- so this is the honest version rather than a
+// convincing one.
+var budget: int = 0
+var window_started: Instant = Instant(0, 0)
+var per_second: int = 0
+
+/// At most `count` requests a second, across all clients.
+offer fun RateLimit(count: int) {
+  per_second = count
+  budget = count
+}
+
+offer fun Limit(_request: &mut Request) -> Response? uses unsafe {
+  if per_second <= 0 {
+    return null
+  }
+  const now = Now()
+  if Elapsed(window_started, now) > 1000000000 {
+    window_started = now
+    budget = per_second
+  }
+  if budget <= 0 {
+    return WithHeader(Status(429, "too many requests\n"), "Retry-After",
+                      "1")
+  }
+  budget = budget - 1
+  return null
+}
+
+/// Refuses a body bigger than `most` bytes with `413`.
+///
+/// The server has a limit of its own, which is about what it will read;
+/// this is about what a route will accept, which is usually smaller.
+var most_body: int = 0
+
+offer fun BodyLimit(most: int) {
+  most_body = most
+}
+
+offer fun CheckBody(request: &mut Request) -> Response? uses unsafe {
+  if most_body > 0 && request.body.len > most_body {
+    return Status(413, "body too large\n")
+  }
+  return null
+}
+
+// ------------------------------------------------------------- tests ---
+
+fun Hello(_request: Request) -> Response {
+  return Ok("hello")
+}
+
+fun Deny(_request: &mut Request) -> Response? {
+  return Status(403, "no")
+}
+
+fun Mark(_request: &Request, answer: Response) -> Response {
+  return WithHeader(answer, "X-Mark", "1")
+}
+
+@Test
+fun RunsLayersAroundAHandler() -> bool uses io, unsafe {
+  var layers = LayersNew()
+  layers.Then(Mark)
+  var request = RequestNew()
+  request.method = "GET"
+  request.path = "/"
+  const answer = Through(&layers, request, Hello)
+  return answer.status == 200 && answer.body == "hello" &&
+         answer.header_count == 1 && answer.headers[0].name == "X-Mark"
+}
+
+@Test
+fun ABeforeLayerMayAnswerInstead() -> bool uses io, unsafe {
+  var layers = LayersNew()
+  layers.Use(Deny)
+  layers.Then(Mark)
+  var request = RequestNew()
+  const answer = Through(&layers, request, Hello)
+  // The handler did not run, and the `after` layer still did: a refused
+  // request is still a request that was answered.
+  return answer.status == 403 && answer.header_count == 1
+}
+
+@Test
+fun MarksAnswersWithCors() -> bool uses io, unsafe {
+  AllowOrigin("https://example.com")
+  var request = RequestNew()
+  const answer = Cors(&request, Ok("x"))
+  AllowOrigin("*")
+  return answer.header_count == 4 &&
+         answer.headers[0].value == "https://example.com" &&
+         answer.headers[3].name == "Vary"
+}
+
+@Test
+fun RefusesAWrongToken() -> bool uses io, unsafe {
+  RequireToken("secret")
+  var request = RequestNew()
+  request.headers[0] = Pair("Authorization", "Bearer wrong")
+  request.header_count = 1
+  const refused = Authorize(&mut request)
+  request.headers[0] = Pair("Authorization", "Bearer secret")
+  const allowed = Authorize(&mut request)
+  RequireToken("")
+  var status = 0
+  if const said = refused {
+    status = said.status
+  }
+  return status == 401 && allowed == null
+}

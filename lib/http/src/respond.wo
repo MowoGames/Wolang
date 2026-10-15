@@ -1,0 +1,226 @@
+// Answering: the shapes a handler reaches for beyond `Ok`.
+//
+// Each of these is a `Response` and nothing more -- a status, a body, a
+// type and a few headers -- so they compose with `WithHeader` and with
+// each other. The point of having them is that `Redirect("/login")` says
+// what it means and `Status(303, "")` with a `Location` header does not.
+
+need std.json.{Json, Write}
+need std.text.{BuilderNew, Bytes, Length}
+
+/// `200 OK` with a JSON value, written here.
+offer fun JsonOf(value: Json) -> Response uses unsafe {
+  return OkJson(Write(value))
+}
+
+/// `200 OK` with an HTML body.
+offer fun Html(body: text) -> Response {
+  return WithType(Status(200, body), "text/html; charset=utf-8")
+}
+
+/// `200 OK` with a plain-text body and the character set said out loud.
+offer fun Text(body: text) -> Response {
+  return WithType(Status(200, body), "text/plain; charset=utf-8")
+}
+
+/// A redirect to `location`.
+///
+/// `303 See Other` by default, which is the one that turns a POST into a
+/// GET -- the thing a form submission wants and the reason `302` is a
+/// trap.
+offer fun Redirect(location: text) -> Response {
+  return WithHeader(Status(303, ""), "Location", location)
+}
+
+/// A redirect with a status of the caller's choosing: `301` for moved for
+/// good, `307` to keep the method.
+offer fun RedirectWith(status: int, location: text) -> Response {
+  return WithHeader(Status(status, ""), "Location", location)
+}
+
+/// An error as a JSON document, the way an API should answer one.
+///
+/// The shape is RFC 7807's: a title, a status and a detail. A client that
+/// has to tell a person what went wrong needs more than a status line,
+/// and a body that is sometimes text and sometimes JSON is the thing that
+/// makes writing a client miserable.
+offer fun Problem(status: int, title: text, detail: text) -> Response
+    uses unsafe {
+  const body = "\{\"status\": {status}, \"title\": \"" +
+               Escaped(title) + "\", \"detail\": \"" +
+               Escaped(detail) + "\"\}\n"
+  return WithType(Status(status, body), "application/problem+json")
+}
+
+/// A string with what JSON cannot carry escaped.
+///
+/// Here rather than in `std.json` because this is a *fragment* -- the
+/// value of one member of a document being built by hand -- and the JSON
+/// writer works on whole documents.
+offer fun Escaped(value: text) -> text uses unsafe {
+  var builder = BuilderNew()
+  const bytes = Bytes(value)
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == 34 {
+      builder.Append("\\\"")
+    } else if byte == 92 {
+      builder.Append("\\\\")
+    } else if byte == 10 {
+      builder.Append("\\n")
+    } else if byte == 13 {
+      builder.Append("\\r")
+    } else if byte == 9 {
+      builder.Append("\\t")
+    } else if byte < 32 {
+      builder.Append("?")
+    } else {
+      builder.AppendByte(byte)
+    }
+    i = i + 1
+  }
+  return builder.Release()
+}
+
+/// A body to be saved rather than shown.
+offer fun Attachment(name: text, body: text) -> Response uses unsafe {
+  var answer = WithType(Status(200, body), "application/octet-stream")
+  return WithHeader(answer, "Content-Disposition",
+                    "attachment; filename=\"" + name + "\"")
+}
+
+/// The same response, with a cookie on it.
+///
+/// `Path=/` and `HttpOnly` by default: a cookie a script can read is a
+/// cookie an injected script can read, and a program that wants one says
+/// so with `WithHeader` itself.
+offer fun WithCookie(answer: Response, name: text, value: text,
+                     seconds: int) -> Response uses unsafe {
+  var pieces = "{name}={value}; Path=/; HttpOnly; SameSite=Lax"
+  if seconds >= 0 {
+    pieces = pieces + "; Max-Age={seconds}"
+  }
+  return WithHeader(answer, "Set-Cookie", pieces)
+}
+
+/// The same response, with the cookie called `name` taken away.
+offer fun WithoutCookie(answer: Response, name: text) -> Response
+    uses unsafe {
+  return WithHeader(answer, "Set-Cookie",
+                    "{name}=; Path=/; HttpOnly; Max-Age=0")
+}
+
+/// The same response, cacheable for `seconds`.
+offer fun WithCache(answer: Response, seconds: int) -> Response uses unsafe {
+  return WithHeader(answer, "Cache-Control", "public, max-age={seconds}")
+}
+
+/// The same response, which nothing may cache.
+offer fun WithoutCache(answer: Response) -> Response uses unsafe {
+  return WithHeader(answer, "Cache-Control", "no-store")
+}
+
+/// The same response, with an entity tag so a client may ask again
+/// cheaply.
+offer fun WithTag(answer: Response, tag: text) -> Response uses unsafe {
+  return WithHeader(answer, "ETag", "\"" + tag + "\"")
+}
+
+/// `304 Not Modified` when the client already has `tag`.
+///
+/// A handler calls this first and answers with it when it is not null,
+/// which is the whole of conditional GET.
+offer fun NotModified(request: &Request, tag: text) -> Response? uses unsafe {
+  const said = Header(request, "If-None-Match", "")
+  if Length(said) == 0 {
+    return null
+  }
+  if said == tag || said == "\"" + tag + "\"" {
+    return WithTag(Status(304, ""), tag)
+  }
+  return null
+}
+
+/// `401` with the scheme a client should use.
+offer fun Unauthorized(realm: text) -> Response uses unsafe {
+  return WithHeader(Status(401, "unauthorized\n"), "WWW-Authenticate",
+                    "Bearer realm=\"" + realm + "\"")
+}
+
+offer fun Forbidden() -> Response {
+  return Status(403, "forbidden\n")
+}
+
+offer fun Conflict(why: text) -> Response {
+  return Status(409, why)
+}
+
+offer fun Unprocessable(why: text) -> Response {
+  return Status(422, why)
+}
+
+/// `429`, with how long the client should wait.
+offer fun TooMany(seconds: int) -> Response uses unsafe {
+  return WithHeader(Status(429, "too many requests\n"), "Retry-After",
+                    "{seconds}")
+}
+
+/// `500`, with nothing about what went wrong.
+///
+/// Deliberately: what went wrong goes in the log, where the people who
+/// run the server can see it, and not to whoever asked.
+offer fun Failed() -> Response {
+  return Status(500, "internal error\n")
+}
+
+offer fun Unavailable(seconds: int) -> Response uses unsafe {
+  return WithHeader(Status(503, "unavailable\n"), "Retry-After",
+                    "{seconds}")
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun WritesTheUsualAnswers() -> bool uses unsafe {
+  const html = Html("<p>hi</p>")
+  const redirect = Redirect("/login")
+  const moved = RedirectWith(301, "/new")
+  return html.status == 200 && html.kind == "text/html; charset=utf-8" &&
+         redirect.status == 303 && redirect.header_count == 1 &&
+         redirect.headers[0].name == "Location" &&
+         redirect.headers[0].value == "/login" && moved.status == 301
+}
+
+@Test
+fun WritesAProblemDocument() -> bool uses unsafe {
+  const answer = Problem(422, "invalid", "name is \"empty\"\n")
+  return answer.status == 422 &&
+         answer.kind == "application/problem+json" &&
+         Escaped("a\"b") == "a\\\"b" && Escaped("a\nb") == "a\\nb" &&
+         answer.body.len > 40
+}
+
+@Test
+fun SetsAndClearsCookies() -> bool uses unsafe {
+  const set = WithCookie(Ok("x"), "session", "abc", 3600)
+  const cleared = WithoutCookie(Ok("x"), "session")
+  return set.headers[0].name == "Set-Cookie" &&
+         set.headers[0].value ==
+             "session=abc; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600" &&
+         cleared.headers[0].value ==
+             "session=; Path=/; HttpOnly; Max-Age=0"
+}
+
+@Test
+fun AnswersAConditionalGet() -> bool uses unsafe {
+  var request = RequestNew()
+  request.headers[0] = Pair("If-None-Match", "\"v1\"")
+  request.header_count = 1
+  var status = 0
+  if const answer = NotModified(&request, "v1") {
+    status = answer.status
+  }
+  const other = NotModified(&request, "v2")
+  return status == 304 && other == null
+}

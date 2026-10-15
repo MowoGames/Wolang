@@ -1,0 +1,389 @@
+// One buffer per connection, so a request may arrive in pieces.
+//
+// A server that parses whatever one `read` returned is a server that
+// works until a body crosses a packet boundary -- which is to say, until
+// someone posts something. A connection needs somewhere to keep what has
+// arrived so far, how much that is, and the answer to "is there a whole
+// request in here yet".
+//
+// A fixed pool rather than a table indexed by descriptor: the number of
+// connections a server holds is the number it was told to hold, and a
+// slot per descriptor the kernel might hand out is megabytes of nothing.
+
+need std.mem.{ArrayNew, Free}
+need std.text.{Bytes}
+
+/// How big one connection's buffer starts out, and how far it may grow.
+offer const kStartingRoom: int = 8192
+
+/// What a server will not read past, per request.
+offer struct Limits {
+  /// The whole request: head and body together.
+  var most_request: int = 1048576
+  /// The head on its own, which is what stops a client from sending
+  /// headers forever.
+  var most_head: int = 16384
+  /// Whether a connection is kept open after an answer.
+  var keep_alive: bool = true
+}
+
+offer fun LimitsDefault() -> Limits {
+  return Limits(1048576, 16384, true)
+}
+
+/// Where one connection's bytes are kept.
+offer struct Held {
+  var fd: int = -1
+  var buffer: []u8
+  var filled: int = 0
+  /// Set when the client said `Connection: close`, or when the server
+  /// decided this one is done: the loop closes it after answering.
+  var closing: bool = false
+}
+
+/// A pool of connection buffers, one slot per connection held at once.
+offer class Connections {
+  var slots: []Held
+  var limits: Limits
+
+  deinit  {
+    var i = 0
+    while i < slots.len {
+      if slots[i].buffer.len != 0 {
+        Free(slots[i].buffer)
+      }
+      i = i + 1
+    }
+    Free(slots)
+  }
+
+  /// The slot `fd` is in, or -1.
+  fun Find(fd: int) -> int {
+    var i = 0
+    while i < slots.len {
+      if slots[i].fd == fd {
+        return i
+      }
+      i = i + 1
+    }
+    return -1
+  }
+
+  /// Takes a slot for `fd`, or -1 when the pool is full.
+  ///
+  /// A full pool is the server's back pressure: the caller closes the
+  /// connection rather than accepting work it has nowhere to put.
+  fun Open(fd: int) -> int uses unsafe {
+    var i = 0
+    while i < slots.len {
+      if slots[i].fd < 0 {
+        if slots[i].buffer.len == 0 {
+          slots[i].buffer = ArrayNew<u8>(kStartingRoom)
+        }
+        slots[i].fd = fd
+        slots[i].filled = 0
+        slots[i].closing = false
+        return i
+      }
+      i = i + 1
+    }
+    return -1
+  }
+
+  /// Gives the slot back. The buffer stays for the next connection: a
+  /// server that allocates per connection allocates per request under
+  /// load.
+  fun Release(slot: int) {
+    if slot >= 0 && slot < slots.len {
+      slots[slot].fd = -1
+      slots[slot].filled = 0
+      slots[slot].closing = false
+    }
+  }
+
+  fun Fd(slot: int) -> int {
+    if slot < 0 || slot >= slots.len {
+      return -1
+    }
+    return slots[slot].fd
+  }
+
+  fun IsClosing(slot: int) -> bool {
+    if slot < 0 || slot >= slots.len {
+      return false
+    }
+    return slots[slot].closing
+  }
+
+  fun SetClosing(slot: int, closing: bool) {
+    if slot >= 0 && slot < slots.len {
+      slots[slot].closing = closing
+    }
+  }
+
+  fun Filled(slot: int) -> int {
+    if slot < 0 || slot >= slots.len {
+      return 0
+    }
+    return slots[slot].filled
+  }
+
+  /// Makes room for `wanted` bytes in a slot's buffer, up to the limit.
+  ///
+  /// False when the request wants more than the server allows, which the
+  /// caller answers with `413` rather than by growing.
+  fun Reserve(slot: int, wanted: int) -> bool uses unsafe {
+    if slot < 0 || slot >= slots.len {
+      return false
+    }
+    if wanted > limits.most_request {
+      return false
+    }
+    if wanted <= slots[slot].buffer.len {
+      return true
+    }
+    var size = slots[slot].buffer.len
+    if size < kStartingRoom {
+      size = kStartingRoom
+    }
+    while size < wanted {
+      size = size * 2
+    }
+    if size > limits.most_request {
+      size = limits.most_request
+    }
+    var grown = ArrayNew<u8>(size)
+    var i = 0
+    while i < slots[slot].filled {
+      grown[i] = slots[slot].buffer[i]
+      i = i + 1
+    }
+    Free(slots[slot].buffer)
+    slots[slot].buffer = grown
+    return true
+  }
+
+  /// Where to read into, and how much room is there.
+  fun Room(slot: int) -> int {
+    if slot < 0 || slot >= slots.len {
+      return 0
+    }
+    return slots[slot].buffer.len - slots[slot].filled
+  }
+
+  /// Reads once from the connection into its buffer. How many bytes
+  /// arrived, zero when nothing was waiting, or negative when the
+  /// connection is finished.
+  fun Fill(slot: int) -> int uses unsafe {
+    if slot < 0 || slot >= slots.len {
+      return -1
+    }
+    if Room(slot) == 0 {
+      // Grow first; if that is not allowed, the caller decides.
+      if !Reserve(slot, slots[slot].buffer.len * 2) {
+        return -2
+      }
+    }
+    const received =
+        Read(slots[slot].fd as s32, &mut slots[slot].buffer[slots[slot].filled],
+             Room(slot))
+    if received > 0 {
+      slots[slot].filled = slots[slot].filled + received
+    }
+    return received
+  }
+
+  /// The bytes a slot holds.
+  fun Bytes(slot: int) -> []u8 {
+    return slots[slot].buffer
+  }
+
+  /// Takes `count` bytes off the front, keeping what came after.
+  ///
+  /// What makes pipelining work: two requests in one read are two turns,
+  /// and the second one's bytes are still here for the next.
+  fun Consume(slot: int, count: int) {
+    if slot < 0 || slot >= slots.len || count <= 0 {
+      return
+    }
+    if count >= slots[slot].filled {
+      slots[slot].filled = 0
+      return
+    }
+    var i = count
+    var to = 0
+    while i < slots[slot].filled {
+      slots[slot].buffer[to] = slots[slot].buffer[i]
+      to = to + 1
+      i = i + 1
+    }
+    slots[slot].filled = to
+  }
+}
+
+offer fun ConnectionsNew(most: int, limits: Limits) -> Connections
+    uses unsafe {
+  var slots = ArrayNew<Held>(most)
+  var empty = ArrayNew<u8>(0)
+  var i = 0
+  while i < most {
+    slots[i] = Held(-1, empty, 0, false)
+    i = i + 1
+  }
+  return Connections(slots, limits)
+}
+
+/// How long a request is, or what is missing.
+///
+/// `-1` says "not all here yet", `-2` says "this is not a request", and
+/// `-3` says "bigger than the server allows".
+offer fun RequestLength(bytes: []u8, filled: int, limits: Limits) -> int
+    uses unsafe {
+  const head = HeadEnd(bytes, filled)
+  if head < 0 {
+    if filled > limits.most_head {
+      return -3
+    }
+    return -1
+  }
+  // The head is here, so `Content-Length` can be read -- which is the one
+  // header that says how much more there is.
+  const said = HeaderIn(bytes, head, "Content-Length")
+  var length = 0
+  if said.len != 0 {
+    length = ParseInt(said)
+  }
+  if head + length > limits.most_request {
+    return -3
+  }
+  if filled < head + length {
+    return -1
+  }
+  return head + length
+}
+
+/// Where the blank line that ends the head is, or -1.
+offer fun HeadEnd(bytes: []u8, filled: int) -> int {
+  var at = 0
+  while at + 3 < filled {
+    if bytes[at] == 13 && bytes[at + 1] == 10 && bytes[at + 2] == 13 &&
+       bytes[at + 3] == 10 {
+      return at + 4
+    }
+    at = at + 1
+  }
+  // A client that sends bare newlines is out of spec but common enough in
+  // a hand-typed request to be worth reading.
+  at = 0
+  while at + 1 < filled {
+    if bytes[at] == 10 && bytes[at + 1] == 10 {
+      return at + 2
+    }
+    at = at + 1
+  }
+  return -1
+}
+
+/// One header's value out of raw bytes, before anything is parsed.
+///
+/// Used for the two headers the loop itself needs -- the length and
+/// whether to keep the connection -- which have to be read before there
+/// is a `Request` to ask (D122).
+offer fun HeaderIn(bytes: []u8, head: int, name: text) -> text uses unsafe {
+  const wanted = Bytes(name)
+  var at = 0
+  // Past the request line.
+  while at < head && bytes[at] != 10 {
+    at = at + 1
+  }
+  at = at + 1
+  while at < head {
+    var end = at
+    while end < head && bytes[end] != 13 && bytes[end] != 10 {
+      end = end + 1
+    }
+    if end == at {
+      return ""
+    }
+    var colon = at
+    while colon < end && bytes[colon] != 58 {
+      colon = colon + 1
+    }
+    if colon < end && colon - at == wanted.len {
+      var same = true
+      var i = 0
+      while i < wanted.len {
+        if LowerByte(bytes[at + i]) != LowerByte(wanted[i]) {
+          same = false
+          break
+        }
+        i = i + 1
+      }
+      if same {
+        var value = colon + 1
+        while value < end && bytes[value] == 32 {
+          value = value + 1
+        }
+        return SliceOf(bytes, value, end) as text
+      }
+    }
+    at = end
+    while at < head && (bytes[at] == 13 || bytes[at] == 10) {
+      at = at + 1
+    }
+  }
+  return ""
+}
+
+fun LowerByte(byte: u8) -> u8 {
+  if byte >= 65 && byte <= 90 {
+    return byte + 32
+  }
+  return byte
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun SaysWhenAWholeRequestIsHere() -> bool uses unsafe {
+  const limits = LimitsDefault()
+  const whole = Bytes("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+  const half = Bytes("GET / HTTP/1.1\r\nHost: ")
+  const body = Bytes("POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhel")
+  const full = Bytes("POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello")
+  return RequestLength(whole, whole.len, limits) == whole.len &&
+         RequestLength(half, half.len, limits) == -1 &&
+         RequestLength(body, body.len, limits) == -1 &&
+         RequestLength(full, full.len, limits) == full.len
+}
+
+@Test
+fun ReadsAHeaderOutOfRawBytes() -> bool uses unsafe {
+  const bytes = Bytes("POST /x HTTP/1.1\r\nContent-Length: 42\r\n" +
+                      "Connection: close\r\n\r\n")
+  const head = HeadEnd(bytes, bytes.len)
+  return head == bytes.len &&
+         HeaderIn(bytes, head, "content-length") == "42" &&
+         HeaderIn(bytes, head, "Connection") == "close" &&
+         HeaderIn(bytes, head, "Missing") == ""
+}
+
+@Test
+fun RefusesSomethingTooBig() -> bool uses unsafe {
+  var limits = LimitsDefault()
+  limits.most_request = 32
+  const big = Bytes("POST / HTTP/1.1\r\nContent-Length: 500\r\n\r\n")
+  return RequestLength(big, big.len, limits) == -3
+}
+
+@Test
+fun KeepsWhatCameAfterARequest() -> bool uses unsafe {
+  var pool = ConnectionsNew(2, LimitsDefault())
+  const slot = pool.Open(7)
+  const second = pool.Open(9)
+  const full = pool.Open(11)
+  pool.Release(second)
+  const reused = pool.Open(13)
+  return slot == 0 && second == 1 && full == -1 && reused == 1 &&
+         pool.Fd(0) == 7 && pool.Find(13) == 1 && pool.Find(99) == -1
+}

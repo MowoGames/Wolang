@@ -1169,9 +1169,17 @@ class Interpreter {
                                      ? base_type
                                      : types_.ElementOf(base_type);
         const abi::Layout& layout = layouts_->ObjectOf(aggregate);
-        const uint64_t offset =
-            inst.field < layout.offsets.size() ? layout.offsets[inst.field]
-                                               : 0;
+        if (inst.field >= layout.offsets.size()) {
+          // Offset zero was the old answer, and it wrote one field over
+          // another: a layout that does not know the type is a fault in
+          // this tier, not a guess (D125).
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "took the address of field " +
+                    std::to_string(inst.field) + " of " +
+                    types_.Describe(interner_, aggregate) +
+                    ", which this tier cannot lay out");
+        }
+        const uint64_t offset = layout.offsets[inst.field];
         return Value::Int(base.integer() + offset, IntWidth::k64,
                           /*is_signed=*/false);
       }
