@@ -2181,3 +2181,39 @@ belongs, what a path really is with `.` and `..` worked out, copying,
 appending, walking a tree, and taking one away. And for a child process:
 somewhere to run and something to add to its environment -- added rather
 than replacing, because a child with no `PATH` cannot find anything.
+
+**D180. A file kept open.** `std.fs` reads and writes whole files, which
+is the right shape for a configuration file and the wrong one for a
+store: a store appends records and reads them back at the offset it
+remembers. So the runtime has the handful of calls that needs -- open,
+read at, append, size, sync, truncate, close -- and `fsync` is in there
+because it is the whole difference between a store and a cache.
+
+**D181. A store is a log and an index.** `lib/db` appends every write --
+key, value, a checksum -- and keeps an index in memory saying where the
+newest record for each key is. Opening reads the log once; a record whose
+checksum does not match, or that the file ends in the middle of, is where
+the log stops, and the file is truncated there. Which is exactly what a
+machine that lost power during an append leaves behind.
+
+Not a B-tree: a tree is the right answer when the index does not fit in
+memory, and it is a month of work to get page splitting, the free list
+and crash recovery right. A log is a day's work and survives a crash by
+construction. The index is *sorted*, so ordered walks and ranges work --
+the one thing a log-structured store usually gives up.
+
+Verified the way the claim deserves: fifty keys written, a torn record
+appended by hand, and the store reopened with all fifty intact and the
+file trimmed back.
+
+**D182. A value returned from a fallible.** `return 7` from a `-> int!`
+returned a bare seven where a pair was expected: the checker records the
+literal as `int!` -- it adapted it -- and lowering built a `const.int`
+*typed* `int!` and then saw nothing left to wrap. The interpreter read
+the seven as a struct and found no field; the compiled tiers read the
+`match` as unreachable.
+
+A literal is built at the element type now, and the wrap is the `Coerce`
+that was always there. The lesson is the one this project keeps
+relearning: what a value *is* comes from the instruction that produced
+it, and what the context wanted is a separate question (D111, D173).

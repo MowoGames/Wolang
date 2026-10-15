@@ -2412,6 +2412,55 @@ fun AsANumber() -> int uses unsafe {
   WOLANG_EXPECT_EQ(f.Run("AsANumber", {}), "7");
 }
 
+WOLANG_TEST(CodegenTest, AValueReturnedFromAFallible) {
+  // `return 7` from a `-> int!` wraps: the checker records the literal
+  // as `int!` already, so lowering built a `const.int` typed `int!` and
+  // returned a bare seven where a pair was expected. The tiers then
+  // read it as two different kinds of nonsense, which is what a
+  // differential test is for (D182).
+  Fixture f(R"(
+error Broken
+
+fun Risky(ok: bool) -> int! {
+  if !ok {
+    return Broken
+  }
+  return 7
+}
+
+fun Floating(ok: bool) -> float! {
+  if !ok {
+    return Broken
+  }
+  return 1.5
+}
+
+fun Works() -> int {
+  match Risky(true) {
+    Ok(value) => { return value },
+    Broken => { return -1 },
+  }
+}
+
+fun Fails() -> int {
+  match Risky(false) {
+    Ok(value) => { return value },
+    Broken => { return -1 },
+  }
+}
+
+fun FloatWorks() -> int {
+  match Floating(true) {
+    Ok(value) => { return (value * 2.0) as int },
+    Broken => { return -1 },
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Works", {}), "7");
+  WOLANG_EXPECT_EQ(f.Run("Fails", {}), "-1");
+  WOLANG_EXPECT_EQ(f.Run("FloatWorks", {}), "3");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang
