@@ -1363,3 +1363,22 @@ resolution knows, the file's symbols, formatting, and completion from
 file scope. A completion that knew about locals needs a scope per
 position, which the checker does not record yet -- said here rather than
 left as a surprise.
+
+**D118. The IR carries where every instruction came from.** A side table
+parallel to the instructions, not a field: an `Inst` is a fixed size on
+purpose and a span is three words. Every pass that makes an instruction
+keeps the table in step, and the inliner copies the *callee's* span --
+an inlined body is still the callee's code, and a trap in it should name
+the callee's line.
+
+Three things come out of it. A trap says
+`app.wo:4:10 (@main:%55): index is outside a length of 4` in both tiers
+instead of naming an instruction number. `wolang build` emits DWARF, so a
+debugger stops on a line of Wolang, steps statement by statement, and
+names Wolang frames in a backtrace -- which needed `dsymutil` as well,
+because on this platform the line table stays in the object file and the
+binary holds only a map into it. And a profiler can attribute a sample to
+a function, which is the next thing this makes possible.
+
+`--no-debug` leaves it all out, which is a fine thing for a release build
+to ask for.

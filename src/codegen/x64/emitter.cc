@@ -610,6 +610,7 @@ class FunctionEmitter {
     site.where = "@" + std::string(interner_.Text(function_.name)) + ":%" +
                  std::to_string(where.index);
     site.message = std::move(message);
+    site.span = function_.SpanOf(where);
     const uint32_t index = trap_site_base_ +
                            static_cast<uint32_t>(traps_.size());
     traps_.push_back(std::move(site));

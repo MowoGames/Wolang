@@ -508,6 +508,8 @@ InstId Append(Function* function, Inst inst, BlockId block) {
   const InstId id{static_cast<uint32_t>(function->instructions.size())};
   function->instructions.push_back(inst);
   function->owners.push_back(block);
+  // The span table runs parallel to the instructions (D118).
+  function->spans.push_back(function->SpanOf(InstId{}));
   function->Get(block).instructions.push_back(id);
   return id;
 }
@@ -609,6 +611,10 @@ bool InlineCalls(TypeStore* types, const Module& module, Function* function) {
           InstId{static_cast<uint32_t>(function->instructions.size())};
       function->instructions.push_back(Inst{});
       function->owners.push_back(BlockId{block_map[b]});
+      // The copy keeps the line it came from: an inlined body is still
+      // the callee's code, and a trap in it should name the callee's
+      // line rather than the call site's (D118).
+      function->spans.push_back(callee.SpanOf(id));
       function->Get(BlockId{block_map[b]}).instructions.push_back(
           value_map[id.index]);
     }
@@ -904,6 +910,8 @@ bool PromoteOne(Function* function,
     const InstId id{static_cast<uint32_t>(function->instructions.size())};
     function->instructions.push_back(param);
     function->owners.push_back(block);
+    // The span table runs parallel to the instructions (D118).
+    function->spans.push_back(function->SpanOf(InstId{}));
     Block& body = function->Get(block);
     body.instructions.insert(
         body.instructions.begin() + body.param_count, id);
@@ -1693,6 +1701,8 @@ bool ExpandElementAddresses(TypeStore* types,
             InstId{static_cast<uint32_t>(function->instructions.size())};
         function->instructions.push_back(inst);
         function->owners.push_back(BlockId{});
+        // The span table runs parallel to the instructions (D118).
+        function->spans.push_back(function->SpanOf(InstId{}));
         built.push_back(made);
         return made;
       };
@@ -1705,6 +1715,8 @@ bool ExpandElementAddresses(TypeStore* types,
             InstId{static_cast<uint32_t>(function->instructions.size())};
         function->instructions.push_back(inst);
         function->owners.push_back(BlockId{});
+        // The span table runs parallel to the instructions (D118).
+        function->spans.push_back(function->SpanOf(InstId{}));
         built.push_back(made);
         return made;
       };
@@ -1734,6 +1746,8 @@ bool ExpandElementAddresses(TypeStore* types,
             InstId{static_cast<uint32_t>(function->instructions.size())};
         function->instructions.push_back(check);
         function->owners.push_back(BlockId{});
+        // The span table runs parallel to the instructions (D118).
+        function->spans.push_back(function->SpanOf(InstId{}));
         built.push_back(made);
       }
 

@@ -26,6 +26,10 @@ InstId Builder::Append(Inst inst, BlockId block) {
   const InstId id{static_cast<uint32_t>(function().instructions.size())};
   function().instructions.push_back(std::move(inst));
   function().owners.push_back(block);
+  // Where the code being lowered came from. Set by lowering as it walks
+  // statements, so that a trap names a line and a debugger can step
+  // (D118).
+  function().spans.push_back(where_);
   function().Get(block).instructions.push_back(id);
   return id;
 }
@@ -38,6 +42,7 @@ InstId Builder::AddParam(BlockId block, TypeId type) {
   const InstId id{static_cast<uint32_t>(function().instructions.size())};
   function().instructions.push_back(std::move(inst));
   function().owners.push_back(block);
+  function().spans.push_back(where_);
 
   Block& target = function().Get(block);
   target.instructions.insert(

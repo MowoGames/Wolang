@@ -120,6 +120,8 @@ class Splitter {
           static_cast<uint32_t>(target->instructions.size())};
       target->instructions.push_back(inst);
       target->owners.push_back(block);
+      // The span table runs parallel to the instructions (D118).
+      target->spans.push_back(target->SpanOf(InstId{}));
       prelude.push_back(fresh);
       return fresh;
     };
@@ -263,6 +265,8 @@ class Splitter {
     const InstId kind{static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(kind_param);
     target->owners.push_back(entry);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(entry).instructions.push_back(kind);
     Inst frame_param;
     frame_param.opcode = Opcode::kParam;
@@ -270,6 +274,8 @@ class Splitter {
     const InstId frame{static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(frame_param);
     target->owners.push_back(entry);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(entry).instructions.push_back(frame);
     target->Get(entry).param_count = 2;
 
@@ -294,6 +300,8 @@ class Splitter {
     const InstId stop{static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(unreachable);
     target->owners.push_back(nowhere);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(nowhere).instructions.push_back(stop);
 
     Inst switch_inst;
@@ -315,6 +323,8 @@ class Splitter {
     const InstId id{static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(switch_inst);
     target->owners.push_back(entry);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(entry).instructions.push_back(id);
   }
 
@@ -509,6 +519,8 @@ class Splitter {
     const InstId id{static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(inst);
     target->owners.push_back(block);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(block).instructions.push_back(id);
     return id;
   }
@@ -536,6 +548,8 @@ class Splitter {
     const InstId id{static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(inst);
     target->owners.push_back(from);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(from).instructions.push_back(id);
   }
 
@@ -554,6 +568,8 @@ class Splitter {
     const InstId id{static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(inst);
     target->owners.push_back(from);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(from).instructions.push_back(id);
   }
 
@@ -568,6 +584,8 @@ class Splitter {
     const InstId id{static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(inst);
     target->owners.push_back(from);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(from).instructions.push_back(id);
   }
 
@@ -580,6 +598,8 @@ class Splitter {
     const InstId id{static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(inst);
     target->owners.push_back(block);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(block).instructions.push_back(id);
     return id;
   }
@@ -592,6 +612,8 @@ class Splitter {
     const InstId id{static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(inst);
     target->owners.push_back(block);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(block).instructions.push_back(id);
     return id;
   }
@@ -652,6 +674,8 @@ class Splitter {
         static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(param);
     target->owners.push_back(entry);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(entry).instructions.push_back(frame_pointer);
     target->Get(entry).param_count = 1;
 
@@ -702,6 +726,8 @@ class Splitter {
         static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(param);
     target->owners.push_back(dispatch);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(dispatch).instructions.push_back(frame_pointer);
     target->Get(dispatch).param_count = 1;
 
@@ -775,6 +801,8 @@ class Splitter {
             static_cast<uint32_t>(target->instructions.size())};
         target->instructions.push_back(copy);
         target->owners.push_back(current);
+        // The span table runs parallel to the instructions (D118).
+        target->spans.push_back(target->SpanOf(InstId{}));
         Block& into = target->Get(current);
         into.instructions.insert(into.instructions.begin() +
                                      into.param_count,
@@ -845,6 +873,8 @@ class Splitter {
             static_cast<uint32_t>(target->instructions.size())};
         target->instructions.push_back(copy);
         target->owners.push_back(current);
+        // The span table runs parallel to the instructions (D118).
+        target->spans.push_back(target->SpanOf(InstId{}));
         target->Get(current).instructions.push_back(fresh);
         map[id.index] = fresh;
       }
@@ -871,6 +901,8 @@ class Splitter {
     const InstId stop{static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(unreachable);
     target->owners.push_back(nowhere);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(nowhere).instructions.push_back(stop);
 
     target->successors.push_back(nowhere);
@@ -881,6 +913,8 @@ class Splitter {
         static_cast<uint32_t>(target->instructions.size())};
     target->instructions.push_back(switch_inst);
     target->owners.push_back(dispatch);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
     target->Get(dispatch).instructions.push_back(dispatch_id);
 
     return position;
@@ -911,6 +945,8 @@ class Splitter {
       const InstId stop{static_cast<uint32_t>(target->instructions.size())};
       target->instructions.push_back(unreachable);
       target->owners.push_back(current);
+      // The span table runs parallel to the instructions (D118).
+      target->spans.push_back(target->SpanOf(InstId{}));
       target->Get(current).instructions.push_back(stop);
       return AddBlock(target, "task.unreachable");
     }
@@ -1000,6 +1036,8 @@ class Splitter {
       const InstId id{static_cast<uint32_t>(target->instructions.size())};
       target->instructions.push_back(param);
       target->owners.push_back(entry);
+      // The span table runs parallel to the instructions (D118).
+      target->spans.push_back(target->SpanOf(InstId{}));
       target->Get(entry).instructions.push_back(id);
       ++target->Get(entry).param_count;
       arguments.push_back(id);

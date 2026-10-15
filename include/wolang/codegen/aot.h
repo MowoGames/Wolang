@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "wolang/abi/layout.h"
+#include "wolang/base/source_manager.h"
 #include "wolang/base/string_interner.h"
 #include "wolang/codegen/compiler.h"
 #include "wolang/ir/ir.h"
@@ -37,6 +38,10 @@ struct AotOptions {
   std::string object_path;
   // The optimization level LLVM runs at, 0 to 3.
   int optimization = 2;
+  // Where the source is, for the line table a debugger reads. Without it
+  // the binary has no debug information, which is a fine thing for a
+  // release build to ask for (D118).
+  const SourceManager* sources = nullptr;
 };
 
 struct AotResult {

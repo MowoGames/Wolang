@@ -16,6 +16,7 @@
 #if WOLANG_WITH_LLVM
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Core.h>
+#include <llvm-c/DebugInfo.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
@@ -76,8 +77,9 @@ class Translator {
  public:
   Translator(const StringInterner& interner,
              const TypeStore& types,
+             const SourceManager* sources,
              std::span<const FileCode> files)
-      : interner_(interner), types_(types) {
+      : interner_(interner), types_(types), sources_(sources) {
     for (const FileCode& file : files) {
       files_.push_back(file);
       layouts_.push_back(std::make_unique<abi::LayoutStore>(
@@ -92,6 +94,102 @@ class Translator {
     return files_[entry.file].module->functions[entry.local];
   }
   abi::LayoutStore& Layouts(uint32_t file) { return *layouts_[file]; }
+
+  // --------------------------------------------------------- debug info ---
+
+  FileId FirstFile() const {
+    for (const FileCode& file : files_) {
+      if (file.module != nullptr) {
+        for (const ir::Function& function : file.module->functions) {
+          for (const SourceSpan span : function.spans) {
+            if (span.is_valid()) {
+              return span.file;
+            }
+          }
+        }
+      }
+    }
+    return FileId{};
+  }
+
+  // The debug descriptor for a source file, made once.
+  LLVMMetadataRef DebugFileOf(FileId file) {
+    if (debug_ == nullptr) {
+      return nullptr;
+    }
+    const auto found = debug_files_.find(file.index);
+    if (found != debug_files_.end()) {
+      return found->second;
+    }
+    std::string path =
+        sources_ != nullptr && file.is_valid()
+            ? std::string(sources_->Path(file))
+            : std::string("<wolang>");
+    std::string directory = ".";
+    const size_t slash = path.rfind('/');
+    if (slash != std::string::npos) {
+      directory = path.substr(0, slash);
+      path = path.substr(slash + 1);
+    }
+    LLVMMetadataRef descriptor = LLVMDIBuilderCreateFile(
+        debug_, path.c_str(), path.size(), directory.c_str(),
+        directory.size());
+    debug_files_[file.index] = descriptor;
+    return descriptor;
+  }
+
+  // The subprogram for a function: what a debugger names a frame, and
+  // what a line table hangs off.
+  LLVMMetadataRef DebugFunctionOf(const Entry& entry,
+                                  LLVMValueRef function) {
+    if (debug_ == nullptr) {
+      return nullptr;
+    }
+    const ir::Function& ir = FunctionOf(entry);
+    SourceSpan where;
+    for (const SourceSpan span : ir.spans) {
+      if (span.is_valid()) {
+        where = span;
+        break;
+      }
+    }
+    LLVMMetadataRef file = DebugFileOf(where.file);
+    const unsigned line =
+        where.is_valid() && sources_ != nullptr
+            ? sources_->Position(where).line
+            : 1;
+    const std::string name(interner_.Text(ir.name));
+    size_t length = 0;
+    const char* linkage = LLVMGetValueName2(function, &length);
+    LLVMMetadataRef signature = LLVMDIBuilderCreateSubroutineType(
+        debug_, file, nullptr, 0, LLVMDIFlagZero);
+    return LLVMDIBuilderCreateFunction(
+        debug_, file, name.c_str(), name.size(), linkage, length, file,
+        line, signature, /*IsLocalToUnit=*/0, /*IsDefinition=*/1, line,
+        LLVMDIFlagZero, /*IsOptimized=*/0);
+  }
+
+  // Where the instruction being translated came from. Attached to
+  // everything the builder emits until it moves.
+  void SetDebugLocation(SourceSpan span) {
+    if (debug_ == nullptr || scope_ == nullptr) {
+      return;
+    }
+    // A synthesized instruction has no span of its own; it belongs to the
+    // function it is in, which is what its declaration line says. Every
+    // instruction gets a location, because a function with debug
+    // information and some locations missing is what LLVM warns about.
+    unsigned line = function_line_;
+    unsigned column = 1;
+    if (span.is_valid() && sources_ != nullptr) {
+      const LineColumn at = sources_->Position(span);
+      line = at.line;
+      column = at.column;
+    }
+    LLVMSetCurrentDebugLocation2(
+        b_, LLVMDIBuilderCreateDebugLocation(ctx_, line, column, scope_,
+                                             nullptr));
+  }
 
   // ------------------------------------------------------------- types ---
 
@@ -236,6 +334,15 @@ class Translator {
   LLVMContextRef ctx_ = nullptr;
   LLVMModuleRef mod_ = nullptr;
   LLVMBuilderRef b_ = nullptr;
+  // Debug information: what lets a debugger stop on a line of Wolang
+  // rather than on an address, and what a profiler needs to attribute a
+  // sample to a function (D118).
+  LLVMDIBuilderRef debug_ = nullptr;
+  LLVMMetadataRef unit_ = nullptr;
+  LLVMMetadataRef scope_ = nullptr;
+  unsigned function_line_ = 1;
+  std::unordered_map<uint32_t, LLVMMetadataRef> debug_files_;
+  const SourceManager* sources_ = nullptr;
 
   // The function being translated.
   const ir::Function* function_ = nullptr;
@@ -522,6 +629,23 @@ bool Translator::Translate(Entry* entry) {
   llvm_function_ = entry->function;
   function_name_ = std::string("@") + std::string(
                                           interner_.Text(function.name));
+  // The subprogram first, and a location inside it before anything is
+  // emitted: a location belongs to the function it is in, and one left
+  // over from the previous function is what the verifier calls a `!dbg`
+  // attachment pointing at the wrong subprogram (D118).
+  scope_ = DebugFunctionOf(*entry, llvm_function_);
+  function_line_ = 1;
+  for (const SourceSpan span : function.spans) {
+    if (span.is_valid() && sources_ != nullptr) {
+      function_line_ = sources_->Position(span).line;
+      break;
+    }
+  }
+  if (scope_ != nullptr) {
+    LLVMSetSubprogram(llvm_function_, scope_);
+  } else {
+    LLVMSetCurrentDebugLocation2(b_, nullptr);
+  }
 
   abi::LayoutStore& layouts = Layouts(file_);
   const size_t count = function.instructions.size();
@@ -539,6 +663,7 @@ bool Translator::Translate(Entry* entry) {
   // loop, because nothing gives an `alloca` back until the function
   // returns.
   LLVMPositionBuilderAtEnd(b_, blocks_[0]);
+  SetDebugLocation(SourceSpan());
   LLVMTypeRef byte = LLVMInt8TypeInContext(ctx_);
   for (const ir::Block& block : function.blocks) {
     for (ir::InstId id : block.instructions) {
@@ -584,6 +709,7 @@ bool Translator::Translate(Entry* entry) {
   // this translation would be one line (D98).
   for (size_t i = 1; i < function.blocks.size(); ++i) {
     LLVMPositionBuilderAtEnd(b_, blocks_[i]);
+    SetDebugLocation(SourceSpan());
     for (ir::InstId param :
          function.ParamsOf(ir::BlockId{static_cast<uint32_t>(i)})) {
       values_[param.index] =
@@ -597,6 +723,7 @@ bool Translator::Translate(Entry* entry) {
     for (size_t at = block.param_count; at < block.instructions.size();
          ++at) {
       const ir::InstId id = block.instructions[at];
+      SetDebugLocation(function.SpanOf(id));
       Emit(id, function.Get(id));
     }
     // A block the IR left without a terminator cannot fall off the end of
@@ -605,6 +732,8 @@ bool Translator::Translate(Entry* entry) {
       LLVMBuildUnreachable(b_);
     }
   }
+  LLVMSetCurrentDebugLocation2(b_, nullptr);
+  scope_ = nullptr;
   return true;
 }
 
@@ -1606,6 +1735,27 @@ AotResult Translator::Run(const AotOptions& options) {
   LLVMTargetDataRef data = LLVMCreateTargetDataLayout(machine);
   LLVMSetModuleDataLayout(mod_, data);
 
+  if (sources_ != nullptr) {
+    debug_ = LLVMCreateDIBuilder(mod_);
+    // The unit is named after the first file: a Wolang package is many
+    // files and one module, and DWARF wants one unit per object.
+    const LLVMMetadataRef first = DebugFileOf(
+        files_.empty() ? FileId{} : FirstFile());
+    unit_ = LLVMDIBuilderCreateCompileUnit(
+        debug_, LLVMDWARFSourceLanguageC99, first, "wolang", 6,
+        /*isOptimized=*/options.optimization > 0, "", 0, 0, "", 0,
+        LLVMDWARFEmissionFull, 0, /*SplitDebugInlining=*/0,
+        /*DebugInfoForProfiling=*/0, "", 0, "", 0);
+    // Which DWARF version the object says it is. Without this the
+    // debugger reads the line table and finds nothing to read it with.
+    LLVMAddModuleFlag(
+        mod_, LLVMModuleFlagBehaviorWarning, "Debug Info Version", 18,
+        LLVMValueAsMetadata(LLVMConstInt(I(32), 3, 0)));
+    LLVMAddModuleFlag(
+        mod_, LLVMModuleFlagBehaviorWarning, "Dwarf Version", 13,
+        LLVMValueAsMetadata(LLVMConstInt(I(32), 4, 0)));
+  }
+
   Declare();
   for (Entry& entry : entries_) {
     entry.skipped = Unsupported(entry);
@@ -1630,6 +1780,11 @@ AotResult Translator::Run(const AotOptions& options) {
   }
   EmitEntryPoint();
 
+  if (debug_ != nullptr) {
+    // Before the verifier: unfinished metadata is what it would complain
+    // about, and the passes read the line table as well.
+    LLVMDIBuilderFinalize(debug_);
+  }
   char* complaint = nullptr;
   if (LLVMVerifyModule(mod_, LLVMReturnStatusAction, &complaint) != 0) {
     result.error = "the generated module did not verify: ";
@@ -1665,6 +1820,11 @@ AotResult Translator::Run(const AotOptions& options) {
     }
   }
 
+  if (debug_ != nullptr) {
+    LLVMDIBuilderFinalize(debug_);
+    LLVMDisposeDIBuilder(debug_);
+    debug_ = nullptr;
+  }
   LLVMDisposeTargetData(data);
   LLVMDisposeBuilder(b_);
   LLVMDisposeModule(mod_);
@@ -1768,7 +1928,7 @@ AotResult EmitObject(const StringInterner& interner,
                      const TypeStore& types,
                      std::span<const FileCode> files,
                      const AotOptions& options) {
-  Translator translator(interner, types, files);
+  Translator translator(interner, types, options.sources, files);
   return translator.Run(options);
 }
 

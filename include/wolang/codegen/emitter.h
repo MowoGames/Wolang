@@ -11,6 +11,7 @@
 #include "wolang/base/string_interner.h"
 #include "wolang/abi/layout.h"
 #include "wolang/codegen/target.h"
+#include "wolang/base/source_manager.h"
 #include "wolang/ir/ir.h"
 #include "wolang/ir/trap.h"
 
@@ -25,6 +26,9 @@ struct TrapSite {
   ir::TrapKind kind = ir::TrapKind::kNone;
   std::string where;
   std::string message;
+  // Where the instruction came from, so that a trap in compiled code
+  // names the same line the reference tier names (D118).
+  SourceSpan span;
 };
 
 // A call whose target is another function of the same module, which is only

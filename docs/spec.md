@@ -1067,3 +1067,25 @@ vim.api.nvim_create_autocmd("FileType", {
   end,
 })
 ```
+
+## Debugging
+
+A binary built with `wolang build` carries the line table of the Wolang
+source, so a debugger works on the program as written:
+
+```
+$ lldb ./app
+(lldb) b main.wo:11
+Breakpoint 1: where = app`wo$1$Total + 152 at main.wo:11:11
+(lldb) run
+(lldb) next
+frame #0: app`wo$1$Total at main.wo:12:9
+```
+
+A trap names a line too, in every tier:
+
+```
+wolang: out of bounds at app.wo:4:10 (@main:%55): index is outside a length of 4
+```
+
+`wolang build --no-debug` leaves the line table out.

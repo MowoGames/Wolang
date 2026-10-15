@@ -1782,6 +1782,12 @@ class Lowerer {
       return;
     }
     const Stmt& stmt = ast().Get(id);
+    // Everything this statement lowers to belongs to the statement: one
+    // line per step is what a debugger steps through, and what a trap
+    // names (D118).
+    if (stmt.span.is_valid()) {
+      builder_->SetWhere(stmt.span);
+    }
     switch (stmt.kind) {
       case StmtKind::kLet:
         LowerLet(stmt, /*mutable_binding=*/false);
@@ -2056,6 +2062,15 @@ class Lowerer {
       return InstId{};
     }
     const Expr& expr = ast().Get(id);
+    // Narrowed to this expression: a trap inside a statement should name
+    // the operation that trapped rather than the line's first column
+    // (D118). Put back on the way out, so that what follows belongs to
+    // the statement again.
+    const SourceSpan outer = builder_->where();
+    if (expr.span.is_valid()) {
+      builder_->SetWhere(expr.span);
+    }
+    const Restore restore(builder_, outer);
     const TypeId type = TypeOf(id);
 
     switch (expr.kind) {
@@ -2442,6 +2457,24 @@ class Lowerer {
     }
     return local->value;
   }
+
+  // Puts the builder's span back when a nested expression is done.
+  class Restore {
+   public:
+    Restore(Builder* builder, SourceSpan span)
+        : builder_(builder), span_(span) {}
+    ~Restore() {
+      if (builder_ != nullptr && span_.is_valid()) {
+        builder_->SetWhere(span_);
+      }
+    }
+    Restore(const Restore&) = delete;
+    Restore& operator=(const Restore&) = delete;
+
+   private:
+    Builder* builder_;
+    SourceSpan span_;
+  };
 
   // While this is set, reading a name does not take what it holds: the
   // base of a field access, an index or a method call is *read through*

@@ -42,6 +42,12 @@ class Builder {
   BlockId current() const { return current_; }
   void SetCurrent(BlockId block) { current_ = block; }
 
+  // Where the instructions being added came from. Lowering moves this as
+  // it walks, and everything appended until it moves again belongs to
+  // that span (D118).
+  void SetWhere(SourceSpan span) { where_ = span; }
+  SourceSpan where() const { return where_; }
+
   // True when the current block already has a terminator, so nothing more
   // can be added to it.
   bool Terminated() const;
@@ -98,6 +104,7 @@ class Builder {
   Module* module_;
   FunctionId function_;
   BlockId current_;
+  SourceSpan where_;
 };
 
 }  // namespace ir

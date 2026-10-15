@@ -32,6 +32,9 @@ struct Outcome {
   // Where it stopped, for a trap.
   std::string where;
   std::string message;
+  // The source the instruction came from, when the IR carried one: what
+  // turns "at @main:%27" into a file and a line (D118).
+  SourceSpan span;
 
   bool ok() const { return trap == TrapKind::kNone; }
 };

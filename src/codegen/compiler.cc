@@ -574,6 +574,7 @@ interp::Outcome CompiledModule::Impl::Run(
   if (context_.trap_site < traps_.size()) {
     outcome.where = traps_[context_.trap_site].where;
     outcome.message = traps_[context_.trap_site].message;
+    outcome.span = traps_[context_.trap_site].span;
   }
   if (backtrace != nullptr) {
     for (uint32_t i = 0; i < context_.frame_count; ++i) {

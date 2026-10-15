@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "wolang/base/source_manager.h"
 #include "wolang/base/string_interner.h"
 #include "wolang/sema/effect.h"
 #include "wolang/sema/type.h"
@@ -196,6 +197,19 @@ struct Function {
   // Which block each instruction belongs to, indexed by instruction. What
   // makes "is this definition before that use" answerable.
   std::vector<BlockId> owners;
+  // Where each instruction came from, indexed by instruction.
+  //
+  // A side table rather than a field, because an `Inst` is a fixed size
+  // on purpose and a span is three words. What it is for: a trap that
+  // names a line instead of an instruction number, and the line table a
+  // debugger needs to step through Wolang rather than through machine
+  // code (D118).
+  std::vector<SourceSpan> spans;
+
+  SourceSpan SpanOf(InstId id) const {
+    return id.is_valid() && id.index < spans.size() ? spans[id.index]
+                                                    : SourceSpan();
+  }
 
   const Inst& Get(InstId id) const { return instructions[id.index]; }
   Inst& Get(InstId id) { return instructions[id.index]; }

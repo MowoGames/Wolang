@@ -64,13 +64,26 @@ class Interpreter {
   Value Trap(Outcome* outcome,
              TrapKind kind,
              std::string where,
-             std::string message) {
+             std::string message,
+             SourceSpan span = SourceSpan()) {
     if (outcome->ok()) {
       outcome->trap = kind;
       outcome->where = std::move(where);
       outcome->message = std::move(message);
+      outcome->span = span;
     }
     return Value();
+  }
+
+  // The same, for the common case: the instruction says where it is and
+  // the IR says where that came from (D118).
+  Value TrapAt(Outcome* outcome,
+               TrapKind kind,
+               const ir::Function& function,
+               ir::InstId id,
+               std::string message) {
+    return Trap(outcome, kind, At(function, id), std::move(message),
+                function.SpanOf(id));
   }
 
   std::string At(const ir::Function& function, ir::InstId id) const {
@@ -153,8 +166,8 @@ class Interpreter {
     const Type& described = types_.Get(type);
     const auto address = reinterpret_cast<const void*>(pointer.integer());
     if (address == nullptr) {
-      return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                  "read through a null pointer");
+      return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "read through a null pointer");
     }
     switch (described.kind) {
       case TypeKind::kBool: {
@@ -262,7 +275,7 @@ class Interpreter {
       }
       return Value::Aggregate(std::move(elements));
     }
-    return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
+    return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
                 "read a type through a pointer that this tier cannot "
                 "lay out: " +
                     types_.Describe(interner_, type));
@@ -276,8 +289,8 @@ class Interpreter {
                             TypeId type = TypeId{}) {
     const auto address = reinterpret_cast<void*>(pointer.integer());
     if (address == nullptr) {
-      return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                  "wrote through a null pointer");
+      return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "wrote through a null pointer");
     }
     // A struct, a slice, a tuple: written field by field at the offsets
     // the layout gives, which is the same answer the compiled tiers get
@@ -369,8 +382,8 @@ class Interpreter {
         return Value::Void();
       }
       default:
-        return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                    "wrote a type through a pointer that this tier cannot "
+        return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "wrote a type through a pointer that this tier cannot "
                     "lay out: " +
                         value.Describe());
     }
@@ -691,8 +704,8 @@ class Interpreter {
       case ir::Opcode::kUndef:
         // Reaching one means control went where the front end proved it
         // could not, so it is a trap rather than a zero.
-        return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                    "an undefined value was used");
+        return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "an undefined value was used");
 
       case ir::Opcode::kAlloca: {
         // Zeroed, the way a slot is in the compiled tiers. The two have to
@@ -715,8 +728,8 @@ class Interpreter {
         // why a method of a class mutates the object and a method of a
         // struct cannot.
         if (layouts_ == nullptr) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "an object needs a layout to be allocated");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "an object needs a layout to be allocated");
         }
         // A class's object, or the value a box holds.
         const TypeId allocated =
@@ -726,8 +739,8 @@ class Interpreter {
         void* object = runtime::wolang_object_alloc(
             layouts_->ObjectOf(allocated).size);
         if (object == nullptr) {
-          return Trap(outcome, TrapKind::kOutOfMemory, At(function, id),
-                      "out of memory");
+          return TrapAt(outcome, TrapKind::kOutOfMemory, function, id,
+                "out of memory");
         }
         return Value::Int(reinterpret_cast<uint64_t>(object), IntWidth::k64,
                           /*is_signed=*/false);
@@ -754,8 +767,8 @@ class Interpreter {
         const Value& subject = Operand(frame, inst, 0);
         if (subject.kind() != Value::Kind::kAggregate ||
             subject.elements().size() < 2) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "read a variant's payload out of something that is "
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "read a variant's payload out of something that is "
                       "not a variant");
         }
         const Value& carried = subject.elements()[1];
@@ -763,8 +776,8 @@ class Interpreter {
             static_cast<size_t>(inst.payload.integer);
         if (carried.kind() != Value::Kind::kAggregate ||
             position >= carried.elements().size()) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "read a value the variant does not carry");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "read a value the variant does not carry");
         }
         return carried.elements()[position];
       }
@@ -821,8 +834,8 @@ class Interpreter {
         // value's pair.
         const Value& token_value = Operand(frame, inst, 0);
         if (token_value.kind() != Value::Kind::kInt) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "a virtual call needs a class token");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "a virtual call needs a class token");
         }
         const uint64_t token = token_value.integer();
         const ir::Module* home = nullptr;
@@ -837,12 +850,12 @@ class Interpreter {
           }
         }
         if (callee == 0xFFFFFFFFu) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "a virtual call found no body for its method");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "a virtual call found no body for its method");
         }
         if (callee >= home->functions.size()) {
-          return Trap(outcome, TrapKind::kNoBody, At(function, id),
-                      "a virtual call names a function the module does not "
+          return TrapAt(outcome, TrapKind::kNoBody, function, id,
+                "a virtual call names a function the module does not "
                       "have");
         }
         std::vector<Value> arguments;
@@ -879,13 +892,13 @@ class Interpreter {
         }
         if (slot.kind() != Value::Kind::kSlot ||
             slot.slot() >= frame->slots.size()) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "loaded from something that is not a slot");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "loaded from something that is not a slot");
         }
         const Value& stored = frame->slots[slot.slot()];
         if (stored.is_undefined()) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "read a slot before anything was written to it");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "read a slot before anything was written to it");
         }
         return stored;
       }
@@ -894,8 +907,8 @@ class Interpreter {
         if (slot.kind() == Value::Kind::kPlace) {
           Value* at = Walk(frame, slot);
           if (at == nullptr) {
-            return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
-                        "wrote outside the slot");
+            return TrapAt(outcome, TrapKind::kOutOfBounds, function, id,
+                "wrote outside the slot");
           }
           *at = Operand(frame, inst, 1);
           return Value::Void();
@@ -927,8 +940,8 @@ class Interpreter {
         }
         if (slot.kind() != Value::Kind::kSlot ||
             slot.slot() >= frame->slots.size()) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "stored to something that is not a slot");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "stored to something that is not a slot");
         }
         frame->slots[slot.slot()] = Operand(frame, inst, 1);
         return Value::Void();
@@ -960,8 +973,8 @@ class Interpreter {
         }
         if (aggregate.kind() != Value::Kind::kAggregate ||
             inst.field >= aggregate.elements().size()) {
-          return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
-                      "field " + std::to_string(inst.field) +
+          return TrapAt(outcome, TrapKind::kOutOfBounds, function, id,
+                "field " + std::to_string(inst.field) +
                           " is not there");
         }
         return aggregate.elements()[inst.field];
@@ -970,8 +983,8 @@ class Interpreter {
         const Value& aggregate = Operand(frame, inst, 0);
         if (aggregate.kind() != Value::Kind::kAggregate ||
             inst.field >= aggregate.elements().size()) {
-          return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
-                      "field " + std::to_string(inst.field) +
+          return TrapAt(outcome, TrapKind::kOutOfBounds, function, id,
+                "field " + std::to_string(inst.field) +
                           " is not there");
         }
         std::vector<Value> elements = aggregate.elements();
@@ -983,16 +996,16 @@ class Interpreter {
         const Value& index = Operand(frame, inst, 1);
         if (array.kind() != Value::Kind::kAggregate ||
             index.kind() != Value::Kind::kInt) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "indexed something that is not an array");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "indexed something that is not an array");
         }
         if (index.integer() >= array.elements().size()) {
           // The message says what both tiers know. The offending index is
           // a runtime value, and a code generator cannot put it in a
           // string it built while compiling -- so keeping it out is what
           // makes the two tiers' outcomes comparable in full.
-          return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
-                      "index is outside a length of " +
+          return TrapAt(outcome, TrapKind::kOutOfBounds, function, id,
+                "index is outside a length of " +
                           std::to_string(array.elements().size()));
         }
         return array.elements()[index.integer()];
@@ -1002,8 +1015,8 @@ class Interpreter {
         // The tier's own answer about its own layout (D100).
         const TypeId measured{static_cast<uint32_t>(inst.payload.integer)};
         if (layouts_ == nullptr || !measured.is_valid()) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "asked how big a type is without a layout to ask");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "asked how big a type is without a layout to ask");
         }
         return Value::Int(std::max(layouts_->SizeOf(measured), 1u),
                           IntWidth::k64, /*is_signed=*/true);
@@ -1013,8 +1026,8 @@ class Interpreter {
         // Storage for a record, one array per field. The size is this
         // tier's answer, the way `new`'s is.
         if (layouts_ == nullptr) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "storage needs a layout to be allocated");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "storage needs a layout to be allocated");
         }
         const TypeId record = types_.ElementOf(inst.type);
         const uint64_t count = Operand(frame, inst, 0).integer();
@@ -1026,8 +1039,8 @@ class Interpreter {
                 : count * layouts_->StrideOf(inst.type);
         void* block = runtime::wolang_object_alloc(bytes);
         if (block == nullptr) {
-          return Trap(outcome, TrapKind::kOutOfMemory, At(function, id),
-                      "out of memory");
+          return TrapAt(outcome, TrapKind::kOutOfMemory, function, id,
+                "out of memory");
         }
         std::vector<Value> pair;
         pair.push_back(Value::Int(reinterpret_cast<uint64_t>(block),
@@ -1043,8 +1056,8 @@ class Interpreter {
         const uint64_t index = Operand(frame, inst, 0).integer();
         const uint64_t length = Operand(frame, inst, 1).integer();
         if (index >= length) {
-          return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
-                      "index is outside a length of " +
+          return TrapAt(outcome, TrapKind::kOutOfBounds, function, id,
+                "index is outside a length of " +
                           std::to_string(length));
         }
         return Value();
@@ -1055,13 +1068,13 @@ class Interpreter {
         const Value& index = Operand(frame, inst, 1);
         const Value& count = Operand(frame, inst, 2);
         if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "took a field address inside storage that is not at "
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "took a field address inside storage that is not at "
                       "an address");
         }
         if (index.integer() >= count.integer()) {
-          return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
-                      "index is outside the length");
+          return TrapAt(outcome, TrapKind::kOutOfBounds, function, id,
+                "index is outside the length");
         }
         const TypeId record = SoaRecordOf(function, inst);
         return Value::Int(
@@ -1080,8 +1093,8 @@ class Interpreter {
         // The length is an operand because a slice's length is a value.
         const uint64_t length = Operand(frame, inst, 2).integer();
         if (index.integer() >= length) {
-          return Trap(outcome, TrapKind::kOutOfBounds, At(function, id),
-                      "index is outside a length of " +
+          return TrapAt(outcome, TrapKind::kOutOfBounds, function, id,
+                "index is outside a length of " +
                           std::to_string(length));
         }
         if (base.kind() == Value::Kind::kSlot ||
@@ -1092,8 +1105,8 @@ class Interpreter {
                         AddressedType(function, inst, 0));
         }
         if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "took an element address without an address to take "
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "took an element address without an address to take "
                       "it from");
         }
         // The stride is the size of what the result points at: the base
@@ -1115,8 +1128,8 @@ class Interpreter {
                         AddressedType(function, inst, 0));
         }
         if (base.kind() != Value::Kind::kInt || layouts_ == nullptr) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "took a field address without an address to take it "
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "took a field address without an address to take it "
                       "from");
         }
         // Through a pointer it is what the pointer points at; through a
@@ -1144,8 +1157,8 @@ class Interpreter {
         const Value& optional = Operand(frame, inst, 0);
         if (optional.kind() != Value::Kind::kOptional ||
             !optional.has_value()) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "read the value of an optional that is absent");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "read the value of an optional that is absent");
         }
         return optional.inside();
       }
@@ -1159,14 +1172,14 @@ class Interpreter {
           target = FromToken(target.integer());
         }
         if (target.kind() != Value::Kind::kFunction) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "called " + target.Describe() +
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "called " + target.Describe() +
                           ", which is not a function");
         }
         const auto* home = static_cast<const ir::Module*>(target.module());
         if (home == nullptr || target.function() >= home->functions.size()) {
-          return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                      "called a function that is not in its module");
+          return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "called a function that is not in its module");
         }
         std::vector<Value> arguments;
         const std::span<const ir::InstId> operands =
@@ -1187,8 +1200,8 @@ class Interpreter {
 
       case ir::Opcode::kCall: {
         if (inst.payload.callee >= frame->module->functions.size()) {
-          return Trap(outcome, TrapKind::kNoBody, At(function, id),
-                      "calls a function the module does not have");
+          return TrapAt(outcome, TrapKind::kNoBody, function, id,
+                "calls a function the module does not have");
         }
         std::vector<Value> arguments;
         for (ir::InstId operand : function.OperandsOf(inst)) {
@@ -1491,8 +1504,8 @@ class Interpreter {
         const double number = std::trunc(source.floating());
         if (!std::isfinite(number) ||
             !FitsAsInteger(number, width, is_signed)) {
-          return Trap(outcome, TrapKind::kOverflow, At(function, id),
-                      "the value does not fit the integer it was cast to");
+          return TrapAt(outcome, TrapKind::kOverflow, function, id,
+                "the value does not fit the integer it was cast to");
         }
         return Value::Int(is_signed ? static_cast<uint64_t>(
                                           static_cast<int64_t>(number))
@@ -1500,15 +1513,15 @@ class Interpreter {
                           width, is_signed);
       }
       if (source.kind() != Value::Kind::kInt) {
-        return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                    "cast of " + source.Describe());
+        return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "cast of " + source.Describe());
       }
       // A narrowing cast traps rather than truncating. Overflow is a trap
       // everywhere else in this language, and `as` is a conversion, not a
       // request for the low bits.
       if (!FitsAsInt(source, width, is_signed)) {
-        return Trap(outcome, TrapKind::kOverflow, At(function, id),
-                    "the value does not fit the integer it was cast to");
+        return TrapAt(outcome, TrapKind::kOverflow, function, id,
+                "the value does not fit the integer it was cast to");
       }
       // The sign extended value, not the stored pattern: a negative `i32`
       // widened to `i64` is the same number, and its bits are not.
@@ -1530,8 +1543,8 @@ class Interpreter {
                                 : static_cast<double>(source.integer()),
                             width);
       }
-      return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                  "cast of " + source.Describe());
+      return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                "cast of " + source.Describe());
     }
 
     if (target.kind == TypeKind::kPointer) {
@@ -1626,8 +1639,8 @@ class Interpreter {
       if (inst.opcode == ir::Opcode::kNe) {
         return Value::Bool(left != right);
       }
-      return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                  std::string(ir::OpcodeMnemonic(inst.opcode)) +
+      return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                std::string(ir::OpcodeMnemonic(inst.opcode)) +
                       " on " + left.Describe());
     }
 
@@ -1666,8 +1679,8 @@ class Interpreter {
           overflowed = overflowed || MaskToWidth(out, width) != out;
         }
         if (overflowed) {
-          return Trap(outcome, TrapKind::kOverflow, At(function, id),
-                      std::string(ir::OpcodeMnemonic(inst.opcode)) +
+          return TrapAt(outcome, TrapKind::kOverflow, function, id,
+                std::string(ir::OpcodeMnemonic(inst.opcode)) +
                           " overflowed");
         }
         return Value::Int(raw, width, is_signed);
@@ -1676,16 +1689,16 @@ class Interpreter {
       case ir::Opcode::kDiv:
       case ir::Opcode::kRem: {
         if (b == 0) {
-          return Trap(outcome, TrapKind::kDivisionByZero, At(function, id),
-                      "divided by zero");
+          return TrapAt(outcome, TrapKind::kDivisionByZero, function, id,
+                "divided by zero");
         }
         if (is_signed) {
           const int64_t x = left.signed_integer();
           const int64_t y = right.signed_integer();
           // The one signed division that overflows.
           if (y == -1 && !FitsSigned(-x, width)) {
-            return Trap(outcome, TrapKind::kOverflow, At(function, id),
-                        "the quotient does not fit");
+            return TrapAt(outcome, TrapKind::kOverflow, function, id,
+                "the quotient does not fit");
           }
           const int64_t out =
               inst.opcode == ir::Opcode::kDiv ? x / y : x % y;
@@ -1705,8 +1718,8 @@ class Interpreter {
       case ir::Opcode::kShl:
       case ir::Opcode::kShr: {
         if (b >= BitsOfWidth(width)) {
-          return Trap(outcome, TrapKind::kOverflow, At(function, id),
-                      "shifted by more than the width");
+          return TrapAt(outcome, TrapKind::kOverflow, function, id,
+                "shifted by more than the width");
         }
         if (inst.opcode == ir::Opcode::kShl) {
           return Value::Int(a << b, width, is_signed);
@@ -1722,8 +1735,8 @@ class Interpreter {
         return Value::Int(~a, width, is_signed);
       case ir::Opcode::kNeg: {
         if (is_signed && !FitsSigned(-left.signed_integer(), width)) {
-          return Trap(outcome, TrapKind::kOverflow, At(function, id),
-                      "negation overflowed");
+          return TrapAt(outcome, TrapKind::kOverflow, function, id,
+                "negation overflowed");
         }
         return Value::Int(static_cast<uint64_t>(-left.signed_integer()),
                           width, is_signed);
@@ -1755,8 +1768,8 @@ class Interpreter {
                                : a >= b);
 
       default:
-        return Trap(outcome, TrapKind::kUndefinedValue, At(function, id),
-                    std::string(ir::OpcodeMnemonic(inst.opcode)) +
+        return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                std::string(ir::OpcodeMnemonic(inst.opcode)) +
                         " has no execution");
     }
   }
@@ -1813,8 +1826,8 @@ class Interpreter {
         const std::span<const ir::BlockId> targets =
             function.SuccessorsOf(inst);
         if (targets.empty()) {
-          return Trap(outcome, TrapKind::kUnreachable, At(function, id),
-                      "a jump with nowhere to go");
+          return TrapAt(outcome, TrapKind::kUnreachable, function, id,
+                "a jump with nowhere to go");
         }
         // The jump's operands become the target's parameters, which is what
         // a phi node would otherwise have to work out backwards.
@@ -1837,8 +1850,8 @@ class Interpreter {
         const std::span<const ir::BlockId> targets =
             function.SuccessorsOf(inst);
         if (targets.size() != 2) {
-          return Trap(outcome, TrapKind::kUnreachable, At(function, id),
-                      "a branch without two targets");
+          return TrapAt(outcome, TrapKind::kUnreachable, function, id,
+                "a branch without two targets");
         }
         *next = Operand(frame, inst, 0).boolean() ? targets[0] : targets[1];
         return Value();
@@ -1849,8 +1862,8 @@ class Interpreter {
             function.SuccessorsOf(inst);
         const std::span<const uint64_t> values = function.CasesOf(inst);
         if (targets.empty()) {
-          return Trap(outcome, TrapKind::kUnreachable, At(function, id),
-                      "a switch with nowhere to go");
+          return TrapAt(outcome, TrapKind::kUnreachable, function, id,
+                "a switch with nowhere to go");
         }
         const uint64_t subject = Operand(frame, inst, 0).integer();
         for (size_t i = 0; i < values.size() && i < targets.size(); ++i) {
@@ -1864,12 +1877,12 @@ class Interpreter {
       }
 
       case ir::Opcode::kUnreachable:
-        return Trap(outcome, TrapKind::kUnreachable, At(function, id),
-                    "reached a point the compiler proved unreachable");
+        return TrapAt(outcome, TrapKind::kUnreachable, function, id,
+                "reached a point the compiler proved unreachable");
 
       default:
-        return Trap(outcome, TrapKind::kUnreachable, At(function, id),
-                    "not a terminator");
+        return TrapAt(outcome, TrapKind::kUnreachable, function, id,
+                "not a terminator");
     }
   }
 

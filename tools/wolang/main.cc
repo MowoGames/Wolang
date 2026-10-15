@@ -84,9 +84,11 @@ struct Options {
   // is ruled out.
   bool no_cache = false;
   // `build` only: where the binary goes, whether to stop at the object
-  // file, and how hard the back end works.
+  // file, how hard the back end works, and whether to leave out the line
+  // information a debugger reads.
   std::string output;
   bool emit_object = false;
+  bool no_debug = false;
   int optimization = 2;
 };
 
@@ -134,6 +136,7 @@ void PrintUsage() {
       "  --unoptimized   `ir`: print what lowering produced, before passes\n"
       "  -o <path>       `build`: where the binary goes\n"
       "  --emit-object   `build`: stop at the object file\n"
+      "  --no-debug      `build`: leave out the line information\n"
       "  -O<n>           `build`: how hard the back end optimizes, 0 to 3\n"
       "  --no-color      never emit ANSI colors\n"
       "  --trivia        include comments in `tokens` output\n"
@@ -543,6 +546,28 @@ std::vector<codegen::FileCode> CollectCode(Database* database,
 // unoptimized IR; the optimized form is run too and the two results are
 // compared, which turns "the passes preserve meaning" into something the
 // driver checks on every run rather than something assumed.
+
+// Where a trap happened, as a file and a line when the IR knew.
+//
+// "at line 12 of app.wo" is what a programmer can act on; "at @main:%27"
+// is what the compiler happens to call the instruction (D118).
+std::string Where(const SourceManager& sources,
+                  const interp::Outcome& outcome) {
+  if (!outcome.span.is_valid()) {
+    return outcome.where;
+  }
+  const LineColumn at = sources.Position(outcome.span);
+  std::string where(sources.Path(outcome.span.file));
+  where.append(":");
+  where.append(std::to_string(at.line));
+  where.append(":");
+  where.append(std::to_string(at.column));
+  where.append(" (");
+  where.append(outcome.where);
+  where.append(")");
+  return where;
+}
+
 std::string Describe(const interp::Outcome& outcome) {
   if (outcome.ok()) {
     return outcome.value.Describe();
@@ -648,7 +673,8 @@ int RunProgram(const Options& options) {
   if (!outcome.ok()) {
     std::fprintf(stderr, "wolang: %s at %s: %s\n",
                  std::string(interp::TrapKindName(outcome.trap)).c_str(),
-                 outcome.where.c_str(), outcome.message.c_str());
+                 Where(database.sources(), outcome).c_str(),
+                 outcome.message.c_str());
     return 1;
   }
   if (outcome.value.kind() != interp::Value::Kind::kVoid) {
@@ -1308,6 +1334,12 @@ int RunBuild(const Options& options) {
   codegen::AotOptions settings;
   settings.object_path = object;
   settings.optimization = options.optimization;
+  // Line information unless the build asked for none: stepping through
+  // Wolang in a debugger is worth more than a smaller object, and
+  // `--no-debug` is there for when it is not (D118).
+  if (!options.no_debug) {
+    settings.sources = &database.sources();
+  }
   const codegen::AotResult result = codegen::EmitObject(
       database.interner(), database.types(), code, settings);
   if (!result.error.empty()) {
@@ -1343,11 +1375,23 @@ int RunBuild(const Options& options) {
   command.append(archive);
   command.append("' -lpthread");
   const int linked = std::system(command.c_str());
-  std::remove(object.c_str());
   if (linked != 0) {
+    std::remove(object.c_str());
     std::fprintf(stderr, "wolang: the linker failed\n");
     return 1;
   }
+  // On this platform the line table stays in the object file and the
+  // binary holds a map into it, so a debugger needs either the object or
+  // a `.dSYM` beside the binary. The second one is what survives the
+  // object being deleted (D118).
+  if (!options.no_debug) {
+    std::string bundle = "dsymutil '";
+    bundle.append(binary);
+    bundle.append("' 2>/dev/null");
+    const int collected = std::system(bundle.c_str());
+    (void)collected;
+  }
+  std::remove(object.c_str());
   std::fprintf(stdout, "%s\n", binary.c_str());
   return 0;
 }
@@ -1628,6 +1672,10 @@ int Run(int argc, char** argv) {
     }
     if (argument == "--emit-object") {
       options.emit_object = true;
+      continue;
+    }
+    if (argument == "--no-debug") {
+      options.no_debug = true;
       continue;
     }
     if (argument == "-o" && i + 1 < argc) {
