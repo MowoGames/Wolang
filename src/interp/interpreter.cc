@@ -204,6 +204,22 @@ class Interpreter {
         break;
     }
 
+    // An enum with no payload: a number in memory, and a one-field
+    // aggregate in this tier -- which is the shape `extract 0` reads and
+    // the shape a local one has. Reading it back as a bare number left a
+    // `match` on a global `Level` trapping in the interpreter while the
+    // compiled tiers answered (D120).
+    if (layouts_ != nullptr && layouts_->IsSupported(type) &&
+        layouts_->IsTagOnly(type)) {
+      uint32_t which = 0;
+      std::memcpy(&which, address,
+                  std::min<size_t>(std::max(layouts_->SizeOf(type), 1u),
+                                   sizeof(which)));
+      std::vector<Value> one;
+      one.push_back(Value::Int(which, IntWidth::k32, /*is_signed=*/false));
+      return Value::Aggregate(std::move(one));
+    }
+
     // A class handle, a reference, an error tag: everything whose value
     // is a number of its own size, including the ones whose *kind* is a
     // named type rather than an integer.
@@ -328,6 +344,20 @@ class Interpreter {
           return one;
         }
       }
+      return Value::Void();
+    }
+    if (value.kind() == Value::Kind::kAggregate && type.is_valid() &&
+        layouts_ != nullptr && layouts_->IsSupported(type) &&
+        layouts_->IsTagOnly(type)) {
+      // The other half of the pair above: one field, which is the tag.
+      const std::span<const Value> elements = value.elements();
+      const uint32_t which = elements.empty()
+                                 ? 0
+                                 : static_cast<uint32_t>(
+                                       elements[0].integer());
+      const size_t size = std::min<size_t>(
+          std::max(layouts_->SizeOf(type), 1u), sizeof(which));
+      std::memcpy(address, &which, size);
       return Value::Void();
     }
     if (value.kind() == Value::Kind::kAggregate && layouts_ != nullptr &&

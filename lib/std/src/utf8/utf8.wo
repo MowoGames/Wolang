@@ -1,0 +1,198 @@
+// Text as code points rather than as bytes.
+//
+// A `text` is bytes, and most work on one is bytes: a length, a search, a
+// slice. Counting characters, walking them, or writing one is this -- and
+// it is a separate module because most programs never need it.
+
+need std.text.{Builder, BuilderNew, Bytes, Length}
+
+/// How many bytes the code point starting at `first` takes.
+///
+/// Zero for a byte that cannot start one, which is what tells a walk to
+/// stop rather than to loop.
+offer fun Width(first: u8) -> int {
+  if first < 128 {
+    return 1
+  }
+  if first >= 192 && first < 224 {
+    return 2
+  }
+  if first >= 224 && first < 240 {
+    return 3
+  }
+  if first >= 240 && first < 248 {
+    return 4
+  }
+  return 0
+}
+
+/// How many code points `value` holds.
+offer fun Count(value: text) -> int uses unsafe {
+  const bytes = Bytes(value)
+  var at = 0
+  var count = 0
+  while at < bytes.len {
+    const width = Width(bytes[at])
+    if width == 0 {
+      // Not valid UTF-8: the byte counts as one and the walk goes on,
+      // because a program counting characters should not stop on bad
+      // input it did not choose.
+      at = at + 1
+    } else {
+      at = at + width
+    }
+    count = count + 1
+  }
+  return count
+}
+
+/// Whether `value` is valid UTF-8 throughout.
+offer fun IsValid(value: text) -> bool uses unsafe {
+  const bytes = Bytes(value)
+  var at = 0
+  while at < bytes.len {
+    const width = Width(bytes[at])
+    if width == 0 || at + width > bytes.len {
+      return false
+    }
+    var i = 1
+    while i < width {
+      // Every byte after the first is `10xxxxxx`.
+      if bytes[at + i] < 128 || bytes[at + i] >= 192 {
+        return false
+      }
+      i = i + 1
+    }
+    at = at + width
+  }
+  return true
+}
+
+/// One code point and where the next one starts.
+offer struct Char {
+  var code: int
+  var at: int
+  var width: int
+}
+
+/// The code point starting at byte `at`.
+offer fun CharAt(value: text, at: int) -> Char uses unsafe {
+  const bytes = Bytes(value)
+  if at < 0 || at >= bytes.len {
+    return Char(0, at, 0)
+  }
+  const first = bytes[at]
+  const width = Width(first)
+  if width == 0 || at + width > bytes.len {
+    return Char(first as int, at, 1)
+  }
+  if width == 1 {
+    return Char(first as int, at, 1)
+  }
+  var code = 0
+  if width == 2 {
+    code = (first - 192) as int
+  } else if width == 3 {
+    code = (first - 224) as int
+  } else {
+    code = (first - 240) as int
+  }
+  var i = 1
+  while i < width {
+    code = code * 64 + (bytes[at + i] - 128) as int
+    i = i + 1
+  }
+  return Char(code, at, width)
+}
+
+/// A walk over the code points of a string.
+offer class Chars {
+  var value: text
+  var at: int = 0
+  var current: Char = Char(0, 0, 0)
+
+  fun Iterate() -> Chars {
+    return self
+  }
+
+  fun Next() -> bool uses unsafe {
+    if at >= Length(value) {
+      return false
+    }
+    current = CharAt(value, at)
+    if current.width == 0 {
+      return false
+    }
+    at = at + current.width
+    return true
+  }
+
+  fun Value() -> int {
+    return current.code
+  }
+}
+
+/// The code points of `value`, for `for code in Walk(value)`.
+offer fun Walk(value: text) -> Chars {
+  return Chars(value, 0, Char(0, 0, 0))
+}
+
+/// One code point as text. Allocates.
+offer fun Encode(code: int) -> text uses unsafe {
+  var builder = BuilderNew()
+  AppendTo(&mut builder, code)
+  return builder.Release()
+}
+
+/// Writes one code point into a builder.
+offer fun AppendTo(builder: &mut Builder, code: int) uses unsafe {
+  if code < 0 {
+    return
+  }
+  if code < 128 {
+    builder.AppendByte(code as u8)
+    return
+  }
+  if code < 2048 {
+    builder.AppendByte((192 + code / 64) as u8)
+    builder.AppendByte((128 + code % 64) as u8)
+    return
+  }
+  if code < 65536 {
+    builder.AppendByte((224 + code / 4096) as u8)
+    builder.AppendByte((128 + code / 64 % 64) as u8)
+    builder.AppendByte((128 + code % 64) as u8)
+    return
+  }
+  builder.AppendByte((240 + code / 262144) as u8)
+  builder.AppendByte((128 + code / 4096 % 64) as u8)
+  builder.AppendByte((128 + code / 64 % 64) as u8)
+  builder.AppendByte((128 + code % 64) as u8)
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun CountsCharactersRatherThanBytes() -> bool uses unsafe {
+  const greek = "αβγ"
+  return Count("abc") == 3 && Length(greek) == 6 && Count(greek) == 3 &&
+         Count("") == 0 && Count("a😀b") == 3
+}
+
+@Test
+fun WalksCodePoints() -> bool uses unsafe {
+  var total = 0
+  var seen = 0
+  for code in Walk("aα😀") {
+    total = total + code
+    seen = seen + 1
+  }
+  // 97, 945 and 128512.
+  return seen == 3 && total == 129554
+}
+
+@Test
+fun WritesACodePointBack() -> bool uses unsafe {
+  return Encode(97) == "a" && Encode(945) == "α" && Encode(128512) == "😀" &&
+         IsValid("αβγ") && IsValid("") && Count(Encode(128512)) == 1
+}

@@ -1,0 +1,122 @@
+// A log, with levels and a timestamp.
+//
+// To standard error, because that is the stream a person watching a
+// server is reading and the one a redirect of the program's output does
+// not take away. The level is a global the program sets once: a logger
+// threaded through every call that might want to say something is the
+// thing that makes people not log.
+
+need std.io.{Warn, WriteError}
+need std.time.{Civil, Clock, WallClock}
+
+/// How much to say.
+offer enum Level {
+  Trace,
+  Debug,
+  Info,
+  Warning,
+  Error,
+  Silent,
+}
+
+fun Rank(level: Level) -> int {
+  return match level {
+    Level.Trace => 0,
+    Level.Debug => 1,
+    Level.Info => 2,
+    Level.Warning => 3,
+    Level.Error => 4,
+    Level.Silent => 5,
+  }
+}
+
+fun Label(level: Level) -> text {
+  return match level {
+    Level.Trace => "trace",
+    Level.Debug => "debug",
+    Level.Info => "info ",
+    Level.Warning => "warn ",
+    Level.Error => "error",
+    Level.Silent => "     ",
+  }
+}
+
+// What is being said and what is not. A global, set once at startup.
+var threshold: Level = Level.Info
+var timestamps: bool = true
+
+/// Says nothing below `level` from here on.
+offer fun SetLevel(level: Level) {
+  threshold = level
+}
+
+/// Whether `level` would be written. For a caller whose message costs
+/// something to build: the check is cheaper than the string.
+offer fun Enabled(level: Level) -> bool {
+  return Rank(level) >= Rank(threshold) && Rank(threshold) < 5
+}
+
+/// Turns the timestamp off, for a program whose output is compared.
+offer fun SetTimestamps(on: bool) {
+  timestamps = on
+}
+
+/// Writes one line at `level`.
+offer fun At(level: Level, message: text) uses io, unsafe {
+  if !Enabled(level) {
+    return
+  }
+  if timestamps {
+    const now = WallClock()
+    const moment = Civil(now.seconds)
+    WriteError(Clock(moment, (now.nanos / 1000000) as int))
+    WriteError(" ")
+  }
+  WriteError(Label(level))
+  WriteError(" ")
+  Warn(message)
+}
+
+offer fun Trace(message: text) uses io, unsafe {
+  At(Level.Trace, message)
+}
+
+offer fun Debug(message: text) uses io, unsafe {
+  At(Level.Debug, message)
+}
+
+offer fun Info(message: text) uses io, unsafe {
+  At(Level.Info, message)
+}
+
+offer fun Warning(message: text) uses io, unsafe {
+  At(Level.Warning, message)
+}
+
+offer fun Error(message: text) uses io, unsafe {
+  At(Level.Error, message)
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun SaysWhatItsLevelAllows() -> bool uses io, unsafe {
+  SetLevel(Level.Warning)
+  const quiet = !Enabled(Level.Info) && Enabled(Level.Error)
+  SetLevel(Level.Silent)
+  const silent = !Enabled(Level.Error)
+  SetLevel(Level.Trace)
+  const loud = Enabled(Level.Trace)
+  SetLevel(Level.Info)
+  return quiet && silent && loud
+}
+
+@Test
+fun WritesALine() -> bool uses io, unsafe {
+  // It goes to standard error, so the test is that it comes back.
+  SetTimestamps(false)
+  Info("")
+  SetTimestamps(true)
+  Info("")
+  return true
+}

@@ -1,0 +1,249 @@
+// Sockets: a client that connects, and a listener that accepts.
+//
+// The floor is the handful of calls every system has, and everything
+// above it is Wolang -- the same arrangement `std.io` has with `write`.
+// `http` has its own copy of this floor for historical reasons; a program
+// that wants to speak something else uses this one.
+
+need std.mem.{ArrayNew, Free}
+need std.text.{BuilderNew, Bytes}
+
+const kFamilyInet: int = 2
+const kStream: int = 1
+const kDatagram: int = 2
+
+extern "C" fun socket(family: s32, kind: s32, protocol: s32) -> s32
+extern "C" fun connect(fd: s32, address: *u8, length: u32) -> s32
+extern "C" fun bind(fd: s32, address: *u8, length: u32) -> s32
+extern "C" fun listen(fd: s32, backlog: s32) -> s32
+extern "C" fun accept(fd: s32, address: *mut u8, length: *mut u32) -> s32
+extern "C" fun send(fd: s32, buffer: *u8, count: u64, flags: s32) -> s64
+extern "C" fun recv(fd: s32, buffer: *mut u8, count: u64,
+                    flags: s32) -> s64
+extern "C" fun close(fd: s32) -> s32
+extern "C" fun setsockopt(fd: s32, level: s32, name: s32, value: *u8,
+                          length: u32) -> s32
+
+/// One connection, open until it is closed.
+offer class Socket {
+  var fd: s32 = -1
+
+  fun IsOpen() -> bool {
+    return fd >= 0
+  }
+
+  /// Sends everything in `message`. False when the other end went away.
+  fun Send(message: text) -> bool uses unsafe {
+    if fd < 0 {
+      return false
+    }
+    const bytes = Bytes(message)
+    var at = 0
+    while at < bytes.len {
+      const written = send(fd, &bytes[at], (bytes.len - at) as u64, 0)
+      if written <= 0 {
+        return false
+      }
+      at = at + written as int
+    }
+    return true
+  }
+
+  /// Reads up to `limit` bytes. "" when the other end closed.
+  fun Receive(limit: int) -> text uses unsafe {
+    if fd < 0 || limit <= 0 {
+      return ""
+    }
+    var buffer = ArrayNew<u8>(limit)
+    const received = recv(fd, &mut buffer[0], limit as u64, 0)
+    if received <= 0 {
+      Free(buffer)
+      return ""
+    }
+    var builder = BuilderNew()
+    var i = 0
+    while i < received as int {
+      builder.AppendByte(buffer[i])
+      i = i + 1
+    }
+    Free(buffer)
+    return builder.Release()
+  }
+
+  /// Reads until the other end closes or `limit` bytes have arrived.
+  fun ReceiveAll(limit: int) -> text uses unsafe {
+    var builder = BuilderNew()
+    var total = 0
+    while total < limit {
+      const piece = Receive(4096)
+      if piece.len == 0 {
+        break
+      }
+      builder.Append(piece)
+      total = total + piece.len
+    }
+    return builder.Release()
+  }
+
+  fun Close() uses unsafe {
+    if fd >= 0 {
+      const _closed = close(fd)
+      fd = -1
+    }
+  }
+}
+
+// An IPv4 address and port, as the sixteen bytes every system's
+// `sockaddr_in` is.
+fun Address(host: int, port: int) -> [16]u8 {
+  var bytes: [16]u8
+  var i = 0
+  while i < 16 {
+    bytes[i] = 0
+    i = i + 1
+  }
+  bytes[0] = 16
+  bytes[1] = kFamilyInet as u8
+  bytes[2] = (port / 256 % 256) as u8
+  bytes[3] = (port % 256) as u8
+  bytes[4] = (host / 16777216 % 256) as u8
+  bytes[5] = (host / 65536 % 256) as u8
+  bytes[6] = (host / 256 % 256) as u8
+  bytes[7] = (host % 256) as u8
+  return bytes
+}
+
+/// The number a dotted address spells, or nothing.
+///
+/// No name lookup: a resolver is a protocol of its own, and a program
+/// that needs one should say so rather than have it happen inside a
+/// connect.
+offer fun ParseAddress(host: text) -> int? uses unsafe {
+  const bytes = Bytes(host)
+  var parts: [4]int
+  var count = 0
+  var value = 0
+  var digits = 0
+  var i = 0
+  while i <= bytes.len {
+    // One past the end counts as a dot, so the last part is taken by the
+    // same code as the three before it.
+    var byte: u8 = 46
+    if i < bytes.len {
+      byte = bytes[i]
+    }
+    i = i + 1
+    if byte == 46 {
+      if digits == 0 || count >= 4 {
+        return null
+      }
+      parts[count] = value
+      count = count + 1
+      value = 0
+      digits = 0
+      continue
+    }
+    if byte < 48 || byte > 57 {
+      return null
+    }
+    value = value * 10 + (byte - 48) as int
+    digits = digits + 1
+    if value > 255 {
+      return null
+    }
+  }
+  if count != 4 {
+    return null
+  }
+  return parts[0] * 16777216 + parts[1] * 65536 + parts[2] * 256 + parts[3]
+}
+
+/// Connects to `host` on `port`. A closed socket when it fails.
+offer fun Connect(host: text, port: int) -> Socket uses unsafe {
+  const address = ParseAddress(host)
+  if const number = address {
+    const fd = socket(kFamilyInet as s32, kStream as s32, 0)
+    if fd < 0 {
+      return Socket(-1)
+    }
+    var bytes = Address(number, port)
+    if connect(fd, &bytes[0], 16) < 0 {
+      const _closed = close(fd)
+      return Socket(-1)
+    }
+    return Socket(fd)
+  }
+  return Socket(-1)
+}
+
+/// A socket listening on `port`, or a closed one.
+offer fun Listen(port: int, backlog: int) -> Socket uses unsafe {
+  const fd = socket(kFamilyInet as s32, kStream as s32, 0)
+  if fd < 0 {
+    return Socket(-1)
+  }
+  // Let the port be reused, or a restarted program waits for the kernel
+  // to let go of the last one.
+  var yes: [4]u8
+  yes[0] = 1
+  yes[1] = 0
+  yes[2] = 0
+  yes[3] = 0
+  const _option = setsockopt(fd, 65535, 4, &yes[0], 4)
+  var bytes = Address(0, port)
+  if bind(fd, &bytes[0], 16) < 0 {
+    const _closed = close(fd)
+    return Socket(-1)
+  }
+  if listen(fd, backlog as s32) < 0 {
+    const _closed = close(fd)
+    return Socket(-1)
+  }
+  return Socket(fd)
+}
+
+/// Waits for a connection on a listening socket.
+offer fun Accept(listener: Socket) -> Socket uses unsafe {
+  if !listener.IsOpen() {
+    return Socket(-1)
+  }
+  var bytes: [16]u8
+  var length: u32 = 16
+  const fd = accept(listener.fd, &mut bytes[0], &mut length)
+  return Socket(fd)
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun ReadsDottedAddresses() -> bool uses unsafe {
+  return (ParseAddress("127.0.0.1") ?? 0) == 2130706433 &&
+         (ParseAddress("0.0.0.0") ?? -1) == 0 &&
+         ParseAddress("256.0.0.1") == null &&
+         ParseAddress("1.2.3") == null && ParseAddress("") == null &&
+         ParseAddress("a.b.c.d") == null
+}
+
+@Test
+fun TalksToItself() -> bool uses unsafe {
+  // A listener and a client in one program: the loopback is the one
+  // network every machine has.
+  var listener = Listen(18311, 4)
+  if !listener.IsOpen() {
+    return false
+  }
+  var client = Connect("127.0.0.1", 18311)
+  if !client.IsOpen() {
+    listener.Close()
+    return false
+  }
+  var served = Accept(listener)
+  const sent = client.Send("hello")
+  const heard = served.Receive(64)
+  const answered = served.Send("world")
+  const back = client.Receive(64)
+  served.Close()
+  client.Close()
+  listener.Close()
+  return sent && heard == "hello" && answered && back == "world"
+}

@@ -1,0 +1,263 @@
+// Bytes as text: base64, hexadecimal, and the escapes a URL needs.
+//
+// All three come up the moment a program talks to something else -- a
+// token in a header, a hash in a log line, a query string -- and all
+// three are a table and a loop.
+
+need std.text.{Builder, BuilderNew, Bytes}
+
+const kAlphabet: text =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+/// `bytes` as base64, padded with `=`.
+offer fun ToBase64(bytes: []u8) -> text uses unsafe {
+  const alphabet = Bytes(kAlphabet)
+  var builder = BuilderNew()
+  var at = 0
+  while at + 2 < bytes.len {
+    const first = bytes[at] as int
+    const second = bytes[at + 1] as int
+    const third = bytes[at + 2] as int
+    builder.AppendByte(alphabet[first / 4])
+    builder.AppendByte(alphabet[first % 4 * 16 + second / 16])
+    builder.AppendByte(alphabet[second % 16 * 4 + third / 64])
+    builder.AppendByte(alphabet[third % 64])
+    at = at + 3
+  }
+  const left = bytes.len - at
+  if left == 1 {
+    const first = bytes[at] as int
+    builder.AppendByte(alphabet[first / 4])
+    builder.AppendByte(alphabet[first % 4 * 16])
+    builder.Append("==")
+  } else if left == 2 {
+    const first = bytes[at] as int
+    const second = bytes[at + 1] as int
+    builder.AppendByte(alphabet[first / 4])
+    builder.AppendByte(alphabet[first % 4 * 16 + second / 16])
+    builder.AppendByte(alphabet[second % 16 * 4])
+    builder.Append("=")
+  }
+  return builder.Release()
+}
+
+/// A string as base64.
+offer fun TextToBase64(value: text) -> text uses unsafe {
+  return ToBase64(Bytes(value))
+}
+
+fun Base64Value(byte: u8) -> int {
+  if byte >= 65 && byte <= 90 {
+    return (byte - 65) as int
+  }
+  if byte >= 97 && byte <= 122 {
+    return (byte - 97) as int + 26
+  }
+  if byte >= 48 && byte <= 57 {
+    return (byte - 48) as int + 52
+  }
+  if byte == 43 {
+    return 62
+  }
+  if byte == 47 {
+    return 63
+  }
+  return -1
+}
+
+/// What `value` holds as base64, or nothing when it is not base64.
+///
+/// An optional, because a token that arrived over a wire is exactly the
+/// place where "this is not valid" has to be an answer rather than a
+/// trap.
+offer fun FromBase64(value: text) -> text? uses unsafe {
+  const bytes = Bytes(value)
+  var builder = BuilderNew()
+  var group: [4]int
+  var count = 0
+  var at = 0
+  while at < bytes.len {
+    const byte = bytes[at]
+    at = at + 1
+    if byte == 61 || byte == 10 || byte == 13 {
+      // Padding and line breaks end the data.
+      continue
+    }
+    const held = Base64Value(byte)
+    if held < 0 {
+      return null
+    }
+    group[count] = held
+    count = count + 1
+    if count == 4 {
+      builder.AppendByte((group[0] * 4 + group[1] / 16) as u8)
+      builder.AppendByte((group[1] % 16 * 16 + group[2] / 4) as u8)
+      builder.AppendByte((group[2] % 4 * 64 + group[3]) as u8)
+      count = 0
+    }
+  }
+  if count == 1 {
+    // One character left over cannot be a byte.
+    return null
+  }
+  if count == 2 {
+    builder.AppendByte((group[0] * 4 + group[1] / 16) as u8)
+  } else if count == 3 {
+    builder.AppendByte((group[0] * 4 + group[1] / 16) as u8)
+    builder.AppendByte((group[1] % 16 * 16 + group[2] / 4) as u8)
+  }
+  return builder.Release()
+}
+
+/// `bytes` as lowercase hexadecimal.
+offer fun ToHex(bytes: []u8) -> text uses unsafe {
+  var builder = BuilderNew()
+  var i = 0
+  while i < bytes.len {
+    AppendHex(&mut builder, bytes[i])
+    i = i + 1
+  }
+  return builder.Release()
+}
+
+fun AppendHex(builder: &mut Builder, byte: u8) uses unsafe {
+  builder.AppendByte(HexDigit((byte / 16) as int))
+  builder.AppendByte(HexDigit((byte % 16) as int))
+}
+
+fun HexDigit(value: int) -> u8 {
+  if value < 10 {
+    return (48 + value) as u8
+  }
+  return (87 + value) as u8
+}
+
+fun UpperHexDigit(value: int) -> u8 {
+  if value < 10 {
+    return (48 + value) as u8
+  }
+  return (55 + value) as u8
+}
+
+/// What a hexadecimal string holds, or nothing.
+offer fun FromHex(value: text) -> text? uses unsafe {
+  const bytes = Bytes(value)
+  if bytes.len % 2 != 0 {
+    return null
+  }
+  var builder = BuilderNew()
+  var at = 0
+  while at < bytes.len {
+    const high = HexValue(bytes[at])
+    const low = HexValue(bytes[at + 1])
+    if high < 0 || low < 0 {
+      return null
+    }
+    builder.AppendByte((high * 16 + low) as u8)
+    at = at + 2
+  }
+  return builder.Release()
+}
+
+fun HexValue(byte: u8) -> int {
+  if byte >= 48 && byte <= 57 {
+    return (byte - 48) as int
+  }
+  if byte >= 97 && byte <= 102 {
+    return (byte - 87) as int
+  }
+  if byte >= 65 && byte <= 70 {
+    return (byte - 55) as int
+  }
+  return -1
+}
+
+// Whether a byte may appear in a URL as it is: the unreserved set.
+fun IsPlain(byte: u8) -> bool {
+  if byte >= 48 && byte <= 57 {
+    return true
+  }
+  if byte >= 65 && byte <= 90 {
+    return true
+  }
+  if byte >= 97 && byte <= 122 {
+    return true
+  }
+  return byte == 45 || byte == 46 || byte == 95 || byte == 126
+}
+
+/// `value` with everything a URL cannot carry written as `%XX`.
+offer fun ToUrl(value: text) -> text uses unsafe {
+  var builder = BuilderNew()
+  const bytes = Bytes(value)
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if IsPlain(byte) {
+      builder.AppendByte(byte)
+    } else {
+      // Upper case, which is what the standard recommends and what every
+      // other escaper writes; reading accepts either.
+      builder.AppendByte(37)
+      builder.AppendByte(UpperHexDigit((byte / 16) as int))
+      builder.AppendByte(UpperHexDigit((byte % 16) as int))
+    }
+    i = i + 1
+  }
+  return builder.Release()
+}
+
+/// `value` with `%XX` and `+` read back.
+offer fun FromUrl(value: text) -> text uses unsafe {
+  var builder = BuilderNew()
+  const bytes = Bytes(value)
+  var at = 0
+  while at < bytes.len {
+    const byte = bytes[at]
+    if byte == 43 {
+      // A form sends a space as a plus.
+      builder.AppendByte(32)
+      at = at + 1
+      continue
+    }
+    if byte == 37 && at + 2 < bytes.len {
+      const high = HexValue(bytes[at + 1])
+      const low = HexValue(bytes[at + 2])
+      if high >= 0 && low >= 0 {
+        builder.AppendByte((high * 16 + low) as u8)
+        at = at + 3
+        continue
+      }
+    }
+    builder.AppendByte(byte)
+    at = at + 1
+  }
+  return builder.Release()
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun WritesAndReadsBase64() -> bool uses unsafe {
+  const encoded = TextToBase64("wolang")
+  const decoded = FromBase64(encoded) ?? ""
+  const padded = TextToBase64("a")
+  return encoded == "d29sYW5n" && decoded == "wolang" && padded == "YQ==" &&
+         (FromBase64("YQ==") ?? "") == "a" &&
+         (FromBase64("YWI=") ?? "") == "ab" && FromBase64("!!") == null
+}
+
+@Test
+fun WritesAndReadsHex() -> bool uses unsafe {
+  const encoded = ToHex(Bytes("AB"))
+  return encoded == "4142" && (FromHex("4142") ?? "") == "AB" &&
+         FromHex("414") == null && FromHex("41zz") == null
+}
+
+@Test
+fun EscapesWhatAUrlCannotCarry() -> bool uses unsafe {
+  return ToUrl("a b&c=d") == "a%20b%26c%3Dd" &&
+         FromUrl("a%20b%26c") == "a b&c" && FromUrl("a+b") == "a b" &&
+         ToUrl("plain-name_1.txt~") == "plain-name_1.txt~" &&
+         FromUrl(ToUrl("ключ=значение")) == "ключ=значение"
+}

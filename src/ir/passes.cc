@@ -636,6 +636,11 @@ bool InlineCalls(TypeStore* types, const Module& module, Function* function) {
       copy.type = source.type;
       copy.field = source.field;
       copy.payload = source.payload;
+      // Arithmetic the compiler wrote for itself stays unchecked through
+      // the copy: `WrappingAdd` is an `add` that does not trap, and
+      // losing the flag made an inlined one trap on the overflow it
+      // exists to allow (D107).
+      copy.is_unchecked = source.is_unchecked;
 
       // A return leaves the callee, and what it leaves to is the
       // continuation.

@@ -1,0 +1,214 @@
+// File paths, as text.
+//
+// Everything here is a view or a new string, and nothing touches the
+// filesystem: whether a path exists is `std.fs`'s question, and this is
+// about the shape of the name. One separator, because every system this
+// targets accepts `/`.
+
+need std.text.{BuilderNew, Bytes, EndsWith, Length, StartsWith,
+               Substring}
+
+/// Whether `path` starts from the root.
+offer fun IsAbsolute(path: text) -> bool uses unsafe {
+  return StartsWith(path, "/")
+}
+
+/// The last part of `path`: `a/b/c.wo` is `c.wo`.
+offer fun Name(path: text) -> text uses unsafe {
+  const bytes = Bytes(path)
+  var at = bytes.len
+  while at > 0 {
+    if bytes[at - 1] == 47 {
+      return Substring(path, at, bytes.len)
+    }
+    at = at - 1
+  }
+  return path
+}
+
+/// Everything before the last separator: `a/b/c.wo` is `a/b`.
+///
+/// "" for a name with no separator in it, and "/" for a path directly
+/// under the root -- both of which a caller joining onto the answer
+/// wants.
+offer fun Parent(path: text) -> text uses unsafe {
+  const bytes = Bytes(path)
+  var at = bytes.len
+  while at > 0 {
+    if bytes[at - 1] == 47 {
+      if at == 1 {
+        return "/"
+      }
+      return Substring(path, 0, at - 1)
+    }
+    at = at - 1
+  }
+  return ""
+}
+
+/// The extension of the last part, without the dot: `c.wo` is `wo`.
+///
+/// "" when there is none, and "" for a name that is only a dot -- a
+/// leading dot is a hidden file rather than an extension.
+offer fun Extension(path: text) -> text uses unsafe {
+  const name = Name(path)
+  const bytes = Bytes(name)
+  var at = bytes.len
+  while at > 1 {
+    if bytes[at - 1] == 46 {
+      return Substring(name, at, bytes.len)
+    }
+    at = at - 1
+  }
+  return ""
+}
+
+/// The last part without its extension: `a/b/c.wo` is `c`.
+offer fun Stem(path: text) -> text uses unsafe {
+  const name = Name(path)
+  const extension = Extension(name)
+  if Length(extension) == 0 {
+    return name
+  }
+  return Substring(name, 0, Length(name) - Length(extension) - 1)
+}
+
+/// `left` and `right` with one separator between them.
+///
+/// An absolute `right` wins, which is what every path library does and
+/// what a caller joining a configured directory with a configured file
+/// depends on.
+offer fun Join(left: text, right: text) -> text uses unsafe {
+  if Length(left) == 0 || IsAbsolute(right) {
+    return right
+  }
+  if Length(right) == 0 {
+    return left
+  }
+  if EndsWith(left, "/") {
+    return left + right
+  }
+  return left + "/" + right
+}
+
+/// `path` with `.` and `..` worked out, and double separators removed.
+///
+/// Textual: it never looks at the filesystem, so a `..` after a symbolic
+/// link means what the text says rather than what the disk says.
+offer fun Normalize(path: text) -> text uses unsafe {
+  const absolute = IsAbsolute(path)
+  var parts: [64]text
+  var count = 0
+  var at = 0
+  const bytes = Bytes(path)
+  while at < bytes.len {
+    // One part, up to the next separator.
+    var end = at
+    while end < bytes.len && bytes[end] != 47 {
+      end = end + 1
+    }
+    const part = Substring(path, at, end)
+    at = end + 1
+    if Length(part) == 0 || part == "." {
+      continue
+    }
+    if part == ".." {
+      if count > 0 && parts[count - 1] != ".." {
+        count = count - 1
+        continue
+      }
+      if absolute {
+        // Above the root is the root.
+        continue
+      }
+    }
+    if count < 64 {
+      parts[count] = part
+      count = count + 1
+    }
+  }
+
+  var builder = BuilderNew()
+  if absolute {
+    builder.Append("/")
+  }
+  var i = 0
+  while i < count {
+    if i != 0 {
+      builder.Append("/")
+    }
+    builder.Append(parts[i])
+    i = i + 1
+  }
+  const joined = builder.Release()
+  if Length(joined) == 0 {
+    if absolute {
+      return "/"
+    }
+    return "."
+  }
+  return joined
+}
+
+/// Whether `path` is inside `directory`, textually.
+offer fun IsInside(path: text, directory: text) -> bool uses unsafe {
+  const whole = Normalize(path)
+  const inside = Normalize(directory)
+  if !StartsWith(whole, inside) {
+    return false
+  }
+  if Length(whole) == Length(inside) {
+    return true
+  }
+  // The next byte has to be a separator, or `/ab` would be inside `/a`.
+  return Substring(whole, Length(inside), Length(inside) + 1) == "/" ||
+         EndsWith(inside, "/")
+}
+
+/// `path` with a different extension. An empty `extension` removes it.
+offer fun WithExtension(path: text, extension: text) -> text uses unsafe {
+  const parent = Parent(path)
+  const stem = Stem(path)
+  var name = stem
+  if Length(extension) != 0 {
+    name = stem + "." + extension
+  }
+  if Length(parent) == 0 {
+    return name
+  }
+  return Join(parent, name)
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun TakesPathsApart() -> bool uses unsafe {
+  return Name("a/b/c.wo") == "c.wo" && Name("c.wo") == "c.wo" &&
+         Parent("a/b/c.wo") == "a/b" && Parent("c.wo") == "" &&
+         Parent("/c.wo") == "/" && Extension("a/b/c.wo") == "wo" &&
+         Extension("a/b/c") == "" && Extension(".hidden") == "" &&
+         Stem("a/b/c.wo") == "c" && Stem("c") == "c"
+}
+
+@Test
+fun PutsPathsTogether() -> bool uses unsafe {
+  return Join("a", "b") == "a/b" && Join("a/", "b") == "a/b" &&
+         Join("", "b") == "b" && Join("a", "/b") == "/b" &&
+         Join("a", "") == "a" &&
+         WithExtension("a/b/c.wo", "md") == "a/b/c.md" &&
+         WithExtension("c.wo", "") == "c"
+}
+
+@Test
+fun WorksOutDotsAndDoubles() -> bool uses unsafe {
+  return Normalize("a//b/./c") == "a/b/c" &&
+         Normalize("a/b/../c") == "a/c" && Normalize("/../a") == "/a" &&
+         Normalize("../a") == "../a" && Normalize("a/..") == "." &&
+         Normalize("/") == "/" && IsAbsolute("/a") && !IsAbsolute("a")
+}
+
+@Test
+fun SaysWhatIsInsideWhat() -> bool uses unsafe {
+  return IsInside("/a/b/c", "/a/b") && IsInside("/a/b", "/a/b") &&
+         !IsInside("/ab/c", "/a") && !IsInside("/a", "/a/b")
+}

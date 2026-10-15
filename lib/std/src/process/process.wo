@@ -1,0 +1,78 @@
+// The program itself: stopping, and running another one.
+//
+// `Run` is the one that needs saying out loud: it hands a command line to
+// the system shell, which means the caller is responsible for what is in
+// it. A program that builds a command out of something a user typed has a
+// hole, and `uses unsafe` is where that responsibility is recorded.
+
+need std.text.{BuilderNew}
+
+extern "C" fun exit(code: s32)
+extern "C" fun getpid() -> s32
+extern "C" fun system(command: *u8) -> s32
+extern "C" fun sleep(seconds: u32) -> u32
+extern "C" fun usleep(micros: u32) -> s32
+
+/// Stops the program with `code`. Nothing after this runs.
+///
+/// Destructors do not run: a program that has to tidy up should return
+/// from `main` instead, and this is for the case where there is nothing
+/// left to tidy.
+offer fun Exit(code: int) uses unsafe {
+  exit(code as s32)
+}
+
+/// This program's identifier.
+offer fun Id() -> int uses unsafe {
+  return getpid() as int
+}
+
+/// Runs `command` through the system shell and answers its exit code.
+///
+/// `unsafe` because the command is a string: what is in it is the
+/// caller's responsibility, and a command built from input a program did
+/// not choose is the oldest hole there is.
+offer fun Run(command: text) -> int uses unsafe {
+  // The shell wants a C string, and a `text` is a view with a length --
+  // so a copy with a zero after it is what crosses.
+  var builder = BuilderNew()
+  builder.Append(command)
+  builder.AppendByte(0)
+  const terminated = builder.Text()
+  return system(terminated.data) as int
+}
+
+/// Sleeps for `millis` milliseconds.
+offer fun Sleep(millis: int) uses unsafe {
+  if millis <= 0 {
+    return
+  }
+  const whole = millis / 1000
+  if whole > 0 {
+    const _left = sleep(whole as u32)
+  }
+  const rest = millis % 1000
+  if rest > 0 {
+    const _slept = usleep((rest * 1000) as u32)
+  }
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun KnowsItsOwnIdentifier() -> bool uses unsafe {
+  return Id() > 0
+}
+
+@Test
+fun RunsACommand() -> bool uses unsafe {
+  // `true` and `false` are the two programs every system has, and their
+  // exit codes are the whole contract.
+  return Run("true") == 0 && Run("false") != 0
+}
+
+@Test
+fun SleepsAndComesBack() -> bool uses unsafe {
+  Sleep(1)
+  return true
+}

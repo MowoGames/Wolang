@@ -75,3 +75,197 @@ fun TheWallClockIsPastTheEpoch() -> bool uses unsafe {
   // Any machine running this is well past 2020, which is 1577836800.
   return WallClock().seconds > 1577836800
 }
+
+// --------------------------------------------------------- the calendar ---
+
+need std.text.{PadStart}
+
+/// A moment taken apart, in UTC.
+///
+/// No time zones: they are a database that changes four times a year, and
+/// a program that needs one should read that database rather than have
+/// this guess. UTC is what a log line and a wire format want anyway.
+offer struct DateTime {
+  var year: int = 1970
+  var month: int = 1
+  var day: int = 1
+  var hour: int = 0
+  var minute: int = 0
+  var second: int = 0
+  var weekday: int = 4
+  var yearday: int = 1
+}
+
+/// `seconds` since the epoch, taken apart.
+///
+/// The civil-from-days algorithm: it shifts the year to start in March so
+/// that the leap day lands at the end, which is what removes every
+/// special case from the month arithmetic.
+offer fun Civil(seconds: s64) -> DateTime {
+  var left = seconds as int
+  var days = left / 86400
+  var rest = left % 86400
+  if rest < 0 {
+    rest = rest + 86400
+    days = days - 1
+  }
+  const hour = rest / 3600
+  const minute = rest % 3600 / 60
+  const second = rest % 60
+  // 1970-01-01 was a Thursday.
+  var weekday = (days + 4) % 7
+  if weekday < 0 {
+    weekday = weekday + 7
+  }
+
+  var shifted = days + 719468
+  var era = shifted / 146097
+  if shifted < 0 {
+    era = (shifted - 146096) / 146097
+  }
+  const day_of_era = shifted - era * 146097
+  const year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 -
+                       day_of_era / 146096) / 365
+  const shifted_year = year_of_era + era * 400
+  const day_of_year =
+      day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100)
+  const month_prime = (5 * day_of_year + 2) / 153
+  const day = day_of_year - (153 * month_prime + 2) / 5 + 1
+  var month = month_prime + 3
+  if month_prime >= 10 {
+    month = month_prime - 9
+  }
+  var year = shifted_year
+  if month <= 2 {
+    year = year + 1
+  }
+
+  return DateTime(year, month, day, hour, minute, second, weekday,
+                  YearDay(year, month, day))
+}
+
+/// Which day of the year a date is, from one.
+offer fun YearDay(year: int, month: int, day: int) -> int {
+  const lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  var total = day
+  var i = 1
+  while i < month {
+    total = total + lengths[i - 1]
+    i = i + 1
+  }
+  if month > 2 && IsLeapYear(year) {
+    total = total + 1
+  }
+  return total
+}
+
+/// Whether `year` has a 29th of February.
+offer fun IsLeapYear(year: int) -> bool {
+  if year % 400 == 0 {
+    return true
+  }
+  if year % 100 == 0 {
+    return false
+  }
+  return year % 4 == 0
+}
+
+/// Seconds since the epoch for a date in UTC.
+offer fun Epoch(moment: DateTime) -> s64 {
+  var year = moment.year
+  var month = moment.month
+  if month <= 2 {
+    year = year - 1
+    month = month + 12
+  }
+  // Rounded towards minus infinity rather than towards zero, which for a
+  // year before the epoch is a different era.
+  var era = year / 400
+  if year < 0 {
+    era = (year - 399) / 400
+  }
+  const year_of_era = year - era * 400
+  const day_of_year = (153 * (month - 3) + 2) / 5 + moment.day - 1
+  const day_of_era =
+      year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year
+  const days = era * 146097 + day_of_era - 719468
+  return (days * 86400 + moment.hour * 3600 + moment.minute * 60 +
+          moment.second) as s64
+}
+
+/// `2026-10-15T14:03:07Z`, which sorts as text and parses everywhere.
+offer fun Iso(moment: DateTime) -> text uses unsafe {
+  const year = PadStart("{moment.year}", 4, "0")
+  const month = PadStart("{moment.month}", 2, "0")
+  const day = PadStart("{moment.day}", 2, "0")
+  const hour = PadStart("{moment.hour}", 2, "0")
+  const minute = PadStart("{moment.minute}", 2, "0")
+  const second = PadStart("{moment.second}", 2, "0")
+  return "{year}-{month}-{day}T{hour}:{minute}:{second}Z"
+}
+
+/// `14:03:07.123`, which is what a log line wants.
+offer fun Clock(moment: DateTime, millis: int) -> text uses unsafe {
+  const hour = PadStart("{moment.hour}", 2, "0")
+  const minute = PadStart("{moment.minute}", 2, "0")
+  const second = PadStart("{moment.second}", 2, "0")
+  const fraction = PadStart("{millis}", 3, "0")
+  return "{hour}:{minute}:{second}.{fraction}"
+}
+
+/// The three-letter name of a weekday, from Sunday.
+offer fun WeekdayName(weekday: int) -> text {
+  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+  if weekday < 0 || weekday > 6 {
+    return "Sun"
+  }
+  return names[weekday]
+}
+
+/// The three-letter name of a month, from one.
+offer fun MonthName(month: int) -> text {
+  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
+                 "Sep", "Oct", "Nov", "Dec"]
+  if month < 1 || month > 12 {
+    return "Jan"
+  }
+  return names[month - 1]
+}
+
+/// `Wed, 15 Oct 2026 14:03:07 GMT`: the date format HTTP uses.
+offer fun HttpDate(seconds: s64) -> text uses unsafe {
+  const moment = Civil(seconds)
+  const name = WeekdayName(moment.weekday)
+  const day = PadStart("{moment.day}", 2, "0")
+  const month = MonthName(moment.month)
+  const hour = PadStart("{moment.hour}", 2, "0")
+  const minute = PadStart("{moment.minute}", 2, "0")
+  const second = PadStart("{moment.second}", 2, "0")
+  return "{name}, {day} {month} {moment.year} {hour}:{minute}:{second} GMT"
+}
+
+@Test
+fun TakesTheClockApart() -> bool uses unsafe {
+  // 2026-10-15T14:03:07Z is 1792072987 seconds after the epoch.
+  const moment = Civil(1792072987)
+  const epoch = Civil(0)
+  return Iso(moment) == "2026-10-15T14:03:07Z" && moment.weekday == 4 &&
+         moment.yearday == 288 &&
+         Iso(epoch) == "1970-01-01T00:00:00Z" && epoch.weekday == 4 &&
+         Epoch(moment) == 1792072987 && Epoch(epoch) == 0
+}
+
+@Test
+fun HandlesLeapYearsAndEdges() -> bool uses unsafe {
+  const leap = Civil(1709208000)  // A leap day, at noon.
+  return IsLeapYear(2024) && !IsLeapYear(2023) && !IsLeapYear(1900) &&
+         IsLeapYear(2000) && Iso(leap) == "2024-02-29T12:00:00Z" &&
+         leap.yearday == 60 && YearDay(2023, 3, 1) == 60 &&
+         Iso(Civil(-86400)) == "1969-12-31T00:00:00Z"
+}
+
+@Test
+fun WritesTheDateHttpWants() -> bool uses unsafe {
+  return HttpDate(1792072987) == "Thu, 15 Oct 2026 14:03:07 GMT" &&
+         HttpDate(0) == "Thu, 01 Jan 1970 00:00:00 GMT"
+}

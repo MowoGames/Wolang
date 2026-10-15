@@ -500,6 +500,36 @@ fun Probe() -> int {
   WOLANG_EXPECT_EQ(f.Run("Probe"), "6");
 }
 
+WOLANG_TEST(CodegenTest, KeepsATagOnlyEnumThroughAGlobal) {
+  // The interpreter holds an enum with no payload as a one-field
+  // aggregate, and memory holds it as a number: a global one had to be
+  // read back in the shape `match` reads, not as a bare number (D120).
+  Fixture f(R"(
+enum Colour {
+  Red,
+  Green,
+  Blue,
+}
+
+var chosen: Colour = Colour.Green
+
+fun Rank(colour: Colour) -> int {
+  return match colour {
+    Colour.Red => 0,
+    Colour.Green => 1,
+    Colour.Blue => 2,
+  }
+}
+
+fun Probe() -> int {
+  const before = Rank(chosen)
+  chosen = Colour.Blue
+  return before * 10 + Rank(chosen)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Probe"), "12");
+}
+
 WOLANG_TEST(CodegenTest, RunsAGenericMethod) {
   // A method with type parameters of its own, on a type that has none:
   // one copy per set of arguments, and the closure's parameter types come

@@ -32,3 +32,94 @@ offer fun Print(message: text) uses io {
 // They allocate and nothing frees them yet. The collector is a later wave
 // and `Owned<T>` the wave after that; until then a string that is built
 // stays built, which `docs/architecture.md` says out loud.
+
+// ------------------------------------------------------- the rest of it ---
+
+need std.mem.{ArrayNew, Free}
+need std.text.{BuilderNew}
+
+extern "C" fun read(fd: s32, buffer: *mut u8, count: u64) -> s64
+
+/// Writes `message` to standard error, with a line break.
+///
+/// Its own call rather than a flag on `Print`: a program that mixes the
+/// two wants them to go to different places, and "which stream" is not
+/// something a caller should have to pass every time.
+offer fun Warn(message: text) uses io, unsafe {
+  const _written = write(2, message.data, message.length)
+  const _break = write(2, "\n".data, 1)
+}
+
+/// Writes `message` to standard error with no line break.
+offer fun WriteError(message: text) uses io, unsafe {
+  const _written = write(2, message.data, message.length)
+}
+
+/// Reads up to `limit` bytes of standard input.
+///
+/// Answers what arrived, which may be less: a pipe hands over what it
+/// has. The bytes are a fresh allocation the caller owns.
+offer fun ReadAll(limit: int) -> text uses io, unsafe {
+  var builder = BuilderNew()
+  var buffer = ArrayNew<u8>(4096)
+  var total = 0
+  while total < limit {
+    var wanted = 4096
+    if limit - total < wanted {
+      wanted = limit - total
+    }
+    const received = read(0, &mut buffer[0], wanted as u64)
+    if received <= 0 {
+      break
+    }
+    var i = 0
+    while i < received as int {
+      builder.AppendByte(buffer[i])
+      i = i + 1
+    }
+    total = total + received as int
+  }
+  Free(buffer)
+  return builder.Release()
+}
+
+/// Reads one line of standard input, without the line break.
+///
+/// Answers nothing at the end of input, which is what tells a loop
+/// reading commands to stop -- and what "" cannot say, because an empty
+/// line is a line.
+offer fun ReadLine() -> text? uses io, unsafe {
+  var builder = BuilderNew()
+  var one = ArrayNew<u8>(1)
+  var seen = 0
+  loop {
+    const received = read(0, &mut one[0], 1)
+    if received <= 0 {
+      break
+    }
+    seen = seen + 1
+    if one[0] == 10 {
+      break
+    }
+    if one[0] != 13 {
+      builder.AppendByte(one[0])
+    }
+  }
+  Free(one)
+  if seen == 0 {
+    return null
+  }
+  return builder.Release()
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun WritesToBothStreams() -> bool uses io, unsafe {
+  // Nothing to assert about where they went -- the test is that they
+  // return rather than trapping, which is what a wrong fd or a bad
+  // pointer would do.
+  Write("")
+  WriteError("")
+  return true
+}

@@ -1,0 +1,108 @@
+// Hashing bytes.
+//
+// FNV-1a, which is what a hash map wants: a few instructions per byte, a
+// good spread for short keys, and no table. Not for signatures or
+// passwords -- an attacker who chooses the keys can make any map with a
+// non-cryptographic hash behave badly, and that is what a keyed hash is
+// for (said here rather than discovered later).
+
+need std.math.{WrappingMul, WrappingAdd}
+need std.text.{Bytes}
+
+const kOffset: u64 = 14695981039346656037
+const kPrime: u64 = 1099511628211
+
+/// The hash of `bytes`.
+offer fun OfBytes(bytes: []u8) -> u64 {
+  var hash = kOffset
+  var i = 0
+  while i < bytes.len {
+    hash = hash ^ (bytes[i] as u64)
+    hash = WrappingMul(hash, kPrime)
+    i = i + 1
+  }
+  return hash
+}
+
+/// The hash of a string's bytes.
+offer fun OfText(value: text) -> u64 uses unsafe {
+  return OfBytes(Bytes(value))
+}
+
+/// The hash of a whole number.
+///
+/// Mixed rather than taken as it is: a map that takes the low bits of a
+/// key as its slot puts every multiple of its table size in one place,
+/// and sequential identifiers are the common case.
+offer fun OfInt(value: int) -> u64 {
+  var hash = value as u64
+  hash = hash ^ (hash >> 33)
+  hash = WrappingMul(hash, 18397679294719823053)
+  hash = hash ^ (hash >> 29)
+  hash = WrappingMul(hash, 14181476777654086739)
+  return hash ^ (hash >> 32)
+}
+
+/// Two hashes joined, for a key made of several parts.
+offer fun Combine(left: u64, right: u64) -> u64 {
+  // The constant is the golden ratio in sixty-four bits, which is what
+  // spreads the bits of the second hash across the first.
+  return left ^ WrappingAdd(WrappingAdd(right, 11400714819323198485),
+                            WrappingAdd(left << 6, left >> 2))
+}
+
+/// The hash as a map wants it: a number from zero to `slots`.
+offer fun Slot(hash: u64, slots: int) -> int {
+  if slots <= 0 {
+    return 0
+  }
+  return (hash % (slots as u64)) as int
+}
+
+/// What `std.map` wants for a text key: a hash as an `int`.
+offer fun TextHash(value: text) -> int uses unsafe {
+  return (OfText(value) >> 1) as int
+}
+
+/// What `std.map` wants for a text key: equality.
+offer fun TextEquals(left: text, right: text) -> bool uses unsafe {
+  return left == right
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun HashesTheSameInputTheSameWay() -> bool uses unsafe {
+  return OfText("wolang") == OfText("wolang") &&
+         OfText("wolang") != OfText("wolanh") && OfText("") == kOffset &&
+         OfInt(7) != OfInt(8)
+}
+
+@Test
+fun SpreadsSequentialNumbers() -> bool uses unsafe {
+  // Sixteen slots, sixteen sequential keys: a hash that took the low bits
+  // would fill them evenly too, so this checks the harder case -- keys a
+  // stride apart.
+  var seen = [false, false, false, false, false, false, false, false,
+              false, false, false, false, false, false, false, false]
+  var filled = 0
+  var i = 0
+  while i < 16 {
+    const slot = Slot(OfInt(i * 16), 16)
+    if !seen[slot] {
+      seen[slot] = true
+      filled = filled + 1
+    }
+    i = i + 1
+  }
+  // At least half the slots touched is what "spreads" means here; a hash
+  // that returned the key would touch one.
+  return filled >= 8
+}
+
+@Test
+fun JoinsHashes() -> bool uses unsafe {
+  const a = OfText("a")
+  const b = OfText("b")
+  return Combine(a, b) != Combine(b, a) && Combine(a, b) != a
+}

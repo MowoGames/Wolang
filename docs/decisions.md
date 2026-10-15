@@ -1396,3 +1396,31 @@ what is being inferred, so the hint is passed down and the result is
 taken from the body. And an expectation that still mentions a type
 parameter is a *pattern* rather than a type -- adapting against it
 reported the very answer that binds the parameter as a mismatch.
+
+**D120. A tag-only enum round-trips through memory as one field.** The
+interpreter holds an enum with no payload as a one-field aggregate --
+which is what `match` reads with `extract 0` -- and memory holds it as a
+number. A global one was written as nothing and read back as a bare
+number, so `match` on it trapped in the interpreter while both compiled
+tiers answered: the same producer-and-consumer disagreement as D111, one
+tier further down. Found by `std.log`, whose level is a global enum.
+
+**D121. The libraries a real program reaches for.** `std.fmt` (columns,
+bases, decimals, sizes, durations), `std.path` (textual, no filesystem),
+`std.utf8` (code points, kept out of `std.text` because most programs
+never need them), `std.hash` (FNV-1a, with the warning that it is not
+keyed), `std.encoding` (base64, hex, URL), `std.net` (a socket floor of
+its own, so a program can speak something other than HTTP), `std.process`
+(exit, pid, a shell command whose string is the caller's
+responsibility), `std.log` (levels, a global threshold, standard error)
+and `std.io`'s other half (stdin by line, stderr).
+
+`std.time` grew a calendar: civil-from-days both ways, ISO 8601, and the
+date format HTTP wants. No time zones -- they are a database that changes
+four times a year, and a program that needs one should read that database
+rather than have this guess.
+
+Writing them found two miscompilations. An inlined `WrappingAdd` lost its
+"do not trap" flag, because the inliner copied an instruction field by
+field and that field was not in the list -- so a hash overflowed where it
+is supposed to wrap.
