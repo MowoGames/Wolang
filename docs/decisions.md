@@ -1475,3 +1475,24 @@ a type mismatch -- which the verifier reported and which stopped the
 whole module from compiling. Erasing `string` to `str` also widened what
 the dev tier accepts: a function returning an owned string is now
 compiled rather than left to the interpreter.
+
+**D128. Wolang embeds behind a C ABI.** `include/wolang/embed/wolang.h`
+is one header with no C++ in it: make a vm, load a package or some
+source, call a function by name, and bind your own functions so the
+script can call back. The compiled tier runs what it can and the
+interpreter runs the rest -- the same arrangement `wolang run` has, which
+is why a host gets machine-code speed without asking for it.
+
+Three decisions worth stating. A host's functions are resolved through a
+registry the runtime consults *before* the loader, so a program that
+binds `host_log` gets the host's and not one that happens to be in the
+process. A string crosses as a pointer and a length, which is what both
+tiers hold one as, and a text the program answered is copied out --
+because the program's own copy may live in an arena that is about to be
+given back. And what a host may call is what the package *offered*: a
+helper a script did not export is no more part of what it offers a host
+than of what it offers another module.
+
+This is not a sandbox, and the header says so: a script can declare
+`extern "C"` and reach anything the process can, the same way the
+standard library does.

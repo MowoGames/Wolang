@@ -18,6 +18,9 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace wolang {
 namespace runtime {
@@ -47,7 +50,40 @@ struct Entry {
 
 }  // namespace
 
+namespace {
+
+// What a host registered, in order. A vector rather than a map: a host
+// binds a handful of functions once, and a linear walk over ten strings
+// is not worth a hash table's allocation.
+std::vector<std::pair<std::string, void*>>& Registered() {
+  static std::vector<std::pair<std::string, void*>> table;
+  return table;
+}
+
+}  // namespace
+
+void RegisterSymbol(std::string_view name, void* address) {
+  for (auto& [existing, held] : Registered()) {
+    if (existing == name) {
+      held = address;
+      return;
+    }
+  }
+  Registered().emplace_back(std::string(name), address);
+}
+
+void ForgetSymbols() {
+  Registered().clear();
+}
+
 void* LookupSymbol(std::string_view name) {
+  // The host's own first: a program that binds `host_log` means its
+  // `host_log` and not one that happens to be in the process.
+  for (const auto& [registered, address] : Registered()) {
+    if (registered == name) {
+      return address;
+    }
+  }
   static const Entry kTable[] = {
       {"wolang_frame_alloc", reinterpret_cast<void*>(&wolang_frame_alloc)},
       {"wolang_frame_free", reinterpret_cast<void*>(&wolang_frame_free)},

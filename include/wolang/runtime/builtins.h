@@ -32,6 +32,17 @@ void wolang_frame_free(void* frame);
 // by something that happens to share a name.
 void* LookupSymbol(std::string_view name);
 
+// Makes |address| the answer for |symbol|.
+//
+// What an embedding host's own functions are reached through: a Wolang
+// program declares `extern "C" fun host_spawn(...)` and this is where
+// that name is resolved before the loader is asked (D128). Process-wide,
+// like the rest of the runtime's tables.
+void RegisterSymbol(std::string_view name, void* address);
+
+// Forgets every registered symbol. For a host that reloads.
+void ForgetSymbols();
+
 }  // namespace runtime
 }  // namespace wolang
 

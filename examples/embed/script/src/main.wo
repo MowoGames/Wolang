@@ -1,0 +1,29 @@
+// A script a host calls into, and which calls back out.
+//
+// Nothing here knows it is embedded: these are ordinary functions, and
+// the host's own are reached the way any C function is -- by declaring
+// it. Which is the point: a script and a program are the same language.
+
+need std.text.{Bytes}
+
+// What the host bound. The signature is the contract; a wrong one here is
+// the same mistake as a wrong prototype in C, which is why it is
+// `extern` and why calling it is `unsafe`.
+extern "C" fun host_log(message: *u8, length: u64)
+extern "C" fun host_add(a: s32, b: s32) -> s32
+
+offer fun Multiply(a: int, b: int) -> int {
+  return a * b
+}
+
+offer fun Greet(name: text) -> text uses unsafe {
+  return "hello from wolang, {name}"
+}
+
+/// Calls the host back twice: once with a string, once for a number.
+offer fun Report() -> int uses unsafe {
+  const message = "the script is running"
+  const bytes = Bytes(message)
+  host_log(&bytes[0], bytes.len as u64)
+  return host_add(20, 22) as int
+}

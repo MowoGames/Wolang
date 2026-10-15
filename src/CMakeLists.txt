@@ -51,3 +51,27 @@ add_dependencies(wolang_core wolang_runtime)
 wolang_configure_target(wolang_core)
 
 add_library(wolang::core ALIAS wolang_core)
+
+# Wolang as something to embed: one C header, one library to link.
+#
+# Static *and* shared, because the two hosts this is for want different
+# things -- an engine built with the same toolchain links the archive, and
+# a program that loads scripts at run time wants a library it can ship
+# beside them (D128).
+add_library(wolang_embed STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/embed/embed.cc)
+target_link_libraries(wolang_embed PUBLIC wolang_core)
+target_include_directories(wolang_embed PUBLIC ${PROJECT_SOURCE_DIR}/include)
+wolang_configure_target(wolang_embed)
+add_library(wolang::embed ALIAS wolang_embed)
+
+add_library(wolang_embed_shared SHARED
+    ${CMAKE_CURRENT_SOURCE_DIR}/embed/embed.cc)
+set_target_properties(wolang_embed_shared PROPERTIES
+    OUTPUT_NAME wolang_embed
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR})
+target_link_libraries(wolang_embed_shared PRIVATE wolang_core)
+target_include_directories(wolang_embed_shared PUBLIC
+    ${PROJECT_SOURCE_DIR}/include)
+wolang_configure_target(wolang_embed_shared)

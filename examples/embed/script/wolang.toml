@@ -1,0 +1,6 @@
+[package]
+name = "script"
+source = "src"
+
+[dependencies]
+std = { path = "../../../lib/std" }
