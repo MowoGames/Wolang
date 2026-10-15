@@ -3,6 +3,13 @@
 
 #include "wolang/runtime/env.h"
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -89,7 +96,13 @@ extern "C" int32_t wolang_env_set(const uint8_t* name,
                            static_cast<size_t>(name_length));
   const std::string held(reinterpret_cast<const char*>(value),
                          static_cast<size_t>(value_length));
+#if defined(_WIN32)
+  // One call for setting and unsetting here, and the name is spelled
+  // with an underscore (D184).
+  return ::_putenv_s(wanted.c_str(), held.c_str()) == 0 ? 0 : -1;
+#else
   return ::setenv(wanted.c_str(), held.c_str(), 1);
+#endif
 }
 
 }  // namespace runtime

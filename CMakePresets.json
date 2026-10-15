@@ -51,11 +51,13 @@
     },
     {
       "name": "windows",
-      "displayName": "Windows (Visual Studio's compiler)",
+      "displayName": "Windows (clang-cl)",
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "WOLANG_WARNINGS_AS_ERRORS": "OFF"
+        "WOLANG_WARNINGS_AS_ERRORS": "OFF",
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl"
       },
       "condition": {
         "type": "equals",

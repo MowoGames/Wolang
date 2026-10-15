@@ -82,13 +82,29 @@ int64_t wolang_fs_changed(const uint8_t* path, uint64_t length) {
   if (failed) {
     return -1;
   }
-  // A file's clock is not the wall clock on every system, which is what
-  // `to_sys` is for: the answer is seconds since the epoch everywhere.
-  const auto wall = std::chrono::file_clock::to_sys(when);
-  return static_cast<int64_t>(
+  // A file's clock is not the wall clock, and the two libraries differ
+  // on how to say so: one has `file_clock::to_sys` and the other has
+  // `clock_cast`. The difference between the two epochs is the same
+  // number on every run, so it is measured once rather than named
+  // (D184).
+  static const int64_t difference = [] {
+    const auto file_now = fs::file_time_type::clock::now();
+    const auto wall_now = std::chrono::system_clock::now();
+    const auto file_seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(
+            file_now.time_since_epoch())
+            .count();
+    const auto wall_seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(
+            wall_now.time_since_epoch())
+            .count();
+    return static_cast<int64_t>(wall_seconds - file_seconds);
+  }();
+  const int64_t held = static_cast<int64_t>(
       std::chrono::duration_cast<std::chrono::seconds>(
-          wall.time_since_epoch())
+          when.time_since_epoch())
           .count());
+  return held + difference;
 }
 
 int32_t wolang_fs_remove(const uint8_t* path, uint64_t length) {

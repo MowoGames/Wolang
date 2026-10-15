@@ -71,7 +71,14 @@ void ReportTrap(Context* context,
   // holds an object that needs unwinding -- a generated frame holds machine
   // values and nothing else -- which is what makes a trap free on the path
   // that does not take one.
+#if defined(_WIN32)
+  // The underscore spelling is the one that does not unwind, and this
+  // system only has the plain one -- which, with no destructors between
+  // here and the landing pad, does the same thing (D184).
+  longjmp(*static_cast<jmp_buf*>(context->landing), 1);
+#else
   _longjmp(*static_cast<jmp_buf*>(context->landing), 1);
+#endif
 }
 
 class CompiledModule::Impl {

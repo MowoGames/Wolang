@@ -13,7 +13,9 @@
 #endif
 
 #include <signal.h>
+#if !defined(_WIN32)
 #include <sys/time.h>
+#endif
 #if !defined(_WIN32)
 #include <ucontext.h>
 #endif
@@ -36,6 +38,7 @@
 #include <unistd.h>
 #endif
 
+#include "wolang/base/shell.h"
 #include "wolang/base/diagnostic.h"
 #include "wolang/bind/bind.h"
 #include "wolang/base/diagnostic_renderer.h"
@@ -1698,13 +1701,13 @@ std::string BuildAndRun(const std::string& source, uint64_t seed) {
   }
 
   std::string said;
-  FILE* running = ::popen((stem + " 2>&1").c_str(), "r");
+  FILE* running = WOLANG_POPEN((stem + " 2>&1").c_str(), "r");
   if (running != nullptr) {
     char buffer[256];
     while (std::fgets(buffer, sizeof(buffer), running) != nullptr) {
       said.append(buffer);
     }
-    ::pclose(running);
+    WOLANG_PCLOSE(running);
   }
   std::remove(stem.c_str());
 

@@ -53,10 +53,12 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
             sudo apt-get update
-            # X11 for the window backend; without it the build is the
-            # one that says there is no backend, which is a different
-            # thing to test and not this one (D155).
-            sudo apt-get install -y ninja-build libx11-dev
+            # clang, because that is what this project is built with
+            # (D184); X11 for the window backend, without which the
+            # build is the one that says there is no backend.
+            sudo apt-get install -y ninja-build clang lld libx11-dev
+            echo "CC=clang" >> $GITHUB_ENV
+            echo "CXX=clang++" >> $GITHUB_ENV
           else
             brew install ninja
           fi
@@ -105,6 +107,14 @@ jobs:
           W=build/${{ matrix.preset }}/tools/wolang/wolang
           $W fmt --check lib examples benchmarks
 
+      - name: The examples in the documentation compile
+        if: matrix.preset == 'debug'
+        run: python3 tools/package/check_docs.py
+
+      - name: The editor extension packages
+        if: matrix.preset == 'debug'
+        run: python3 tools/package/make_vsix.py
+
       - name: Documentation is current
         if: matrix.preset == 'debug'
         run: |
@@ -120,9 +130,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      # clang-cl, with Microsoft's headers and libraries behind it: the
+      # compiler is clang and the system is Windows (D184).
       - uses: ilammy/msvc-dev-cmd@v1
-      - name: Install ninja
-        run: choco install ninja --no-progress -y
+      - name: Install ninja and LLVM
+        run: |
+          choco install ninja --no-progress -y
+          choco install llvm --no-progress -y
+          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
       - name: Configure
         run: cmake --preset windows
       - name: Build

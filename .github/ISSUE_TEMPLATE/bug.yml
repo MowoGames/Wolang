@@ -1,0 +1,49 @@
+name: Bug
+description: Something the compiler, the runtime or a library gets wrong
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A disagreement between tiers — one answer from `wolang run` and
+        another from `wolang run --interpret` — is the most valuable kind
+        of report. Please say if you see one.
+  - type: textarea
+    id: program
+    attributes:
+      label: The smallest program that shows it
+      render: wolang
+      placeholder: |
+        fun main() uses io {
+          Print("...")
+        }
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened
+    validations:
+      required: true
+  - type: textarea
+    id: tiers
+    attributes:
+      label: What each tier says
+      description: |
+        `wolang run --interpret path`, `wolang run path`, and
+        `wolang build path -o /tmp/a && /tmp/a`.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`wolang --version`, or the commit."
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Machine
+      placeholder: macOS 15 on arm64, Ubuntu 24.04 on x86-64, Windows 11
+    validations:
+      required: true

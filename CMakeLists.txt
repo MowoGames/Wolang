@@ -17,6 +17,36 @@ if(PROJECT_IS_TOP_LEVEL)
     endif()
 endif()
 
+# This project is built with clang.
+#
+# Not a preference: the compiler uses clang's overflow builtins for the
+# checked arithmetic every Wolang operator compiles to, `__int128` for
+# the wide multiply a constant divisor turns into, and the statement
+# expressions the trap machinery is written with. GCC has most of those
+# and is untested; Microsoft's compiler has none of them.
+#
+# On Windows that means clang-cl, which is what the LLVM installer puts
+# there and what the `windows` preset selects (D184).
+option(WOLANG_REQUIRE_CLANG "Insist on clang" ON)
+if(WOLANG_REQUIRE_CLANG AND
+   NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR
+        "Wolang is built with clang, and this is "
+        "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}.\n"
+        "  macOS:   xcode-select --install   (Apple clang is fine)\n"
+        "  Linux:   sudo apt install clang lld   then: "
+        "CC=clang CXX=clang++ cmake --preset debug\n"
+        "  Windows: install LLVM, then: cmake --preset windows   "
+        "(that preset uses clang-cl)\n"
+        "See docs/building.md. Pass -DWOLANG_REQUIRE_CLANG=OFF to try "
+        "anyway.")
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(STATUS
+        "Wolang: ${CMAKE_CXX_COMPILER_ID} "
+        "${CMAKE_CXX_COMPILER_VERSION} at ${CMAKE_CXX_COMPILER}")
+endif()
+
 option(WOLANG_BUILD_TESTS "Build the Wolang test suite" ON)
 option(WOLANG_BUILD_TOOLS "Build the wolang command line driver" ON)
 option(WOLANG_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)

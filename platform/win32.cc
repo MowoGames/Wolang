@@ -16,12 +16,14 @@
 #endif
 #include <windows.h>
 
+#include <mmreg.h>
 #include <mmsystem.h>
 #include <windowsx.h>
 
 #include <atomic>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "platform/common.h"
@@ -274,7 +276,10 @@ void RegisterOnce() {
   description.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
   description.lpfnWndProc = &Procedure;
   description.hInstance = GetModuleHandleW(nullptr);
-  description.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  // `IDC_ARROW` is a number pretending to be a string, and the wide
+  // call wants it pretending to be a wide one.
+  description.hCursor =
+      LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
   description.lpszClassName = kClassName;
   RegisterClassExW(&description);
 }

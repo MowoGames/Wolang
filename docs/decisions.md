@@ -2217,3 +2217,31 @@ A literal is built at the element type now, and the wrap is the `Coerce`
 that was always there. The lesson is the one this project keeps
 relearning: what a value *is* comes from the instruction that produced
 it, and what the context wanted is a separate question (D111, D173).
+
+**D183. The manual's programs compile.** A manual full of programs that
+do not build teaches the wrong thing and nobody finds out.
+`tools/package/check_docs.py` pulls every fenced `wolang` block that
+claims to be a program -- one with a `fun main` in it -- writes it into a
+package and runs `wolang check` over it. CI does this on every commit.
+
+It found nine broken examples the first time it ran, in a file written
+an hour earlier, by someone who had the library open in another window.
+
+**D184. This project is built with clang.** Not a preference: the
+compiler uses clang's overflow builtins for the checked arithmetic every
+Wolang operator compiles to, `__int128` for the wide multiply a constant
+divisor becomes, and statement expressions in the trap machinery. The
+configure step says so and stops, rather than letting a build fail two
+hundred errors later.
+
+On Windows that means clang-cl -- clang's compiler, Microsoft's flags and
+headers -- which is what the LLVM installer provides and what the
+`windows` preset selects.
+
+Trying it with Microsoft's own compiler turned up eight portability bugs
+that were real under clang-cl too, and they are fixed: `setenv`,
+`clock_gettime`, `popen`, `_longjmp` and `sys/time.h` behind one name
+each; `std::thread` and `<mmreg.h>` missing from the Windows backend; a
+cursor handle that needed a wide pointer; and `file_clock::to_sys`, which
+one standard library has and the other does not -- so the difference
+between the two epochs is measured once at run time rather than named.

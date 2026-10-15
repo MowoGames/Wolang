@@ -71,15 +71,19 @@ declares a `class` does not link one.
 
 ## Building
 
-Requires CMake 3.24+ and a C++20 compiler. No third party dependencies.
+Requires **clang** and CMake 3.24+. No third party dependencies; LLVM is
+optional and only for `wolang build`.
 
 ```sh
 cmake --preset debug
-cmake --build build/debug
-ctest --test-dir build/debug --output-on-failure
+cmake --build --preset debug -j
+ctest --preset debug
 ```
 
-Presets: `debug`, `asan` (address and UB sanitizers), `release`.
+Presets: `debug`, `release`, `asan` (address and UB sanitizers),
+`windows` (clang-cl), `x64`. The full guide, per system, is
+[docs/building.md](docs/building.md) — including why it is clang and not
+whatever your machine calls `cc`.
 
 ## Using it
 
@@ -177,6 +181,8 @@ docs/             specification, architecture, decisions, diagnostics, style
 - [docs/architecture.md](docs/architecture.md) — how the compiler is built
 - [docs/roadmap.md](docs/roadmap.md) — waves and exit criteria
 - [docs/diagnostics.md](docs/diagnostics.md) — diagnostic catalog
+- [docs/building.md](docs/building.md) — building it, on each system
+- [docs/stdlib.md](docs/stdlib.md) — the standard library, module by module
 - [docs/style.md](docs/style.md) — code and commit conventions
 - [docs/embedding.md](docs/embedding.md) — Wolang inside another program
 - [docs/debugging.md](docs/debugging.md) — debuggers, profiles, replays

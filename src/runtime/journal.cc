@@ -6,6 +6,7 @@
 #include "wolang/runtime/builtins.h"
 
 #include <cstdio>
+#include <chrono>
 #include <cstring>
 #include <ctime>
 #include <mutex>
@@ -192,9 +193,26 @@ int32_t wolang_journal_clock(int32_t clock, void* out) {
     std::memset(out, 0, 16);
     return 0;
   }
+#if defined(_WIN32)
+  // No `clock_gettime` here: the standard library's steady clock is the
+  // same thing, written as the two numbers a `timespec` holds (D184).
+  (void)clock;
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  const auto seconds =
+      std::chrono::duration_cast<std::chrono::seconds>(now);
+  int64_t pair[2] = {
+      static_cast<int64_t>(seconds.count()),
+      static_cast<int64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              now - seconds)
+              .count())};
+  std::memcpy(out, pair, sizeof(pair));
+  const int32_t status = 0;
+#else
   const int32_t status =
       ::clock_gettime(static_cast<clockid_t>(clock),
                       static_cast<struct timespec*>(out));
+#endif
   Write("clock", out, 16);
   return status;
 }

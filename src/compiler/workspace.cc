@@ -1,6 +1,7 @@
 // Copyright 2026 The Wolang Authors. Licensed under the Apache
 // License, Version 2.0; see LICENSE.
 
+#include "wolang/base/shell.h"
 #include "wolang/compiler/workspace.h"
 
 #include <algorithm>
@@ -228,13 +229,13 @@ class Loader {
     std::string command = "git -C '";
     command.append(checkout.string());
     command.append("' rev-parse HEAD 2>/dev/null");
-    FILE* pipe = ::popen(command.c_str(), "r");
+    FILE* pipe = WOLANG_POPEN(command.c_str(), "r");
     if (pipe == nullptr) {
       return dependency.revision;
     }
     char buffer[128] = {};
     const size_t read = std::fread(buffer, 1, sizeof(buffer) - 1, pipe);
-    ::pclose(pipe);
+    WOLANG_PCLOSE(pipe);
     std::string answer(buffer, read);
     while (!answer.empty() &&
            (answer.back() == '\n' || answer.back() == '\r')) {

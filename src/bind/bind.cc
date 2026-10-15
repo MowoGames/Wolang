@@ -1,6 +1,7 @@
 // Copyright 2026 The Wolang Authors. Licensed under the Apache
 // License, Version 2.0; see LICENSE.
 
+#include "wolang/base/shell.h"
 #include "wolang/bind/bind.h"
 
 #include <algorithm>
@@ -368,7 +369,7 @@ std::string Preprocess(const std::string& path,
   command.append(" '");
   command.append(path);
   command.append("' 2>/dev/null");
-  FILE* pipe = ::popen(command.c_str(), "r");
+  FILE* pipe = WOLANG_POPEN(command.c_str(), "r");
   if (pipe == nullptr) {
     return std::string();
   }
@@ -377,7 +378,7 @@ std::string Preprocess(const std::string& path,
   while (std::size_t read = std::fread(buffer, 1, sizeof(buffer), pipe)) {
     out.append(buffer, read);
   }
-  const int status = ::pclose(pipe);
+  const int status = WOLANG_PCLOSE(pipe);
   if (status != 0) {
     return std::string();
   }
