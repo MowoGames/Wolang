@@ -271,3 +271,33 @@ WOLANG_TEST(Workspace, IsPackageDirectoryDetectsAManifest) {
 
 }  // namespace
 }  // namespace wolang
+
+WOLANG_TEST(Workspace, RefusesARemoteDependencyThatIsNotFetched) {
+  // `check` does not reach the network: a dependency that is not there
+  // is an error with a fix in it, not a download (D141).
+  const std::filesystem::path root =
+      std::filesystem::temp_directory_path() / "wolang-remote-test";
+  std::error_code failed;
+  std::filesystem::remove_all(root, failed);
+  std::filesystem::create_directories(root / "src", failed);
+  {
+    std::ofstream manifest((root / "wolang.toml").string());
+    manifest << "[package]\nname = \"app\"\nsource = \"src\"\n"
+             << "\n[dependencies]\n"
+             << "engine = { git = \"https://example.invalid/e.git\", "
+                "rev = \"v1\" }\n";
+    std::ofstream source((root / "src" / "main.wo").string());
+    source << "fun main() {}\n";
+  }
+
+  wolang::Database database;
+  wolang::DiagnosticEngine diagnostics;
+  WOLANG_EXPECT(
+      wolang::LoadPackage(&database, root.string(), &diagnostics));
+  bool said = false;
+  for (const wolang::Diagnostic& diagnostic : diagnostics.diagnostics()) {
+    said |= diagnostic.code == "E0061";
+  }
+  WOLANG_EXPECT(said);
+  std::filesystem::remove_all(root, failed);
+}

@@ -1717,3 +1717,22 @@ the declaration a function came from rather than by its name.
 The interpreter's own `Print` now reaches a host too: it collects what a
 program printed rather than writing it, and a host that asked for the
 output gets that as well.
+
+**D141. A dependency may be fetched, and what was fetched is written
+down.** `engine = { git = "...", tag = "v1.2.0", dir = "lib/engine" }` in
+a manifest, `wolang fetch` to get it, and `wolang.lock` recording the
+repository, the revision that was asked for and the **commit it resolved
+to** -- which is what makes a second machine build the same code.
+
+Three decisions. Fetching is `git` through the `git` on the path: a
+package manager that cannot be told "use the git you already have" is one
+that fights the machine it runs on. Only `fetch` reaches the network --
+`check` on a missing dependency is an error with a fix in it (`E0061`),
+because a compiler that downloads something because a file was saved is
+not one anyone can trust. And a revision is required: a dependency
+without one changes under you, and the lock file would have nothing to
+record.
+
+Where a checkout lands depends only on the repository and the revision,
+so two packages wanting the same dependency share one copy, and two
+revisions of the same repository are two directories.

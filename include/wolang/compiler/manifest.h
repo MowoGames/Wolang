@@ -17,6 +17,17 @@ namespace wolang {
 struct ManifestDependency {
   std::string name;
   std::string path;
+  // A dependency fetched rather than found: `git = "..."` with a `rev`,
+  // a `tag` or a `branch`. The checkout lands under the workspace's
+  // cache and `path` is set to where it landed, so that everything above
+  // this sees one kind of dependency (D141).
+  std::string git;
+  std::string revision;
+  // Where inside the checkout the package is, for a repository holding
+  // several.
+  std::string subdirectory;
+
+  bool is_remote() const { return !git.empty(); }
 };
 
 // A per-code severity override from the `[lints]` table.

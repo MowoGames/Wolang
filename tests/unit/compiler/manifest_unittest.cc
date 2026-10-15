@@ -157,10 +157,37 @@ WOLANG_TEST(Manifest, ReportsDependenciesWithoutAPath) {
       Fixture("[package]\nname = \"p\"\n[dependencies]\ncore = { }\n")
           .Codes()
           .find("E0052") != std::string::npos);
+  // A revision with nothing to fetch from is as incomplete as no path at
+  // all (D141).
   WOLANG_EXPECT(Fixture("[package]\nname = \"p\"\n[dependencies]\n"
                         "core = { branch = \"main\" }\n")
                     .Codes()
-                    .find("E0051") != std::string::npos);
+                    .find("E0052") != std::string::npos);
+}
+
+WOLANG_TEST(Manifest, ReadsARemoteDependency) {
+  Fixture fixture(
+      "[package]\nname = \"p\"\n[dependencies]\n"
+      "engine = { git = \"https://example.com/engine.git\", "
+      "rev = \"v1.2.0\", dir = \"lib/engine\" }\n");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT_EQ(fixture.manifest().dependencies.size(), 1u);
+  const wolang::ManifestDependency& held =
+      fixture.manifest().dependencies.front();
+  WOLANG_EXPECT_EQ(held.name, "engine");
+  WOLANG_EXPECT_EQ(held.git, "https://example.com/engine.git");
+  WOLANG_EXPECT_EQ(held.revision, "v1.2.0");
+  WOLANG_EXPECT_EQ(held.subdirectory, "lib/engine");
+  WOLANG_EXPECT(held.is_remote());
+}
+
+WOLANG_TEST(Manifest, RefusesARepositoryWithNoRevision) {
+  // A dependency with no revision changes under you, and the lock file
+  // has nothing to record (D141).
+  WOLANG_EXPECT(Fixture("[package]\nname = \"p\"\n[dependencies]\n"
+                        "engine = { git = \"https://e.com/e.git\" }\n")
+                    .Codes()
+                    .find("E0052") != std::string::npos);
 }
 
 WOLANG_TEST(Manifest, KeepsParsingAfterABadLine) {

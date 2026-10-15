@@ -200,13 +200,23 @@ void ManifestParser::ApplyDependencyField(const Field& field,
         if (SplitField(part, inner_offset, &inner)) {
           if (inner.key == "path") {
             ReadString(inner, &dependency.path);
+          } else if (inner.key == "git") {
+            ReadString(inner, &dependency.git);
+          } else if (inner.key == "rev" || inner.key == "tag" ||
+                     inner.key == "branch") {
+            // One field for all three: what git needs is something to
+            // check out, and which kind it is matters only to a person
+            // reading the manifest (D141).
+            ReadString(inner, &dependency.revision);
+          } else if (inner.key == "dir") {
+            ReadString(inner, &dependency.subdirectory);
           } else {
             std::string message = "unknown dependency key `";
             message.append(inner.key);
             message.append("`");
             Report(kUnknownKey, std::move(message),
                    Span(inner.key_offset, inner.key.size()),
-                   "only `path` dependencies are supported for now");
+                   "known keys are path, git, rev, tag, branch and dir");
           }
         }
       }
@@ -219,13 +229,26 @@ void ManifestParser::ApplyDependencyField(const Field& field,
     return;
   }
 
-  if (dependency.path.empty()) {
+  if (dependency.path.empty() && dependency.git.empty()) {
     std::string message = "dependency `";
     message.append(field.key);
-    message.append("` has no path");
+    message.append("` has no path and no git");
     Report(kMissingKey, std::move(message),
            Span(field.value_offset, field.value.size()),
-           "write `name = { path = \"...\" }`");
+           "write `name = { path = \"...\" }` or "
+           "`name = { git = \"...\", rev = \"...\" }`");
+    return;
+  }
+  if (dependency.is_remote() && dependency.revision.empty()) {
+    // A dependency with no revision is a dependency that changes under
+    // you: the lock file records what was used, and there has to be
+    // something to record (D141).
+    std::string message = "dependency `";
+    message.append(field.key);
+    message.append("` names a repository but no revision");
+    Report(kMissingKey, std::move(message),
+           Span(field.value_offset, field.value.size()),
+           "add `rev`, `tag` or `branch`");
     return;
   }
   manifest->dependencies.push_back(std::move(dependency));

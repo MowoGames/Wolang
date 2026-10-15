@@ -159,6 +159,7 @@ void PrintUsage() {
       "  bind <header>   write Wolang declarations for a C header\n"
       "  new <dir>       start a package: a manifest, a source file, a "
       "test\n"
+      "  fetch <dir>     get the dependencies and write wolang.lock\n"
       "  repl            a session: type an expression and see it\n"
       "  lsp             speak the Language Server Protocol on stdin\n"
       "  systems <dir>   print what systems access and when they run\n"
@@ -710,6 +711,44 @@ std::string Describe(const interp::Outcome& outcome) {
   result.append(" at ");
   result.append(outcome.where);
   return result;
+}
+
+// `wolang fetch`: get what the manifest asked for, and write down what
+// was got.
+int RunFetch(const Options& options) {
+  Database database;
+  DiagnosticEngine diagnostics;
+  const std::string& where = options.inputs.front();
+  if (!IsPackageDirectory(where)) {
+    std::fprintf(stderr, "wolang: %s is not a package\n", where.c_str());
+    return 2;
+  }
+  const bool complete =
+      FetchDependencies(&database, where, &diagnostics);
+
+  RenderOptions render;
+  render.color = options.color && StderrIsTerminal();
+  const int reported =
+      Report(database.sources(), diagnostics.diagnostics(), render);
+  if (!complete) {
+    return reported != 0 ? reported : 1;
+  }
+
+  int remote = 0;
+  for (size_t i = 0; i < database.package_count(); ++i) {
+    const Package* package =
+        database.GetPackage(PackageId{static_cast<uint32_t>(i)});
+    if (package == nullptr) {
+      continue;
+    }
+    for (const ManifestDependency& dependency :
+         package->manifest.dependencies) {
+      remote += dependency.is_remote() ? 1 : 0;
+    }
+  }
+  std::fprintf(stdout, "%d fetched, written to %s\n", remote,
+               (std::filesystem::path(where) / "wolang.lock").c_str());
+  return reported;
 }
 
 // Where the standard library is, as this binary can find it.
@@ -2561,7 +2600,8 @@ int Run(int argc, char** argv) {
       options.command == "run" || options.command == "test" ||
       options.command == "asm" || options.command == "bench" ||
       options.command == "build" || options.command == "doc" ||
-      options.command == "bind" || options.command == "new";
+      options.command == "bind" || options.command == "new" ||
+      options.command == "fetch";
   if (needs_inputs && options.inputs.empty()) {
     std::fprintf(stderr, "wolang: %s needs at least one path\n",
                  options.command.c_str());
@@ -2607,6 +2647,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "repl") {
     return RunRepl(options);
+  }
+  if (options.command == "fetch") {
+    return RunFetch(options);
   }
   if (options.command == "lsp") {
     // The editor's end of the compiler: the same queries `check` and

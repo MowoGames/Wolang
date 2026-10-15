@@ -542,8 +542,10 @@ int32_t wolang_vm_load_source(WolangVm* vm,
         if (held == nullptr || held->name == "host") {
           continue;
         }
-        manifest.dependencies.push_back(
-            wolang::ManifestDependency{held->name, held->directory});
+        wolang::ManifestDependency dependency;
+        dependency.name = held->name;
+        dependency.path = held->directory;
+        manifest.dependencies.push_back(std::move(dependency));
       }
       const wolang::PackageId package = vm->database.AddPackage(
           "host", std::filesystem::current_path().string(),

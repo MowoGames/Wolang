@@ -16,6 +16,14 @@ struct WorkspaceOptions {
   std::string manifest_name = "wolang.toml";
   // The extension of a source file.
   std::string extension = ".wo";
+  // Whether a dependency that is not there yet may be fetched.
+  //
+  // Off for the commands that only read -- `check` should not reach the
+  // network because a file was saved -- and on for `fetch` and for the
+  // commands a person waits on anyway (D141).
+  bool fetch = false;
+  // Where fetched packages are kept. Empty means `<root>/.wolang/deps`.
+  std::string cache;
 };
 
 // Loads the package rooted at |directory| into |database|, together with the
@@ -33,6 +41,20 @@ bool LoadPackage(Database* database,
                  std::string_view directory,
                  DiagnosticEngine* diagnostics,
                  const WorkspaceOptions& options = {});
+
+// Fetches every remote dependency of the package rooted at |directory|,
+// writes `wolang.lock` beside the manifest, and answers whether all of
+// it worked.
+//
+// Fetching is `git`: a repository, a revision, and a checkout under the
+// workspace's cache. Which is the smallest thing that can be called a
+// package manager and still be reproducible -- the lock file records the
+// commit each dependency resolved to, so a second machine gets the same
+// code (D141).
+bool FetchDependencies(Database* database,
+                       std::string_view directory,
+                       DiagnosticEngine* diagnostics,
+                       const WorkspaceOptions& options = {});
 
 // True when |directory| holds a package manifest.
 bool IsPackageDirectory(std::string_view directory,
