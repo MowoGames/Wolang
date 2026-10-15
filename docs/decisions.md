@@ -1773,3 +1773,15 @@ propagation: `Ok(value)` in a `match` on a `T!` never got a type, because
 `Ok` is not a declared member of anything. An error type is accepted
 everywhere, so nothing complained until a *reference* to such a binding
 turned up -- `&<error>` against `&Thing`, a long way from the cause.
+
+**D145. Output is buffered when a program says so.** `std.io.Out`
+collects and writes in blocks: fifty thousand lines through `Print` is
+fifty thousand system calls and half the time in the kernel; through
+`Out` it is one write per sixty-four kilobytes, and the same program
+spends no system time at all.
+
+Explicit rather than automatic, because the two callers want opposite
+things: a program whose output is a log wants every line out *now*, and
+one writing a report wants it fast. `Flush` is where a program says
+which, and a writer that goes out of scope flushes itself -- one that
+dropped the last line would be a writer nobody could trust.
