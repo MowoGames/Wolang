@@ -3,7 +3,6 @@
 
 #include "wolang/codegen/foreign.h"
 
-#include <dlfcn.h>
 
 #include <cstring>
 #include <map>
@@ -15,6 +14,7 @@
 #include "wolang/codegen/code_block.h"
 #include "wolang/codegen/target.h"
 #include "wolang/runtime/builtins.h"
+#include "wolang/runtime/library.h"
 
 namespace wolang {
 namespace codegen {
@@ -86,7 +86,7 @@ class Caller : public interp::ForeignCaller {
     const std::string name(symbol);
     void* target = runtime::LookupSymbol(name);
     if (target == nullptr) {
-      target = ::dlsym(RTLD_DEFAULT, name.c_str());
+      target = runtime::FindSymbol(name);
     }
     if (target == nullptr) {
       return interp::ForeignOutcome::kNoSymbol;
@@ -239,7 +239,7 @@ class Caller : public interp::ForeignCaller {
     const std::string name(symbol);
     void* target = runtime::LookupSymbol(name);
     if (target == nullptr) {
-      target = ::dlsym(RTLD_DEFAULT, name.c_str());
+      target = runtime::FindSymbol(name);
     }
     if (target == nullptr) {
       return interp::ForeignOutcome::kNoSymbol;

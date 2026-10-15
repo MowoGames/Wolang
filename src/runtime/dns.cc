@@ -3,9 +3,15 @@
 
 #include "wolang/runtime/dns.h"
 
+#if defined(_WIN32)
+#include <winsock2.h>
+// After winsock2, which has to come first or the older header wins.
+#include <ws2tcpip.h>
+#else
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#endif
 
 #include <cstring>
 
@@ -23,6 +29,18 @@ extern "C" int32_t wolang_resolve(const uint8_t* host,
   if (host == nullptr || out == nullptr || length == 0) {
     return -1;
   }
+#if defined(_WIN32)
+  // Winsock has to be started before `getaddrinfo` answers, and a
+  // program that resolved before it opened a socket would otherwise be
+  // the one case that fails (D158).
+  static const bool started = [] {
+    WSADATA data;
+    return ::WSAStartup(MAKEWORD(2, 2), &data) == 0;
+  }();
+  if (!started) {
+    return -1;
+  }
+#endif
   // The name arrives as a view with a length; `getaddrinfo` wants a C
   // string, so a copy with a zero after it is what crosses.
   char name[256] = {};

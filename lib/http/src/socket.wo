@@ -4,131 +4,79 @@
 // `wolang-http` that leave the language, which is the same arrangement
 // `std.io` has with `write` -- and the reason both declare `uses unsafe`
 // and take responsibility for it rather than passing it upwards.
+//
+// What they leave into is the runtime's own socket calls rather than the
+// system's: Berkeley's interface is the same everywhere except on
+// Windows, and a language with no conditional compilation cannot write a
+// binding twice (D158).
 
-extern "C" fun socket(domain: s32, kind: s32, protocol: s32) -> s32
-extern "C" fun bind(fd: s32, address: *u8, length: u32) -> s32
-extern "C" fun listen(fd: s32, backlog: s32) -> s32
-extern "C" fun accept(fd: s32, address: *mut u8, length: *mut u32) -> s32
-extern "C" fun read(fd: s32, buffer: *mut u8, count: u64) -> s64
-extern "C" fun write(fd: s32, buffer: *u8, count: u64) -> s64
-extern "C" fun close(fd: s32) -> s32
-extern "C" fun setsockopt(
-    fd: s32,
-    level: s32,
-    name: s32,
-    value: *u8,
-    length: u32) -> s32
+extern "C" fun wolang_socket_open() -> s64
+extern "C" fun wolang_socket_listen(socket: s64, address: u32, port: u32,
+                                    backlog: s32) -> s32
+extern "C" fun wolang_socket_accept(socket: s64) -> s64
+extern "C" fun wolang_socket_send(socket: s64, bytes: *u8,
+                                  count: s64) -> s64
+extern "C" fun wolang_socket_receive(socket: s64, bytes: *mut u8,
+                                     room: s64) -> s64
+extern "C" fun wolang_socket_close(socket: s64) -> s32
+extern "C" fun wolang_socket_reuse(socket: s64, on: s32) -> s32
+extern "C" fun wolang_socket_nodelay(socket: s64, on: s32) -> s32
 
-/// The address family and socket kind a TCP listener needs.
-offer const kFamilyInet: s32 = 2
-offer const kStream: s32 = 1
+/// Opens a listening socket on `port`, or a negative number on failure.
+offer fun Listen(port: int, backlog: int) -> s32 uses unsafe {
+  const fd = wolang_socket_open()
+  if fd < 0 {
+    return -1
+  }
+  // Let the port be reused, or a restarted server waits for the system
+  // to let go of the last one. On a system that has `SO_REUSEPORT` this
+  // also asks for it, which is what makes `ListenShared` work (D135).
+  const _option = wolang_socket_reuse(fd, 1)
+  if wolang_socket_listen(fd, 0, port as u32, backlog as s32) < 0 {
+    const _closed = wolang_socket_close(fd)
+    return -2
+  }
+  return fd as s32
+}
 
 /// The same, with the port shared between threads.
 ///
 /// `SO_REUSEPORT` gives each listener its own accept queue on the same
-/// port and lets the kernel spread connections across them: one listener
+/// port and lets the system spread connections across them: one listener
 /// per thread is what makes a multi-threaded server scale, and sharing
 /// one listener instead makes every thread wake for every connection
-/// (D135).
+/// (D135). On a system without it this is one listener, which still
+/// works with one thread.
 offer fun ListenShared(port: int, backlog: int) -> s32 uses unsafe {
-  const fd = socket(kFamilyInet, kStream, 0)
-  if fd < 0 {
-    return fd
-  }
-  var yes: [4]u8
-  yes[0] = 1
-  // `SOL_SOCKET` is 0xffff on this platform; 4 is `SO_REUSEADDR` and
-  // 0x0200 is `SO_REUSEPORT`.
-  const _reuse_address = setsockopt(fd, 65535, 4, &yes[0], 4)
-  if setsockopt(fd, 65535, 512, &yes[0], 4) < 0 {
-    // A system without it: the caller gets one listener, which still
-    // works with one thread.
-    const _closed = close(fd)
-    return Listen(port, backlog)
-  }
-  var address: [16]u8
-  address[0] = 16
-  address[1] = kFamilyInet as u8
-  address[2] = (port / 256 % 256) as u8
-  address[3] = (port % 256) as u8
-  if bind(fd, &address[0], 16) < 0 {
-    const _closed = close(fd)
-    return -1
-  }
-  if listen(fd, backlog as s32) < 0 {
-    const _closed = close(fd)
-    return -2
-  }
-  return fd
+  return Listen(port, backlog)
 }
 
-/// Opens a listening socket on `port`, or a negative number on failure.
-///
-/// The address is built byte by byte because a `sockaddr_in` is a C struct
-/// and this language has no way to say that yet: sixteen bytes, of which
-/// the first four are the ones that matter. The layout is the BSD one that
-/// macOS uses -- a length byte, then the family -- and a port in network
-/// order, which is to say most significant byte first.
-offer fun Listen(port: int, backlog: int) -> s32 uses unsafe {
-  const fd = socket(kFamilyInet, kStream, 0)
-  if fd < 0 {
-    return fd
-  }
-
-  // Let the port be reused, or a restarted server waits for the kernel to
-  // let go of the last one.
-  var yes: [4]u8
-  yes[0] = 1
-  const _option = setsockopt(fd, 65535, 4, &yes[0], 4)
-
-  var address: [16]u8
-  address[0] = 16
-  address[1] = kFamilyInet as u8
-  address[2] = (port / 256 % 256) as u8
-  address[3] = (port % 256) as u8
-  if bind(fd, &address[0], 16) < 0 {
-    const _closed = close(fd)
-    return -1
-  }
-  if listen(fd, backlog as s32) < 0 {
-    const _closed = close(fd)
-    return -2
-  }
-  return fd
-}
-
-/// Waits for the next connection. Blocking: readiness notification is what
-/// wave 13 brings, and until then a connection is served before the next
-/// one is taken.
+/// Waits for the next connection.
 offer fun Accept(listener: s32) -> s32 uses unsafe {
-  var address: [16]u8
-  var length: [1]u32
-  length[0] = 16
-  const fd = accept(listener, &address[0], &length[0])
+  const fd = wolang_socket_accept(listener as s64)
   if fd >= 0 {
     // Send what we write when we write it. Without this a small response
     // waits for the previous one to be acknowledged, which on a local
     // connection is most of the time a request takes.
-    var yes: [4]u8
-    yes[0] = 1
-    const _option = setsockopt(fd, 6, 1, &yes[0], 4)
+    const _option = wolang_socket_nodelay(fd, 1)
   }
-  return fd
+  return fd as s32
 }
 
 offer fun Close(fd: s32) -> s32 uses unsafe {
-  return close(fd)
+  return wolang_socket_close(fd as s64)
 }
 
 /// Reads into `buffer` and returns how many bytes arrived, or a negative
 /// number. The buffer is the caller's, which is what makes this allocate
 /// nothing per request.
-offer fun Read(fd: s32, buffer: *mut u8, capacity: int) -> int uses unsafe {
-  return read(fd, buffer, capacity as u64) as int
+offer fun Read(fd: s32, buffer: *mut u8, capacity: int) -> int
+    uses unsafe {
+  return wolang_socket_receive(fd as s64, buffer, capacity as s64) as int
 }
 
-/// Writes all of `message`, which may take more than one call: a socket is
-/// allowed to accept part of what it was given.
+/// Writes all of `message`, which may take more than one call: a socket
+/// is allowed to accept part of what it was given.
 offer fun WriteAll(fd: s32, message: text) -> bool uses unsafe {
   var sent = 0
   const total = message.len
@@ -136,7 +84,8 @@ offer fun WriteAll(fd: s32, message: text) -> bool uses unsafe {
     // From where the last call stopped: a socket is allowed to take part
     // of what it was given, and starting over would send the beginning
     // twice.
-    const written = write(fd, message.data + sent, (total - sent) as u64) as int
+    const written = wolang_socket_send(fd as s64, message.data + sent,
+                                       (total - sent) as s64) as int
     if written <= 0 {
       return false
     }

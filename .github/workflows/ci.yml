@@ -32,6 +32,12 @@ jobs:
           - name: linux-x86_64-release
             os: ubuntu-24.04
             preset: release
+          # The other machine this language claims to run on, and the one
+          # a laptop cannot check: same architecture as macOS, different
+          # system (D157).
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            preset: debug
           - name: macos-arm64
             os: macos-14
             preset: debug
@@ -42,12 +48,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ninja
+      - name: Install ninja, and what a window is made of
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
             sudo apt-get update
-            sudo apt-get install -y ninja-build
+            # X11 for the window backend; without it the build is the
+            # one that says there is no backend, which is a different
+            # thing to test and not this one (D155).
+            sudo apt-get install -y ninja-build libx11-dev
           else
             brew install ninja
           fi
@@ -71,6 +80,9 @@ jobs:
           $W test lib/http
           $W test lib/game
           $W test lib/core
+          # `gfx` without a display: every drawing test runs, and the one
+          # that asks which backend this is answers "none" (D155).
+          $W test lib/gfx
 
       # The differential fuzzer: the same program through every tier, and
       # any disagreement is a miscompilation. The one test that has found
@@ -84,7 +96,7 @@ jobs:
         run: |
           W=build/${{ matrix.preset }}/tools/wolang/wolang
           $W check examples/server examples/systems examples/package
-          $W check examples/embed/script
+          $W check examples/embed/script examples/window
           $W run examples/hello.wo
 
       - name: Formatting
@@ -99,6 +111,43 @@ jobs:
           W=build/${{ matrix.preset }}/tools/wolang/wolang
           $W doc lib/std lib/http lib/game -o /tmp/api
           test -s /tmp/api/std.text.md
+
+  # Windows builds and runs here and nowhere else: a laptop cannot check
+  # it, and a port nobody runs is a port that does not work (D159).
+  windows:
+    name: windows-x86_64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Install ninja
+        run: choco install ninja --no-progress -y
+      - name: Configure
+        run: cmake --preset windows
+      - name: Build
+        run: cmake --build --preset windows -j
+      - name: Unit tests
+        run: ctest --preset windows
+      - name: Library tests
+        shell: bash
+        run: |
+          W=build/windows/tools/wolang/wolang.exe
+          $W test lib/std
+          $W test lib/http
+          $W test lib/core
+          $W test lib/gfx
+      - name: Fuzz the tiers against each other
+        shell: bash
+        run: |
+          W=build/windows/tools/wolang/wolang.exe
+          $W fuzz --seed ${{ github.run_number }} --count 100
+      - name: A program that runs
+        shell: bash
+        run: |
+          W=build/windows/tools/wolang/wolang.exe
+          $W run examples/hello.wo
+          $W check examples/server examples/window
 
   embed:
     name: embed the language in C

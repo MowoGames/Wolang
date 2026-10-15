@@ -10,7 +10,12 @@
 #include <ctime>
 #include <mutex>
 #include <string>
+#if defined(_WIN32)
+#include <io.h>
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 #include <vector>
 
 namespace wolang {
@@ -205,7 +210,12 @@ int64_t wolang_journal_read(int32_t fd, void* buffer, uint64_t count) {
     const size_t written = FromHex(payload, buffer, count);
     return static_cast<int64_t>(written);
   }
+#if defined(_WIN32)
+  const int64_t received =
+      ::_read(fd, buffer, static_cast<unsigned>(count));
+#else
   const int64_t received = ::read(fd, buffer, count);
+#endif
   Write("read", buffer, received > 0 ? static_cast<size_t>(received) : 0);
   return received;
 }
@@ -221,7 +231,11 @@ int32_t wolang_journal_getpid(void) {
     }
     return held_id;
   }
+#if defined(_WIN32)
+  const int32_t id = static_cast<int32_t>(::_getpid());
+#else
   const int32_t id = ::getpid();
+#endif
   Write("pid", &id, sizeof(id));
   return id;
 }

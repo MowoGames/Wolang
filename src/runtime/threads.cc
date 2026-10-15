@@ -3,10 +3,8 @@
 
 #include "wolang/runtime/threads.h"
 
-#include <pthread.h>
-#include <unistd.h>
-
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -15,35 +13,26 @@ namespace wolang {
 namespace runtime {
 namespace {
 
-struct Started {
-  void (*body)(void*) = nullptr;
-  void* argument = nullptr;
-};
-
-void* Entry(void* raw) {
-  Started* started = static_cast<Started*>(raw);
-  if (started->body != nullptr) {
-    started->body(started->argument);
-  }
-  delete started;
-  return nullptr;
-}
-
 // Threads and locks are handed out by handle so that a Wolang value is a
 // number in every tier. The tables only grow, which is what makes a
 // handle valid for as long as the program runs.
+//
+// The standard library's own thread and mutex rather than the system's:
+// `pthread_create` and `CreateThread` differ in every detail and in none
+// that matters here, and a second implementation of this file would be
+// two places for a race to hide (D159).
 std::mutex& TableLock() {
   static std::mutex lock;
   return lock;
 }
 
-std::vector<pthread_t>& Threads() {
-  static std::vector<pthread_t> threads;
+std::vector<std::thread>& Threads() {
+  static std::vector<std::thread> threads;
   return threads;
 }
 
-std::vector<pthread_mutex_t*>& Mutexes() {
-  static std::vector<pthread_mutex_t*> mutexes;
+std::vector<std::unique_ptr<std::mutex>>& Mutexes() {
+  static std::vector<std::unique_ptr<std::mutex>> mutexes;
   return mutexes;
 }
 
@@ -51,14 +40,11 @@ std::vector<pthread_mutex_t*>& Mutexes() {
 
 extern "C" uint64_t wolang_thread_spawn(void (*body)(void*),
                                         void* argument) {
-  auto* started = new Started{body, argument};
-  pthread_t thread;
-  if (::pthread_create(&thread, nullptr, &Entry, started) != 0) {
-    delete started;
+  if (body == nullptr) {
     return 0;
   }
   const std::lock_guard<std::mutex> held(TableLock());
-  Threads().push_back(thread);
+  Threads().emplace_back([body, argument]() { body(argument); });
   return Threads().size();
 }
 
@@ -126,27 +112,32 @@ extern "C" void wolang_parallel_for(uint64_t code,
 }
 
 extern "C" int32_t wolang_thread_join(uint64_t handle) {
-  pthread_t thread;
+  // Joined while the table is *not* locked: a thread that is finishing
+  // may be spawning another, and holding the table through a join is how
+  // two threads wait for each other.
+  std::thread* thread = nullptr;
   {
     const std::lock_guard<std::mutex> held(TableLock());
     if (handle == 0 || handle > Threads().size()) {
       return -1;
     }
-    thread = Threads()[handle - 1];
+    thread = &Threads()[handle - 1];
   }
-  return ::pthread_join(thread, nullptr) == 0 ? 0 : -1;
+  if (!thread->joinable()) {
+    return -1;
+  }
+  thread->join();
+  return 0;
 }
 
 extern "C" int32_t wolang_thread_count(void) {
-  const long count = ::sysconf(_SC_NPROCESSORS_ONLN);
+  const unsigned count = std::thread::hardware_concurrency();
   return count > 0 ? static_cast<int32_t>(count) : 1;
 }
 
 extern "C" uint64_t wolang_mutex_create(void) {
-  auto* mutex = new pthread_mutex_t;
-  ::pthread_mutex_init(mutex, nullptr);
   const std::lock_guard<std::mutex> held(TableLock());
-  Mutexes().push_back(mutex);
+  Mutexes().push_back(std::make_unique<std::mutex>());
   return Mutexes().size();
 }
 
@@ -155,40 +146,34 @@ extern "C" void wolang_mutex_destroy(uint64_t handle) {
   if (handle == 0 || handle > Mutexes().size()) {
     return;
   }
-  pthread_mutex_t* mutex = Mutexes()[handle - 1];
-  if (mutex == nullptr) {
-    return;
-  }
-  ::pthread_mutex_destroy(mutex);
-  delete mutex;
-  Mutexes()[handle - 1] = nullptr;
+  Mutexes()[handle - 1].reset();
 }
 
 extern "C" void wolang_mutex_lock(uint64_t handle) {
-  pthread_mutex_t* mutex = nullptr;
+  std::mutex* mutex = nullptr;
   {
     const std::lock_guard<std::mutex> held(TableLock());
     if (handle == 0 || handle > Mutexes().size()) {
       return;
     }
-    mutex = Mutexes()[handle - 1];
+    mutex = Mutexes()[handle - 1].get();
   }
   if (mutex != nullptr) {
-    ::pthread_mutex_lock(mutex);
+    mutex->lock();
   }
 }
 
 extern "C" void wolang_mutex_unlock(uint64_t handle) {
-  pthread_mutex_t* mutex = nullptr;
+  std::mutex* mutex = nullptr;
   {
     const std::lock_guard<std::mutex> held(TableLock());
     if (handle == 0 || handle > Mutexes().size()) {
       return;
     }
-    mutex = Mutexes()[handle - 1];
+    mutex = Mutexes()[handle - 1].get();
   }
   if (mutex != nullptr) {
-    ::pthread_mutex_unlock(mutex);
+    mutex->unlock();
   }
 }
 

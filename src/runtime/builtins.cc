@@ -14,6 +14,7 @@
 #include "wolang/runtime/trap.h"
 #include "wolang/runtime/world.h"
 #include "wolang/runtime/signal.h"
+#include "wolang/runtime/sockets.h"
 #include "wolang/runtime/spawn.h"
 #include "wolang/runtime/text.h"
 
@@ -153,6 +154,26 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_args_at", reinterpret_cast<void*>(&wolang_args_at)},
       {"wolang_resolve", reinterpret_cast<void*>(&wolang_resolve)},
       {"wolang_spawn", reinterpret_cast<void*>(&wolang_spawn)},
+      {"wolang_socket_open",
+       reinterpret_cast<void*>(&wolang_socket_open)},
+      {"wolang_socket_connect",
+       reinterpret_cast<void*>(&wolang_socket_connect)},
+      {"wolang_socket_listen",
+       reinterpret_cast<void*>(&wolang_socket_listen)},
+      {"wolang_socket_accept",
+       reinterpret_cast<void*>(&wolang_socket_accept)},
+      {"wolang_socket_send",
+       reinterpret_cast<void*>(&wolang_socket_send)},
+      {"wolang_socket_receive",
+       reinterpret_cast<void*>(&wolang_socket_receive)},
+      {"wolang_socket_close",
+       reinterpret_cast<void*>(&wolang_socket_close)},
+      {"wolang_socket_reuse",
+       reinterpret_cast<void*>(&wolang_socket_reuse)},
+      {"wolang_socket_nodelay",
+       reinterpret_cast<void*>(&wolang_socket_nodelay)},
+      {"wolang_socket_blocking",
+       reinterpret_cast<void*>(&wolang_socket_blocking)},
       {"wolang_env_get", reinterpret_cast<void*>(&wolang_env_get)},
       {"wolang_env_set", reinterpret_cast<void*>(&wolang_env_set)},
       {"wolang_report", reinterpret_cast<void*>(&wolang_report)},

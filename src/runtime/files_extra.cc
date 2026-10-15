@@ -3,15 +3,19 @@
 //
 // The rest of a filesystem: what a path is, how big, when it changed,
 // what is in a directory, and the verbs that change the tree (D149).
+//
+// Through the standard library rather than through `dirent.h` and
+// `stat`: those are the same everywhere except on the system that spells
+// them differently, and one implementation that is right is better than
+// two that have to agree (D159).
 
 #include "wolang/runtime/files.h"
 
-#include <dirent.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
+#include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <string>
+#include <system_error>
 
 namespace wolang {
 namespace runtime {
@@ -33,20 +37,26 @@ bool Terminated(const uint8_t* path, uint64_t length, char* into,
 
 extern "C" {
 
+namespace fs = std::filesystem;
+
 int32_t wolang_fs_kind(const uint8_t* path, uint64_t length) {
   char name[4096];
   if (!Terminated(path, length, name, sizeof(name))) {
     return 0;
   }
-  struct stat held = {};
-  if (::stat(name, &held) != 0) {
+  std::error_code failed;
+  const fs::file_status held = fs::status(fs::path(name), failed);
+  if (failed) {
     return 0;
   }
-  if (S_ISREG(held.st_mode)) {
+  if (fs::is_regular_file(held)) {
     return 1;
   }
-  if (S_ISDIR(held.st_mode)) {
+  if (fs::is_directory(held)) {
     return 2;
+  }
+  if (!fs::exists(held)) {
+    return 0;
   }
   return 3;
 }
@@ -56,11 +66,9 @@ int64_t wolang_fs_size(const uint8_t* path, uint64_t length) {
   if (!Terminated(path, length, name, sizeof(name))) {
     return -1;
   }
-  struct stat held = {};
-  if (::stat(name, &held) != 0) {
-    return -1;
-  }
-  return static_cast<int64_t>(held.st_size);
+  std::error_code failed;
+  const uintmax_t size = fs::file_size(fs::path(name), failed);
+  return failed ? -1 : static_cast<int64_t>(size);
 }
 
 int64_t wolang_fs_changed(const uint8_t* path, uint64_t length) {
@@ -68,11 +76,19 @@ int64_t wolang_fs_changed(const uint8_t* path, uint64_t length) {
   if (!Terminated(path, length, name, sizeof(name))) {
     return -1;
   }
-  struct stat held = {};
-  if (::stat(name, &held) != 0) {
+  std::error_code failed;
+  const fs::file_time_type when =
+      fs::last_write_time(fs::path(name), failed);
+  if (failed) {
     return -1;
   }
-  return static_cast<int64_t>(held.st_mtime);
+  // A file's clock is not the wall clock on every system, which is what
+  // `to_sys` is for: the answer is seconds since the epoch everywhere.
+  const auto wall = std::chrono::file_clock::to_sys(when);
+  return static_cast<int64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          wall.time_since_epoch())
+          .count());
 }
 
 int32_t wolang_fs_remove(const uint8_t* path, uint64_t length) {
@@ -80,13 +96,10 @@ int32_t wolang_fs_remove(const uint8_t* path, uint64_t length) {
   if (!Terminated(path, length, name, sizeof(name))) {
     return -1;
   }
-  // A directory and a file are taken away by different calls, and which
-  // one this is decides.
-  struct stat held = {};
-  if (::stat(name, &held) != 0) {
-    return -1;
-  }
-  return S_ISDIR(held.st_mode) ? ::rmdir(name) : ::unlink(name);
+  std::error_code failed;
+  // One file or one empty directory: taking a tree away is something a
+  // program should have to say it means, and `Remove` does not say it.
+  return fs::remove(fs::path(name), failed) && !failed ? 0 : -1;
 }
 
 int32_t wolang_fs_rename(const uint8_t* from,
@@ -99,7 +112,9 @@ int32_t wolang_fs_rename(const uint8_t* from,
       !Terminated(to, to_length, right, sizeof(right))) {
     return -1;
   }
-  return ::rename(left, right);
+  std::error_code failed;
+  fs::rename(fs::path(left), fs::path(right), failed);
+  return failed ? -1 : 0;
 }
 
 int32_t wolang_fs_make_directory(const uint8_t* path,
@@ -109,22 +124,16 @@ int32_t wolang_fs_make_directory(const uint8_t* path,
   if (!Terminated(path, length, name, sizeof(name))) {
     return -1;
   }
-  if (parents == 0) {
-    return ::mkdir(name, 0755) == 0 || errno == EEXIST ? 0 : -1;
+  std::error_code failed;
+  const fs::path where(name);
+  if (parents != 0) {
+    fs::create_directories(where, failed);
+  } else {
+    fs::create_directory(where, failed);
   }
-  // Every directory above it, in order: a path that exists already is
-  // not a failure, which is what makes this safe to call twice.
-  std::string held;
-  for (size_t i = 0; name[i] != 0; ++i) {
-    held.push_back(name[i]);
-    if (name[i] != '/' || held.size() == 1) {
-      continue;
-    }
-    if (::mkdir(held.c_str(), 0755) != 0 && errno != EEXIST) {
-      return -1;
-    }
-  }
-  if (::mkdir(name, 0755) != 0 && errno != EEXIST) {
+  // A directory that is already there is not a failure, which is what
+  // makes this safe to call twice.
+  if (failed && !fs::is_directory(where)) {
     return -1;
   }
   return 0;
@@ -138,19 +147,18 @@ int64_t wolang_fs_list(const uint8_t* path,
   if (!Terminated(path, length, name, sizeof(name)) || into == nullptr) {
     return -1;
   }
-  DIR* directory = ::opendir(name);
-  if (directory == nullptr) {
+  std::error_code failed;
+  fs::directory_iterator walk(fs::path(name), failed);
+  if (failed) {
     return -1;
   }
   uint64_t written = 0;
-  // `.` and `..` are not entries anyone asked for.
-  while (const dirent* entry = ::readdir(directory)) {
-    const std::string_view held(entry->d_name);
-    if (held == "." || held == "..") {
+  for (const fs::directory_entry& entry : walk) {
+    const std::string held = entry.path().filename().string();
+    if (held.empty() || held == "." || held == "..") {
       continue;
     }
     if (written + held.size() + 1 > room) {
-      ::closedir(directory);
       // Not an error the caller can act on except by asking for more
       // room, which is exactly what it does.
       return -1;
@@ -159,7 +167,6 @@ int64_t wolang_fs_list(const uint8_t* path,
     written += held.size();
     into[written++] = '\n';
   }
-  ::closedir(directory);
   return static_cast<int64_t>(written);
 }
 

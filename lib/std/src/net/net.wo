@@ -1,28 +1,30 @@
 // Sockets: a client that connects, and a listener that accepts.
 //
-// The floor is the handful of calls every system has, and everything
-// above it is Wolang -- the same arrangement `std.io` has with `write`.
-// `http` has its own copy of this floor for historical reasons; a program
-// that wants to speak something else uses this one.
+// The floor is the runtime's own socket calls rather than the system's.
+// Berkeley's interface is the same everywhere except on Windows, where a
+// socket is a handle rather than a descriptor, closing one has another
+// name, and the library has to be started first -- and a language with
+// no conditional compilation cannot write a binding twice. So the
+// difference lives in C, in one file, and this module is the same
+// everywhere (D158).
 
 need std.mem.{ArrayNew, Free}
 need std.text.{BuilderNew, Bytes}
 
-const kFamilyInet: int = 2
-const kStream: int = 1
-const kDatagram: int = 2
-
-extern "C" fun socket(family: s32, kind: s32, protocol: s32) -> s32
-extern "C" fun connect(fd: s32, address: *u8, length: u32) -> s32
-extern "C" fun bind(fd: s32, address: *u8, length: u32) -> s32
-extern "C" fun listen(fd: s32, backlog: s32) -> s32
-extern "C" fun accept(fd: s32, address: *mut u8, length: *mut u32) -> s32
-extern "C" fun send(fd: s32, buffer: *u8, count: u64, flags: s32) -> s64
-extern "C" fun recv(fd: s32, buffer: *mut u8, count: u64,
-                    flags: s32) -> s64
-extern "C" fun close(fd: s32) -> s32
-extern "C" fun setsockopt(fd: s32, level: s32, name: s32, value: *u8,
-                          length: u32) -> s32
+extern "C" fun wolang_socket_open() -> s64
+extern "C" fun wolang_socket_connect(socket: s64, address: u32,
+                                     port: u32) -> s32
+extern "C" fun wolang_socket_listen(socket: s64, address: u32, port: u32,
+                                    backlog: s32) -> s32
+extern "C" fun wolang_socket_accept(socket: s64) -> s64
+extern "C" fun wolang_socket_send(socket: s64, bytes: *u8,
+                                  count: s64) -> s64
+extern "C" fun wolang_socket_receive(socket: s64, bytes: *mut u8,
+                                     room: s64) -> s64
+extern "C" fun wolang_socket_close(socket: s64) -> s32
+extern "C" fun wolang_socket_reuse(socket: s64, on: s32) -> s32
+extern "C" fun wolang_socket_nodelay(socket: s64, on: s32) -> s32
+extern "C" fun wolang_socket_blocking(socket: s64, on: s32) -> s32
 extern "C" fun wolang_resolve(host: *u8, length: u64,
                               out: *mut u32) -> s32
 
@@ -42,7 +44,9 @@ offer class Socket {
     const bytes = Bytes(message)
     var at = 0
     while at < bytes.len {
-      const written = send(fd, &bytes[at], (bytes.len - at) as u64, 0)
+      const written =
+          wolang_socket_send(fd as s64, &bytes[at],
+                             (bytes.len - at) as s64)
       if written <= 0 {
         return false
       }
@@ -57,7 +61,8 @@ offer class Socket {
       return ""
     }
     var buffer = ArrayNew<u8>(limit)
-    const received = recv(fd, &mut buffer[0], limit as u64, 0)
+    const received =
+        wolang_socket_receive(fd as s64, &mut buffer[0], limit as s64)
     if received <= 0 {
       Free(buffer)
       return ""
@@ -89,30 +94,36 @@ offer class Socket {
 
   fun Close() uses unsafe {
     if fd >= 0 {
-      const _closed = close(fd)
+      const _closed = wolang_socket_close(fd as s64)
       fd = -1
     }
   }
-}
 
-// An IPv4 address and port, as the sixteen bytes every system's
-// `sockaddr_in` is.
-fun Address(host: s64, port: int) -> [16]u8 {
-  var bytes: [16]u8
-  var i = 0
-  while i < 16 {
-    bytes[i] = 0
-    i = i + 1
+  /// Whether small writes go out at once rather than waiting for more.
+  /// What a server turns off, because a reply held back is latency
+  /// nobody asked for.
+  fun SetNoDelay(on: bool) uses unsafe {
+    if fd < 0 {
+      return
+    }
+    var value: s32 = 0
+    if on {
+      value = 1
+    }
+    const _set = wolang_socket_nodelay(fd as s64, value)
   }
-  bytes[0] = 16
-  bytes[1] = kFamilyInet as u8
-  bytes[2] = (port / 256 % 256) as u8
-  bytes[3] = (port % 256) as u8
-  bytes[4] = (host / 16777216 % 256) as u8
-  bytes[5] = (host / 65536 % 256) as u8
-  bytes[6] = (host / 256 % 256) as u8
-  bytes[7] = (host % 256) as u8
-  return bytes
+
+  /// Whether a call that would wait answers instead.
+  fun SetBlocking(on: bool) uses unsafe {
+    if fd < 0 {
+      return
+    }
+    var value: s32 = 0
+    if on {
+      value = 1
+    }
+    const _set = wolang_socket_blocking(fd as s64, value)
+  }
 }
 
 /// The number a dotted address spells, or nothing.
@@ -188,44 +199,33 @@ offer fun Resolve(host: text) -> s64? uses unsafe {
 offer fun Connect(host: text, port: int) -> Socket uses unsafe {
   const address = Resolve(host)
   if const number = address {
-    const fd = socket(kFamilyInet as s32, kStream as s32, 0)
+    const fd = wolang_socket_open()
     if fd < 0 {
       return Socket(-1)
     }
-    var bytes = Address(number, port)
-    if connect(fd, &bytes[0], 16) < 0 {
-      const _closed = close(fd)
+    if wolang_socket_connect(fd, number as u32, port as u32) < 0 {
+      const _closed = wolang_socket_close(fd)
       return Socket(-1)
     }
-    return Socket(fd)
+    return Socket(fd as s32)
   }
   return Socket(-1)
 }
 
 /// A socket listening on `port`, or a closed one.
 offer fun Listen(port: int, backlog: int) -> Socket uses unsafe {
-  const fd = socket(kFamilyInet as s32, kStream as s32, 0)
+  const fd = wolang_socket_open()
   if fd < 0 {
     return Socket(-1)
   }
-  // Let the port be reused, or a restarted program waits for the kernel
+  // Let the port be reused, or a restarted program waits for the system
   // to let go of the last one.
-  var yes: [4]u8
-  yes[0] = 1
-  yes[1] = 0
-  yes[2] = 0
-  yes[3] = 0
-  const _option = setsockopt(fd, 65535, 4, &yes[0], 4)
-  var bytes = Address(0, port)
-  if bind(fd, &bytes[0], 16) < 0 {
-    const _closed = close(fd)
+  const _option = wolang_socket_reuse(fd, 1)
+  if wolang_socket_listen(fd, 0, port as u32, backlog as s32) < 0 {
+    const _closed = wolang_socket_close(fd)
     return Socket(-1)
   }
-  if listen(fd, backlog as s32) < 0 {
-    const _closed = close(fd)
-    return Socket(-1)
-  }
-  return Socket(fd)
+  return Socket(fd as s32)
 }
 
 /// Waits for a connection on a listening socket.
@@ -233,10 +233,11 @@ offer fun Accept(listener: Socket) -> Socket uses unsafe {
   if !listener.IsOpen() {
     return Socket(-1)
   }
-  var bytes: [16]u8
-  var length: u32 = 16
-  const fd = accept(listener.fd, &mut bytes[0], &mut length)
-  return Socket(fd)
+  const taken = wolang_socket_accept(listener.fd as s64)
+  if taken < 0 {
+    return Socket(-1)
+  }
+  return Socket(taken as s32)
 }
 
 // ------------------------------------------------------------- tests ---

@@ -6,8 +6,15 @@
 #include <cstring>
 #include <utility>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 
 #if defined(__APPLE__)
 #include <libkern/OSCacheControl.h>
@@ -20,8 +27,44 @@ namespace codegen {
 namespace {
 
 size_t PageSize() {
+#if defined(_WIN32)
+  static const size_t size = [] {
+    SYSTEM_INFO info;
+    ::GetSystemInfo(&info);
+    return static_cast<size_t>(info.dwPageSize);
+  }();
+#else
   static const size_t size = static_cast<size_t>(::getpagesize());
+#endif
   return size;
+}
+
+// Pages that can be written now and executed later.
+//
+// Two steps rather than one, on every system: memory that is writable
+// *and* executable at the same time is what every exploit of the last
+// thirty years wanted, and a tier that compiles and then runs has no
+// need of it (D159).
+void* Writable(size_t rounded) {
+#if defined(_WIN32)
+  void* memory = ::VirtualAlloc(nullptr, rounded,
+                                MEM_COMMIT | MEM_RESERVE,
+                                PAGE_READWRITE);
+  return memory;
+#else
+  void* memory = ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANON, -1, 0);
+  return memory == MAP_FAILED ? nullptr : memory;
+#endif
+}
+
+bool MakeExecutable(void* base, size_t size) {
+#if defined(_WIN32)
+  DWORD was = 0;
+  return ::VirtualProtect(base, size, PAGE_EXECUTE_READ, &was) != 0;
+#else
+  return ::mprotect(base, size, PROT_READ | PROT_EXEC) == 0;
+#endif
 }
 
 size_t RoundUpToPage(size_t bytes) {
@@ -70,7 +113,11 @@ CodeBlock& CodeBlock::operator=(CodeBlock&& other) noexcept {
 
 void CodeBlock::Release() {
   if (base_ != nullptr) {
+#if defined(_WIN32)
+    ::VirtualFree(base_, 0, MEM_RELEASE);
+#else
     ::munmap(base_, size_);
+#endif
     base_ = nullptr;
     size_ = 0;
   }
@@ -82,9 +129,8 @@ const void* CodeBlock::Reserve(size_t size) {
     return nullptr;
   }
   const size_t rounded = RoundUpToPage(size);
-  void* memory = ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANON, -1, 0);
-  if (memory == MAP_FAILED) {
+  void* memory = Writable(rounded);
+  if (memory == nullptr) {
     return nullptr;
   }
   base_ = memory;
@@ -97,7 +143,7 @@ bool CodeBlock::Commit(const std::vector<uint8_t>& code) {
     return false;
   }
   std::memcpy(base_, code.data(), code.size());
-  if (::mprotect(base_, size_, PROT_READ | PROT_EXEC) != 0) {
+  if (!MakeExecutable(base_, size_)) {
     Release();
     return false;
   }
@@ -113,15 +159,18 @@ bool CodeBlock::Install(const std::vector<uint8_t>& code) {
   const size_t bytes = code.size();
   const size_t rounded = RoundUpToPage(bytes);
 
-  void* memory = ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANON, -1, 0);
-  if (memory == MAP_FAILED) {
+  void* memory = Writable(rounded);
+  if (memory == nullptr) {
     return false;
   }
   std::memcpy(memory, code.data(), bytes);
 
-  if (::mprotect(memory, rounded, PROT_READ | PROT_EXEC) != 0) {
+  if (!MakeExecutable(memory, rounded)) {
+#if defined(_WIN32)
+    ::VirtualFree(memory, 0, MEM_RELEASE);
+#else
     ::munmap(memory, rounded);
+#endif
     return false;
   }
   SynchronizeCaches(memory, bytes);

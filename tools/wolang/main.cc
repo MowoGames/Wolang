@@ -12,7 +12,6 @@
 #define _XOPEN_SOURCE 700
 #endif
 
-#include <dlfcn.h>
 #include <signal.h>
 #include <sys/time.h>
 #if !defined(_WIN32)
@@ -49,6 +48,7 @@
 #include "wolang/codegen/aot.h"
 #include "wolang/lsp/server.h"
 #include "wolang/runtime/env.h"
+#include "wolang/runtime/library.h"
 #include "wolang/runtime/journal.h"
 #include "wolang/codegen/compiler.h"
 #include "wolang/abi/layout.h"
@@ -667,7 +667,7 @@ void OpenLinkedLibraries(Database* database) {
         tries.push_back(decorated);
       }
       for (const std::string& candidate : tries) {
-        if (::dlopen(candidate.c_str(), RTLD_NOW | RTLD_GLOBAL) != nullptr) {
+        if (runtime::OpenLibrary(candidate)) {
           break;
         }
       }

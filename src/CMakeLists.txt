@@ -24,6 +24,17 @@ target_include_directories(wolang_runtime PUBLIC
 wolang_configure_target(wolang_runtime)
 add_library(wolang::runtime ALIAS wolang_runtime)
 
+# Sockets and the loader are libraries of their own on Windows, and part
+# of libc everywhere else (D159).
+if(WIN32)
+    target_link_libraries(wolang_runtime PUBLIC ws2_32)
+else()
+    find_library(WOLANG_DL_LIB dl)
+    if(WOLANG_DL_LIB)
+        target_link_libraries(wolang_runtime PUBLIC ${WOLANG_DL_LIB})
+    endif()
+endif()
+
 target_sources(wolang_core PUBLIC
     FILE_SET HEADERS
     BASE_DIRS ${PROJECT_SOURCE_DIR}/include
@@ -32,6 +43,10 @@ target_sources(wolang_core PUBLIC
 target_include_directories(wolang_core PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
+if(WIN32)
+    target_link_libraries(wolang_core PUBLIC ws2_32)
+endif()
 
 # The ahead-of-time backend, when LLVM is available. Through the C API
 # rather than the C++ one: this project builds without RTTI and LLVM's

@@ -8,7 +8,6 @@
 
 #include "wolang/interp/marshal.h"
 
-#include <dlfcn.h>
 #include <setjmp.h>
 
 #include <cstdio>
@@ -26,6 +25,7 @@
 #include "wolang/codegen/runtime.h"
 #include "wolang/codegen/target.h"
 #include "wolang/runtime/builtins.h"
+#include "wolang/runtime/library.h"
 
 namespace wolang {
 namespace codegen {
@@ -325,7 +325,7 @@ void CompiledModule::Impl::Compile() {
     const std::string symbol(interner_.Text(function.foreign_symbol));
     void* address = runtime::LookupSymbol(symbol);
     if (address == nullptr) {
-      address = ::dlsym(RTLD_DEFAULT, symbol.c_str());
+      address = runtime::FindSymbol(symbol);
     }
     foreign[i] = reinterpret_cast<uint64_t>(address);
     reasons[i] = foreign[i] == 0

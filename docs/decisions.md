@@ -1959,3 +1959,41 @@ the context wants, like `null` does for optionals, and `*mut u8` when
 there is none -- the pointer every other converts from without breaking a
 promise. A number as an address (`0x1000 as *mut u8`) is allowed too, in
 `unsafe`, for a binding that was handed one.
+
+**D157. The machines, checked.** Linux on arm64 joined the matrix: same
+architecture as the laptop, different system, and the one combination
+that had never been built. A language that says it runs somewhere and
+never builds there is making a claim about a machine nobody has.
+
+**D158. Sockets through the runtime.** `std.net` and `http` each bound
+the system's own `socket`, `send` and `close`. That works on every system
+that copied Berkeley's interface, and Windows is the one that did not
+quite: a socket there is a handle rather than a descriptor, closing one
+is `closesocket`, the library has to be started before the first call,
+and `send` takes an `int` where everything else takes a `size_t`.
+
+A binding cannot be written twice in a language with no conditional
+compilation, so the difference lives in C now -- `wolang_socket_open`,
+`connect`, `listen`, `accept`, `send`, `receive`, `close`, and the three
+options a server sets. Both Wolang packages are the same everywhere, the
+`sockaddr_in` nobody could name is built where the headers are, and the
+server still answers fifty-three thousand requests a second, which is
+what says the layer costs nothing.
+
+**D159. Windows.** The rest of what a system is: `VirtualAlloc` for the
+pages a tier compiles into, `WSAPoll` for readiness, `CreateProcess` and
+three pipes for another program, `LoadLibrary` and `GetProcAddress` for a
+binding, `_open` in binary mode so a file round trips, and the standard
+library for threads, locks and the filesystem -- `pthread_create` and
+`CreateThread` differ in every detail and in none that matters here, and
+a second implementation of a lock is a second place for a race to hide.
+
+Two things that look like details and are not. Writable *and* executable
+memory at once is what every exploit of the last thirty years wanted, so
+pages are written, then made executable, on every system. And a command
+is split into words by the same code everywhere and joined back together
+with this system's quoting for `CreateProcess` -- so that what a caller
+wrote means the same thing on both.
+
+CI builds and runs it, because a port nobody runs is a port that does not
+work.
