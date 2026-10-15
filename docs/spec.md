@@ -1001,10 +1001,30 @@ from the type it is being given to, so a closure passed to something that
 takes a `fun(int) -> int` needs no annotation; one written with no such
 context has to say them (`E0134`).
 
-A closure takes nothing with it: naming a local of the function around it
-is an error (`E0135`), because that local has to live somewhere after the
-frame goes away. A type with the state and a method on it says where, and
-costs nothing that is not written down.
+A closure takes a **copy** of whatever of the surrounding locals its body
+reads:
+
+```wolang
+fun Loud(words: []text, limit: int) -> int uses unsafe {
+  // `limit` is copied into the closure's environment.
+  return Count(words, |word| word.len > limit)
+}
+```
+
+The copies live in the frame of the call that made the closure, which is
+why a closure that captures may be passed *down* but not handed upwards:
+returning one, assigning one to a module-level `var` or putting one in a
+field is an error (`E0136`). A closure that captures nothing is an
+ordinary function value and may go anywhere.
+
+State that outlives a call is what a type with a method is for. That is
+not a workaround: an environment with a lifetime of its own is an
+allocation someone has to own, and a class is where this language says
+who.
+
+A function value is two words: where the code is, and what it closed
+over. A plain function closed over nothing, and a call through a value
+asks which of the two it has.
 
 ## Serving an API
 

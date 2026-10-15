@@ -51,6 +51,14 @@ offer fun Free<T>(items: []T) uses unsafe
 /// that there are that many values there, or that they stay.
 offer fun ViewFromRaw<T>(data: *u8, count: int) -> []T uses unsafe
 
+/// The first `count` elements of `items`, as a view.
+///
+/// A view and not a copy: writing through it writes the storage. What a
+/// container with room to spare hands out -- `List.Items()` is this with
+/// the count filled in -- and the one place that knows a slice is a
+/// pointer and a length (D138).
+offer fun Prefix<T>(items: []T, count: int) -> []T uses unsafe
+
 /// How many bytes a value of `value`'s type takes.
 ///
 /// The value is not read -- what is wanted is its type, which is why this

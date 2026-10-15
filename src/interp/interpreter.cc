@@ -185,16 +185,15 @@ class Interpreter {
         std::memcpy(&number, address, sizeof(number));
         return Value::Float(static_cast<double>(number), FloatWidth::k32);
       }
-      case TypeKind::kFunction:
       case TypeKind::kPointer: {
-        // A function read out of memory is the token this tier handed to
-        // the runtime, not an address: a call through it looks the token
-        // back up. Which is how a signal's handler list works the same
-        // way in both tiers.
         uint64_t raw = 0;
         std::memcpy(&raw, address, sizeof(raw));
         return Value::Int(raw, IntWidth::k64, /*is_signed=*/false);
       }
+      // A *function* is two words -- the code and what it closed over --
+      // so it is read by the aggregate path below. Reading it as one
+      // word was right while a function value was one, and became an
+      // extract out of bounds when it stopped being (D138).
       case TypeKind::kInt: {
         uint64_t raw = 0;
         std::memcpy(&raw, address, WidthInBytes(described.int_width));

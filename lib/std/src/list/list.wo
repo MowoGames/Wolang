@@ -6,7 +6,7 @@
 // (D91). Written in Wolang over `ArrayNew` and `Free`, which is what the
 // generics and destructors were for.
 
-need std.mem.{ArrayNew, Free}
+need std.mem.{ArrayNew, Free, Prefix}
 
 /// A sequence that grows.
 ///
@@ -29,6 +29,19 @@ offer class List<T> {
   /// What `for value in list` walks with.
   fun Iterate() -> ListWalk<T> {
     return ListWalk<T>(self, -1)
+  }
+
+  /// The elements, as a slice of exactly what is in the list.
+  ///
+  /// A view, not a copy: writing through it writes the list. What every
+  /// function taking `[]T` wants, which is most of them. The language
+  /// has no slicing syntax yet, so this is a view built from where the
+  /// storage is and how much of it is in use.
+  fun Items() -> []T uses unsafe {
+    if count == 0 {
+      return ArrayNew<T>(0)
+    }
+    return Prefix<T>(items, count)
   }
 
   fun Capacity() -> int {
@@ -183,4 +196,151 @@ fun WalksEveryElement() -> bool uses unsafe {
     seen = seen + 1
   }
   return total == 9 && seen == 3
+}
+
+// ------------------------------------------------------- walks and tests ---
+//
+// What a closure is for: `Count(xs, |x| x > limit)` reads as what it
+// does, and the closure takes `limit` with it (D138). Each of these is a
+// loop someone would otherwise write by hand, which is the whole
+// argument for having them.
+
+/// Whether anything in `items` satisfies `holds`.
+offer fun Any<T>(items: []T, holds: fun(T) -> bool) -> bool {
+  var i = 0
+  while i < items.len {
+    if holds(items[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+/// Whether everything in `items` does.
+offer fun All<T>(items: []T, holds: fun(T) -> bool) -> bool {
+  var i = 0
+  while i < items.len {
+    if !holds(items[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+/// How many satisfy `holds`.
+offer fun Count<T>(items: []T, holds: fun(T) -> bool) -> int {
+  var total = 0
+  var i = 0
+  while i < items.len {
+    if holds(items[i]) {
+      total = total + 1
+    }
+    i = i + 1
+  }
+  return total
+}
+
+/// Where the first one that satisfies `holds` is, or -1.
+///
+/// The index rather than the value: a caller that wants the value has
+/// the slice, and one that wants to write it back needs the index.
+offer fun Find<T>(items: []T, holds: fun(T) -> bool) -> int {
+  var i = 0
+  while i < items.len {
+    if holds(items[i]) {
+      return i
+    }
+    i = i + 1
+  }
+  return -1
+}
+
+/// Runs `body` on each element.
+offer fun Each<T>(items: []T, body: fun(T)) {
+  var i = 0
+  while i < items.len {
+    body(items[i])
+    i = i + 1
+  }
+}
+
+/// Folds `items` into one value, left to right.
+offer fun Fold<T, A>(items: []T, start: A, join: fun(A, T) -> A) -> A {
+  var total = start
+  var i = 0
+  while i < items.len {
+    total = join(total, items[i])
+    i = i + 1
+  }
+  return total
+}
+
+/// Replaces each element with what `change` makes of it, in place.
+///
+/// In place rather than into a new list: a list that owns its storage is
+/// something to free, and a caller that wants both keeps a copy.
+offer fun MapInPlace<T>(items: []T, change: fun(T) -> T) {
+  var i = 0
+  while i < items.len {
+    items[i] = change(items[i])
+    i = i + 1
+  }
+}
+
+/// Moves everything that satisfies `holds` to the front, and answers how
+/// many there are.
+///
+/// What filtering is without allocating: the caller takes the first `n`
+/// elements, and what was dropped is past them.
+offer fun Keep<T>(items: []T, holds: fun(T) -> bool) -> int {
+  var kept = 0
+  var i = 0
+  while i < items.len {
+    if holds(items[i]) {
+      const held = items[i]
+      items[i] = items[kept]
+      items[kept] = held
+      kept = kept + 1
+    }
+    i = i + 1
+  }
+  return kept
+}
+
+@Test
+fun AsksAboutEveryElement() -> bool uses unsafe {
+  var list = ListNew<int>()
+  var i = 1
+  while i <= 5 {
+    list.Push(i)
+    i = i + 1
+  }
+  const items = list.Items()
+  const limit = 3
+  // The closures take `limit` with them, which is the point.
+  return Any(items, |x| x > limit) && !All(items, |x| x > limit) &&
+         Count(items, |x| x > limit) == 2 &&
+         Find(items, |x| x == limit) == 2 &&
+         Find(items, |x| x == 99) == -1 &&
+         Fold(items, 0, |total, x| total + x) == 15
+}
+
+@Test
+fun ChangesAndFiltersInPlace() -> bool uses unsafe {
+  var list = ListNew<int>()
+  var i = 1
+  while i <= 6 {
+    list.Push(i)
+    i = i + 1
+  }
+  const items = list.Items()
+  const factor = 10
+  MapInPlace(items, |x| x * factor)
+  if items[0] != 10 || items[5] != 60 {
+    return false
+  }
+  const kept = Keep(items, |x| x > 30)
+  return kept == 3 && items[0] > 30 && items[1] > 30 && items[2] > 30
 }

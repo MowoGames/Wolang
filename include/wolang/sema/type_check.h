@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <utility>
+#include <span>
 #include <vector>
 
 #include "wolang/base/diagnostic.h"
@@ -43,6 +44,22 @@ struct TypedBody {
   // difference between a use that moves and a use that does not, and only
   // the checker knows which rule it applied.
   std::vector<ExprId> borrows;
+  // What each closure takes with it: the closure's expression, and the
+  // names of the enclosing locals its body read. Lowering builds an
+  // environment from them -- in the frame of the function that made the
+  // closure, which is why a capturing closure may not outlive it
+  // (D138).
+  std::vector<std::pair<ExprId, std::vector<Symbol>>> captures;
+
+  // The names |closure| captured, in the order they were first read.
+  std::span<const Symbol> CapturesOf(ExprId closure) const {
+    for (const auto& [id, names] : captures) {
+      if (id == closure) {
+        return names;
+      }
+    }
+    return {};
+  }
 
   // What a generic call was inferred to be: the call expression, and the
   // type arguments in the callee's parameter order.

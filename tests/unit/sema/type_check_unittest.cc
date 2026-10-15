@@ -379,14 +379,35 @@ WOLANG_TEST(TypeCheck, AClosureWithNoContextNeedsItsTypesWritten) {
   WOLANG_EXPECT_EQ(fixture.Codes(), "E0134");
 }
 
-WOLANG_TEST(TypeCheck, AClosureCannotSeeTheLocalsAroundIt) {
-  // D106: it takes nothing with it, and the diagnostic says which name
-  // and what to do instead.
+WOLANG_TEST(TypeCheck, AClosureTakesACopyOfWhatItReads) {
+  // D138: a closure captures by copy, and its environment lives in the
+  // frame of the call that made it -- so passing it *down* is fine.
   Fixture fixture(
       "fun Apply(f: fun(int) -> int, x: int) -> int => f(x)\n"
       "fun Use() -> int {\n  const k = 10\n"
       "  return Apply(|n| n + k, 1)\n}\n");
-  WOLANG_EXPECT_EQ(fixture.Codes(), "E0135");
+  WOLANG_EXPECT(fixture.Codes().empty());
+}
+
+WOLANG_TEST(TypeCheck, ACapturingClosureCannotOutliveItsFrame) {
+  // The other half of D138: what it captured is a copy of this call's
+  // locals, so handing it upwards leaves it pointing at nothing.
+  Fixture returned(
+      "fun Make() -> fun(int) -> int {\n  const k = 10\n"
+      "  return |n| n + k\n}\n");
+  WOLANG_EXPECT_EQ(returned.Codes(), "E0136");
+
+  // And a closure that captures nothing is a plain function: it may go
+  // anywhere.
+  Fixture plain(
+      "fun Make() -> fun(int) -> int {\n  return |n| n + 1\n}\n");
+  WOLANG_EXPECT(plain.Codes().empty());
+}
+
+WOLANG_TEST(TypeCheck, ACaptureOutsideAClosureIsStillAnError) {
+  // A name from nowhere is a name from nowhere.
+  Fixture fixture("fun Use() -> int {\n  return missing + 1\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(), "E0103");
 }
 
 WOLANG_TEST(TypeCheck, PresentPatternNarrowsAnOptional) {

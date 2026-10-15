@@ -39,6 +39,7 @@ if(WOLANG_WITH_LLVM)
     endif()
 endif()
 
+include(GNUInstallDirs)
 include(cmake/WolangCompilerOptions.cmake)
 
 add_subdirectory(src)
@@ -57,8 +58,6 @@ endif()
 # embedding header and library. The layout is the one `wolang new` looks
 # for -- `<prefix>/bin/wolang` beside `<prefix>/lib/std` (D132).
 if(PROJECT_IS_TOP_LEVEL)
-    include(GNUInstallDirs)
-
     if(WOLANG_BUILD_TOOLS)
         install(TARGETS wolang_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()

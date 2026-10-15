@@ -49,6 +49,9 @@ constexpr std::string_view kUnboundParameter = "E0133";
 constexpr std::string_view kClosureNeedsTypes = "E0134";
 // A closure body naming a local of the function around it.
 constexpr std::string_view kClosureCaptures = "E0135";
+// A closure that captures, handed somewhere it would outlive its
+// environment (D138).
+constexpr std::string_view kClosureEscapes = "E0136";
 constexpr std::string_view kWaitOutsideTask = "E0301";
 constexpr std::string_view kTaskNotWaited = "E0302";
 constexpr std::string_view kWaitNotWholeExpression = "E0303";
@@ -237,16 +240,80 @@ class Checker {
   }
   void ShowLocals(size_t hidden) { hidden_scopes_ = hidden; }
 
-  // Whether |name| is a local the closure being checked cannot see.
-  bool IsHiddenLocal(Symbol name) const {
+  // Refuses a closure that took something with it where it would
+  // outlive what it took.
+  //
+  // Its environment is a copy of the enclosing function's locals, made
+  // where the closure was: handing it upwards -- returning it, storing
+  // it in a field or a global -- leaves it pointing at a frame that is
+  // gone. A closure that captures is for passing *down*, which covers a
+  // comparator, a callback and a loop body; state that outlives a call
+  // is what a class with a method is for (D138).
+  void RefuseEscape(ExprId id, std::string_view what) {
+    if (!ast_.Contains(id)) {
+      return;
+    }
+    const Expr& expr = ast_.Get(id);
+    if (expr.kind != ExprKind::kClosure ||
+        result_.CapturesOf(id).empty()) {
+      return;
+    }
+    std::string message = "a closure that captures cannot be ";
+    message.append(what);
+    Report(kClosureEscapes, std::move(message), expr.span,
+           "what it captured lives in this call's frame; give a type the "
+           "state and a method, or pass the closure down instead");
+  }
+
+  // The local a closure cannot see by name, or null. What a capture
+  // copies -- and reading it counts as using it, which is why this is
+  // not a const query (D138).
+  const Binding* HiddenLocal(Symbol name) {
     for (size_t depth = hidden_scopes_; depth > 0; --depth) {
-      for (const LocalBinding& local : scopes_[depth - 1].bindings) {
+      for (LocalBinding& local : scopes_[depth - 1].bindings) {
+        if (local.binding.name == name) {
+          local.used = true;
+          return &local.binding;
+        }
+      }
+    }
+    return nullptr;
+  }
+
+  bool IsHiddenLocal(Symbol name) {
+    return HiddenLocal(name) != nullptr;
+  }
+
+  // Whether |name| is a local of this call rather than a module-level
+  // one: a module-level `var` outlives the call, so a closure stored in
+  // one escapes (D138).
+  bool IsLocalName(Symbol name) const {
+    for (const Scope& scope : scopes_) {
+      for (const LocalBinding& local : scope.bindings) {
         if (local.binding.name == name) {
           return true;
         }
       }
     }
     return false;
+  }
+
+  // Says that |closure| reads |name| from the function around it. In
+  // order and without duplicates: the order is the environment's layout.
+  void Capture(ExprId closure, Symbol name) {
+    for (auto& [id, names] : result_.captures) {
+      if (id != closure) {
+        continue;
+      }
+      for (Symbol held : names) {
+        if (held == name) {
+          return;
+        }
+      }
+      names.push_back(name);
+      return;
+    }
+    result_.captures.emplace_back(closure, std::vector<Symbol>{name});
   }
   void PopScope() {
     if (scopes_.empty()) {
@@ -286,6 +353,9 @@ class Checker {
   // How many of the innermost scopes are hidden, which is how a closure
   // sees its own parameters and nothing of the function around it.
   size_t hidden_scopes_ = 0;
+  // The closures being checked, innermost last: a name read inside one
+  // is captured by it (D138).
+  std::vector<ExprId> closures_;
 
   // ---------------------------------------------------------- statements --
 
@@ -766,17 +836,23 @@ TypeId Checker::CheckPath(const Expr& expr) {
     if (const Member* member = SelfMember(expr.name); member != nullptr) {
       return member->type;
     }
-    // A local of the function around a closure: it exists, and the
-    // closure cannot see it. Said as what it is rather than as "no such
-    // name", because the two call for different fixes (D106).
-    if (IsHiddenLocal(expr.name)) {
-      std::string message = "`";
-      message.append(interner_->Text(expr.name));
-      message.append("` belongs to the function around this closure");
-      Report(kClosureCaptures, std::move(message), expr.span,
-             "a closure takes nothing with it: pass it as a parameter, or "
-             "give a type the state and a method");
-      return types_->error();
+    // A local of the function around a closure: the closure takes a
+    // *copy* of it, which is what capture means here. Recorded so that
+    // lowering can build an environment, and recorded against the
+    // innermost closure being checked -- a closure inside a closure
+    // captures through both (D138).
+    if (const Binding* outer = HiddenLocal(expr.name); outer != nullptr) {
+      if (closures_.empty()) {
+        std::string message = "`";
+        message.append(interner_->Text(expr.name));
+        message.append("` belongs to the function around this closure");
+        Report(kClosureCaptures, std::move(message), expr.span,
+               "a closure takes nothing with it: pass it as a parameter, or "
+               "give a type the state and a method");
+        return types_->error();
+      }
+      Capture(closures_.back(), expr.name);
+      return outer->type;
     }
     std::string message = "no value named `";
     message.append(interner_->Text(expr.name));
@@ -1300,6 +1376,16 @@ TypeId Checker::CheckAssign(const Expr& expr) {
   if (!Accepts(target, value)) {
     ReportMismatch(target, value, expr.span);
   }
+  // A field, a global or an element outlives the call that assigned it;
+  // a local does not. Only the first three are an escape (D138).
+  if (ast_.Contains(expr.lhs)) {
+    const Expr& place = ast_.Get(expr.lhs);
+    const bool is_local =
+        place.kind == ExprKind::kPath && IsLocalName(place.name);
+    if (!is_local) {
+      RefuseEscape(expr.rhs, "stored");
+    }
+  }
   return types_->void_type();
 }
 
@@ -1314,6 +1400,9 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
       if (binding != nullptr && binding->kind == BindingKind::kType) {
         const TypeId type = Instantiate(id, expr, binding->type);
         CheckConstructor(expr, type);
+        for (const ExprId argument : ast_.Get(expr.args)) {
+          RefuseEscape(argument, "stored in a field");
+        }
         Record(expr.lhs, type);
         return type;
       }
@@ -2455,11 +2544,12 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
                             : std::vector<TypeId>();
 
       PushScope();
-      // A closure sees its own parameters and the file's names, not the
-      // locals of the function around it: what it would take with it has
-      // to be said rather than captured silently, and this is what makes
-      // a use of one a diagnostic rather than a read of a dead frame.
+      // A closure sees its own parameters, the file's names, and -- by
+      // copy -- whatever of the enclosing function's locals its body
+      // reads. The locals are hidden from the *scope* walk so that each
+      // read is noticed and recorded as a capture (D138).
       const size_t enclosing = HideLocals();
+      closures_.push_back(id);
       std::vector<TypeId> params;
       size_t position = 0;
       for (ParamId param_id : ast_.Get(expr.params)) {
@@ -2495,6 +2585,7 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
         declared = TypeId{};
       }
       const TypeId body = Check(expr.lhs, declared);
+      closures_.pop_back();
       ShowLocals(enclosing);
       PopScope();
       type = types_->Function(params,
@@ -2707,6 +2798,7 @@ void Checker::CheckStmt(StmtId id) {
       }
       wait_allowed_ = true;
       const TypeId found = Check(stmt.expr, return_type_);
+      RefuseEscape(stmt.expr, "returned");
       if (return_type_.is_valid() && !Accepts(return_type_, found)) {
         ReportMismatch(return_type_, found, ast_.Get(stmt.expr).span);
       }

@@ -68,6 +68,11 @@ class Lowerer {
     TypeStore::Substitution substitution;
     TypeId owner;
     Context where;
+    // What the closure took with it: the names, and the type of the
+    // environment holding them. Empty for one that captured nothing
+    // (D138).
+    std::vector<Symbol> captures;
+    TypeId environment;
   };
 
 
@@ -2055,6 +2060,9 @@ class Lowerer {
     InstId flag;
     // Whether |value| is the slot holding it or the value itself.
     bool in_slot = true;
+    // Storage to give back with no destructor to run first: a closure's
+    // environment, which is a few copied values and nothing more (D138).
+    bool free_only = false;
   };
 
   // Runs everything deferred at or below |scope|, innermost first, without
@@ -2069,6 +2077,10 @@ class Lowerer {
         return;
       }
       const Deferred& entry = deferred_[i - 1];
+      if (entry.free_only) {
+        FreeObject(entry.value);
+        continue;
+      }
       if (entry.value.is_valid()) {
         EmitDestroy(entry);
         continue;
@@ -2527,6 +2539,31 @@ class Lowerer {
          builder_->Extract(word, left, 1),
          builder_->Extract(bytes, right, 0),
          builder_->Extract(word, right, 1)});
+  }
+
+  // Frees |object| when the scope being lowered ends.
+  //
+  // What a closure's environment needs: it lives as long as the closure
+  // may be called, which is the scope that made it (D138).
+  void FreeAtScopeExit(InstId object) {
+    deferred_.push_back(Deferred{scope_depth_, ExprId{}, object,
+                                 types_->u64(), InstId{},
+                                 /*in_slot=*/false,
+                                 /*free_only=*/true});
+  }
+
+  // The object free every heap allocation goes back through. The runtime
+  // leaves one an `arena` block handed out to the block (D113).
+  void FreeObject(InstId object) {
+    if (!object.is_valid()) {
+      return;
+    }
+    const Symbol name = interner_->Intern("wolang_object_free");
+    const uint32_t free = DeclareExternal(
+        name, types_->Function({types_->u64()}, types_->void_type()));
+    module_->functions[free].foreign_symbol = name;
+    builder_->Call(free, types_->void_type(),
+                   {AsDeclared(free, 0, object)});
   }
 
   // Gives a string's bytes back. The runtime leaves one an `arena` block
@@ -3980,16 +4017,63 @@ class Lowerer {
     if (types_->KindOf(callee_type) == TypeKind::kFunction) {
       const InstId target = Value(expr.lhs);
       if (target.is_valid()) {
-        std::vector<InstId> operands;
-        operands.push_back(target);
-        for (InstId argument : arguments) {
-          operands.push_back(argument);
-        }
-        return builder_->Add(Opcode::kCallIndirect, type,
-                             std::move(operands));
+        return CallThroughValue(target, std::move(arguments), type);
       }
     }
     return builder_->Undef(type);
+  }
+
+  // A call through a function value.
+  //
+  // The value is a pair: the code, and the environment it closed over.
+  // A closure's body takes that environment as its first argument and a
+  // plain function does not, so which call to make is a question about
+  // the value -- asked here, in the IR, so that every tier gets the
+  // answer from the one place that knows it (D138).
+  InstId CallThroughValue(InstId target,
+                          std::vector<InstId> arguments,
+                          TypeId type) {
+    const TypeId word = types_->u64();
+    const InstId code = builder_->Extract(word, target, 0);
+    const InstId environment = builder_->Extract(word, target, 1);
+    const InstId none = builder_->ConstInt(word, 0);
+    const InstId plain = builder_->Add(Opcode::kEq, types_->bool_type(),
+                                       {environment, none});
+
+    const BlockId bare = builder_->AddBlock("call.bare");
+    const BlockId closed = builder_->AddBlock("call.closed");
+    const BlockId join = builder_->AddBlock("call.join");
+    const bool produces = type.is_valid() &&
+                          types_->KindOf(Erase(type)) != TypeKind::kVoid;
+    const InstId result =
+        produces ? builder_->AddParam(join, Erase(type)) : InstId{};
+    builder_->Branch(plain, bare, closed);
+
+    builder_->SetCurrent(bare);
+    std::vector<InstId> without;
+    without.push_back(code);
+    for (InstId argument : arguments) {
+      without.push_back(argument);
+    }
+    const InstId answered =
+        builder_->Add(Opcode::kCallIndirect, Erase(type), without);
+    builder_->Jump(join, produces ? std::vector<InstId>{answered}
+                                  : std::vector<InstId>{});
+
+    builder_->SetCurrent(closed);
+    std::vector<InstId> with;
+    with.push_back(code);
+    with.push_back(environment);
+    for (InstId argument : arguments) {
+      with.push_back(argument);
+    }
+    const InstId closed_answer =
+        builder_->Add(Opcode::kCallIndirect, Erase(type), with);
+    builder_->Jump(join, produces ? std::vector<InstId>{closed_answer}
+                                  : std::vector<InstId>{});
+
+    builder_->SetCurrent(join);
+    return produces ? Coerce(result, Erase(type), type) : InstId{};
   }
 
   // A function named where a value is wanted. Not a call: the value is the
@@ -4009,9 +4093,10 @@ class Lowerer {
                                binding->item, binding->is_task,
                                binding->has_body);
     }
-    const InstId value = builder_->Add(Opcode::kFuncAddress, type);
-    module_->functions[current_function_].Get(value).payload.callee = callee;
-    return value;
+    const InstId code = builder_->Add(Opcode::kFuncAddress, types_->u64());
+    module_->functions[current_function_].Get(code).payload.callee = callee;
+    return builder_->Add(Opcode::kMakeStruct, Erase(type),
+                         {code, builder_->ConstInt(types_->u64(), 0)});
   }
 
   // Reading a derived field: compute it if the cache is not current, keep
@@ -4144,6 +4229,23 @@ class Lowerer {
     // `ViewFromRaw<T>` is the same instruction with the element type
     // coming from the call rather than being `u8`: what all three stand
     // for is the pair, not a call (D100).
+    // `Prefix<T>(items, count)` is the same pair again, with the
+    // pointer taken from a view the caller already has: a container with
+    // room to spare hands out the part that is in use (D138).
+    if (called == "Prefix") {
+      const TypeId slice = Unwrapped(type);
+      if (types_->KindOf(slice) != TypeKind::kSlice) {
+        return InstId{};
+      }
+      const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
+      const TypeId pointer = types_->Pointer(
+          types_->Int(IntWidth::k8, /*is_signed=*/false),
+          /*is_mutable=*/true);
+      const InstId data = builder_->Extract(pointer, arguments[0], 0);
+      return Coerce(builder_->Add(Opcode::kMakeStruct, slice,
+                                  {data, Widen(arguments[1], word)}),
+                    slice, type);
+    }
     if (called != "BytesFromRaw" && called != "TextFromRaw" &&
         called != "ViewFromRaw") {
       return InstId{};
@@ -4207,9 +4309,13 @@ class Lowerer {
       if (arguments.empty()) {
         return InstId{};
       }
+      // The code, not the pair: the runtime's list holds one word per
+      // handler, and a closure that captured a frame cannot outlive it
+      // -- which is what the checker refuses to let happen (D138).
+      const InstId code = builder_->Extract(word, arguments[0], 0);
       return RuntimeCall(connect ? "wolang_signal_connect"
                                  : "wolang_signal_disconnect",
-                         types_->void_type(), {address, arguments[0]});
+                         types_->void_type(), {address, code});
     }
 
     // Emit: every handler, in the order they were connected.
@@ -4222,7 +4328,8 @@ class Lowerer {
     const InstId handlers =
         builder_->Add(Opcode::kLoad, handler_pointer, {handlers_address});
 
-    const TypeId handler = Erase(TypeOf(callee.lhs));
+    // One word per entry, which is what was connected.
+    const TypeId handler = word;
     const InstId index = builder_->Add(Opcode::kAlloca, word);
     builder_->Add(Opcode::kStore, TypeId{},
                   {index, builder_->ConstInt(word, 0)});
@@ -4335,6 +4442,31 @@ class Lowerer {
   // the call's own made the IR disagree with the function it was calling
   // (D111) -- and the wrap that bridges the two belongs where every other
   // conversion is.
+  // What a foreign call sees of a function value: its code address.
+  //
+  // A C function takes a function pointer, which is one word -- so the
+  // pair a function value is here crosses as the half C understands. A
+  // closure that captured something cannot cross at all, and the
+  // checker is what stops it (D138).
+  std::vector<InstId> ForC(uint32_t callee, std::vector<InstId> args) {
+    if (callee >= module_->functions.size()) {
+      return args;
+    }
+    const Function& target = module_->functions[callee];
+    if (!target.is_foreign()) {
+      return args;
+    }
+    const std::vector<TypeId> params = types_->ArgumentsOf(target.type);
+    const TypeId word = types_->u64();
+    for (size_t i = 0; i < args.size() && i < params.size(); ++i) {
+      if (types_->KindOf(Erase(params[i])) == TypeKind::kFunction &&
+          args[i].is_valid()) {
+        args[i] = builder_->Extract(word, args[i], 0);
+      }
+    }
+    return args;
+  }
+
   InstId CallAs(uint32_t callee, TypeId wanted, std::vector<InstId> args) {
     const TypeId declared =
         callee < module_->functions.size()
@@ -4342,7 +4474,7 @@ class Lowerer {
             : TypeId{};
     const TypeId result = declared.is_valid() ? declared : Erase(wanted);
     const InstId value =
-        builder_->Call(callee, result, std::move(args));
+        builder_->Call(callee, result, ForC(callee, std::move(args)));
     return Coerce(value, result, wanted);
   }
 
@@ -5183,11 +5315,51 @@ class Lowerer {
     if (types_->KindOf(signature) != TypeKind::kFunction) {
       return builder_->Undef(signature);
     }
+
+    // What the closure takes with it, and where from: the locals of the
+    // function being lowered, by the names the checker recorded (D138).
+    std::vector<Symbol> captures;
+    std::vector<TypeId> captured_types;
+    std::vector<InstId> captured_values;
+    for (const Symbol captured : typed().CapturesOf(id)) {
+      const Local* local = Find(captured);
+      if (local == nullptr) {
+        continue;
+      }
+      const TypeId held = Erase(local->type);
+      const InstId value = local->slot.is_valid()
+                               ? builder_->Add(Opcode::kLoad, held,
+                                               {local->slot})
+                               : local->value;
+      if (!value.is_valid()) {
+        continue;
+      }
+      captures.push_back(captured);
+      captured_types.push_back(held);
+      captured_values.push_back(value);
+    }
+
     std::string name = "closure$";
     name.append(std::to_string(closure_serial_++));
     Function function;
     function.name = interner_->Intern(name);
     function.type = signature;
+
+    // The body of a capturing closure takes the environment first. Its
+    // *value* keeps the closure's own type -- the call through it is
+    // indirect, and which of the two shapes to call is a question about
+    // the value (D138).
+    TypeId environment;
+    if (!captures.empty()) {
+      environment = types_->Tuple(captured_types);
+      std::vector<TypeId> params;
+      params.push_back(types_->Pointer(environment, /*is_mutable=*/true));
+      for (const TypeId held : types_->ArgumentsOf(signature)) {
+        params.push_back(held);
+      }
+      function.type =
+          types_->Function(params, types_->ElementOf(signature));
+    }
     // Nothing observable: a closure that takes nothing with it can only
     // do what its arguments and the file's names allow, and saying the
     // row is unknown would stop a call to it being deleted as dead.
@@ -5196,10 +5368,36 @@ class Lowerer {
     module_->functions.push_back(std::move(function));
 
     closures_.push_back(PendingClosure{id, index, substitution_, self_type_,
-                                       here_});
-    const InstId address = builder_->Add(Opcode::kFuncAddress, signature);
-    builder_->Mutable(address).payload.callee = index;
-    return address;
+                                       here_, captures, environment});
+
+    // The value is the pair every function value is: the code, and what
+    // it closed over. A closure that captures nothing closed over
+    // nothing; one that captures gets a copy of each name, in the frame
+    // of the function that made it -- which is why it may not outlive it
+    // (D138).
+    const InstId code = builder_->Add(Opcode::kFuncAddress, types_->u64());
+    builder_->Mutable(code).payload.callee = index;
+    InstId closed = builder_->ConstInt(types_->u64(), 0);
+    if (!captures.empty()) {
+      // On the heap rather than in the frame: the environment's *address*
+      // is what travels, and a frame slot has no address in the
+      // reference tier -- it has an index. From the innermost `arena`
+      // block when there is one, like every other allocation, and given
+      // back when the scope that made the closure ends (D138).
+      const TypeId pointer =
+          types_->Pointer(environment, /*is_mutable=*/true);
+      const InstId storage = builder_->Add(Opcode::kNew, pointer);
+      for (size_t i = 0; i < captured_values.size(); ++i) {
+        const InstId field = builder_->FieldAddress(
+            types_->Pointer(captured_types[i], /*is_mutable=*/true),
+            storage, static_cast<uint32_t>(i));
+        builder_->Add(Opcode::kStore, TypeId{},
+                      {field, captured_values[i]});
+      }
+      closed = builder_->Add(Opcode::kCast, types_->u64(), {storage});
+      FreeAtScopeExit(storage);
+    }
+    return builder_->Add(Opcode::kMakeStruct, signature, {code, closed});
   }
 
   // The body of one, as an ordinary function of its parameters.
@@ -5232,8 +5430,26 @@ class Lowerer {
       const BlockId entry = builder.AddBlock("entry");
       builder.SetCurrent(entry);
 
-      const std::vector<TypeId> params =
+      std::vector<TypeId> params =
           types_->ArgumentsOf(module_->functions[work.index].type);
+      if (!work.captures.empty() && !params.empty()) {
+        // The environment, and the names it holds: bound before the
+        // parameters, because the body reads them like locals (D138).
+        const InstId held = builder.AddParam(entry, params.front());
+        const std::vector<TypeId> inside =
+            types_->ArgumentsOf(work.environment);
+        for (size_t i = 0; i < work.captures.size() && i < inside.size();
+             ++i) {
+          const InstId field = builder.FieldAddress(
+              types_->Pointer(inside[i], /*is_mutable=*/true), held,
+              static_cast<uint32_t>(i));
+          const InstId value =
+              builder.Add(Opcode::kLoad, inside[i], {field});
+          locals_.push_back(
+              Local{work.captures[i], InstId{}, value, inside[i]});
+        }
+        params.erase(params.begin());
+      }
       size_t position = 0;
       for (ParamId param_id : ast().Get(expr.params)) {
         const Param& param = ast().Get(param_id);

@@ -689,6 +689,10 @@ void Database::RegisterQueries() {
           result.body.borrows.insert(result.body.borrows.end(),
                                      body.borrows.begin(),
                                      body.borrows.end());
+          // What each closure takes with it (D138).
+          result.body.captures.insert(result.body.captures.end(),
+                                      body.captures.begin(),
+                                      body.captures.end());
           result.items.push_back(std::move(body));
         }
         result.resolution = resolution;

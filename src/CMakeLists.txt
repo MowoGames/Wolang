@@ -19,7 +19,8 @@ file(GLOB WOLANG_RUNTIME_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime/*.cc")
 add_library(wolang_runtime STATIC ${WOLANG_RUNTIME_SOURCES})
 target_include_directories(wolang_runtime PUBLIC
-    ${PROJECT_SOURCE_DIR}/include)
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 wolang_configure_target(wolang_runtime)
 add_library(wolang::runtime ALIAS wolang_runtime)
 
@@ -29,7 +30,8 @@ target_sources(wolang_core PUBLIC
     FILES ${WOLANG_CORE_HEADERS})
 
 target_include_directories(wolang_core PUBLIC
-    ${PROJECT_SOURCE_DIR}/include)
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 # The ahead-of-time backend, when LLVM is available. Through the C API
 # rather than the C++ one: this project builds without RTTI and LLVM's
@@ -65,7 +67,9 @@ add_library(wolang::core ALIAS wolang_core)
 add_library(wolang_embed STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/embed/embed.cc)
 target_link_libraries(wolang_embed PUBLIC wolang_core)
-target_include_directories(wolang_embed PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(wolang_embed PUBLIC
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 wolang_configure_target(wolang_embed)
 add_library(wolang::embed ALIAS wolang_embed)
 
@@ -77,5 +81,6 @@ set_target_properties(wolang_embed_shared PROPERTIES
     SOVERSION ${PROJECT_VERSION_MAJOR})
 target_link_libraries(wolang_embed_shared PRIVATE wolang_core)
 target_include_directories(wolang_embed_shared PUBLIC
-    ${PROJECT_SOURCE_DIR}/include)
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 wolang_configure_target(wolang_embed_shared)

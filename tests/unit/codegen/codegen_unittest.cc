@@ -500,6 +500,48 @@ fun Probe() -> int {
   WOLANG_EXPECT_EQ(f.Run("Probe"), "6");
 }
 
+WOLANG_TEST(CodegenTest, RunsAClosureThatCaptures) {
+  // A closure takes a *copy* of what it reads, in an environment that
+  // lives as long as the call that made it. Its value is the pair every
+  // function value is -- the code and the environment -- and which of
+  // the two shapes to call is a question about the value (D138).
+  Fixture f(R"(
+fun Apply(f: fun(int) -> int, x: int) -> int => f(x)
+
+fun Fold(f: fun(int, int) -> int, xs: [4]int) -> int {
+  var total = 0
+  var i = 0
+  while i < 4 {
+    total = f(total, xs[i])
+    i = i + 1
+  }
+  return total
+}
+
+fun Twice(n: int) -> int => n * 2
+
+fun Probe() -> int {
+  const factor = 3
+  const offset = 4
+  var xs: [4]int
+  xs[0] = 1
+  xs[1] = 2
+  xs[2] = 3
+  xs[3] = 4
+  // One that captures two names, one that captures nothing, a plain
+  // function through the same parameter, and one capturing inside a
+  // loop body.
+  const scaled = Apply(|n| n * factor + offset, 10)
+  const plain = Apply(|n| n + 1, 10)
+  const named = Apply(Twice, 10)
+  const folded = Fold(|a, b| a + b + factor, xs)
+  return scaled + plain + named + folded
+}
+)");
+  // 34 + 11 + 20 + (10 + 12) = 87.
+  WOLANG_EXPECT_EQ(f.Run("Probe"), "87");
+}
+
 WOLANG_TEST(CodegenTest, GivesAnInterpolatedStringBack) {
   // An interpolated string is allocated, so somebody has to free it: the
   // binding that holds it, when its scope ends. The pieces a

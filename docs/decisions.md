@@ -1635,3 +1635,37 @@ relocatable pkg-config file. A release builds that layout per platform
 and an embedding-only archive beside it. CI links a host project through
 `find_package`, because an embedding API nobody links from outside the
 tree is a guess.
+
+**D138. A closure takes a copy of what it reads.** `|n| n * factor` now
+works: the names a closure's body reads from the function around it are
+copied into an environment, and the closure's value is the pair every
+function value now is -- where the code is, and what it closed over. A
+plain function closed over nothing, so a call through a value asks which
+of the two shapes it has: one compare and a branch, in the IR, so every
+tier gets the answer from the one place that knows it.
+
+The environment lives as long as the call that made it, and is given back
+when that scope ends. Which is the whole of the restriction: a closure
+that captures may be passed *down* -- a comparator, a callback, a loop
+body, which is what closures are mostly for -- but returning one, storing
+one in a module-level `var` or putting one in a field is an error
+(`E0136`), because what it captured would be gone. State that outlives a
+call is what a class with a method is for; an environment with a lifetime
+of its own is an allocation someone has to own, and a class is where this
+language says who.
+
+Three things had to give way underneath. A function value became two
+words, which changed its layout, how it is read out of memory, and what
+crosses into C -- a C function takes the code word, because it has no
+idea what an environment is, and the same goes for a signal's handler
+list. The checker records *which* names each closure captured, in the
+order it read them, which is the environment's layout. And the merge from
+per-declaration results into a file's was dropping that list, the same
+way it dropped the borrows (D133) -- two lists added to a merge that
+should have had them from the start.
+
+`std.list` gained what closures are for: `Any`, `All`, `Count`, `Find`,
+`Each`, `Fold`, `MapInPlace` and `Keep`, which is filtering without
+allocating. And `List.Items()` hands out the part of its storage that is
+in use, through a `std.mem.Prefix` that is the same pair-making
+instruction `ViewFromRaw` is.

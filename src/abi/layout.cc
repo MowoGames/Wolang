@@ -61,8 +61,10 @@ ValueClass LayoutStore::ClassOf(TypeId type) const {
       return types_.IsHandle(type) ? ValueClass::kInteger
                                   : ValueClass::kAggregate;
     case TypeKind::kFunction:
-      // A function as a value is its address.
-      return ValueClass::kInteger;
+      // A function as a value is where the code is *and* what it closed
+      // over: `|n| n * factor` is the body plus the frame holding
+      // `factor`, and a plain function is the body with nothing (D138).
+      return ValueClass::kAggregate;
     default:
       // A string, a slice, a `T!`, an unresolved generic: each wants
       // machinery a later wave brings.
@@ -341,6 +343,9 @@ uint32_t LayoutStore::FieldCount(TypeId type) const {
     case TypeKind::kSlice:
       // The elements and how many there are.
       return 2;
+    case TypeKind::kFunction:
+      // The code, and the environment it closed over (D138).
+      return 2;
     case TypeKind::kInstance:
     case TypeKind::kNamed: {
       if (resolution_.IsAbility(type)) {
@@ -382,6 +387,9 @@ TypeId LayoutStore::FieldType(TypeId type, uint32_t index) const {
       return index == 0 ? types_.u32() : types_.ElementOf(type);
     case TypeKind::kArray:
       return types_.ElementOf(type);
+    case TypeKind::kFunction:
+      // Two addresses: the code, and the environment (D138).
+      return types_.u64();
     case TypeKind::kTuple: {
       const std::vector<TypeId> elements = types_.ArgumentsOf(type);
       return index < elements.size() ? elements[index] : TypeId{};
