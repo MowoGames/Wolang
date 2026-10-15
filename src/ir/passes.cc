@@ -6,6 +6,11 @@
 #include "wolang/ir/analysis.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <utility>
+#include <vector>
 
 #include "wolang/base/check.h"
 

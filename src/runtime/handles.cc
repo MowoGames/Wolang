@@ -21,6 +21,7 @@
 #include <unistd.h>
 #endif
 
+#include <cstddef>
 #include <cstring>
 #include <string>
 

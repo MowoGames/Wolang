@@ -10,6 +10,7 @@
 #include <windows.h>
 #endif
 
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <string>

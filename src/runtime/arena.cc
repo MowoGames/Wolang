@@ -3,6 +3,7 @@
 
 #include "wolang/runtime/arena.h"
 
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <vector>

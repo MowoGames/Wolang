@@ -3,6 +3,7 @@
 
 #include "wolang/interp/value.h"
 
+#include <cstddef>
 #include <cstdio>
 
 namespace wolang {

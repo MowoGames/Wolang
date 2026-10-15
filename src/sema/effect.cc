@@ -4,6 +4,7 @@
 #include "wolang/sema/effect.h"
 
 #include <algorithm>
+#include <cstddef>
 
 namespace wolang {
 namespace {

@@ -4,9 +4,13 @@
 #ifndef WOLANG_LSP_JSON_H_
 #define WOLANG_LSP_JSON_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace wolang {

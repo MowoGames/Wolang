@@ -3,7 +3,11 @@
 
 #include "wolang/sema/flow.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace wolang {

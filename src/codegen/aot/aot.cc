@@ -5,10 +5,13 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 

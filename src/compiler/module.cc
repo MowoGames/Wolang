@@ -4,6 +4,7 @@
 #include "wolang/compiler/module.h"
 
 #include <algorithm>
+#include <cstddef>
 
 namespace wolang {
 namespace {

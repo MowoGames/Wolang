@@ -5,6 +5,7 @@
 #define WOLANG_QUERY_QUERY_ENGINE_H_
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>

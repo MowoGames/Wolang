@@ -4,7 +4,9 @@
 #ifndef WOLANG_CODEGEN_AOT_H_
 #define WOLANG_CODEGEN_AOT_H_
 
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "wolang/abi/layout.h"

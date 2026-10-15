@@ -4,8 +4,10 @@
 #ifndef WOLANG_SYNTAX_TOKEN_H_
 #define WOLANG_SYNTAX_TOKEN_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "wolang/base/source_manager.h"

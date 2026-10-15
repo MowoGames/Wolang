@@ -2,6 +2,8 @@
 // License, Version 2.0; see LICENSE.
 
 #include "wolang/ir/ir.h"
+#include <cstddef>
+
 
 #include "wolang/ir/trap.h"
 

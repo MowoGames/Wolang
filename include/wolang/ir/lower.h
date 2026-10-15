@@ -4,6 +4,8 @@
 #ifndef WOLANG_IR_LOWER_H_
 #define WOLANG_IR_LOWER_H_
 
+#include <cstdint>
+#include <functional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -13,7 +15,6 @@
 #include "wolang/sema/resolution.h"
 #include "wolang/sema/systems.h"
 #include "wolang/sema/type_check.h"
-#include <functional>
 
 #include "wolang/syntax/ast.h"
 

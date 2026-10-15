@@ -4,6 +4,8 @@
 #ifndef WOLANG_SYNTAX_PARSER_H_
 #define WOLANG_SYNTAX_PARSER_H_
 
+#include <cstdint>
+
 #include "wolang/base/diagnostic.h"
 #include "wolang/base/source_manager.h"
 #include "wolang/base/string_interner.h"

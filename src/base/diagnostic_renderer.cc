@@ -4,6 +4,7 @@
 #include "wolang/base/diagnostic_renderer.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <string_view>
 #include <utility>

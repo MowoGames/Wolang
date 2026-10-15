@@ -4,6 +4,7 @@
 #include "wolang/ir/analysis.h"
 
 #include <algorithm>
+#include <cstddef>
 
 namespace wolang {
 namespace ir {

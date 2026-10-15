@@ -3,6 +3,7 @@
 
 #include "wolang/syntax/ast_printer.h"
 
+#include <cstddef>
 #include <cstdio>
 #include <string_view>
 #include <utility>

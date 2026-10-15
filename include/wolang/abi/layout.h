@@ -5,6 +5,7 @@
 #define WOLANG_ABI_LAYOUT_H_
 
 #include <cstdint>
+#include <span>
 #include <unordered_map>
 #include <vector>
 

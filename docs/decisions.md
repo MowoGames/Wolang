@@ -2288,3 +2288,31 @@ CI builds the amalgamation and runs a host against it on every commit.
 import library with it, and ours was called `wolang_embed.lib` -- the
 same name the static library has, which is two build rules writing one
 file and a build that stops. The import library has its own name now.
+
+**D188. A real installer on Windows.** A `.msi`, built by WiX from
+`tools/package/wolang.wxs`: it installs under Program Files, adds its
+`bin` to the system PATH as a component -- so removing the product
+removes the entry -- registers itself in Add/Remove Programs with an
+icon, and upgrades in place rather than sitting beside the old version.
+The payload is whatever `cmake --install` lays out, harvested at build
+time, so a file added to the project does not need a line in an
+installer as well.
+
+The icon is the same mark as everything else, written as an `.ico` by
+the script that draws the rest (D174): a header and a PNG per size,
+which is what the format has allowed since Vista.
+
+The PowerShell script stays for people who want a copy in their home
+directory and no administrator.
+
+**D189. Every file says what it needs.** `include/wolang/base/unicode.h`
+used `std::string` and included `<string>` nowhere: libc++ drags it in
+through something else, Microsoft's library does not, and the build fell
+over on Windows with an error about a type that has been there all along.
+There were eighty-one of those.
+
+`tools/package/check_includes.py` asks the question on every commit --
+which standard names a file uses, and whether it includes the header each
+one comes from. It is a heuristic over the names this project actually
+uses, not a model of C++; what it buys is that the next one is found by
+CI rather than by somebody on another operating system.

@@ -4,6 +4,7 @@
 #ifndef WOLANG_IR_BUILDER_H_
 #define WOLANG_IR_BUILDER_H_
 
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>

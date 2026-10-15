@@ -4,6 +4,7 @@
 #ifndef WOLANG_IR_TASKS_H_
 #define WOLANG_IR_TASKS_H_
 
+#include <cstdint>
 #include <functional>
 #include <vector>
 

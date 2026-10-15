@@ -107,6 +107,10 @@ jobs:
           W=build/${{ matrix.preset }}/tools/wolang/wolang
           $W fmt --check lib examples benchmarks
 
+      - name: Every file says what it includes
+        if: matrix.preset == 'debug'
+        run: python3 tools/package/check_includes.py
+
       - name: The examples in the documentation compile
         if: matrix.preset == 'debug'
         run: python3 tools/package/check_docs.py

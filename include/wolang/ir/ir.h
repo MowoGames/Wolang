@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "wolang/base/source_manager.h"

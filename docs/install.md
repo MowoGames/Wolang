@@ -8,7 +8,18 @@
 curl -fsSL https://raw.githubusercontent.com/MowoGames/Wolang/alpha/install.sh | sh
 ```
 
-**Windows** (PowerShell)
+**Windows**
+
+Download `wolang-<version>-x86_64.msi` from the
+[releases](https://github.com/MowoGames/Wolang/releases) and run it: it
+installs under Program Files, puts `wolang` on the PATH, and appears in
+Add/Remove Programs like anything else. Silently, for a fleet:
+
+```powershell
+msiexec /i wolang-0.1.1-x86_64.msi /qn
+```
+
+Or, without the installer:
 
 ```powershell
 irm https://raw.githubusercontent.com/MowoGames/Wolang/alpha/install.ps1 | iex
@@ -55,6 +66,18 @@ PowerShell takes the same as named parameters:
 ```powershell
 .\install.ps1 -Version 0.2.0 -Prefix C:\tools\wolang -NoModifyPath
 ```
+
+## Building the installer yourself
+
+```powershell
+dotnet tool install --global wix
+wix extension add -g WixToolset.UI.wixext
+cmake --preset windows -DCMAKE_BUILD_TYPE=Release
+cmake --build --preset windows -j
+pwsh tools/package/make_msi.ps1 -Build build/windows
+```
+
+That writes `build\wolang-<version>-x86_64.msi`.
 
 ## By hand
 

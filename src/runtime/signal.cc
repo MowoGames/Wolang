@@ -3,6 +3,7 @@
 
 #include "wolang/runtime/signal.h"
 
+#include <cstddef>
 #include <cstring>
 
 #include "wolang/runtime/arena.h"

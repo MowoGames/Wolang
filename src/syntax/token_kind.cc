@@ -4,6 +4,7 @@
 #include "wolang/syntax/token_kind.h"
 
 #include <array>
+#include <cstddef>
 #include <unordered_map>
 
 namespace wolang {

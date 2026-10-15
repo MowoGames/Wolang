@@ -21,6 +21,7 @@
 #ifndef WOLANG_PLATFORM_PLATFORM_H_
 #define WOLANG_PLATFORM_PLATFORM_H_
 
+#include <cstdint>
 #include <stdint.h>
 
 #if defined(_WIN32)

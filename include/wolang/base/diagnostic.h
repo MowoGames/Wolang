@@ -4,6 +4,7 @@
 #ifndef WOLANG_BASE_DIAGNOSTIC_H_
 #define WOLANG_BASE_DIAGNOSTIC_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>

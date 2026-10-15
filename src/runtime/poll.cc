@@ -3,6 +3,7 @@
 
 #include "wolang/runtime/poll.h"
 
+#include <cstddef>
 #include <vector>
 
 #if defined(_WIN32)

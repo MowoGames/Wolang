@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Windows installer.
+
+  What it does: puts the compiler, the libraries and the headers under
+  Program Files, adds its `bin` to the system PATH, and registers itself
+  so that Add/Remove Programs can take it away again. An upgrade
+  replaces the old version rather than sitting beside it (D188).
+
+  Built by tools/package/make_msi.ps1, which assembles the payload with
+  cmake's install step first, then runs WiX 5 over this file.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="Wolang"
+           Manufacturer="Mowo Games"
+           Version="$(var.Version)"
+           UpgradeCode="7F3A6C18-5E4B-4C2F-9A77-2D6B1C0E4A91"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <!-- One version at a time: installing a newer one takes the older
+         one away first, which is what a person expects and what stops
+         two `wolang.exe` on the PATH. -->
+    <MajorUpgrade
+        DowngradeErrorMessage="A newer version of Wolang is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="WolangIcon" SourceFile="$(var.Payload)\wolang.ico" />
+    <Property Id="ARPPRODUCTICON" Value="WolangIcon" />
+    <Property Id="ARPURLINFOABOUT"
+              Value="https://github.com/MowoGames/Wolang" />
+    <Property Id="ARPHELPLINK"
+              Value="https://github.com/MowoGames/Wolang/issues" />
+
+    <WixVariable Id="WixUILicenseRtf"
+                 Value="$(var.Payload)\LICENSE.rtf" />
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Wolang" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Wolang" Level="1"
+             Description="The compiler, the libraries and the headers.">
+      <ComponentGroupRef Id="Everything" />
+      <ComponentRef Id="PathEntry" />
+    </Feature>
+
+    <!-- Everything cmake's install step laid out, harvested at build time
+         rather than listed here: a file added to the project should not
+         need a line in an installer as well. -->
+    <ComponentGroup Id="Everything" Directory="INSTALLFOLDER">
+      <Files Include="$(var.Payload)\**" />
+    </ComponentGroup>
+
+    <!-- The PATH entry, as its own component so that removing the
+         product removes it too. -->
+    <Component Id="PathEntry" Directory="INSTALLFOLDER" Guid="*">
+      <Environment Id="WolangPath"
+                   Name="PATH"
+                   Value="[INSTALLFOLDER]bin"
+                   Permanent="no"
+                   Part="last"
+                   Action="set"
+                   System="yes" />
+      <RegistryValue Root="HKLM"
+                     Key="Software\MowoGames\Wolang"
+                     Name="InstallFolder"
+                     Type="string"
+                     Value="[INSTALLFOLDER]"
+                     KeyPath="yes" />
+    </Component>
+  </Package>
+</Wix>

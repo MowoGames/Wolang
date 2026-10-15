@@ -12,6 +12,7 @@
 #include <unistd.h>
 #endif
 
+#include <cstddef>
 #include <string>
 
 namespace wolang {

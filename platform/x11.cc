@@ -13,14 +13,16 @@
 #include <X11/XKBlib.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
-#include <dlfcn.h>
-#include <sys/time.h>
-
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <dlfcn.h>
 #include <string>
+#include <sys/time.h>
 #include <thread>
 #include <vector>
+
 
 #include "platform/common.h"
 

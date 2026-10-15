@@ -4,6 +4,8 @@
 #include "wolang/syntax/parser.h"
 
 #include <array>
+#include <cstddef>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>

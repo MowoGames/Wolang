@@ -4,11 +4,12 @@
 #ifndef WOLANG_SEMA_RESOLUTION_H_
 #define WOLANG_SEMA_RESOLUTION_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
-#include <utility>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "wolang/base/diagnostic.h"

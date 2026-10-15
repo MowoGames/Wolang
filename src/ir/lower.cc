@@ -4,7 +4,10 @@
 #include "wolang/ir/lower.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
+#include <string>
+#include <string_view>
 #include <utility>
 
 #include "wolang/base/diagnostic.h"

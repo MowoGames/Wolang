@@ -5,6 +5,7 @@
 #define WOLANG_BASE_UNICODE_H_
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 namespace wolang {

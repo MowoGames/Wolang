@@ -10,13 +10,16 @@
 
 #include "wolang/embed/wolang.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "wolang/abi/layout.h"

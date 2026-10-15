@@ -5,22 +5,11 @@
 // supports are implemented; see docs/roadmap.md for what each wave adds.
 
 #include <algorithm>
-#include <chrono>
-// `ucontext` is where a signal handler finds the program counter, and on
-// macOS it wants to be asked for by its old name (D139).
-#if !defined(_WIN32) && !defined(_XOPEN_SOURCE)
-#define _XOPEN_SOURCE 700
-#endif
-
-#include <signal.h>
-#if !defined(_WIN32)
-#include <sys/time.h>
-#endif
-#if !defined(_WIN32)
-#include <ucontext.h>
-#endif
-
 #include <atomic>
+#include <chrono>
+#include <csignal>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -30,12 +19,26 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+// What only one system has, each asked for where it is. `ucontext` is
+// where a signal handler finds the program counter, and on macOS it
+// wants `_XOPEN_SOURCE` defined before it is asked for (D139).
 #if defined(_WIN32)
 #include <io.h>
 #else
+#if !defined(_XOPEN_SOURCE)
+#define _XOPEN_SOURCE 700
+#endif
+#include <sys/time.h>
+#include <ucontext.h>
 #include <unistd.h>
+#endif
+
+
+#if defined(_WIN32)
+#else
 #endif
 
 #include "wolang/base/shell.h"
@@ -46,7 +49,6 @@
 #include "wolang/base/string_interner.h"
 #include "wolang/compiler/cache.h"
 #include "wolang/compiler/database.h"
-#include <unistd.h>
 
 #include "wolang/codegen/aot.h"
 #include "wolang/lsp/server.h"

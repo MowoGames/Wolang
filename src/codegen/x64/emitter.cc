@@ -4,7 +4,13 @@
 #include "wolang/codegen/emitter.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "wolang/base/check.h"
 #include "wolang/codegen/reg_alloc.h"

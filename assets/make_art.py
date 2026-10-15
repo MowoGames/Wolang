@@ -307,6 +307,44 @@ def render_mascot(size, path):
     canvas.write(path)
 
 
+def write_ico(path, sizes=(16, 32, 48, 64, 128, 256)):
+    """The mark as a Windows icon.
+
+    An `.ico` is a small header and then a PNG per size, which is what
+    the format has allowed since Vista -- so the PNGs this already
+    writes are the whole of it (D188).
+    """
+    images = []
+    for size in sizes:
+        canvas = Canvas(size, (0, 0, 0, 0))
+        unit = size / 512.0
+        canvas.rounded_rect(0, 0, size, size, 0.22 * size, NIGHT)
+        head, left_ear, right_ear, left_eye, right_eye, muzzle, nose = \
+            wolf_head(scale=unit)
+        for shape, colour in ((head, ICE), (left_ear, INDIGO),
+                              (right_ear, INDIGO), (muzzle, SHADE),
+                              (nose, DEEP), (left_eye, AMBER),
+                              (right_eye, AMBER)):
+            canvas.polygon(shape, colour)
+        held = HERE / ".ico-{}.png".format(size)
+        canvas.write(held)
+        images.append((size, held.read_bytes()))
+        held.unlink()
+
+    header = struct.pack("<HHH", 0, 1, len(images))
+    offset = 6 + 16 * len(images)
+    entries = b""
+    body = b""
+    for size, data in images:
+        entries += struct.pack("<BBBBHHII",
+                               0 if size >= 256 else size,
+                               0 if size >= 256 else size,
+                               0, 0, 1, 32, len(data), offset)
+        body += data
+        offset += len(data)
+    path.write_bytes(header + entries + body)
+
+
 def main():
     write_logo_svg(HERE / "logo.svg")
     write_mascot_svg(HERE / "mascot.svg")
@@ -317,6 +355,8 @@ def main():
     render_mascot(256, HERE / "mascot-256.png")
     # What the editor extension ships.
     render_logo(128, HERE.parent / "editors" / "vscode" / "icon.png")
+    # What the Windows installer shows (D188).
+    write_ico(HERE / "wolang.ico")
     print("wrote the logo, the wordmark and the mascot")
 
 

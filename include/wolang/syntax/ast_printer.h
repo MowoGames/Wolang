@@ -4,6 +4,7 @@
 #ifndef WOLANG_SYNTAX_AST_PRINTER_H_
 #define WOLANG_SYNTAX_AST_PRINTER_H_
 
+#include <cstdint>
 #include <string>
 
 #include "wolang/base/source_manager.h"

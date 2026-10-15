@@ -26,6 +26,7 @@
 #include <cstdio>
 #endif
 
+#include <cstddef>
 #include <cstring>
 
 namespace wolang {

@@ -3,6 +3,7 @@
 
 #include "wolang/interp/marshal.h"
 
+#include <cstddef>
 #include <cstring>
 #include <vector>
 

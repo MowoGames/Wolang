@@ -4,6 +4,9 @@
 #include "wolang/ir/verifier.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <span>
 
 namespace wolang {
 namespace ir {

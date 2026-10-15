@@ -5,6 +5,8 @@
 
 #include "wolang/sema/flow.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <string_view>

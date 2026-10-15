@@ -4,6 +4,7 @@
 #ifndef WOLANG_SYNTAX_AST_H_
 #define WOLANG_SYNTAX_AST_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>

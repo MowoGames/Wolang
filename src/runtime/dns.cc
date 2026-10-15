@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #endif
 
+#include <cstddef>
 #include <cstring>
 
 namespace wolang {

@@ -4,7 +4,10 @@
 #include "wolang/sema/systems.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <span>
 #include <string>
+#include <string_view>
 
 #include "wolang/compiler/item_tree.h"
 

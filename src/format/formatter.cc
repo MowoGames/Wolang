@@ -4,9 +4,11 @@
 #include "wolang/format/formatter.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <vector>

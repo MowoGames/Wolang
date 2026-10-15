@@ -4,6 +4,7 @@
 #include "wolang/runtime/threads.h"
 
 #include <atomic>
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <thread>

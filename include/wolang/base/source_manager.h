@@ -4,6 +4,7 @@
 #ifndef WOLANG_BASE_SOURCE_MANAGER_H_
 #define WOLANG_BASE_SOURCE_MANAGER_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>

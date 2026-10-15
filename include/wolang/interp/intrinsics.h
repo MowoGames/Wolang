@@ -4,7 +4,9 @@
 #ifndef WOLANG_INTERP_INTRINSICS_H_
 #define WOLANG_INTERP_INTRINSICS_H_
 
+#include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "wolang/interp/value.h"

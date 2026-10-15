@@ -3,6 +3,7 @@
 
 #include "wolang/interp/intrinsics.h"
 
+#include <cstddef>
 #include <cstdio>
 #include <string_view>
 

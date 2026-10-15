@@ -4,11 +4,13 @@
 #ifndef WOLANG_CODEGEN_COMPILER_H_
 #define WOLANG_CODEGEN_COMPILER_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
-#include <utility>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "wolang/base/string_interner.h"

@@ -4,6 +4,7 @@
 #ifndef WOLANG_COMPILER_DATABASE_H_
 #define WOLANG_COMPILER_DATABASE_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>

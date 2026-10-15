@@ -8,16 +8,17 @@
 
 #include "wolang/interp/marshal.h"
 
-#include <setjmp.h>
-
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <string>
 #include <memory>
+#include <setjmp.h>
 #include <span>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
 
 #include "wolang/base/check.h"
 #include "wolang/codegen/code_block.h"

@@ -4,8 +4,11 @@
 #include "wolang/ir/tasks.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <set>
+#include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 

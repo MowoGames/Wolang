@@ -10,6 +10,8 @@
 // built for a server, which is the wrong trade (D155).
 
 #include "platform/common.h"
+#include <cstdint>
+
 
 extern "C" int32_t wolang_platform_available(void) { return 0; }
 

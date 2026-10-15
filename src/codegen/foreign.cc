@@ -4,9 +4,12 @@
 #include "wolang/codegen/foreign.h"
 
 
+#include <cstdint>
 #include <cstring>
 #include <map>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "wolang/codegen/arm64/assembler.h"

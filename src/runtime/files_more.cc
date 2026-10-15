@@ -20,6 +20,8 @@
 #include <unistd.h>
 #endif
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>

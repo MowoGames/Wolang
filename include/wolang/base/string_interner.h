@@ -4,6 +4,7 @@
 #ifndef WOLANG_BASE_STRING_INTERNER_H_
 #define WOLANG_BASE_STRING_INTERNER_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string_view>

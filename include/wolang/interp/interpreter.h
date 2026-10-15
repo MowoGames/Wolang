@@ -4,6 +4,7 @@
 #ifndef WOLANG_INTERP_INTERPRETER_H_
 #define WOLANG_INTERP_INTERPRETER_H_
 
+#include <cstdint>
 #include <span>
 #include <string>
 #include <vector>

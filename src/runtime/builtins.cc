@@ -23,6 +23,7 @@
 
 #include "wolang/runtime/scheduler.h"
 
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <string>

@@ -4,6 +4,7 @@
 #include "wolang/codegen/reg_alloc.h"
 
 #include <algorithm>
+#include <cstddef>
 
 #include "wolang/base/check.h"
 

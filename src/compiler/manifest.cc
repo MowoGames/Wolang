@@ -3,6 +3,8 @@
 
 #include "wolang/compiler/manifest.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <utility>
 
 namespace wolang {

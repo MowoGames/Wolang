@@ -18,6 +18,7 @@
 #ifndef WOLANG_EMBED_WOLANG_H_
 #define WOLANG_EMBED_WOLANG_H_
 
+#include <cstdint>
 #include <stdint.h>
 
 #ifdef __cplusplus

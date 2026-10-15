@@ -4,11 +4,12 @@
 #ifndef WOLANG_SEMA_TYPE_H_
 #define WOLANG_SEMA_TYPE_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
-#include <utility>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "wolang/base/string_interner.h"

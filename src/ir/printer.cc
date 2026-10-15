@@ -3,7 +3,11 @@
 
 #include "wolang/ir/printer.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <span>
+#include <vector>
 
 namespace wolang {
 namespace ir {

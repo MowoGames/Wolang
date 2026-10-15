@@ -2,6 +2,8 @@
 // License, Version 2.0; see LICENSE.
 
 #include "wolang/ir/builder.h"
+#include <cstddef>
+
 
 namespace wolang {
 namespace ir {
