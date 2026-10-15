@@ -4407,18 +4407,56 @@ class Lowerer {
     // `Prefix<T>(items, count)` is the same pair again, with the
     // pointer taken from a view the caller already has: a container with
     // room to spare hands out the part that is in use (D138).
-    if (called == "Prefix") {
+    // `Suffix<T>(items, at)` is the same thing from the other end: the
+    // pointer moved on by `at` elements and the length shortened by as
+    // many. Between the two a caller can name any run inside a view
+    // without copying it (D177).
+    if (called == "Prefix" || called == "Suffix") {
       const TypeId slice = Unwrapped(type);
       if (types_->KindOf(slice) != TypeKind::kSlice) {
         return InstId{};
       }
       const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
+      const TypeId element = Erase(types_->ElementOf(slice));
       const TypeId pointer = types_->Pointer(
           types_->Int(IntWidth::k8, /*is_signed=*/false),
           /*is_mutable=*/true);
       const InstId data = builder_->Extract(pointer, arguments[0], 0);
+      if (called == "Prefix") {
+        return Coerce(builder_->Add(Opcode::kMakeStruct, slice,
+                                    {data, Widen(arguments[1], word)}),
+                      slice, type);
+      }
+      // Where element `at` is, and how many are left after it.
+      //
+      // `at` is clamped to the length first: a suffix that starts past
+      // the end is an empty view, which is what every caller that walks
+      // a buffer to its end wants, and a length computed from an
+      // unclamped `at` would wrap into something enormous.
+      const InstId length = builder_->Extract(word, arguments[0], 1);
+      const InstId asked = Widen(arguments[1], word);
+      const InstId past =
+          builder_->Add(Opcode::kGt, types_->bool_type(),
+                        {asked, length});
+      const BlockId clamp = builder_->AddBlock("suffix.clamp");
+      const BlockId keep = builder_->AddBlock("suffix.keep");
+      const BlockId join = builder_->AddBlock("suffix.join");
+      const InstId held = builder_->AddParam(join, word);
+      builder_->Branch(past, clamp, keep);
+      builder_->SetCurrent(clamp);
+      builder_->Jump(join, {length});
+      builder_->SetCurrent(keep);
+      builder_->Jump(join, {asked});
+      builder_->SetCurrent(join);
+      // Unbounded: the index was just clamped, and the bounds check
+      // would be against a length this has already accounted for.
+      const InstId moved = builder_->IndexAddress(
+          types_->Pointer(element, /*is_mutable=*/true), data, held,
+          builder_->ConstInt(word, ~uint64_t{0}));
+      const InstId left =
+          builder_->Add(Opcode::kSub, word, {length, held});
       return Coerce(builder_->Add(Opcode::kMakeStruct, slice,
-                                  {data, Widen(arguments[1], word)}),
+                                  {moved, left}),
                     slice, type);
     }
     if (called != "BytesFromRaw" && called != "TextFromRaw" &&

@@ -2804,17 +2804,27 @@ TypeRefId Parser::ParseTypeNoSuffix() {
       Advance();
       type.kind = TypeRefKind::kTuple;
       std::vector<TypeRefId> elements;
+      bool trailing = false;
       while (!AtEnd() && !At(TokenKind::kRightParen)) {
         const size_t before = pos_;
         elements.push_back(ParseType());
         if (!Eat(TokenKind::kComma)) {
+          trailing = false;
           break;
         }
+        trailing = true;
         if (pos_ == before) {
           break;
         }
       }
       ExpectToken(TokenKind::kRightParen);
+      // `(T)` is `T`, and `(T,)` is a tuple of one: brackets around a
+      // type are how a suffix is made to belong to the inside --
+      // `[](T?)` is a slice of optionals, where `[]T?` is an optional
+      // slice (D178).
+      if (elements.size() == 1 && !trailing) {
+        return elements[0];
+      }
       type.args = ast_->AddRange(std::span<const TypeRefId>(elements));
       type.span = SpanFrom(start);
       return ast_->Add(type);
@@ -2836,7 +2846,12 @@ TypeRefId Parser::ParseTypeNoSuffix() {
         }
         ExpectToken(TokenKind::kRightBracket);
       }
-      type.element = ParseType();
+      // The element, without suffixes: `[]u8!` is a slice of bytes that
+      // may fail, not a slice of bytes-that-may-fail, because the first
+      // is what a function signature means by it every time. A slice of
+      // optionals is `[](T?)`, which is why a type may be
+      // parenthesised (D178).
+      type.element = ParseTypeNoSuffix();
       type.span = SpanFrom(start);
       return ast_->Add(type);
     }

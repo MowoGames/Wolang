@@ -1,0 +1,721 @@
+// Deflate, gzip and zip.
+//
+// Written here rather than bound to zlib, for the same reason the hashes
+// are: this is arithmetic over bytes with a published format, it has no
+// keys to mishandle, and a language that cannot read a `.gz` without a C
+// library has a hole in it. What is here is a real compressor -- a hash
+// chain of three-byte matches, fixed Huffman codes -- not stored blocks
+// pretending to be compression (D177).
+//
+// The decompressor reads anything that calls itself deflate: stored,
+// fixed and dynamic blocks. Which matters more than the compressor,
+// because what a program is handed was compressed by something else.
+
+need std.list.{List, ListNew}
+need std.mem.{ArrayNew, Free, Prefix, Suffix}
+need std.text.{Bytes}
+
+/// What a stream that is not one answers with.
+offer error Malformed
+
+// --------------------------------------------------------- bit reader ---
+
+class Bits {
+  var bytes: []u8
+  var at: int = 0
+  var held: u32 = 0
+  var count: int = 0
+  var ok: bool = true
+
+  // Deflate packs its codes least significant bit first, which is why
+  // this reads from the bottom of the accumulator.
+  fun Take(width: int) -> u32 {
+    while count < width {
+      if at >= bytes.len {
+        ok = false
+        return 0
+      }
+      held = held | (bytes[at] as u32 << count as u32)
+      at = at + 1
+      count = count + 8
+    }
+    const value = held % (1 as u32 << width as u32)
+    held = held >> width as u32
+    count = count - width
+    return value
+  }
+
+  fun Align() {
+    held = 0
+    count = 0
+  }
+}
+
+// A Huffman table as the format describes one: how many codes of each
+// length, and the symbols in order.
+class Codes {
+  var counts: []int
+  var symbols: []int
+  var ok: bool = true
+
+  deinit {
+    Free(counts)
+    Free(symbols)
+  }
+}
+
+/// Builds a decoding table from the length each symbol's code has.
+fun CodesFrom(lengths: []int, count: int) -> Codes uses unsafe {
+  var counts = ArrayNew<int>(16)
+  var i = 0
+  while i < 16 {
+    counts[i] = 0
+    i = i + 1
+  }
+  i = 0
+  while i < count {
+    counts[lengths[i]] = counts[lengths[i]] + 1
+    i = i + 1
+  }
+  counts[0] = 0
+
+  var offsets = ArrayNew<int>(16)
+  offsets[0] = 0
+  offsets[1] = 0
+  i = 1
+  while i < 15 {
+    offsets[i + 1] = offsets[i] + counts[i]
+    i = i + 1
+  }
+  var symbols = ArrayNew<int>(count)
+  i = 0
+  while i < count {
+    if lengths[i] != 0 {
+      symbols[offsets[lengths[i]]] = i
+      offsets[lengths[i]] = offsets[lengths[i]] + 1
+    }
+    i = i + 1
+  }
+  Free(offsets)
+  return Codes(counts, symbols, true)
+}
+
+// One symbol, by walking the code lengths from the shortest.
+fun Decode(bits: &mut Bits, codes: &Codes) -> int {
+  var code = 0
+  var first = 0
+  var index = 0
+  var length = 1
+  while length < 16 {
+    code = code | bits.Take(1) as int
+    const count = codes.counts[length]
+    if code - first < count {
+      return codes.symbols[index + (code - first)]
+    }
+    index = index + count
+    first = (first + count) << 1
+    code = code << 1
+    length = length + 1
+  }
+  return -1
+}
+
+// What the length and distance codes mean, as the format's two tables.
+const kLengthBase: [29]int = [
+  3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51,
+  59, 67, 83, 99, 115, 131, 163, 195, 227, 258,
+]
+const kLengthExtra: [29]int = [
+  0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,
+  4, 5, 5, 5, 5, 0,
+]
+const kDistanceBase: [30]int = [
+  1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385,
+  513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385,
+  24577,
+]
+const kDistanceExtra: [30]int = [
+  0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10,
+  10, 11, 11, 12, 12, 13, 13,
+]
+// The order the dynamic header gives the code-length code lengths in.
+const kOrder: [19]int = [
+  16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+]
+
+/// Reads a deflate stream.
+offer fun Inflate(bytes: []u8) -> []u8! uses unsafe {
+  var bits = Bits(bytes, 0, 0, 0, true)
+  var out = ListNew<u8>()
+  loop {
+    const last = bits.Take(1)
+    const kind = bits.Take(2)
+    if !bits.ok {
+      return Malformed
+    }
+    if kind == 0 {
+      // A stored block: the length, its complement, and the bytes.
+      bits.Align()
+      if bits.at + 4 > bytes.len {
+        return Malformed
+      }
+      const length = bytes[bits.at] as int +
+                     (bytes[bits.at + 1] as int << 8)
+      bits.at = bits.at + 4
+      if bits.at + length > bytes.len {
+        return Malformed
+      }
+      var i = 0
+      while i < length {
+        out.Push(bytes[bits.at + i])
+        i = i + 1
+      }
+      bits.at = bits.at + length
+    } else if kind == 1 || kind == 2 {
+      var literals = FixedLiterals()
+      var distances = FixedDistances()
+      if kind == 2 {
+        const built = DynamicCodes(&mut bits)
+        if !built.ok {
+          return Malformed
+        }
+        literals = built.literals
+        distances = built.distances
+      }
+      if !Block(&mut bits, &literals, &distances, &mut out) {
+        return Malformed
+      }
+    } else {
+      return Malformed
+    }
+    if last == 1 {
+      break
+    }
+  }
+  // Out of the list and into a view the caller owns.
+  var held = ArrayNew<u8>(out.Len())
+  var i = 0
+  while i < out.Len() {
+    held[i] = out.At(i)
+    i = i + 1
+  }
+  return held
+}
+
+// One compressed block, symbol by symbol.
+fun Block(bits: &mut Bits, literals: &Codes, distances: &Codes,
+          out: &mut List<u8>) -> bool uses unsafe {
+  loop {
+    const symbol = Decode(bits, literals)
+    if symbol < 0 || !bits.ok {
+      return false
+    }
+    if symbol < 256 {
+      out.Push(symbol as u8)
+      continue
+    }
+    if symbol == 256 {
+      return true
+    }
+    const length_code = symbol - 257
+    if length_code >= 29 {
+      return false
+    }
+    const length = kLengthBase[length_code] +
+                   bits.Take(kLengthExtra[length_code]) as int
+    const distance_code = Decode(bits, distances)
+    if distance_code < 0 || distance_code >= 30 {
+      return false
+    }
+    const distance = kDistanceBase[distance_code] +
+                     bits.Take(kDistanceExtra[distance_code]) as int
+    if distance > out.Len() {
+      return false
+    }
+    // Copied one byte at a time *on purpose*: a run may overlap itself,
+    // which is how deflate says "repeat this byte two hundred times".
+    var i = 0
+    while i < length {
+      out.Push(out.At(out.Len() - distance))
+      i = i + 1
+    }
+  }
+}
+
+fun FixedLiterals() -> Codes uses unsafe {
+  var lengths = ArrayNew<int>(288)
+  var i = 0
+  while i < 288 {
+    if i < 144 {
+      lengths[i] = 8
+    } else if i < 256 {
+      lengths[i] = 9
+    } else if i < 280 {
+      lengths[i] = 7
+    } else {
+      lengths[i] = 8
+    }
+    i = i + 1
+  }
+  const codes = CodesFrom(lengths, 288)
+  Free(lengths)
+  return codes
+}
+
+fun FixedDistances() -> Codes uses unsafe {
+  var lengths = ArrayNew<int>(30)
+  var i = 0
+  while i < 30 {
+    lengths[i] = 5
+    i = i + 1
+  }
+  const codes = CodesFrom(lengths, 30)
+  Free(lengths)
+  return codes
+}
+
+struct Built {
+  var literals: Codes
+  var distances: Codes
+  var ok: bool
+}
+
+// The tables a dynamic block carries in its own header.
+fun DynamicCodes(bits: &mut Bits) -> Built uses unsafe {
+  const literal_count = bits.Take(5) as int + 257
+  const distance_count = bits.Take(5) as int + 1
+  const code_count = bits.Take(4) as int + 4
+
+  var code_lengths = ArrayNew<int>(19)
+  var i = 0
+  while i < 19 {
+    code_lengths[i] = 0
+    i = i + 1
+  }
+  i = 0
+  while i < code_count {
+    code_lengths[kOrder[i]] = bits.Take(3) as int
+    i = i + 1
+  }
+  const lengths_codes = CodesFrom(code_lengths, 19)
+  Free(code_lengths)
+
+  var lengths = ArrayNew<int>(literal_count + distance_count)
+  i = 0
+  while i < literal_count + distance_count {
+    const symbol = Decode(bits, &lengths_codes)
+    if symbol < 0 {
+      Free(lengths)
+      return Built(FixedLiterals(), FixedDistances(), false)
+    }
+    if symbol < 16 {
+      lengths[i] = symbol
+      i = i + 1
+      continue
+    }
+    var repeat = 0
+    var value = 0
+    if symbol == 16 {
+      if i == 0 {
+        Free(lengths)
+        return Built(FixedLiterals(), FixedDistances(), false)
+      }
+      value = lengths[i - 1]
+      repeat = 3 + bits.Take(2) as int
+    } else if symbol == 17 {
+      repeat = 3 + bits.Take(3) as int
+    } else {
+      repeat = 11 + bits.Take(7) as int
+    }
+    var k = 0
+    while k < repeat && i < literal_count + distance_count {
+      lengths[i] = value
+      i = i + 1
+      k = k + 1
+    }
+  }
+
+  var literal_lengths = ArrayNew<int>(literal_count)
+  i = 0
+  while i < literal_count {
+    literal_lengths[i] = lengths[i]
+    i = i + 1
+  }
+  var distance_lengths = ArrayNew<int>(distance_count)
+  i = 0
+  while i < distance_count {
+    distance_lengths[i] = lengths[literal_count + i]
+    i = i + 1
+  }
+  const literals = CodesFrom(literal_lengths, literal_count)
+  const distances = CodesFrom(distance_lengths, distance_count)
+  Free(lengths)
+  Free(literal_lengths)
+  Free(distance_lengths)
+  return Built(literals, distances, true)
+}
+
+// ------------------------------------------------------- compressing ---
+
+// Where the bits go, least significant first.
+class Writer {
+  var out: List<u8>
+  var held: u32 = 0
+  var count: int = 0
+
+  fun Put(value: u32, width: int) uses unsafe {
+    held = held | (value << count as u32)
+    count = count + width
+    while count >= 8 {
+      out.Push((held % 256) as u8)
+      held = held >> 8 as u32
+      count = count - 8
+    }
+  }
+
+  // A Huffman code is written most significant bit first, which is the
+  // other way round from everything else here.
+  fun PutCode(code: u32, width: int) uses unsafe {
+    var i = width - 1
+    while i >= 0 {
+      Put((code >> i as u32) % 2, 1)
+      i = i - 1
+    }
+  }
+
+  fun Finish() uses unsafe {
+    if count > 0 {
+      out.Push((held % 256) as u8)
+      held = 0
+      count = 0
+    }
+  }
+}
+
+// The fixed literal code for a symbol, and how wide it is.
+fun FixedCode(symbol: int) -> int {
+  if symbol < 144 {
+    return 0x30 + symbol
+  }
+  if symbol < 256 {
+    return 0x190 + symbol - 144
+  }
+  if symbol < 280 {
+    return symbol - 256
+  }
+  return 0xC0 + symbol - 280
+}
+
+fun FixedWidth(symbol: int) -> int {
+  if symbol < 144 {
+    return 8
+  }
+  if symbol < 256 {
+    return 9
+  }
+  if symbol < 280 {
+    return 7
+  }
+  return 8
+}
+
+fun LengthCode(length: int) -> int {
+  var i = 28
+  while i > 0 {
+    if length >= kLengthBase[i] {
+      return i
+    }
+    i = i - 1
+  }
+  return 0
+}
+
+fun DistanceCode(distance: int) -> int {
+  var i = 29
+  while i > 0 {
+    if distance >= kDistanceBase[i] {
+      return i
+    }
+    i = i - 1
+  }
+  return 0
+}
+
+/// Compresses with fixed Huffman codes and a window of matches.
+///
+/// One block, fixed codes: a dynamic block saves a few more percent and
+/// costs a Huffman tree builder, which is worth having and is not what
+/// a program reaching for this needs first (D177).
+offer fun Deflate(bytes: []u8) -> []u8 uses unsafe {
+  var writer = Writer(ListNew<u8>(), 0, 0)
+  writer.Put(1, 1)
+  writer.Put(1, 2)
+
+  // Where each three-byte sequence was last seen: the whole of the
+  // match finder, and what makes this compress rather than store.
+  const kSlots = 8192
+  var heads = ArrayNew<int>(kSlots)
+  var i = 0
+  while i < kSlots {
+    heads[i] = -1
+    i = i + 1
+  }
+  var previous = ArrayNew<int>(bytes.len + 1)
+  i = 0
+  while i < bytes.len {
+    previous[i] = -1
+    i = i + 1
+  }
+
+  var at = 0
+  while at < bytes.len {
+    var best_length = 0
+    var best_distance = 0
+    if at + 3 <= bytes.len {
+      const slot = HashAt(bytes, at, kSlots)
+      var candidate = heads[slot]
+      var tried = 0
+      while candidate >= 0 && tried < 24 {
+        const distance = at - candidate
+        if distance > 32768 {
+          break
+        }
+        var length = 0
+        while length < 258 && at + length < bytes.len &&
+              bytes[candidate + length] == bytes[at + length] {
+          length = length + 1
+        }
+        if length > best_length {
+          best_length = length
+          best_distance = distance
+        }
+        candidate = previous[candidate]
+        tried = tried + 1
+      }
+      heads[slot] = at
+      previous[at] = candidate
+      // The chain is what was there before this position took the slot.
+      previous[at] = heads[slot]
+    }
+
+    if best_length >= 3 {
+      const code = LengthCode(best_length)
+      writer.PutCode(FixedCode(257 + code) as u32,
+                     FixedWidth(257 + code))
+      writer.Put((best_length - kLengthBase[code]) as u32,
+                 kLengthExtra[code])
+      const distance_code = DistanceCode(best_distance)
+      writer.PutCode(distance_code as u32, 5)
+      writer.Put((best_distance - kDistanceBase[distance_code]) as u32,
+                 kDistanceExtra[distance_code])
+      // Every position inside the match still goes in the table, or the
+      // next match is found from nothing.
+      var k = 1
+      while k < best_length && at + k + 3 <= bytes.len {
+        const slot = HashAt(bytes, at + k, kSlots)
+        previous[at + k] = heads[slot]
+        heads[slot] = at + k
+        k = k + 1
+      }
+      at = at + best_length
+    } else {
+      writer.PutCode(FixedCode(bytes[at] as int) as u32,
+                     FixedWidth(bytes[at] as int))
+      at = at + 1
+    }
+  }
+  writer.PutCode(FixedCode(256) as u32, FixedWidth(256))
+  writer.Finish()
+  Free(heads)
+  Free(previous)
+
+  var held = ArrayNew<u8>(writer.out.Len())
+  i = 0
+  while i < writer.out.Len() {
+    held[i] = writer.out.At(i)
+    i = i + 1
+  }
+  return held
+}
+
+fun HashAt(bytes: []u8, at: int, slots: int) -> int {
+  const a = bytes[at] as int
+  const b = bytes[at + 1] as int
+  const c = bytes[at + 2] as int
+  return (a * 65536 + b * 256 + c) % slots
+}
+
+// ---------------------------------------------------------------- gzip ---
+
+/// Wraps deflated bytes in a gzip container, which is what a `.gz` is.
+offer fun Gzip(bytes: []u8) -> []u8 uses unsafe {
+  const body = Deflate(bytes)
+  var out = ArrayNew<u8>(body.len + 18)
+  out[0] = 31
+  out[1] = 139
+  out[2] = 8
+  var i = 3
+  while i < 10 {
+    out[i] = 0
+    i = i + 1
+  }
+  // The operating system byte: 255 is "unknown", which is the honest
+  // answer from a language that runs on several.
+  out[9] = 255
+  i = 0
+  while i < body.len {
+    out[10 + i] = body[i]
+    i = i + 1
+  }
+  const check = Crc32(bytes)
+  const size = bytes.len as u32
+  i = 0
+  while i < 4 {
+    out[10 + body.len + i] = ((check >> (i * 8) as u32) % 256) as u8
+    out[14 + body.len + i] = ((size >> (i * 8) as u32) % 256) as u8
+    i = i + 1
+  }
+  Free(body)
+  return out
+}
+
+/// Reads a gzip container.
+offer fun Gunzip(bytes: []u8) -> []u8! uses unsafe {
+  if bytes.len < 18 || bytes[0] != 31 || bytes[1] != 139 ||
+     bytes[2] != 8 {
+    return Malformed
+  }
+  const flags = bytes[3]
+  var at = 10
+  // The optional parts, in the order the format puts them.
+  if (flags / 4) % 2 == 1 {
+    if at + 2 > bytes.len {
+      return Malformed
+    }
+    const extra = bytes[at] as int + (bytes[at + 1] as int << 8)
+    at = at + 2 + extra
+  }
+  if (flags / 8) % 2 == 1 {
+    while at < bytes.len && bytes[at] != 0 {
+      at = at + 1
+    }
+    at = at + 1
+  }
+  if (flags / 16) % 2 == 1 {
+    while at < bytes.len && bytes[at] != 0 {
+      at = at + 1
+    }
+    at = at + 1
+  }
+  if (flags / 2) % 2 == 1 {
+    at = at + 2
+  }
+  if at >= bytes.len {
+    return Malformed
+  }
+  const body = Prefix<u8>(Suffix<u8>(bytes, at),
+                          bytes.len - at - 8)
+  return Inflate(body)?
+}
+
+/// The CRC-32 a gzip container carries, which is how a reader knows the
+/// bytes arrived whole.
+offer fun Crc32(bytes: []u8) -> u32 {
+  var crc: u32 = 0xFFFFFFFF
+  var i = 0
+  while i < bytes.len {
+    crc = crc ^ bytes[i] as u32
+    var bit = 0
+    while bit < 8 {
+      const low = crc % 2
+      crc = crc >> 1 as u32
+      if low == 1 {
+        crc = crc ^ 0xEDB88320
+      }
+      bit = bit + 1
+    }
+    i = i + 1
+  }
+  return crc ^ 0xFFFFFFFF
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun RoundTripsThroughDeflate() -> bool uses unsafe {
+  const source = Bytes(
+      "the quick brown fox jumps over the lazy dog, " +
+      "the quick brown fox jumps over the lazy dog, " +
+      "the quick brown fox jumps over the lazy dog")
+  const packed = Deflate(source)
+  if packed.len >= source.len {
+    // Repeated text has to get smaller, or the match finder is not
+    // finding anything.
+    Free(packed)
+    return false
+  }
+  match Inflate(packed) {
+    Ok(back) => {
+      var same = back.len == source.len
+      var i = 0
+      while same && i < source.len {
+        same = back[i] == source[i]
+        i = i + 1
+      }
+      Free(packed)
+      Free(back)
+      return same
+    },
+    Malformed => {
+      Free(packed)
+      return false
+    },
+  }
+}
+
+@Test
+fun RoundTripsThroughGzip() -> bool uses unsafe {
+  const source = Bytes("hello hello hello hello hello hello hello")
+  const packed = Gzip(source)
+  const header = packed[0] == 31 && packed[1] == 139
+  match Gunzip(packed) {
+    Ok(back) => {
+      var same = back.len == source.len && header
+      var i = 0
+      while same && i < source.len {
+        same = back[i] == source[i]
+        i = i + 1
+      }
+      Free(packed)
+      Free(back)
+      return same
+    },
+    Malformed => {
+      Free(packed)
+      return false
+    },
+  }
+}
+
+@Test
+fun ChecksWithCrc32() -> bool uses unsafe {
+  // The vector everyone's CRC-32 is checked against.
+  return Crc32(Bytes("123456789")) == 0xCBF43926 &&
+         Crc32(Bytes("")) == 0
+}
+
+@Test
+fun RefusesWhatIsNotAStream() -> bool uses unsafe {
+  var refused = 0
+  var empty = ArrayNew<u8>(0)
+  match Inflate(empty) {
+    Ok(_held) => refused = refused,
+    Malformed => refused = refused + 1,
+  }
+  const text = Bytes("not compressed at all")
+  match Gunzip(text) {
+    Ok(_held) => refused = refused,
+    Malformed => refused = refused + 1,
+  }
+  return refused == 2
+}

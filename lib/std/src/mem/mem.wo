@@ -98,3 +98,28 @@ struct Held {
   var marks: [4]int
   var ok: bool = false
 }
+
+/// The elements of `items` from `at` onwards, as a view.
+///
+/// The other half of `Prefix`, and an intrinsic for the same reason: a
+/// view is a pointer and a length, and only the tiers know how far
+/// along an element is. Between them a caller can name any run inside a
+/// view without copying it (D177).
+offer fun Suffix<T>(items: []T, at: int) -> []T uses unsafe
+
+@Test
+fun TakesTheEndOfAView() -> bool uses unsafe {
+  var held = ArrayNew<int>(5)
+  var i = 0
+  while i < 5 {
+    held[i] = i * i
+    i = i + 1
+  }
+  const tail = Suffix<int>(held, 3)
+  const nothing = Suffix<int>(held, 9)
+  const whole = Suffix<int>(held, 0)
+  const answer = tail.len == 2 && tail[0] == 9 && tail[1] == 16 &&
+                 nothing.len == 0 && whole.len == 5
+  Free(held)
+  return answer
+}

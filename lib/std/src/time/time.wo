@@ -78,7 +78,8 @@ fun TheWallClockIsPastTheEpoch() -> bool uses unsafe {
 
 // --------------------------------------------------------- the calendar ---
 
-need std.text.{PadStart}
+need std.mem.{ArrayNew, Free}
+need std.text.{Bytes, BuilderNew, PadStart}
 
 /// A moment taken apart, in UTC.
 ///
@@ -268,4 +269,269 @@ fun HandlesLeapYearsAndEdges() -> bool uses unsafe {
 fun WritesTheDateHttpWants() -> bool uses unsafe {
   return HttpDate(1792072987) == "Thu, 15 Oct 2026 14:03:07 GMT" &&
          HttpDate(0) == "Thu, 01 Jan 1970 00:00:00 GMT"
+}
+
+// ------------------------------------------------- zones and parsing ---
+//
+// A zone is not arithmetic: it is a database of what each government
+// decided, and every system has one that everything else on the machine
+// agrees with. So these ask the system rather than shipping a table
+// that would be wrong by the time anyone ran it (D176).
+
+extern "C" fun wolang_zone_offset(seconds: s64, zone: *u8,
+                                  length: u64) -> s32
+extern "C" fun wolang_zone_name(seconds: s64, zone: *u8, length: u64,
+                                into: *mut u8, room: u64) -> s32
+
+/// How many seconds `zone` is ahead of UTC at that moment.
+///
+/// The moment matters: half the world moves its clocks twice a year.
+/// An empty zone is the machine's own. `"Europe/Kyiv"`, `"UTC"`,
+/// `"America/New_York"` -- whatever the system's database holds.
+offer fun ZoneOffset(seconds: s64, zone: text) -> int uses unsafe {
+  const bytes = Bytes(zone)
+  if bytes.len == 0 {
+    return wolang_zone_offset(seconds, 0 as *u8, 0) as int
+  }
+  return wolang_zone_offset(seconds, &bytes[0], bytes.len as u64) as int
+}
+
+/// What the zone is called at that moment: `CET`, `PDT`, `EEST`.
+offer fun ZoneName(seconds: s64, zone: text) -> text uses unsafe {
+  const bytes = Bytes(zone)
+  var room = ArrayNew<u8>(64)
+  var written: s32 = 0
+  if bytes.len == 0 {
+    written = wolang_zone_name(seconds, 0 as *u8, 0, &mut room[0], 64)
+  } else {
+    written = wolang_zone_name(seconds, &bytes[0], bytes.len as u64,
+                               &mut room[0], 64)
+  }
+  var builder = BuilderNew()
+  var i = 0
+  while i < written as int {
+    builder.AppendByte(room[i])
+    i = i + 1
+  }
+  Free(room)
+  return builder.Release()
+}
+
+/// The same moment, as the wall clock reads in `zone`.
+///
+/// What a program shows a person: the moment is the same, the numbers
+/// are theirs.
+offer fun CivilIn(seconds: s64, zone: text) -> DateTime uses unsafe {
+  return Civil(seconds + ZoneOffset(seconds, zone) as s64)
+}
+
+/// The moment a wall clock in `zone` was showing.
+///
+/// Two passes: the offset depends on the moment, and the moment is what
+/// is being worked out. The second pass is what gets the hour after a
+/// clock change right.
+offer fun EpochIn(moment: DateTime, zone: text) -> s64 uses unsafe {
+  const guess = Epoch(moment)
+  const first = ZoneOffset(guess, zone) as s64
+  const second = ZoneOffset(guess - first, zone) as s64
+  return guess - second
+}
+
+/// Reads `2026-10-15T18:09:23Z` and the shapes around it.
+///
+/// What it takes: a date, optionally a time after `T` or a blank,
+/// optionally a fraction, optionally `Z` or `+02:00`. What it answers:
+/// seconds since the epoch, or nothing when the text is not a moment.
+/// The one format worth having built in, because it is the one every
+/// machine writes (D176).
+offer fun ParseIso(value: text) -> s64? uses unsafe {
+  const bytes = Bytes(value)
+  if bytes.len < 10 {
+    return null
+  }
+  const year = Digits(bytes, 0, 4)
+  const month = Digits(bytes, 5, 2)
+  const day = Digits(bytes, 8, 2)
+  if year < 0 || month < 1 || month > 12 || day < 1 || day > 31 {
+    return null
+  }
+  if bytes[4] != 45 || bytes[7] != 45 {
+    return null
+  }
+  var hour = 0
+  var minute = 0
+  var second = 0
+  var at = 10
+  if bytes.len > 10 && (bytes[10] == 84 || bytes[10] == 32 ||
+                        bytes[10] == 116) {
+    if bytes.len < 16 {
+      return null
+    }
+    hour = Digits(bytes, 11, 2)
+    minute = Digits(bytes, 14, 2)
+    if hour < 0 || minute < 0 || bytes[13] != 58 {
+      return null
+    }
+    at = 16
+    if bytes.len > 18 && bytes[16] == 58 {
+      second = Digits(bytes, 17, 2)
+      if second < 0 {
+        return null
+      }
+      at = 19
+    }
+    // A fraction, which is read and dropped: this answers whole
+    // seconds, and a caller that needs more has the text.
+    if at < bytes.len && bytes[at] == 46 {
+      at = at + 1
+      while at < bytes.len && bytes[at] >= 48 && bytes[at] <= 57 {
+        at = at + 1
+      }
+    }
+  }
+  // The weekday and the day of the year are worked out from the rest,
+  // so what goes in here is anything: `Epoch` does not read them.
+  var moment = Epoch(DateTime(year, month, day, hour, minute, second, 0,
+                              1))
+
+  if at < bytes.len {
+    const marker = bytes[at]
+    if marker == 90 || marker == 122 {
+      return moment
+    }
+    if marker == 43 || marker == 45 {
+      if at + 5 >= bytes.len + 1 {
+        return null
+      }
+      const offset_hours = Digits(bytes, at + 1, 2)
+      var offset_minutes = 0
+      if at + 4 < bytes.len && bytes[at + 3] == 58 {
+        offset_minutes = Digits(bytes, at + 4, 2)
+      } else if at + 4 < bytes.len {
+        offset_minutes = Digits(bytes, at + 3, 2)
+      }
+      if offset_hours < 0 || offset_minutes < 0 {
+        return null
+      }
+      const offset = (offset_hours * 3600 + offset_minutes * 60) as s64
+      if marker == 43 {
+        moment = moment - offset
+      } else {
+        moment = moment + offset
+      }
+      return moment
+    }
+    return null
+  }
+  return moment
+}
+
+fun Digits(bytes: []u8, at: int, count: int) -> int {
+  if at + count > bytes.len {
+    return -1
+  }
+  var total = 0
+  var i = 0
+  while i < count {
+    const byte = bytes[at + i]
+    if byte < 48 || byte > 57 {
+      return -1
+    }
+    total = total * 10 + (byte - 48) as int
+    i = i + 1
+  }
+  return total
+}
+
+/// `2026-10-15T18:09:23Z` from a moment, which is what `ParseIso` reads
+/// back. `Iso` is the same thing from a `DateTime`.
+offer fun IsoInstant(seconds: s64) -> text uses unsafe {
+  return Iso(Civil(seconds))
+}
+
+/// How long ago, in words a person reads: `just now`, `3 minutes ago`,
+/// `2 days ago`. What a listing shows instead of a timestamp.
+offer fun Ago(seconds: s64, now: s64) -> text uses unsafe {
+  var gap = now - seconds
+  var suffix = " ago"
+  if gap < 0 {
+    gap = -gap
+    suffix = " from now"
+  }
+  if gap < 45 {
+    return "just now"
+  }
+  // Forty-five minutes is where minutes stop being the useful unit, and
+  // ninety is where "an hour" stops being a lie.
+  if gap < 2700 {
+    const minutes = (gap + 30) / 60
+    return Counted(minutes, "minute") + suffix
+  }
+  if gap < 5400 {
+    return "1 hour" + suffix
+  }
+  if gap < 129600 {
+    const hours = (gap + 1800) / 3600
+    return Counted(hours, "hour") + suffix
+  }
+  if gap < 2592000 {
+    const days = (gap + 43200) / 86400
+    return Counted(days, "day") + suffix
+  }
+  if gap < 31536000 {
+    const months = (gap + 1296000) / 2592000
+    return Counted(months, "month") + suffix
+  }
+  const years = (gap + 15768000) / 31536000
+  return Counted(years, "year") + suffix
+}
+
+fun Counted(value: s64, unit: text) -> text uses unsafe {
+  if value == 1 {
+    return "1 " + unit
+  }
+  return "{value} " + unit + "s"
+}
+
+@Test
+fun ReadsAndWritesIso() -> bool uses unsafe {
+  const moment = ParseIso("2026-10-15T18:09:23Z") ?? -1
+  if moment < 0 {
+    return false
+  }
+  const back = IsoInstant(moment)
+  // A date on its own is midnight, and an offset moves the moment.
+  const midnight = ParseIso("2026-10-15") ?? -1
+  const plus_two = ParseIso("2026-10-15T20:09:23+02:00") ?? -1
+  const minus = ParseIso("2026-10-15T16:09:23-02:00") ?? -1
+  const broken = ParseIso("not a date") == null &&
+                 ParseIso("2026-13-01") == null &&
+                 ParseIso("2026-10-15T25") == null
+  return back == "2026-10-15T18:09:23Z" && midnight == moment - 65363 &&
+         plus_two == moment && minus == moment && broken
+}
+
+@Test
+fun KnowsAboutZones() -> bool uses unsafe {
+  // A moment in January and one in July: a zone with summer time is
+  // not the same number of hours ahead in both.
+  const winter = ParseIso("2026-01-15T12:00:00Z") ?? 0
+  const summer = ParseIso("2026-07-15T12:00:00Z") ?? 0
+  const utc_offset = ZoneOffset(winter, "UTC")
+  const kyiv_winter = ZoneOffset(winter, "Europe/Kyiv")
+  const kyiv_summer = ZoneOffset(summer, "Europe/Kyiv")
+  const shown = CivilIn(winter, "Europe/Kyiv")
+  return utc_offset == 0 && kyiv_winter == 7200 &&
+         kyiv_summer == 10800 && shown.hour == 14 &&
+         EpochIn(shown, "Europe/Kyiv") == winter
+}
+
+@Test
+fun SaysHowLongAgo() -> bool uses unsafe {
+  const now: s64 = 1000000
+  return Ago(now - 10, now) == "just now" &&
+         Ago(now - 120, now) == "2 minutes ago" &&
+         Ago(now - 3600, now) == "1 hour ago" &&
+         Ago(now - 172800, now) == "2 days ago" &&
+         Ago(now + 3600, now) == "1 hour from now"
 }

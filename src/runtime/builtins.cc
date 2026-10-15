@@ -7,6 +7,7 @@
 #include "wolang/runtime/classes.h"
 #include "wolang/runtime/dns.h"
 #include "wolang/runtime/entropy.h"
+#include "wolang/runtime/zones.h"
 #include "wolang/runtime/env.h"
 #include "wolang/runtime/files.h"
 #include "wolang/runtime/globals.h"
@@ -159,6 +160,9 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_text_compare",
        reinterpret_cast<void*>(&wolang_text_compare)},
       {"wolang_entropy", reinterpret_cast<void*>(&wolang_entropy)},
+      {"wolang_zone_offset",
+       reinterpret_cast<void*>(&wolang_zone_offset)},
+      {"wolang_zone_name", reinterpret_cast<void*>(&wolang_zone_name)},
       {"wolang_socket_open",
        reinterpret_cast<void*>(&wolang_socket_open)},
       {"wolang_socket_connect",
