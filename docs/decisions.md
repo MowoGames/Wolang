@@ -1800,3 +1800,25 @@ exists to avoid.
 Both `Pop` the same way: the caller checks `Len` first. An optional of
 `T` would be a second shape to lay out for every `T`, and a queue with
 nothing in it has nothing to give.
+
+**D147. A parallel loop is a closure and a range.** `ParallelFor(count,
+threads, |from, to| ...)` splits `[0, count)` into chunks and runs one
+per thread, each with a range to itself -- so the body is an ordinary
+loop and the work is divided with no locking. Zero threads means one per
+core, the calling thread takes the last chunk (so a one-thread loop
+spawns nothing), and the remainder is spread one element per chunk rather
+than left to the last. Two hundred thousand elements of real work: 851 ms
+on one thread, 142 ms on eight.
+
+It is declared with no body, like `TokenOf` and `RunSystems`: what the
+runtime needs is the *two halves* of the body's function value -- the
+code and what it closed over (D138) -- and taking a function value apart
+is something only lowering can do. The language has no way to do it, and
+should not.
+
+The reference tier runs it in one go, with the whole range: the
+interpreter is what every test is compared against, and the sequential
+answer is the one that has to match. Which also says what a body may not
+do -- write to what it captured, because a capture is a copy and here
+there is one per thread. A result comes back through storage the body was
+given, by index.

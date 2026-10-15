@@ -27,6 +27,16 @@ extern "C" {
 uint64_t wolang_thread_spawn(void (*body)(void*), void* argument);
 // Waits for it. Returns zero on success.
 int32_t wolang_thread_join(uint64_t handle);
+
+// Runs |code| over [0, count) on |threads| threads, in chunks.
+//
+// |code| is the code half of a function value and |environment| the
+// other: a closure's body takes its environment first, and a plain
+// function does not (D147). Zero threads means one per core.
+void wolang_parallel_for(uint64_t code,
+                         uint64_t environment,
+                         int64_t count,
+                         int32_t threads);
 // How many threads the machine will really run at once.
 int32_t wolang_thread_count(void);
 

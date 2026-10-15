@@ -9,6 +9,8 @@
 
 // The argument is a word rather than a pointer: a body that takes nothing
 // needs none, and zero is what C reads as null.
+need std.mem.{ArrayNew, Free}
+
 extern "C" fun wolang_thread_spawn(body: fun(), argument: u64) -> u64
 extern "C" fun wolang_thread_join(handle: u64) -> s32
 extern "C" fun wolang_thread_count() -> s32
@@ -115,4 +117,81 @@ fun ThreadsShareACounter() -> bool uses unsafe {
 @Test
 fun ReportsHowManyThreadsRun() -> bool uses unsafe {
   return Parallelism() >= 1
+}
+
+// ------------------------------------------------------ data parallel ---
+
+/// Runs `body` over `[0, count)` on `threads` threads, in chunks.
+///
+/// Each call gets a range to itself -- `body(begin, end)` -- so the body
+/// is an ordinary loop and the work is split without any locking. Zero
+/// threads means one per core, and the calling thread takes the last
+/// chunk, so a one-thread loop spawns nothing (D147).
+///
+/// The body may be a closure, which is the point: `ParallelFor(n, 0,
+/// |from, to| ...)` takes what it needs with it. What it may not do is
+/// write to what it captured -- a capture is a copy, and here there is
+/// one copy per thread -- so a result comes back through storage the
+/// body was *given*, by index.
+///
+/// Declared with no body: what the runtime needs is the two halves of
+/// the body's function value, and lowering is the only place that can
+/// take a function value apart (D147).
+offer fun ParallelFor(count: int, threads: int, body: fun(int, int))
+    uses unsafe
+
+@Test
+fun SplitsALoopAcrossThreads() -> bool uses unsafe {
+  // Each chunk writes its own slice of the storage, which is what makes
+  // this safe without a lock: no two threads touch the same element.
+  var numbers = ArrayNew<int>(10000)
+  var i = 0
+  while i < 10000 {
+    numbers[i] = i
+    i = i + 1
+  }
+
+  ParallelFor(10000, 4, |from, to| {
+    var at = from
+    while at < to {
+      numbers[at] = numbers[at] * 2
+      at = at + 1
+    }
+  })
+
+  var ok = true
+  var j = 0
+  while j < 10000 {
+    ok = ok && numbers[j] == j * 2
+    j = j + 1
+  }
+  Free(numbers)
+  return ok
+}
+
+@Test
+fun RunsEveryIndexExactlyOnce() -> bool uses unsafe {
+  var marks = ArrayNew<int>(1000)
+  var i = 0
+  while i < 1000 {
+    marks[i] = 0
+    i = i + 1
+  }
+  // Zero threads is one per core, and the remainder is spread one per
+  // chunk rather than left to the last.
+  ParallelFor(1000, 0, |from, to| {
+    var at = from
+    while at < to {
+      marks[at] = marks[at] + 1
+      at = at + 1
+    }
+  })
+  var once = true
+  var j = 0
+  while j < 1000 {
+    once = once && marks[j] == 1
+    j = j + 1
+  }
+  Free(marks)
+  return once
 }

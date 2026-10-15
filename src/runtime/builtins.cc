@@ -148,6 +148,8 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_thread_spawn)},
       {"wolang_thread_join",
        reinterpret_cast<void*>(&wolang_thread_join)},
+      {"wolang_parallel_for",
+       reinterpret_cast<void*>(&wolang_parallel_for)},
       {"wolang_thread_count",
        reinterpret_cast<void*>(&wolang_thread_count)},
       {"wolang_mutex_create",

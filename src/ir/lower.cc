@@ -3947,6 +3947,32 @@ class Lowerer {
                     type);
     }
 
+    // `ParallelFor(count, threads, body)` hands the runtime the two
+    // halves of the body's function value: the code, and what it closed
+    // over. Which is a thing only lowering can do -- the language has no
+    // way to take a function value apart, and should not (D147).
+    if (ast().Contains(expr.lhs) &&
+        ast().Get(expr.lhs).kind == ExprKind::kPath &&
+        interner_->Text(ast().Get(expr.lhs).name) == "ParallelFor" &&
+        arguments.size() == 3) {
+      const TypeId word = types_->u64();
+      const TypeId count = types_->Int(IntWidth::k64, /*is_signed=*/true);
+      const TypeId threads = types_->Int(IntWidth::k32, /*is_signed=*/true);
+      const InstId code = builder_->Extract(word, arguments[2], 0);
+      const InstId environment =
+          builder_->Extract(word, arguments[2], 1);
+      const Symbol name = interner_->Intern("wolang_parallel_for");
+      const uint32_t runtime = DeclareExternal(
+          name,
+          types_->Function({word, word, count, threads},
+                           types_->void_type()));
+      module_->functions[runtime].foreign_symbol = name;
+      return builder_->Call(
+          runtime, types_->void_type(),
+          {code, environment, Widen(arguments[0], count),
+           Coerce(arguments[1], ValueType(arguments[1]), threads)});
+    }
+
     // `BytesFromRaw(data, length)` is not a call: a slice *is* a pointer
     // and a length, so saying so is the whole of it. The one unsafe way
     // to make a view of memory that came from outside the language --

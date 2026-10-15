@@ -1237,6 +1237,51 @@ class Interpreter {
       }
 
       case ir::Opcode::kCall: {
+        // A parallel loop, run in one go: this tier is the reference, and
+        // the reference answer is the sequential one. The body is a
+        // function value in two halves -- the code as a token here -- and
+        // what it gets is the whole range (D147).
+        if (inst.payload.callee < frame->module->functions.size()) {
+          const ir::Function& called =
+              frame->module->functions[inst.payload.callee];
+          if (called.is_foreign() &&
+              interner_.Text(called.foreign_symbol) ==
+                  "wolang_parallel_for") {
+            const std::span<const ir::InstId> operands =
+                function.OperandsOf(inst);
+            if (operands.size() < 3) {
+              return Value::Void();
+            }
+            Value body = Operand(frame, inst, 0);
+            if (body.kind() == Value::Kind::kInt) {
+              body = FromToken(body.integer());
+            }
+            if (body.kind() != Value::Kind::kFunction) {
+              return Value::Void();
+            }
+            const Value environment = Operand(frame, inst, 1);
+            const uint64_t count = Operand(frame, inst, 2).integer();
+            const auto* home =
+                static_cast<const ir::Module*>(body.module());
+            if (home == nullptr ||
+                body.function() >= home->functions.size()) {
+              return Value::Void();
+            }
+            std::vector<Value> arguments;
+            if (environment.integer() != 0) {
+              arguments.push_back(environment);
+            }
+            arguments.push_back(Value::Int(0, IntWidth::k64,
+                                           /*is_signed=*/true));
+            arguments.push_back(
+                Value::Int(count, IntWidth::k64, /*is_signed=*/true));
+            const ir::Function* callee = &home->functions[body.function()];
+            const ir::Module* where = home;
+            Link(&callee, &where);
+            return Call(*callee, where, std::move(arguments), outcome,
+                        frame);
+          }
+        }
         if (inst.payload.callee >= frame->module->functions.size()) {
           return TrapAt(outcome, TrapKind::kNoBody, function, id,
                 "calls a function the module does not have");
