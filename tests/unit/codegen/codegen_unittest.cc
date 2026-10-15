@@ -2461,6 +2461,40 @@ fun FloatWorks() -> int {
   WOLANG_EXPECT_EQ(f.Run("FloatWorks", {}), "3");
 }
 
+WOLANG_TEST(CodegenTest, DividesByAConstantWithoutDividing) {
+  // A constant divisor that is a power of two is a shift; signed needs
+  // the bias that makes it round towards zero the way division does.
+  // Every answer here is compared against the reference tier, which
+  // still divides (D192).
+  Fixture f(R"(
+fun Eight(x: int) -> int => x / 8
+fun RemEight(x: int) -> int => x % 8
+fun MinusFour(x: int) -> int => x / -4
+fun Ten(x: int) -> int => x % 10
+fun One(x: int) -> int => x / 1
+fun MinusOne(x: int) -> int => x / -1
+
+fun Walk() -> int {
+  var total = 0
+  var i = -40
+  while i <= 40 {
+    total = total + Eight(i) + RemEight(i) * 3 + MinusFour(i) * 5 +
+            Ten(i) * 7 + One(i) + MinusOne(i)
+    i = i + 1
+  }
+  return total
+}
+
+fun Edges() -> int {
+  // The rounding cases: just either side of zero and of the divisor.
+  return Eight(-9) * 1000 + Eight(-8) * 100 + Eight(-7) * 10 +
+         RemEight(-9)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Walk", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Edges", {}), "-1101");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

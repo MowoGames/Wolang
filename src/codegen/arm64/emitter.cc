@@ -545,6 +545,94 @@ class FunctionEmitter {
                                                 : kNotConstant;
   }
 
+  // `x / 2^k` and `x % 2^k`, without a division.
+  //
+  // Unsigned is a shift and a mask. Signed needs the bias that makes the
+  // shift round towards zero the way division does: adding `2^k - 1`
+  // when the value is negative, which is what the sign-extended shift
+  // below works out without a branch (D192).
+  bool EmitDivideByConstant(ir::InstId id, const ir::Inst& inst,
+                            TypeId operand_type, IWidth width,
+                            bool is_signed, uint32_t bits,
+                            Register left, uint64_t divisor) {
+    const bool negative = is_signed &&
+                          (divisor >> (bits - 1)) % 2 == 1;
+    const uint64_t mask = bits >= 64 ? ~uint64_t{0}
+                                     : (uint64_t{1} << bits) - 1;
+    const uint64_t magnitude =
+        negative ? ((~divisor + 1) & mask) : (divisor & mask);
+    if (magnitude == 0 || (magnitude & (magnitude - 1)) != 0) {
+      return false;
+    }
+    unsigned shift = 0;
+    while ((magnitude >> shift) != 1) {
+      ++shift;
+    }
+
+    const Register reg = DestInt(id, 0);
+    if (!is_signed) {
+      if (inst.opcode == ir::Opcode::kRem) {
+        if (shift == 0) {
+          assembler_.MovImmediate(width, reg, 0);
+        } else {
+          const Register held = Scratch(3);
+          assembler_.MovImmediate(width, held, magnitude - 1);
+          assembler_.And(width, reg, left, held);
+        }
+      } else if (shift == 0) {
+        assembler_.Mov(width, reg, left);
+      } else {
+        assembler_.Lsr(width, reg, left, shift);
+      }
+      FinishInt(id, reg);
+      return true;
+    }
+
+    // The bias: the sign bit smeared across the low `shift` bits, which
+    // is `2^k - 1` for a negative value and zero for a positive one.
+    const Register biased = Scratch(3);
+    if (shift == 0) {
+      assembler_.Mov(width, biased, left);
+    } else {
+      const Register sign = Scratch(4);
+      assembler_.Asr(width, sign, left, bits - 1);
+      assembler_.Lsr(width, sign, sign, bits - shift);
+      assembler_.Add(width, biased, left, sign);
+    }
+    const Register quotient =
+        inst.opcode == ir::Opcode::kRem ? Scratch(5) : reg;
+    if (shift == 0) {
+      assembler_.Mov(width, quotient, biased);
+    } else {
+      assembler_.Asr(width, quotient, biased, shift);
+    }
+    if (negative) {
+      // `x / -2^k` is `-(x / 2^k)`, and the one case that overflows is
+      // the most negative value divided by minus one -- which the
+      // division path traps on and this one has to as well.
+      if (magnitude == 1) {
+        const Register lowest = Scratch(4);
+        assembler_.MovImmediate(width, lowest, LowestOf(operand_type));
+        assembler_.Cmp(width, left, lowest);
+        const Label overflow = TrapLabel(ir::TrapKind::kOverflow, id,
+                                         "the quotient does not fit");
+        assembler_.BCond(Condition::kEq, overflow);
+      }
+      // `sub` reads register 31 as the stack pointer; `subs` reads it
+      // as zero, which is what negation needs.
+      assembler_.Subs(width, quotient, Register::kZr, quotient);
+    }
+    if (inst.opcode == ir::Opcode::kRem) {
+      // What is left over: `x - (x / d) * d`, with the divisor back as
+      // it was written.
+      const Register held = Scratch(4);
+      assembler_.MovImmediate(width, held, divisor & mask);
+      assembler_.Msub(width, reg, quotient, held, left);
+    }
+    FinishInt(id, reg);
+    return true;
+  }
+
   // Which power of two |value| is, or `kNotAPower`.
   static unsigned PowerOfTwo(uint32_t value) {
     if (value == 0 || (value & (value - 1)) != 0) {
@@ -2536,6 +2624,20 @@ class FunctionEmitter {
 
       case ir::Opcode::kDiv:
       case ir::Opcode::kRem: {
+        // A constant divisor that is a power of two is a shift, and a
+        // remainder by one is a mask. Worth doing here rather than
+        // leaving to the optimizing tier because this is the tier `run`
+        // and `test` use, and `% 10`-shaped code is in every number
+        // printer -- and because a constant divisor cannot be zero, so
+        // the check and the branch go away with it (D192).
+        if (const uint64_t divisor = ConstantOperand(
+                function_.OperandsOf(inst)[1]);
+            divisor != kNotConstant && divisor != 0) {
+          if (EmitDivideByConstant(id, inst, operand_type, width,
+                                   is_signed, bits, left, divisor)) {
+            return;
+          }
+        }
         const Label by_zero = TrapLabel(ir::TrapKind::kDivisionByZero, id,
                                         "divided by zero");
         assembler_.Cbz(width, right, by_zero);

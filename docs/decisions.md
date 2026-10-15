@@ -2351,3 +2351,24 @@ do unless `--write` is given.
 
 Edits are applied from the end of the file backwards, so that an earlier
 offset is still where it was.
+
+**D192. A constant divisor is a shift.** The dev tier emitted a hardware
+division whatever the divisor was. For a constant power of two -- `/ 8`,
+`% 16`, `/ -4` -- it is now a shift, with the bias that makes a signed
+shift round towards zero the way division does, and the zero check goes
+away because a constant divisor is not zero.
+
+Worth doing in this tier rather than leaving it to LLVM, because this is
+the tier `run` and `test` use, and `% 10`-shaped code is in every number
+printer.
+
+The general case -- a multiply by a magic constant for a divisor that is
+not a power of two -- is still a division here. It needs a "high half of
+the product" opcode in the IR, and the value of adding one is smaller
+than it looks: a non-power-of-two constant divisor in a hot loop is rare,
+and `wolang build` goes through LLVM, which does it.
+
+Both back ends have the same arithmetic in their own instructions, and
+the reference tier still divides -- so every case is compared against a
+division by the differential fuzzer and by the test that walks eighty
+values through six divisors.

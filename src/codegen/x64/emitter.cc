@@ -504,6 +504,107 @@ class FunctionEmitter {
     WOLANG_CHECK(index < std::size(kIntegerPool));
     return kIntegerPool[index];
   }
+  static constexpr uint64_t kNotConstant = ~uint64_t{0};
+
+  // The value of an operand that is a constant, or `kNotConstant`.
+  uint64_t ConstantOperand(ir::InstId id) const {
+    if (!function_.Contains(id)) {
+      return kNotConstant;
+    }
+    const ir::Inst& inst = function_.Get(id);
+    return inst.opcode == ir::Opcode::kConstInt ? inst.payload.integer
+                                                : kNotConstant;
+  }
+
+  // `x / 2^k` and `x % 2^k`, without a division (D192). The same
+  // arithmetic as the other back end, in this one's instructions.
+  bool EmitDivideByConstant(ir::InstId id, const ir::Inst& inst,
+                            TypeId operand_type, IWidth width,
+                            bool is_signed, uint32_t bits,
+                            Register left, uint64_t divisor) {
+    const bool negative =
+        is_signed && (divisor >> (bits - 1)) % 2 == 1;
+    const uint64_t mask =
+        bits >= 64 ? ~uint64_t{0} : (uint64_t{1} << bits) - 1;
+    const uint64_t magnitude =
+        negative ? ((~divisor + 1) & mask) : (divisor & mask);
+    if (magnitude == 0 || (magnitude & (magnitude - 1)) != 0) {
+      return false;
+    }
+    unsigned shift = 0;
+    while ((magnitude >> shift) != 1) {
+      ++shift;
+    }
+
+    const Register reg = DestInt(id, 0);
+    const Register held = Scratch(0);
+    assembler_.Mov(IWidth::k64, held, left);
+    if (!is_signed) {
+      if (inst.opcode == ir::Opcode::kRem) {
+        const Register mask_register = Scratch(1);
+        assembler_.MovImmediate(width, mask_register,
+                                shift == 0 ? 0 : magnitude - 1);
+        if (shift == 0) {
+          assembler_.MovImmediate(width, held, 0);
+        } else {
+          assembler_.And(width, held, mask_register);
+        }
+      } else if (shift != 0) {
+        assembler_.ShrImmediate(width, held,
+                                static_cast<uint8_t>(shift));
+      }
+      if (width == IWidth::k32) {
+        Canonicalize(held, operand_type, reg);
+      } else {
+        assembler_.Mov(IWidth::k64, reg, held);
+      }
+      FinishInt(id, reg);
+      return true;
+    }
+
+    // The bias that makes the shift round towards zero: the sign bit
+    // smeared across the low `shift` bits.
+    if (shift != 0) {
+      const Register sign = Scratch(1);
+      assembler_.Mov(IWidth::k64, sign, left);
+      assembler_.SarImmediate(width, sign,
+                              static_cast<uint8_t>(bits - 1));
+      assembler_.ShrImmediate(width, sign,
+                              static_cast<uint8_t>(bits - shift));
+      assembler_.Add(width, held, sign);
+      assembler_.SarImmediate(width, held,
+                              static_cast<uint8_t>(shift));
+    }
+    if (negative) {
+      if (magnitude == 1) {
+        const Register lowest = Scratch(1);
+        assembler_.MovImmediate(width, lowest, LowestOf(operand_type));
+        assembler_.Cmp(width, left, lowest);
+        const Label overflow = TrapLabel(ir::TrapKind::kOverflow, id,
+                                         "the quotient does not fit");
+        assembler_.Jcc(Condition::kEqual, overflow);
+      }
+      assembler_.Neg(width, held);
+    }
+    if (inst.opcode == ir::Opcode::kRem) {
+      // `x - (x / d) * d`, with the divisor as it was written.
+      const Register scaled = Scratch(1);
+      assembler_.MovImmediate(width, scaled, divisor & mask);
+      assembler_.Imul(width, held, scaled);
+      const Register remainder = Scratch(2);
+      assembler_.Mov(IWidth::k64, remainder, left);
+      assembler_.Sub(width, remainder, held);
+      assembler_.Mov(IWidth::k64, held, remainder);
+    }
+    if (width == IWidth::k32) {
+      Canonicalize(held, operand_type, reg);
+    } else {
+      assembler_.Mov(IWidth::k64, reg, held);
+    }
+    FinishInt(id, reg);
+    return true;
+  }
+
   Register Scratch(unsigned index) const {
     WOLANG_CHECK(index < std::size(kScratch));
     return kScratch[index];
@@ -2382,6 +2483,16 @@ class FunctionEmitter {
 
       case ir::Opcode::kDiv:
       case ir::Opcode::kRem: {
+        // A constant power of two is a shift, and the zero check goes
+        // away with it (D192).
+        if (const uint64_t divisor =
+                ConstantOperand(function_.OperandsOf(inst)[1]);
+            divisor != kNotConstant && divisor != 0) {
+          if (EmitDivideByConstant(id, inst, operand_type, width,
+                                   is_signed, bits, left, divisor)) {
+            return;
+          }
+        }
         const Label by_zero =
             TrapLabel(ir::TrapKind::kDivisionByZero, id, "divided by zero");
         assembler_.Test(width, right, right);
