@@ -5,11 +5,12 @@
 // each other. The point of having them is that `Redirect("/login")` says
 // what it means and `Status(303, "")` with a `Location` header does not.
 
-need std.json.{Json, Write}
+need std.doc.{Value}
+need std.json.{Write}
 need std.text.{BuilderNew, Bytes, Length}
 
 /// `200 OK` with a JSON value, written here.
-offer fun JsonOf(value: Json) -> Response uses unsafe {
+offer fun JsonOf(value: Value) -> Response uses unsafe {
   return OkJson(Write(value))
 }
 

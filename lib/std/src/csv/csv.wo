@@ -1,0 +1,218 @@
+// CSV, as RFC 4180 describes it and as spreadsheets actually write it.
+//
+// Quoted fields, doubled quotes inside them, line breaks inside quotes,
+// and a separator that is a comma unless a caller says otherwise -- half
+// of Europe writes a semicolon, and a reader that cannot be told is a
+// reader that is wrong half the time.
+//
+// Rows come back as a list of lists of text, rather than as a `std.doc`
+// value: a table is not a tree, and `Rows(input)[2][0]` is what reading
+// one looks like. `Named` is there for the file that has a header line.
+
+need std.doc.{AsText, Member, Null, Object, OfText, Put, Value}
+need std.list.{List, ListNew}
+need std.text.{Bytes, BuilderNew, Length}
+
+/// Every row of `input`, split on `separator`.
+offer fun Rows(input: text, separator: u8) -> List<List<text>>
+    uses unsafe {
+  var rows = ListNew<List<text>>()
+  var row = ListNew<text>()
+  var field = BuilderNew()
+  var quoted = false
+  var started = false
+  const bytes = Bytes(input)
+  var i = 0
+
+  while i < bytes.len {
+    const byte = bytes[i]
+    started = true
+    if quoted {
+      if byte == 34 {
+        // Two quotes in a row are one quote in the field.
+        if i + 1 < bytes.len && bytes[i + 1] == 34 {
+          field.AppendByte(34)
+          i = i + 2
+          continue
+        }
+        quoted = false
+        i = i + 1
+        continue
+      }
+      field.AppendByte(byte)
+      i = i + 1
+      continue
+    }
+    if byte == 34 {
+      quoted = true
+      i = i + 1
+      continue
+    }
+    if byte == separator {
+      row.Push(field.Release())
+      field = BuilderNew()
+      i = i + 1
+      continue
+    }
+    if byte == 13 {
+      i = i + 1
+      continue
+    }
+    if byte == 10 {
+      row.Push(field.Release())
+      field = BuilderNew()
+      rows.Push(row)
+      row = ListNew<text>()
+      started = false
+      i = i + 1
+      continue
+    }
+    field.AppendByte(byte)
+    i = i + 1
+  }
+
+  // The last row, when the file does not end with a break.
+  const last = field.Release()
+  if started || Length(last) != 0 {
+    row.Push(last)
+    rows.Push(row)
+  }
+  return rows
+}
+
+/// The same, with a comma.
+offer fun Read(input: text) -> List<List<text>> uses unsafe {
+  return Rows(input, 44)
+}
+
+/// Rows as tables, taking the first row as the names.
+///
+/// What a file with a header line is for: `Get(row, "price")` rather
+/// than `row[3]` and a comment saying which column that is.
+offer fun Named(input: text, separator: u8) -> List<Value> uses unsafe {
+  var out = ListNew<Value>()
+  const rows = Rows(input, separator)
+  if rows.Len() < 1 {
+    return out
+  }
+  const header = rows.At(0)
+  var i = 1
+  while i < rows.Len() {
+    const row = rows.At(i)
+    var table = Object()
+    var column = 0
+    while column < row.Len() {
+      // Built with a builder rather than interpolated: an interpolated
+      // string is owned and freed where it was made, and this one has
+      // to outlive the loop that made it (D127, D164).
+      var naming = BuilderNew()
+      if column < header.Len() {
+        naming.Append(header.At(column))
+      } else {
+        naming.Append("{column}")
+      }
+      const name = naming.Release()
+      table = Put(table, name, OfText(row.At(column)))
+      column = column + 1
+    }
+    out.Push(table)
+    i = i + 1
+  }
+  return out
+}
+
+/// Rows as CSV.
+///
+/// A field is quoted when it has to be -- a separator, a quote or a line
+/// break in it -- and not otherwise, which is what keeps a written file
+/// readable.
+offer fun Write(rows: &List<List<text>>, separator: u8) -> text
+    uses unsafe {
+  var builder = BuilderNew()
+  var i = 0
+  while i < rows.Len() {
+    const row = rows.At(i)
+    var column = 0
+    while column < row.Len() {
+      if column != 0 {
+        builder.AppendByte(separator)
+      }
+      builder.Append(Field(row.At(column), separator))
+      column = column + 1
+    }
+    builder.AppendByte(10)
+    i = i + 1
+  }
+  return builder.Release()
+}
+
+/// One field, quoted if it has to be.
+offer fun Field(value: text, separator: u8) -> text uses unsafe {
+  const bytes = Bytes(value)
+  var needs = false
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == separator || byte == 34 || byte == 10 || byte == 13 {
+      needs = true
+    }
+    i = i + 1
+  }
+  if !needs {
+    return value
+  }
+  var builder = BuilderNew()
+  builder.AppendByte(34)
+  i = 0
+  while i < bytes.len {
+    if bytes[i] == 34 {
+      builder.AppendByte(34)
+    }
+    builder.AppendByte(bytes[i])
+    i = i + 1
+  }
+  builder.AppendByte(34)
+  return builder.Release()
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun ReadsQuotedFields() -> bool uses unsafe {
+  const source = "name,price,note\n" +
+                 "\"Smith, John\",10,\"he said \"\"hi\"\"\"\n" +
+                 "plain,20,\"two\nlines\"\n"
+  const rows = Read(source)
+  if rows.Len() != 3 {
+    return false
+  }
+  const second = rows.At(1)
+  const third = rows.At(2)
+  return second.At(0) == "Smith, John" && second.At(1) == "10" &&
+         second.At(2) == "he said \"hi\"" &&
+         third.At(2) == "two\nlines"
+}
+
+@Test
+fun ReadsAnotherSeparator() -> bool uses unsafe {
+  const rows = Rows("a;b;c\n1;2;3\n", 59)
+  return rows.Len() == 2 && rows.At(1).At(2) == "3"
+}
+
+@Test
+fun ReadsRowsAsTables() -> bool uses unsafe {
+  const rows = Named("name,price\nbread,2\nmilk,1\n", 44)
+  return rows.Len() == 2 &&
+         AsText(Member(rows.At(0), "name") ?? Null(), "") == "bread" &&
+         AsText(Member(rows.At(1), "price") ?? Null(), "") == "1"
+}
+
+@Test
+fun WritesWhatItRead() -> bool uses unsafe {
+  const source = "a,\"b,c\",\"d\"\"e\"\n1,2,3\n"
+  var rows = Read(source)
+  const written = Write(&rows, 44)
+  const again = Read(written)
+  return again.At(0).At(1) == "b,c" && again.At(0).At(2) == "d\"e" &&
+         again.At(1).At(0) == "1"
+}

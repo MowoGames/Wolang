@@ -7,8 +7,8 @@
 
 need std.env.{Get}
 need std.io.{Print}
-need std.json.{AsText, Malformed, Member, Null, OfInt, OfText, Object,
-                Parse, Put, Write}
+need std.doc.{AsText, Member, Null, Object, OfInt, OfText, Put}
+need std.json.{Malformed, Parse, Write}
 need std.log.{Level, SetLevel}
 need http.{AppNew, Authorize, Cors, Logged, SecurityHeaders, ServeApp,
            ServeMany, Timing, BadRequest, Created, Field, JsonOf,

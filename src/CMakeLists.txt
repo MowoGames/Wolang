@@ -54,8 +54,24 @@ endif()
 if(WOLANG_WITH_LLVM)
     target_compile_definitions(wolang_core PUBLIC WOLANG_WITH_LLVM=1)
     target_include_directories(wolang_core SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
-    llvm_map_components_to_libnames(WOLANG_LLVM_LIBS
-        core target native analysis passes bitwriter)
+    # Every target this LLVM has, not just this machine's: a compiler
+    # that can only emit code for the machine it runs on is one that
+    # cannot build the Windows binary from the laptop, and `--target` is
+    # what makes that possible (D160).
+    option(WOLANG_ALL_TARGETS "Emit code for every target LLVM has" ON)
+    if(WOLANG_ALL_TARGETS)
+        # Named one by one rather than as `all-targets`: that group is a
+        # `llvm-config` spelling, and the CMake function wants the
+        # components -- which are whatever this LLVM was built with.
+        llvm_map_components_to_libnames(WOLANG_LLVM_LIBS
+            core analysis passes bitwriter
+            ${LLVM_TARGETS_TO_BUILD})
+        target_compile_definitions(wolang_core PUBLIC
+            WOLANG_ALL_TARGETS=1)
+    else()
+        llvm_map_components_to_libnames(WOLANG_LLVM_LIBS
+            core target native analysis passes bitwriter)
+    endif()
     target_link_libraries(wolang_core PUBLIC ${WOLANG_LLVM_LIBS})
 endif()
 

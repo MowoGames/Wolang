@@ -6,7 +6,8 @@
 // handler that has to decide what a missing `page` means should say so at
 // the call, and `QueryInt(request, "page", 1)` says it.
 
-need std.json.{AsText, Json, Member, Null, Parse}
+need std.doc.{AsText, Member, Null, Value}
+need std.json.{Parse}
 need std.text.{Bytes, Length, StartsWith, Substring, Trim}
 need std.encoding.{FromUrl}
 
@@ -101,7 +102,7 @@ offer fun IsJson(request: &Request) -> bool uses unsafe {
 /// A handler that wants to answer `400` rather than `500` for a bad
 /// document matches on this: the body came from outside, so "this is not
 /// JSON" is an answer and not a fault.
-offer fun JsonBody(request: &Request) -> Json! uses unsafe {
+offer fun JsonBody(request: &Request) -> Value! uses unsafe {
   return Parse(request.body)
 }
 

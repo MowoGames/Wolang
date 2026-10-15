@@ -129,6 +129,9 @@ struct Options {
   // information a debugger reads.
   std::string output;
   bool emit_object = false;
+  // What machine the binary is for, as an LLVM triple. Empty is this
+  // one (D160).
+  std::string target;
   bool no_debug = false;
   int optimization = 2;
 };
@@ -2183,6 +2186,7 @@ int RunBuild(const Options& options) {
   codegen::AotOptions settings;
   settings.object_path = object;
   settings.optimization = options.optimization;
+  settings.triple = options.target;
   // Line information unless the build asked for none: stepping through
   // Wolang in a debugger is worth more than a smaller object, and
   // `--no-debug` is there for when it is not (D118).
@@ -2203,6 +2207,24 @@ int RunBuild(const Options& options) {
   }
   if (options.emit_object) {
     std::fprintf(stdout, "%s\n", object.c_str());
+    return 0;
+  }
+
+  // A binary for another machine needs that machine's runtime and that
+  // machine's linker, and this build has neither: what it has is the
+  // object, which is the part only this compiler can produce. Said
+  // plainly rather than handed to a linker that would fail with
+  // something about architectures (D160).
+  if (!options.target.empty() &&
+      options.target != codegen::HostTriple()) {
+    std::fprintf(stderr,
+                 "wolang: wrote %s for %s\n"
+                 "wolang: linking it needs that machine's runtime and "
+                 "linker; build the runtime there, or link with\n"
+                 "wolang:   clang --target=%s %s "
+                 "<libwolang_runtime.a for that machine> -o <binary>\n",
+                 object.c_str(), options.target.c_str(),
+                 options.target.c_str(), object.c_str());
     return 0;
   }
 
@@ -2613,6 +2635,14 @@ int Run(int argc, char** argv) {
     }
     if (argument == "--emit-object") {
       options.emit_object = true;
+      continue;
+    }
+    if (argument == "--target" && i + 1 < argc) {
+      options.target = argv[++i];
+      continue;
+    }
+    if (argument.rfind("--target=", 0) == 0) {
+      options.target = std::string(argument.substr(9));
       continue;
     }
     if (argument == "--no-debug") {

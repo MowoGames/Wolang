@@ -1,0 +1,324 @@
+// INI.
+//
+// The oldest configuration format and still the one a tool reaches for:
+// `[section]`, `name = value`, `;` or `#` for a comment. There is no
+// standard, so what is here is what every program that reads one agrees
+// on, plus two things that are common and harmless: a value may be
+// quoted, and a key outside any section lands at the root.
+//
+// It reads into `std.doc`'s value, so the navigation is the same as for
+// JSON, TOML and YAML (D162). Everything is text: INI has no types, and
+// a reader that guessed would turn `version = 1.10` into `1.1`.
+
+need std.doc.{AsText, Field, Get, Null, Object, OfText, Value}
+need std.list.{List}
+need std.text.{Bytes, BuilderNew, Length, Trim}
+
+/// What a document that is not one answers with.
+offer error Malformed
+
+/// Reads a document. Every value is text.
+offer fun Parse(input: text) -> Value! uses unsafe {
+  const bytes = Bytes(input)
+  var root = Object()
+  var section = ""
+  var at = 0
+
+  while at < bytes.len {
+    // One line, without its break.
+    var end = at
+    while end < bytes.len && bytes[end] != 10 && bytes[end] != 13 {
+      end = end + 1
+    }
+    const line = Trim(Slice(bytes, at, end))
+    at = end
+    while at < bytes.len && (bytes[at] == 10 || bytes[at] == 13) {
+      at = at + 1
+    }
+    if Length(line) == 0 {
+      continue
+    }
+    const first = Bytes(line)[0]
+    if first == 59 || first == 35 {
+      continue
+    }
+    if first == 91 {
+      const close = LastByte(line)
+      if close != 93 {
+        return Malformed
+      }
+      section = Trim(Middle(line))
+      if Length(section) == 0 {
+        return Malformed
+      }
+      root = Replace(root, section, Object())
+      continue
+    }
+    const split = IndexOfByte(line, 61)
+    if split < 0 {
+      return Malformed
+    }
+    const name = Trim(Head(line, split))
+    if Length(name) == 0 {
+      return Malformed
+    }
+    const value = Unquote(Trim(Tail(line, split + 1)))
+    if Length(section) == 0 {
+      root = Replace(root, name, OfText(value))
+    } else {
+      root = Replace(root, section,
+                     Replace(MemberOf(root, section), name,
+                             OfText(value)))
+    }
+  }
+  return root
+}
+
+// ------------------------------------------------------------ writing ---
+
+/// A value as INI.
+///
+/// Members that are tables become sections and everything else becomes a
+/// pair at the top, which is the only arrangement INI has.
+offer fun Write(value: Value) -> text uses unsafe {
+  var builder = BuilderNew()
+  match value {
+    Value.Object(fields) => {
+      var i = 0
+      while i < fields.Len() {
+        const field = fields.At(i)
+        if !IsTable(field.value) {
+          builder.Append(field.name)
+          builder.Append(" = ")
+          builder.Append(Flatten(field.value))
+          builder.AppendByte(10)
+        }
+        i = i + 1
+      }
+      i = 0
+      while i < fields.Len() {
+        const field = fields.At(i)
+        if IsTable(field.value) {
+          builder.AppendByte(10)
+          builder.Append("[" + field.name + "]")
+          builder.AppendByte(10)
+          match field.value {
+            Value.Object(inner) => {
+              var j = 0
+              while j < inner.Len() {
+                const held = inner.At(j)
+                builder.Append(held.name)
+                builder.Append(" = ")
+                builder.Append(Flatten(held.value))
+                builder.AppendByte(10)
+                j = j + 1
+              }
+            },
+            _ => {},
+          }
+        }
+        i = i + 1
+      }
+    },
+    _ => {},
+  }
+  return builder.Release()
+}
+
+fun IsTable(value: Value) -> bool {
+  return match value {
+    Value.Object(_fields) => true,
+    _ => false,
+  }
+}
+
+// Whatever it is, as one line of text: INI has no types and no nesting
+// below a section, so anything else is written as what it says.
+fun Flatten(value: Value) -> text uses unsafe {
+  return match value {
+    Value.Null => "",
+    Value.Bool(held) => Truth(held),
+    Value.Number(held) => WholeOrNot(held),
+    Value.Text(held) => held,
+    Value.Array(items) => Joined(items),
+    Value.Object(_fields) => "",
+  }
+}
+
+fun Truth(held: bool) -> text {
+  if held {
+    return "true"
+  }
+  return "false"
+}
+
+fun WholeOrNot(held: float) -> text {
+  if held == (held as int) as float {
+    return "{held as int}"
+  }
+  return "{held}"
+}
+
+fun Joined(items: List<Value>) -> text uses unsafe {
+  var builder = BuilderNew()
+  var i = 0
+  while i < items.Len() {
+    if i != 0 {
+      builder.Append(", ")
+    }
+    builder.Append(Flatten(items.At(i)))
+    i = i + 1
+  }
+  return builder.Release()
+}
+
+// --------------------------------------------------------------- bits ---
+
+fun Slice(bytes: []u8, from: int, to: int) -> text uses unsafe {
+  var builder = BuilderNew()
+  var i = from
+  while i < to {
+    builder.AppendByte(bytes[i])
+    i = i + 1
+  }
+  return builder.Release()
+}
+
+fun LastByte(line: text) -> u8 uses unsafe {
+  const bytes = Bytes(line)
+  if bytes.len == 0 {
+    return 0
+  }
+  return bytes[bytes.len - 1]
+}
+
+fun Middle(line: text) -> text uses unsafe {
+  const bytes = Bytes(line)
+  return Slice(bytes, 1, bytes.len - 1)
+}
+
+fun Head(line: text, to: int) -> text uses unsafe {
+  return Slice(Bytes(line), 0, to)
+}
+
+fun Tail(line: text, from: int) -> text uses unsafe {
+  const bytes = Bytes(line)
+  return Slice(bytes, from, bytes.len)
+}
+
+fun IndexOfByte(line: text, byte: u8) -> int uses unsafe {
+  const bytes = Bytes(line)
+  var i = 0
+  while i < bytes.len {
+    if bytes[i] == byte {
+      return i
+    }
+    i = i + 1
+  }
+  return -1
+}
+
+// A quoted value without its quotes: what a person writes when the value
+// has blanks at either end that they mean.
+fun Unquote(value: text) -> text uses unsafe {
+  const bytes = Bytes(value)
+  if bytes.len < 2 {
+    return value
+  }
+  const first = bytes[0]
+  if (first == 34 || first == 39) && bytes[bytes.len - 1] == first {
+    return Slice(bytes, 1, bytes.len - 1)
+  }
+  return value
+}
+
+fun MemberOf(value: Value, name: text) -> Value uses unsafe {
+  match value {
+    Value.Object(fields) => {
+      var i = 0
+      while i < fields.Len() {
+        const field = fields.At(i)
+        if field.name == name {
+          return field.value
+        }
+        i = i + 1
+      }
+      return Object()
+    },
+    _ => { return Object() },
+  }
+}
+
+fun Replace(table: Value, name: text, value: Value) -> Value uses unsafe {
+  match table {
+    Value.Object(fields) => {
+      var i = 0
+      while i < fields.Len() {
+        if fields.At(i).name == name {
+          fields.Set(i, Field(name, value))
+          return Value.Object(fields)
+        }
+        i = i + 1
+      }
+      fields.Push(Field(name, value))
+      return Value.Object(fields)
+    },
+    _ => { return table },
+  }
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun ReadsSectionsAndPairs() -> bool uses unsafe {
+  const source = "; a comment\n" +
+                 "editor = vim\n\n" +
+                 "[server]\n" +
+                 "host = example.com\n" +
+                 "port = 8080\n" +
+                 "# another comment\n" +
+                 "greeting = \"  hello  \"\n"
+  match Parse(source) {
+    Ok(value) => {
+      return AsText(Get(value, "editor") ?? Null(), "") == "vim" &&
+             AsText(Get(value, "server.host") ?? Null(), "") ==
+                 "example.com" &&
+             AsText(Get(value, "server.port") ?? Null(), "") == "8080" &&
+             AsText(Get(value, "server.greeting") ?? Null(), "") ==
+                 "  hello  "
+    },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun RefusesWhatIsNotIni() -> bool uses unsafe {
+  var refused = 0
+  const broken = ["[unclosed", "no equals sign", "= 1", "[]"]
+  var i = 0
+  while i < 4 {
+    match Parse(broken[i]) {
+      Ok(_value) => refused = refused,
+      Malformed => refused = refused + 1,
+    }
+    i = i + 1
+  }
+  return refused == 4
+}
+
+@Test
+fun WritesWhatItRead() -> bool uses unsafe {
+  const source = "a = 1\n\n[s]\nb = two\n"
+  match Parse(source) {
+    Ok(value) => {
+      match Parse(Write(value)) {
+        Ok(again) => {
+          return AsText(Get(again, "a") ?? Null(), "") == "1" &&
+                 AsText(Get(again, "s.b") ?? Null(), "") == "two"
+        },
+        Malformed => { return false },
+      }
+    },
+    Malformed => { return false },
+  }
+}

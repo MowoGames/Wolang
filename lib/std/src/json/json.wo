@@ -1,49 +1,20 @@
 // JSON.
 //
-// A document is a value, and a value is one of six things -- which is
-// exactly what an enum with payloads is for (D89). The recursion goes
-// through a `List`, whose value is a handle, so a tree costs one
-// allocation per array and object and nothing per number.
+// Reading and writing; what a document *is* lives in `std.doc`, because
+// JSON, TOML, INI and YAML are four spellings of the same six things and
+// a program that reads configuration should not care which file it came
+// from (D162).
 //
-// Parsing answers a `Json!`: a malformed document is a thing that
+// Parsing answers a `Value!`: a malformed document is a thing that
 // happens to a server every day, not a reason to stop the program.
 
+need std.doc.{Array, AsBool, AsInt, AsText, At, Field, IsNull, Len,
+              Member, Null, Object, OfBool, OfInt, OfText, Push, Put,
+              Value}
 need std.list.{List, ListNew}
 need std.text.{Bytes, BuilderNew, Builder}
-/// Which of the six a value is, as a number: `0` null, `1` bool, `2`
-/// number, `3` text, `4` array, `5` object.
-///
-/// For a program that switches on the shape of a document it did not
-/// write, which is most of what reading JSON is.
-offer fun Kind(value: Json) -> int {
-  return match value {
-    Json.Null => 0,
-    Json.Bool(_held) => 1,
-    Json.Number(_held) => 2,
-    Json.Text(_held) => 3,
-    Json.Array(_items) => 4,
-    Json.Object(_fields) => 5,
-  }
-}
-
 /// What a document that is not one answers with.
 offer error Malformed
-
-/// One of the six things a JSON value can be.
-offer enum Json {
-  Null,
-  Bool(value: bool),
-  Number(value: float),
-  Text(value: text),
-  Array(items: List<Json>),
-  Object(fields: List<Field>),
-}
-
-/// A member of an object: its name and its value.
-offer struct Field {
-  var name: text
-  var value: Json
-}
 
 // ------------------------------------------------------------ reading ---
 
@@ -79,17 +50,17 @@ fun SkipSpace(cursor: Cursor) -> Cursor {
 
 // What a parse step answers: the value, and where it stopped.
 struct Step {
-  var value: Json
+  var value: Value
   var cursor: Cursor
   var ok: bool
 }
 
 fun Fail(cursor: Cursor) -> Step {
-  return Step(Json.Null, cursor, false)
+  return Step(Value.Null, cursor, false)
 }
 
 /// Reads one value from `input`.
-offer fun Parse(input: text) -> Json! uses unsafe {
+offer fun Parse(input: text) -> Value! uses unsafe {
   const start = Cursor(Bytes(input), 0)
   const step = ParseValue(SkipSpace(start))
   if !step.ok {
@@ -120,21 +91,21 @@ fun ParseValue(cursor: Cursor) -> Step uses unsafe {
     if !read.ok {
       return Fail(cursor)
     }
-    return Step(Json.Text(read.value), read.cursor, true)
+    return Step(Value.Text(read.value), read.cursor, true)
   }
   if byte == 116 {
-    return ParseWord(cursor, "true", Json.Bool(true))
+    return ParseWord(cursor, "true", Value.Bool(true))
   }
   if byte == 102 {
-    return ParseWord(cursor, "false", Json.Bool(false))
+    return ParseWord(cursor, "false", Value.Bool(false))
   }
   if byte == 110 {
-    return ParseWord(cursor, "null", Json.Null)
+    return ParseWord(cursor, "null", Value.Null)
   }
   return ParseNumber(cursor)
 }
 
-fun ParseWord(cursor: Cursor, word: text, value: Json) -> Step uses unsafe {
+fun ParseWord(cursor: Cursor, word: text, value: Value) -> Step uses unsafe {
   const spelling = Bytes(word)
   var walk = cursor
   var i = 0
@@ -329,17 +300,17 @@ fun ParseNumber(cursor: Cursor) -> Step {
       i = i + 1
     }
   }
-  return Step(Json.Number(sign * whole), walk, true)
+  return Step(Value.Number(sign * whole), walk, true)
 }
 
 fun ParseArray(cursor: Cursor) -> Step uses unsafe {
   var walk = cursor
   walk.at = walk.at + 1
-  var items = ListNew<Json>()
+  var items = ListNew<Value>()
   walk = SkipSpace(walk)
   if Peek(walk) == 93 {
     walk.at = walk.at + 1
-    return Step(Json.Array(items), walk, true)
+    return Step(Value.Array(items), walk, true)
   }
   loop {
     const step = ParseValue(SkipSpace(walk))
@@ -355,7 +326,7 @@ fun ParseArray(cursor: Cursor) -> Step uses unsafe {
     }
     if byte == 93 {
       walk.at = walk.at + 1
-      return Step(Json.Array(items), walk, true)
+      return Step(Value.Array(items), walk, true)
     }
     return Fail(cursor)
   }
@@ -368,7 +339,7 @@ fun ParseObject(cursor: Cursor) -> Step uses unsafe {
   walk = SkipSpace(walk)
   if Peek(walk) == 125 {
     walk.at = walk.at + 1
-    return Step(Json.Object(fields), walk, true)
+    return Step(Value.Object(fields), walk, true)
   }
   loop {
     walk = SkipSpace(walk)
@@ -394,7 +365,7 @@ fun ParseObject(cursor: Cursor) -> Step uses unsafe {
     }
     if byte == 125 {
       walk.at = walk.at + 1
-      return Step(Json.Object(fields), walk, true)
+      return Step(Value.Object(fields), walk, true)
     }
     return Fail(cursor)
   }
@@ -403,7 +374,7 @@ fun ParseObject(cursor: Cursor) -> Step uses unsafe {
 // ------------------------------------------------------------ writing ---
 
 /// `value` as JSON text.
-offer fun Write(value: Json) -> text uses unsafe {
+offer fun Write(value: Value) -> text uses unsafe {
   var builder = BuilderNew()
   // Lent rather than handed over: a builder owns its bytes, so a helper
   // that writes into one takes a reference to it (D109).
@@ -411,14 +382,14 @@ offer fun Write(value: Json) -> text uses unsafe {
   return builder.Release()
 }
 
-fun WriteInto(builder: &mut Builder, value: Json) uses unsafe {
+fun WriteInto(builder: &mut Builder, value: Value) uses unsafe {
   match value {
-    Json.Null => builder.Append("null"),
-    Json.Bool(held) => builder.Append(TextOfBool(held)),
-    Json.Number(held) => builder.Append(TextOfNumber(held)),
-    Json.Text(held) => WriteText(builder, held),
-    Json.Array(items) => WriteArray(builder, items),
-    Json.Object(fields) => WriteObject(builder, fields),
+    Value.Null => builder.Append("null"),
+    Value.Bool(held) => builder.Append(TextOfBool(held)),
+    Value.Number(held) => builder.Append(TextOfNumber(held)),
+    Value.Text(held) => WriteText(builder, held),
+    Value.Array(items) => WriteArray(builder, items),
+    Value.Object(fields) => WriteObject(builder, fields),
   }
 }
 
@@ -474,7 +445,7 @@ fun HexByte(value: int) -> u8 {
   return (87 + value) as u8
 }
 
-fun WriteArray(builder: &mut Builder, items: List<Json>) uses unsafe {
+fun WriteArray(builder: &mut Builder, items: List<Value>) uses unsafe {
   builder.AppendByte(91)
   var i = 0
   while i < items.Len() {
@@ -504,126 +475,6 @@ fun WriteObject(builder: &mut Builder, fields: List<Field>) uses unsafe {
 }
 
 // ------------------------------------------------------------ reading ---
-
-/// The member of an object called `name`, or nothing.
-offer fun Member(value: Json, name: text) -> Json? uses unsafe {
-  match value {
-    Json.Object(fields) => {
-      var i = 0
-      while i < fields.Len() {
-        const field = fields.At(i)
-        if field.name == name {
-          return field.value
-        }
-        i = i + 1
-      }
-      return null
-    },
-    _ => { return null },
-  }
-}
-
-/// Element `at` of an array, or nothing.
-offer fun At(value: Json, at: int) -> Json? uses unsafe {
-  match value {
-    Json.Array(items) => {
-      if at < 0 || at >= items.Len() {
-        return null
-      }
-      return items.At(at)
-    },
-    _ => { return null },
-  }
-}
-
-/// How many elements an array has, or how many members an object has.
-offer fun Len(value: Json) -> int uses unsafe {
-  return match value {
-    Json.Array(items) => items.Len(),
-    Json.Object(fields) => fields.Len(),
-    _ => 0,
-  }
-}
-
-/// The number this is, or `fallback`.
-offer fun AsNumber(value: Json, fallback: float) -> float {
-  return match value {
-    Json.Number(held) => held,
-    _ => fallback,
-  }
-}
-
-/// The whole number this is, or `fallback`.
-offer fun AsInt(value: Json, fallback: int) -> int {
-  return match value {
-    Json.Number(held) => held as int,
-    _ => fallback,
-  }
-}
-
-/// The string this is, or `fallback`.
-offer fun AsText(value: Json, fallback: text) -> text {
-  return match value {
-    Json.Text(held) => held,
-    _ => fallback,
-  }
-}
-
-/// The boolean this is, or `fallback`.
-offer fun AsBool(value: Json, fallback: bool) -> bool {
-  return match value {
-    Json.Bool(held) => held,
-    _ => fallback,
-  }
-}
-
-offer fun IsNull(value: Json) -> bool {
-  return match value {
-    Json.Null => true,
-    _ => false,
-  }
-}
-
-// ----------------------------------------------------------- building ---
-
-/// An empty object, to put members in.
-offer fun Object() -> Json uses unsafe {
-  return Json.Object(ListNew<Field>())
-}
-
-/// An empty array, to put values in.
-offer fun Array() -> Json uses unsafe {
-  return Json.Array(ListNew<Json>())
-}
-
-/// Puts a member in an object. The object is the value it answers with,
-/// so calls chain: `Put(Put(Object(), "a", ..), "b", ..)`.
-offer fun Put(object: Json, name: text, value: Json) -> Json uses unsafe {
-  match object {
-    Json.Object(fields) => {
-      fields.Push(Field(name, value))
-      return Json.Object(fields)
-    },
-    _ => { return object },
-  }
-}
-
-/// Adds a value to an array.
-offer fun Push(array: Json, value: Json) -> Json uses unsafe {
-  match array {
-    Json.Array(items) => {
-      items.Push(value)
-      return Json.Array(items)
-    },
-    _ => { return array },
-  }
-}
-
-offer fun Number(value: float) -> Json => Json.Number(value)
-offer fun OfInt(value: int) -> Json => Json.Number(value as float)
-offer fun OfText(value: text) -> Json => Json.Text(value)
-offer fun OfBool(value: bool) -> Json => Json.Bool(value)
-offer fun Null() -> Json => Json.Null
 
 // ------------------------------------------------------------- tests ---
 

@@ -109,5 +109,30 @@ bool wolang_text_equal(const uint8_t* left,
   return std::memcmp(left, right, left_length) == 0;
 }
 
+extern "C" void wolang_print(const void* message) {
+  // What `Print` is for a file compiled on its own.
+  //
+  // A single file links no standard library, so `Print` there is a
+  // declaration with no body -- which the interpreter answers with an
+  // intrinsic and the compiled tiers could not answer at all, so a
+  // binary built from such a file trapped the moment it printed. One
+  // symbol, and all three tiers do the same thing (D161).
+  //
+  // The argument is the address of the text, because that is how an
+  // aggregate travels in this ABI: a pointer and a length, in that
+  // order.
+  if (message == nullptr) {
+    std::fputc('\n', stdout);
+    return;
+  }
+  const Text* held = static_cast<const Text*>(message);
+  if (held->data != nullptr && held->length != 0) {
+    std::fwrite(held->data, 1, static_cast<size_t>(held->length), stdout);
+  }
+  std::fputc('\n', stdout);
+}
+
 }  // namespace runtime
 }  // namespace wolang
+
+

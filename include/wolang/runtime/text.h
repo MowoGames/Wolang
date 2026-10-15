@@ -48,6 +48,11 @@ bool wolang_text_equal(const uint8_t* left,
 
 }  // extern "C"
 
+// Writes a `text` and a line break, where |message| is the address of
+// one. What `Print` is for a file compiled on its own, which links no
+// standard library to call (D161).
+extern "C" void wolang_print(const void* message);
+
 }  // namespace runtime
 }  // namespace wolang
 

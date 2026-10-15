@@ -1,10 +1,47 @@
+# What a build makes. Anything here can be produced again from the
+# sources, and nothing here should ever be committed.
 build/
 out/
 cmake-build-*/
-.cache/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+*.cmake.in.tmp
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
 compile_commands.json
-.DS_Store
-*.qdb
+.cache/
 
-# The compiler's own on-disk cache, written next to any package it checks.
+# Objects, libraries and binaries, wherever a stray build left them.
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.dSYM/
+
+# The compiler's own on-disk cache, written next to any package it
+# checks, and what a package manager fetches.
 .wolang-cache/
+.wolang/
+wolang.lock.tmp
+
+# Editors and systems that leave things behind.
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.qdb

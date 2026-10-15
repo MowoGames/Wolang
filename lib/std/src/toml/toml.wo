@@ -1,0 +1,1088 @@
+// TOML.
+//
+// What a manifest is written in, including this project's own: tables in
+// square brackets, `name = value` under them, and arrays of tables in
+// double brackets. It reads into `std.doc`'s value, so a program that
+// reads configuration navigates it the same way whatever the file was
+// written in (D162).
+//
+// What is here is TOML 1.0 as it is used: strings (basic, literal and
+// multi-line), integers in four bases, floats, booleans, dates as text,
+// arrays, inline tables, dotted keys, `[table]` and `[[array]]`.
+// Offsets and local times are kept as the text they were written as,
+// because a date is a `std.time` question and a parser should not answer
+// it badly.
+
+need std.doc.{Array, AsBool, AsInt, AsNumber, AsText, Field, Get, Null,
+              Object, OfBool, OfText, Push, Value}
+need std.list.{List, ListNew}
+need std.text.{Builder, Bytes, BuilderNew, Length, Trim}
+
+/// What a document that is not one answers with.
+offer error Malformed
+
+// Where the reader is.
+struct Cursor {
+  var bytes: []u8
+  var at: int
+}
+
+fun AtEnd(cursor: Cursor) -> bool {
+  return cursor.at >= cursor.bytes.len
+}
+
+fun Peek(cursor: Cursor) -> u8 {
+  if AtEnd(cursor) {
+    return 0
+  }
+  return cursor.bytes[cursor.at]
+}
+
+fun PeekAt(cursor: Cursor, ahead: int) -> u8 {
+  if cursor.at + ahead >= cursor.bytes.len {
+    return 0
+  }
+  return cursor.bytes[cursor.at + ahead]
+}
+
+// Blanks that are not line breaks: a line break ends a pair, so it is
+// never skipped by accident.
+fun SkipBlanks(cursor: Cursor) -> Cursor {
+  var walk = cursor
+  while !AtEnd(walk) {
+    const byte = walk.bytes[walk.at]
+    if byte == 32 || byte == 9 {
+      walk.at = walk.at + 1
+      continue
+    }
+    return walk
+  }
+  return walk
+}
+
+// Blanks, line breaks and comments, which is what is between two pairs.
+fun SkipNothing(cursor: Cursor) -> Cursor {
+  var walk = cursor
+  while !AtEnd(walk) {
+    const byte = walk.bytes[walk.at]
+    if byte == 32 || byte == 9 || byte == 10 || byte == 13 {
+      walk.at = walk.at + 1
+      continue
+    }
+    if byte == 35 {
+      while !AtEnd(walk) && walk.bytes[walk.at] != 10 {
+        walk.at = walk.at + 1
+      }
+      continue
+    }
+    return walk
+  }
+  return walk
+}
+
+// What a step answers: a value, where it stopped, and whether it worked.
+struct Step {
+  var value: Value
+  var cursor: Cursor
+  var ok: bool
+}
+
+fun Fail(cursor: Cursor) -> Step {
+  return Step(Value.Null, cursor, false)
+}
+
+/// Reads a document.
+offer fun Parse(input: text) -> Value! uses unsafe {
+  var cursor = Cursor(Bytes(input), 0)
+  var root = Object()
+  // Where `name = value` goes: the root, or the table a header named.
+  var path = ListNew<text>()
+
+  loop {
+    cursor = SkipNothing(cursor)
+    if AtEnd(cursor) {
+      break
+    }
+    if Peek(cursor) == 91 {
+      // `[name]` or `[[name]]`.
+      const doubled = PeekAt(cursor, 1) == 91
+      if doubled {
+        cursor.at = cursor.at + 2
+      } else {
+        cursor.at = cursor.at + 1
+      }
+      const header = ParsePath(SkipBlanks(cursor))
+      if !header.ok {
+        return Malformed
+      }
+      cursor = SkipBlanks(header.cursor)
+      if Peek(cursor) != 93 {
+        return Malformed
+      }
+      cursor.at = cursor.at + 1
+      if doubled {
+        if Peek(cursor) != 93 {
+          return Malformed
+        }
+        cursor.at = cursor.at + 1
+      }
+      path = header.path
+      if doubled {
+        root = PushTable(root, &path)
+      } else {
+        root = MakeTable(root, &path)
+      }
+      continue
+    }
+
+    const key = ParsePath(cursor)
+    if !key.ok {
+      return Malformed
+    }
+    cursor = SkipBlanks(key.cursor)
+    if Peek(cursor) != 61 {
+      return Malformed
+    }
+    cursor.at = cursor.at + 1
+    const step = ParseValue(SkipBlanks(cursor))
+    if !step.ok {
+      return Malformed
+    }
+    cursor = step.cursor
+    root = Assign(root, &path, &key.path, step.value)
+  }
+  return root
+}
+
+// What a dotted key is: the names, and where the reader stopped.
+struct PathStep {
+  var path: List<text>
+  var cursor: Cursor
+  var ok: bool
+}
+
+fun ParsePath(cursor: Cursor) -> PathStep uses unsafe {
+  var walk = SkipBlanks(cursor)
+  var names = ListNew<text>()
+  loop {
+    const piece = ParseKey(walk)
+    if !piece.ok {
+      return PathStep(names, walk, false)
+    }
+    names.Push(piece.name)
+    walk = SkipBlanks(piece.cursor)
+    if Peek(walk) != 46 {
+      return PathStep(names, walk, true)
+    }
+    walk.at = walk.at + 1
+    walk = SkipBlanks(walk)
+  }
+}
+
+struct KeyStep {
+  var name: text
+  var cursor: Cursor
+  var ok: bool
+}
+
+fun ParseKey(cursor: Cursor) -> KeyStep uses unsafe {
+  var walk = cursor
+  if AtEnd(walk) {
+    return KeyStep("", walk, false)
+  }
+  const byte = Peek(walk)
+  if byte == 34 || byte == 39 {
+    const step = ParseString(walk)
+    if !step.ok {
+      return KeyStep("", walk, false)
+    }
+    return KeyStep(AsTextValue(step.value), step.cursor, true)
+  }
+  var builder = BuilderNew()
+  var seen = 0
+  while !AtEnd(walk) {
+    const held = walk.bytes[walk.at]
+    const bare = (held >= 65 && held <= 90) ||
+                 (held >= 97 && held <= 122) ||
+                 (held >= 48 && held <= 57) || held == 45 || held == 95
+    if !bare {
+      break
+    }
+    builder.AppendByte(held)
+    walk.at = walk.at + 1
+    seen = seen + 1
+  }
+  if seen == 0 {
+    return KeyStep("", walk, false)
+  }
+  return KeyStep(builder.Release(), walk, true)
+}
+
+fun AsTextValue(value: Value) -> text {
+  return match value {
+    Value.Text(held) => held,
+    _ => "",
+  }
+}
+
+// ------------------------------------------------------------ values ---
+
+fun ParseValue(cursor: Cursor) -> Step uses unsafe {
+  var walk = SkipBlanks(cursor)
+  if AtEnd(walk) {
+    return Fail(walk)
+  }
+  const byte = Peek(walk)
+  if byte == 34 || byte == 39 {
+    return ParseString(walk)
+  }
+  if byte == 91 {
+    return ParseArray(walk)
+  }
+  if byte == 123 {
+    return ParseInline(walk)
+  }
+  return ParseBare(walk)
+}
+
+fun ParseString(cursor: Cursor) -> Step uses unsafe {
+  var walk = cursor
+  const quote = Peek(walk)
+  const tripled = PeekAt(walk, 1) == quote && PeekAt(walk, 2) == quote
+  if tripled {
+    walk.at = walk.at + 3
+  } else {
+    walk.at = walk.at + 1
+  }
+  // A line break straight after the opening of a multi-line string is
+  // not part of it, which is what makes the usual layout read right.
+  if tripled && Peek(walk) == 10 {
+    walk.at = walk.at + 1
+  } else if tripled && Peek(walk) == 13 && PeekAt(walk, 1) == 10 {
+    walk.at = walk.at + 2
+  }
+  var builder = BuilderNew()
+  loop {
+    if AtEnd(walk) {
+      return Fail(walk)
+    }
+    const byte = walk.bytes[walk.at]
+    if byte == quote {
+      if !tripled {
+        walk.at = walk.at + 1
+        return Step(Value.Text(builder.Release()), walk, true)
+      }
+      if PeekAt(walk, 1) == quote && PeekAt(walk, 2) == quote {
+        walk.at = walk.at + 3
+        return Step(Value.Text(builder.Release()), walk, true)
+      }
+    }
+    // A single-quoted string is literal: what is in it is what it says.
+    if byte == 92 && quote == 34 {
+      walk.at = walk.at + 1
+      if AtEnd(walk) {
+        return Fail(walk)
+      }
+      const escaped = walk.bytes[walk.at]
+      walk.at = walk.at + 1
+      if escaped == 110 {
+        builder.AppendByte(10)
+      } else if escaped == 116 {
+        builder.AppendByte(9)
+      } else if escaped == 114 {
+        builder.AppendByte(13)
+      } else if escaped == 34 {
+        builder.AppendByte(34)
+      } else if escaped == 92 {
+        builder.AppendByte(92)
+      } else if escaped == 98 {
+        builder.AppendByte(8)
+      } else if escaped == 102 {
+        builder.AppendByte(12)
+      } else if escaped == 117 || escaped == 85 {
+        var digits = 8
+        if escaped == 117 {
+          digits = 4
+        }
+        var point = 0
+        var i = 0
+        while i < digits {
+          if AtEnd(walk) {
+            return Fail(walk)
+          }
+          const digit = HexDigit(walk.bytes[walk.at])
+          if digit < 0 {
+            return Fail(walk)
+          }
+          point = point * 16 + digit
+          walk.at = walk.at + 1
+          i = i + 1
+        }
+        AppendCodePoint(&mut builder, point)
+      } else if escaped == 10 {
+        // A backslash at the end of a line eats the line break and the
+        // blanks after it, which is how a long string is wrapped.
+        while !AtEnd(walk) {
+          const held = walk.bytes[walk.at]
+          if held != 32 && held != 9 && held != 10 && held != 13 {
+            break
+          }
+          walk.at = walk.at + 1
+        }
+      } else {
+        return Fail(walk)
+      }
+      continue
+    }
+    builder.AppendByte(byte)
+    walk.at = walk.at + 1
+  }
+}
+
+fun HexDigit(byte: u8) -> int {
+  if byte >= 48 && byte <= 57 {
+    return (byte - 48) as int
+  }
+  if byte >= 97 && byte <= 102 {
+    return (byte - 87) as int
+  }
+  if byte >= 65 && byte <= 70 {
+    return (byte - 55) as int
+  }
+  return -1
+}
+
+// A code point as UTF-8, which is what the file is in.
+fun AppendCodePoint(builder: &mut Builder, point: int) uses unsafe {
+  if point < 0x80 {
+    builder.AppendByte(point as u8)
+  } else if point < 0x800 {
+    builder.AppendByte((192 + point / 64) as u8)
+    builder.AppendByte((128 + point % 64) as u8)
+  } else if point < 0x10000 {
+    builder.AppendByte((224 + point / 4096) as u8)
+    builder.AppendByte((128 + point / 64 % 64) as u8)
+    builder.AppendByte((128 + point % 64) as u8)
+  } else {
+    builder.AppendByte((240 + point / 262144) as u8)
+    builder.AppendByte((128 + point / 4096 % 64) as u8)
+    builder.AppendByte((128 + point / 64 % 64) as u8)
+    builder.AppendByte((128 + point % 64) as u8)
+  }
+}
+
+fun ParseArray(cursor: Cursor) -> Step uses unsafe {
+  var walk = cursor
+  walk.at = walk.at + 1
+  var items = Array()
+  loop {
+    walk = SkipNothing(walk)
+    if AtEnd(walk) {
+      return Fail(walk)
+    }
+    if Peek(walk) == 93 {
+      walk.at = walk.at + 1
+      return Step(items, walk, true)
+    }
+    const step = ParseValue(walk)
+    if !step.ok {
+      return Fail(walk)
+    }
+    items = Push(items, step.value)
+    walk = SkipNothing(step.cursor)
+    if Peek(walk) == 44 {
+      walk.at = walk.at + 1
+      continue
+    }
+    if Peek(walk) == 93 {
+      walk.at = walk.at + 1
+      return Step(items, walk, true)
+    }
+    return Fail(walk)
+  }
+}
+
+fun ParseInline(cursor: Cursor) -> Step uses unsafe {
+  var walk = cursor
+  walk.at = walk.at + 1
+  var table = Object()
+  loop {
+    walk = SkipBlanks(walk)
+    if AtEnd(walk) {
+      return Fail(walk)
+    }
+    if Peek(walk) == 125 {
+      walk.at = walk.at + 1
+      return Step(table, walk, true)
+    }
+    const key = ParsePath(walk)
+    if !key.ok {
+      return Fail(walk)
+    }
+    walk = SkipBlanks(key.cursor)
+    if Peek(walk) != 61 {
+      return Fail(walk)
+    }
+    walk.at = walk.at + 1
+    const step = ParseValue(SkipBlanks(walk))
+    if !step.ok {
+      return Fail(walk)
+    }
+    table = PutPath(table, &key.path, 0, step.value)
+    walk = SkipBlanks(step.cursor)
+    if Peek(walk) == 44 {
+      walk.at = walk.at + 1
+      continue
+    }
+    if Peek(walk) == 125 {
+      walk.at = walk.at + 1
+      return Step(table, walk, true)
+    }
+    return Fail(walk)
+  }
+}
+
+// A number, a truth, or a date -- all of which end at a blank, a comma,
+// a bracket or a line break.
+fun ParseBare(cursor: Cursor) -> Step uses unsafe {
+  var walk = cursor
+  var builder = BuilderNew()
+  while !AtEnd(walk) {
+    const byte = walk.bytes[walk.at]
+    if byte == 44 || byte == 93 || byte == 125 || byte == 10 ||
+       byte == 13 || byte == 35 {
+      break
+    }
+    builder.AppendByte(byte)
+    walk.at = walk.at + 1
+  }
+  const spelled = Trim(builder.Release())
+  if Length(spelled) == 0 {
+    return Fail(walk)
+  }
+  if spelled == "true" {
+    return Step(OfBool(true), walk, true)
+  }
+  if spelled == "false" {
+    return Step(OfBool(false), walk, true)
+  }
+  if const number = NumberOf(spelled) {
+    return Step(Value.Number(number), walk, true)
+  }
+  // A date, a time, or an offset: kept as what it said, because turning
+  // one into a moment is `std.time`'s question and a parser that
+  // answered it badly would be worse than one that does not.
+  if LooksLikeDate(spelled) {
+    return Step(OfText(spelled), walk, true)
+  }
+  return Fail(walk)
+}
+
+fun LooksLikeDate(spelled: text) -> bool uses unsafe {
+  const bytes = Bytes(spelled)
+  if bytes.len < 8 {
+    return false
+  }
+  var digits = 0
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    const allowed = (byte >= 48 && byte <= 57) || byte == 45 ||
+                    byte == 58 || byte == 84 || byte == 90 ||
+                    byte == 46 || byte == 43 || byte == 32
+    if !allowed {
+      return false
+    }
+    if byte >= 48 && byte <= 57 {
+      digits = digits + 1
+    }
+    i = i + 1
+  }
+  return digits >= 6
+}
+
+/// The number `spelled` is, in any of TOML's four bases, or nothing.
+offer fun NumberOf(spelled: text) -> float? uses unsafe {
+  const bytes = Bytes(spelled)
+  if bytes.len == 0 {
+    return null
+  }
+  // `0x`, `0o` and `0b` are whole numbers in another base; everything
+  // else is read in ten, with underscores anywhere between digits.
+  if bytes.len > 2 && bytes[0] == 48 {
+    const marker = bytes[1]
+    var base = 0
+    if marker == 120 {
+      base = 16
+    } else if marker == 111 {
+      base = 8
+    } else if marker == 98 {
+      base = 2
+    }
+    if base != 0 {
+      var total = 0.0
+      var seen = 0
+      var i = 2
+      while i < bytes.len {
+        const byte = bytes[i]
+        i = i + 1
+        if byte == 95 {
+          continue
+        }
+        const digit = HexDigit(byte)
+        if digit < 0 || digit >= base {
+          return null
+        }
+        total = total * (base as float) + (digit as float)
+        seen = seen + 1
+      }
+      if seen == 0 {
+        return null
+      }
+      return total
+    }
+  }
+
+  var sign = 1.0
+  var i = 0
+  if bytes[0] == 43 || bytes[0] == 45 {
+    if bytes[0] == 45 {
+      sign = -1.0
+    }
+    i = 1
+  }
+  var whole = 0.0
+  var digits = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == 95 {
+      i = i + 1
+      continue
+    }
+    if byte < 48 || byte > 57 {
+      break
+    }
+    whole = whole * 10.0 + ((byte - 48) as float)
+    digits = digits + 1
+    i = i + 1
+  }
+  if digits == 0 {
+    return null
+  }
+  if i < bytes.len && bytes[i] == 46 {
+    i = i + 1
+    var scale = 0.1
+    var fraction = 0
+    while i < bytes.len {
+      const byte = bytes[i]
+      if byte == 95 {
+        i = i + 1
+        continue
+      }
+      if byte < 48 || byte > 57 {
+        break
+      }
+      whole = whole + ((byte - 48) as float) * scale
+      scale = scale * 0.1
+      fraction = fraction + 1
+      i = i + 1
+    }
+    if fraction == 0 {
+      return null
+    }
+  }
+  if i < bytes.len && (bytes[i] == 101 || bytes[i] == 69) {
+    i = i + 1
+    var exponent_sign = 1
+    if i < bytes.len && (bytes[i] == 43 || bytes[i] == 45) {
+      if bytes[i] == 45 {
+        exponent_sign = -1
+      }
+      i = i + 1
+    }
+    var exponent = 0
+    var seen = 0
+    while i < bytes.len {
+      const byte = bytes[i]
+      if byte == 95 {
+        i = i + 1
+        continue
+      }
+      if byte < 48 || byte > 57 {
+        break
+      }
+      exponent = exponent * 10 + (byte - 48) as int
+      seen = seen + 1
+      i = i + 1
+    }
+    if seen == 0 {
+      return null
+    }
+    var step = 0
+    while step < exponent {
+      if exponent_sign > 0 {
+        whole = whole * 10.0
+      } else {
+        whole = whole / 10.0
+      }
+      step = step + 1
+    }
+  }
+  if i != bytes.len {
+    return null
+  }
+  return sign * whole
+}
+
+// ------------------------------------------------------------ tables ---
+
+// The table `path` names, made if it is not there, and the root with it
+// in place.
+fun MakeTable(root: Value, path: &List<text>) -> Value uses unsafe {
+  return Descend(root, path, 0, false)
+}
+
+// The same, but the last name is an array of tables: a new table is
+// appended to it and that is where pairs go.
+fun PushTable(root: Value, path: &List<text>) -> Value uses unsafe {
+  return Descend(root, path, 0, true)
+}
+
+fun Descend(here: Value, path: &List<text>, at: int, appending: bool)
+    -> Value uses unsafe {
+  if at >= path.Len() {
+    return here
+  }
+  const name = path.At(at)
+  const last = at == path.Len() - 1
+  var child = MemberOf(here, name)
+  if last && appending {
+    var list = child
+    if Kind(list) != 4 {
+      list = Array()
+    }
+    list = Push(list, Object())
+    return Replace(here, name, list)
+  }
+  if Kind(child) != 5 {
+    // An array of tables is descended into at its last element, which is
+    // what `[[a]]` then `[a.b]` means.
+    if Kind(child) == 4 {
+      const inner = Descend(LastOf(child), path, at + 1, appending)
+      return Replace(here, name, ReplaceLast(child, inner))
+    }
+    child = Object()
+  }
+  return Replace(here, name, Descend(child, path, at + 1, appending))
+}
+
+fun Kind(value: Value) -> int {
+  return match value {
+    Value.Null => 0,
+    Value.Bool(_held) => 1,
+    Value.Number(_held) => 2,
+    Value.Text(_held) => 3,
+    Value.Array(_items) => 4,
+    Value.Object(_fields) => 5,
+  }
+}
+
+fun MemberOf(value: Value, name: text) -> Value uses unsafe {
+  match value {
+    Value.Object(fields) => {
+      var i = 0
+      while i < fields.Len() {
+        const field = fields.At(i)
+        if field.name == name {
+          return field.value
+        }
+        i = i + 1
+      }
+      return Value.Null
+    },
+    _ => { return Value.Null },
+  }
+}
+
+// The table with `name` set to `value`, replacing what was there.
+fun Replace(table: Value, name: text, value: Value) -> Value uses unsafe {
+  match table {
+    Value.Object(fields) => {
+      var i = 0
+      while i < fields.Len() {
+        if fields.At(i).name == name {
+          fields.Set(i, Field(name, value))
+          return Value.Object(fields)
+        }
+        i = i + 1
+      }
+      fields.Push(Field(name, value))
+      return Value.Object(fields)
+    },
+    _ => { return table },
+  }
+}
+
+fun LastOf(list: Value) -> Value uses unsafe {
+  match list {
+    Value.Array(items) => {
+      if items.Len() == 0 {
+        return Value.Null
+      }
+      return items.At(items.Len() - 1)
+    },
+    _ => { return Value.Null },
+  }
+}
+
+fun ReplaceLast(list: Value, value: Value) -> Value uses unsafe {
+  match list {
+    Value.Array(items) => {
+      if items.Len() != 0 {
+        items.Set(items.Len() - 1, value)
+      }
+      return Value.Array(items)
+    },
+    _ => { return list },
+  }
+}
+
+// `name = value` under the table the last header named.
+fun Assign(root: Value, under: &List<text>, key: &List<text>,
+           value: Value)
+    -> Value uses unsafe {
+  if under.Len() == 0 {
+    return PutPath(root, key, 0, value)
+  }
+  return PutInto(root, under, 0, key, value)
+}
+
+fun PutInto(here: Value, under: &List<text>, at: int,
+            key: &List<text>, value: Value) -> Value uses unsafe {
+  if at >= under.Len() {
+    return PutPath(here, key, 0, value)
+  }
+  const name = under.At(at)
+  var child = MemberOf(here, name)
+  if Kind(child) == 4 {
+    // The newest table of an array of tables is the one being filled.
+    const inner = PutInto(LastOf(child), under, at + 1, key, value)
+    return Replace(here, name, ReplaceLast(child, inner))
+  }
+  if Kind(child) != 5 {
+    child = Object()
+  }
+  return Replace(here, name, PutInto(child, under, at + 1, key, value))
+}
+
+fun PutPath(table: Value, key: &List<text>, at: int, value: Value)
+    -> Value uses unsafe {
+  if at >= key.Len() {
+    return value
+  }
+  const name = key.At(at)
+  if at == key.Len() - 1 {
+    return Replace(table, name, value)
+  }
+  var child = MemberOf(table, name)
+  if Kind(child) != 5 {
+    child = Object()
+  }
+  return Replace(table, name, PutPath(child, key, at + 1, value))
+}
+
+// ------------------------------------------------------------ writing ---
+
+/// A value as TOML.
+///
+/// Tables are written as headers and arrays of tables as double headers,
+/// which is what a person writing a manifest by hand would have written.
+offer fun Write(value: Value) -> text uses unsafe {
+  var builder = BuilderNew()
+  WriteTable(&mut builder, value, "")
+  return builder.Release()
+}
+
+fun WriteTable(builder: &mut Builder, table: Value, prefix: text)
+    uses unsafe {
+  // The pairs first, then the tables: a pair after a header belongs to
+  // that header, so a pair written late would move.
+  match table {
+    Value.Object(fields) => {
+      var i = 0
+      while i < fields.Len() {
+        const field = fields.At(i)
+        if Kind(field.value) != 5 && !IsTableArray(field.value) {
+          builder.Append(WriteKey(field.name))
+          builder.Append(" = ")
+          builder.Append(WriteValue(field.value))
+          builder.AppendByte(10)
+        }
+        i = i + 1
+      }
+      i = 0
+      while i < fields.Len() {
+        const field = fields.At(i)
+        var name = WriteKey(field.name)
+        if Length(prefix) != 0 {
+          name = prefix + "." + name
+        }
+        if Kind(field.value) == 5 {
+          builder.AppendByte(10)
+          builder.Append("[" + name + "]")
+          builder.AppendByte(10)
+          WriteTable(builder, field.value, name)
+        } else if IsTableArray(field.value) {
+          match field.value {
+            Value.Array(items) => {
+              var j = 0
+              while j < items.Len() {
+                builder.AppendByte(10)
+                builder.Append("[[" + name + "]]")
+                builder.AppendByte(10)
+                WriteTable(builder, items.At(j), name)
+                j = j + 1
+              }
+            },
+            _ => {},
+          }
+        }
+        i = i + 1
+      }
+    },
+    _ => {},
+  }
+}
+
+fun IsTableArray(value: Value) -> bool uses unsafe {
+  match value {
+    Value.Array(items) => {
+      if items.Len() == 0 {
+        return false
+      }
+      var i = 0
+      while i < items.Len() {
+        if Kind(items.At(i)) != 5 {
+          return false
+        }
+        i = i + 1
+      }
+      return true
+    },
+    _ => { return false },
+  }
+}
+
+fun WriteKey(name: text) -> text uses unsafe {
+  const bytes = Bytes(name)
+  var bare = bytes.len > 0
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    const allowed = (byte >= 65 && byte <= 90) ||
+                    (byte >= 97 && byte <= 122) ||
+                    (byte >= 48 && byte <= 57) || byte == 45 ||
+                    byte == 95
+    if !allowed {
+      bare = false
+    }
+    i = i + 1
+  }
+  if bare {
+    return name
+  }
+  return WriteString(name)
+}
+
+fun WriteValue(value: Value) -> text uses unsafe {
+  return match value {
+    Value.Null => "\"\"",
+    Value.Bool(held) => TruthText(held),
+    Value.Number(held) => WriteNumber(held),
+    Value.Text(held) => WriteString(held),
+    Value.Array(items) => WriteArray(items),
+    Value.Object(fields) => WriteInline(fields),
+  }
+}
+
+fun TruthText(held: bool) -> text {
+  if held {
+    return "true"
+  }
+  return "false"
+}
+
+fun WriteNumber(held: float) -> text {
+  // A whole number is written without a point, because TOML's integers
+  // and floats are different types and a port that reads this back
+  // should see the one that was meant.
+  if held == (held as int) as float {
+    return "{held as int}"
+  }
+  return "{held}"
+}
+
+fun WriteString(held: text) -> text uses unsafe {
+  var builder = BuilderNew()
+  builder.AppendByte(34)
+  const bytes = Bytes(held)
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == 34 || byte == 92 {
+      builder.AppendByte(92)
+      builder.AppendByte(byte)
+    } else if byte == 10 {
+      builder.AppendByte(92)
+      builder.AppendByte(110)
+    } else if byte == 9 {
+      builder.AppendByte(92)
+      builder.AppendByte(116)
+    } else if byte == 13 {
+      builder.AppendByte(92)
+      builder.AppendByte(114)
+    } else {
+      builder.AppendByte(byte)
+    }
+    i = i + 1
+  }
+  builder.AppendByte(34)
+  return builder.Release()
+}
+
+fun WriteArray(items: List<Value>) -> text uses unsafe {
+  var builder = BuilderNew()
+  builder.AppendByte(91)
+  var i = 0
+  while i < items.Len() {
+    if i != 0 {
+      builder.Append(", ")
+    }
+    builder.Append(WriteValue(items.At(i)))
+    i = i + 1
+  }
+  builder.AppendByte(93)
+  return builder.Release()
+}
+
+fun WriteInline(fields: List<Field>) -> text uses unsafe {
+  var builder = BuilderNew()
+  builder.AppendByte(123)
+  var i = 0
+  while i < fields.Len() {
+    if i != 0 {
+      builder.Append(", ")
+    }
+    const field = fields.At(i)
+    builder.Append(WriteKey(field.name))
+    builder.Append(" = ")
+    builder.Append(WriteValue(field.value))
+    i = i + 1
+  }
+  builder.AppendByte(125)
+  return builder.Release()
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun ReadsAManifest() -> bool uses unsafe {
+  // The shape this project's own manifests are in.
+  const source = "# a comment\n" +
+      "name = \"wolang\"\n" +
+      "version = 1\n\n" +
+      "[package]\n" +
+      "source = \"src\"\n" +
+      "tags = [\"systems\", \"games\"]\n\n" +
+      "[dependencies.std]\n" +
+      "path = \"../std\"\n"
+  match Parse(source) {
+    Ok(value) => {
+      return AsText(Get(value, "name") ?? Null(), "") == "wolang" &&
+             AsInt(Get(value, "version") ?? Null(), 0) == 1 &&
+             AsText(Get(value, "package.source") ?? Null(), "") ==
+                 "src" &&
+             AsText(Get(value, "package.tags.1") ?? Null(), "") ==
+                 "games" &&
+             AsText(Get(value, "dependencies.std.path") ?? Null(),
+                    "") == "../std"
+    },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun ReadsEveryKindOfValue() -> bool uses unsafe {
+  const source =
+      "a = 1\nb = -2.5\nc = 0xff\nd = 0b1010\ne = 1_000\n" +
+      "f = true\ng = 'literal \\n'\nh = \"escaped \\n\"\n" +
+      "i = 2024-01-31T12:00:00Z\nj = \{ x = 1, y = 2 \}\n" +
+      "k = [1, [2, 3]]\nl = 1e3\n"
+  match Parse(source) {
+    Ok(v) => {
+      return AsInt(Get(v, "a") ?? Null(), 0) == 1 &&
+             AsNumber(Get(v, "b") ?? Null(), 0.0) == -2.5 &&
+             AsInt(Get(v, "c") ?? Null(), 0) == 255 &&
+             AsInt(Get(v, "d") ?? Null(), 0) == 10 &&
+             AsInt(Get(v, "e") ?? Null(), 0) == 1000 &&
+             AsBool(Get(v, "f") ?? Null(), false) &&
+             AsText(Get(v, "g") ?? Null(), "") == "literal \\n" &&
+             AsText(Get(v, "h") ?? Null(), "") == "escaped \n" &&
+             AsText(Get(v, "i") ?? Null(), "") ==
+                 "2024-01-31T12:00:00Z" &&
+             AsInt(Get(v, "j.y") ?? Null(), 0) == 2 &&
+             AsInt(Get(v, "k.1.0") ?? Null(), 0) == 2 &&
+             AsInt(Get(v, "l") ?? Null(), 0) == 1000
+    },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun ReadsArraysOfTables() -> bool uses unsafe {
+  const source = "[[server]]\nhost = \"a\"\n\n" +
+                 "[[server]]\nhost = \"b\"\nport = 80\n"
+  match Parse(source) {
+    Ok(v) => {
+      return AsText(Get(v, "server.0.host") ?? Null(), "") == "a" &&
+             AsText(Get(v, "server.1.host") ?? Null(), "") == "b" &&
+             AsInt(Get(v, "server.1.port") ?? Null(), 0) == 80
+    },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun RefusesWhatIsNotToml() -> bool uses unsafe {
+  var refused = 0
+  const broken = ["a =", "= 1", "[a", "a = @", "a = \"unclosed"]
+  var i = 0
+  while i < 5 {
+    match Parse(broken[i]) {
+      Ok(_value) => refused = refused,
+      Malformed => refused = refused + 1,
+    }
+    i = i + 1
+  }
+  return refused == 5
+}
+
+@Test
+fun WritesWhatItRead() -> bool uses unsafe {
+  const source = "name = \"wolang\"\n\n[package]\nsource = \"src\"\n"
+  match Parse(source) {
+    Ok(value) => {
+      const written = Write(value)
+      match Parse(written) {
+        Ok(again) => {
+          return AsText(Get(again, "name") ?? Null(), "") ==
+                     "wolang" &&
+                 AsText(Get(again, "package.source") ?? Null(), "") ==
+                     "src"
+        },
+        Malformed => { return false },
+      }
+    },
+    Malformed => { return false },
+  }
+}

@@ -2712,6 +2712,13 @@ AstRange<TypeRefId> Parser::ParseGenericArguments() {
   while (!AtEnd() && !AtAngleClose()) {
     const size_t before = pos_;
     args.push_back(ParseType());
+    // The close first. A nested list that ended on a `>>` left half a
+    // token behind, and a comma after it belongs to whatever this type
+    // is *in* -- `fun f(a: List<List<T>>, b: int)` was read as a list
+    // with two arguments and a parameter list with one (D163).
+    if (AtAngleClose()) {
+      break;
+    }
     if (!Eat(TokenKind::kComma)) {
       break;
     }

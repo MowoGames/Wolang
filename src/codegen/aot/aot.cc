@@ -26,6 +26,20 @@
 namespace wolang {
 namespace codegen {
 
+std::string HostTriple() {
+#if WOLANG_WITH_LLVM
+  char* host = LLVMGetDefaultTargetTriple();
+  const std::string held = host != nullptr ? host : "";
+  if (host != nullptr) {
+    LLVMDisposeMessage(host);
+  }
+  return held;
+#else
+  // No backend to ask, and nothing to compare a `--target` against.
+  return "";
+#endif
+}
+
 bool HasAotBackend() {
 #if WOLANG_WITH_LLVM
   return true;
@@ -439,6 +453,23 @@ void Translator::Declare() {
       continue;
     }
     if (function.is_declaration()) {
+      // A declaration that found no definition and is not foreign: the
+      // one case is `Print` in a file compiled on its own, which the
+      // interpreter answers with an intrinsic. Pointed at the runtime's
+      // own, so that a binary built from such a file prints rather than
+      // trapping (D161).
+      // `link` points at itself until a definition is found, so a
+      // declaration that still points at itself found none.
+      if (entry.link == i &&
+          interner_.Text(function.name) == "Print" &&
+          types_.ArgumentsOf(function.type).size() == 1) {
+        const auto existing = declared_.find("wolang_print");
+        entry.function = existing != declared_.end()
+                             ? existing->second
+                             : LLVMAddFunction(mod_, "wolang_print",
+                                               Signature(entry));
+        declared_["wolang_print"] = entry.function;
+      }
       continue;
     }
     std::string name = "wo$";
@@ -1693,11 +1724,20 @@ void Translator::EmitTerminator(const ir::Inst& inst) {
 
 AotResult Translator::Run(const AotOptions& options) {
   AotResult result;
-  // This machine's target only. Every target would link most of LLVM
-  // into the driver for the sake of cross-compiling, which is a thing to
-  // pay for when there is something to cross-compile *to* (D98).
+  // Every target this build has, so that `--target` can name one (D160).
+  // When the build asked for this machine only, that is what there is --
+  // and a triple for anything else then says so rather than producing a
+  // binary for the wrong machine.
+#if defined(WOLANG_ALL_TARGETS)
+  LLVMInitializeAllTargetInfos();
+  LLVMInitializeAllTargets();
+  LLVMInitializeAllTargetMCs();
+  LLVMInitializeAllAsmPrinters();
+  LLVMInitializeAllAsmParsers();
+#else
   LLVMInitializeNativeTarget();
   LLVMInitializeNativeAsmPrinter();
+#endif
 
   char* host = LLVMGetDefaultTargetTriple();
   const std::string triple =

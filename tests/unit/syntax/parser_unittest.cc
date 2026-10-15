@@ -1038,5 +1038,27 @@ fun Use(t: Thing) -> int {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+WOLANG_TEST(ParserTest, ANestedGenericIsNotTwoArguments) {
+  // `List<List<T>>` ends on one token that closes two lists, and the
+  // comma after it belongs to the parameter list. Read the other way
+  // round -- which is what happened -- the generic swallowed the comma
+  // and the function lost a parameter (D163).
+  const std::string source = R"(
+struct Pair<A, B> { var a: A var b: B }
+
+fun Rows(rows: Pair<Pair<int, int>, int>, count: int) -> int {
+  return count
+}
+
+fun Deeper(x: Pair<int, Pair<int, Pair<int, int>>>, y: int) -> int {
+  return y
+}
+
+fun Returned(a: int) -> Pair<Pair<int, int>, int>
+)";
+  Fixture f(source);
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang

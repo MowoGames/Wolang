@@ -57,6 +57,11 @@ struct AotResult {
 // True when this build has the backend at all.
 bool HasAotBackend();
 
+// What this machine is, as an LLVM triple. Empty when there is no
+// backend to ask. A `--target` that matches it is not a cross build, so
+// the driver links it the usual way (D160).
+std::string HostTriple();
+
 // Compiles every file into one object file, with a C `main` that starts
 // the program: the class tables registered, then the module initializers,
 // then Wolang's own `main`.

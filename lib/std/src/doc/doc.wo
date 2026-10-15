@@ -1,0 +1,293 @@
+// What a document is, whatever it was written in.
+//
+// JSON, TOML, INI and YAML are four spellings of the same six things: a
+// nothing, a truth, a number, some text, a list and a table. One value
+// type for all of them means a program that reads configuration does not
+// care which file it came from, and that the navigation -- `Member`,
+// `At`, `Get`, `AsText` -- is learned once (D162).
+//
+// The recursion goes through a `List`, whose value is a handle, so a
+// tree costs one allocation per list and table and nothing per number.
+
+need std.list.{List, ListNew}
+need std.text.{Bytes, IndexOf, Length, Substring}
+
+/// One of the six things a document value can be.
+offer enum Value {
+  Null,
+  Bool(value: bool),
+  Number(value: float),
+  Text(value: text),
+  Array(items: List<Value>),
+  Object(fields: List<Field>),
+}
+
+/// A member of a table: its name and its value.
+offer struct Field {
+  var name: text
+  var value: Value
+}
+
+/// Which of the six a value is, as a number: `0` null, `1` bool, `2`
+/// number, `3` text, `4` array, `5` object.
+///
+/// For a program that switches on the shape of a document it did not
+/// write, which is most of what reading one is.
+offer fun Kind(value: Value) -> int {
+  return match value {
+    Value.Null => 0,
+    Value.Bool(_held) => 1,
+    Value.Number(_held) => 2,
+    Value.Text(_held) => 3,
+    Value.Array(_items) => 4,
+    Value.Object(_fields) => 5,
+  }
+}
+
+// ---------------------------------------------------------- navigation ---
+
+/// The member of a table called `name`, or nothing.
+offer fun Member(value: Value, name: text) -> Value? uses unsafe {
+  match value {
+    Value.Object(fields) => {
+      var i = 0
+      while i < fields.Len() {
+        const field = fields.At(i)
+        if field.name == name {
+          return field.value
+        }
+        i = i + 1
+      }
+      return null
+    },
+    _ => { return null },
+  }
+}
+
+/// Element `at` of a list, or nothing.
+offer fun At(value: Value, at: int) -> Value? uses unsafe {
+  match value {
+    Value.Array(items) => {
+      if at < 0 || at >= items.Len() {
+        return null
+      }
+      return items.At(at)
+    },
+    _ => { return null },
+  }
+}
+
+/// What `path` names, or nothing.
+///
+/// `"server.ports.0"`: a name walks into a table and a number walks into
+/// a list. What reading configuration actually looks like, written once
+/// here rather than as four lines at every call.
+offer fun Get(value: Value, path: text) -> Value? uses unsafe {
+  var here = value
+  var rest = path
+  loop {
+    var piece = rest
+    const dot = IndexOf(rest, ".")
+    if dot >= 0 {
+      piece = Substring(rest, 0, dot)
+      rest = Substring(rest, dot + 1, Length(rest))
+    } else {
+      rest = ""
+    }
+    if Length(piece) == 0 {
+      return null
+    }
+    var step: Value? = null
+    if const index = WholeNumber(piece) {
+      step = At(here, index)
+      if step == null {
+        step = Member(here, piece)
+      }
+    } else {
+      step = Member(here, piece)
+    }
+    if const found = step {
+      here = found
+    } else {
+      return null
+    }
+    if Length(rest) == 0 {
+      return here
+    }
+  }
+}
+
+/// The number `piece` spells, when it is all digits.
+fun WholeNumber(piece: text) -> int? uses unsafe {
+  const bytes = Bytes(piece)
+  if bytes.len == 0 {
+    return null
+  }
+  var total = 0
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte < 48 || byte > 57 {
+      return null
+    }
+    total = total * 10 + (byte - 48) as int
+    i = i + 1
+  }
+  return total
+}
+
+/// How many elements a list has, or how many members a table has.
+offer fun Len(value: Value) -> int uses unsafe {
+  return match value {
+    Value.Array(items) => items.Len(),
+    Value.Object(fields) => fields.Len(),
+    _ => 0,
+  }
+}
+
+/// The name of member `at` of a table, or "".
+offer fun NameAt(value: Value, at: int) -> text uses unsafe {
+  match value {
+    Value.Object(fields) => {
+      if at < 0 || at >= fields.Len() {
+        return ""
+      }
+      return fields.At(at).name
+    },
+    _ => { return "" },
+  }
+}
+
+/// The value of member `at` of a table.
+offer fun ValueAt(value: Value, at: int) -> Value uses unsafe {
+  match value {
+    Value.Object(fields) => {
+      if at < 0 || at >= fields.Len() {
+        return Value.Null
+      }
+      return fields.At(at).value
+    },
+    _ => { return Value.Null },
+  }
+}
+
+// ----------------------------------------------------------- reading ---
+
+/// The number this is, or `fallback`.
+offer fun AsNumber(value: Value, fallback: float) -> float {
+  return match value {
+    Value.Number(held) => held,
+    _ => fallback,
+  }
+}
+
+/// The whole number this is, or `fallback`.
+offer fun AsInt(value: Value, fallback: int) -> int {
+  return match value {
+    Value.Number(held) => held as int,
+    _ => fallback,
+  }
+}
+
+/// The text this is, or `fallback`.
+offer fun AsText(value: Value, fallback: text) -> text {
+  return match value {
+    Value.Text(held) => held,
+    _ => fallback,
+  }
+}
+
+/// The truth this is, or `fallback`.
+offer fun AsBool(value: Value, fallback: bool) -> bool {
+  return match value {
+    Value.Bool(held) => held,
+    _ => fallback,
+  }
+}
+
+offer fun IsNull(value: Value) -> bool {
+  return match value {
+    Value.Null => true,
+    _ => false,
+  }
+}
+
+// ----------------------------------------------------------- building ---
+
+/// An empty table, to put members in.
+offer fun Object() -> Value uses unsafe {
+  return Value.Object(ListNew<Field>())
+}
+
+/// An empty list, to put values in.
+offer fun Array() -> Value uses unsafe {
+  return Value.Array(ListNew<Value>())
+}
+
+/// Puts a member in a table. The table is what it answers with, so calls
+/// chain: `Put(Put(Object(), "a", ..), "b", ..)`.
+offer fun Put(object: Value, name: text, value: Value) -> Value
+    uses unsafe {
+  match object {
+    Value.Object(fields) => {
+      fields.Push(Field(name, value))
+      return Value.Object(fields)
+    },
+    _ => { return object },
+  }
+}
+
+/// Adds a value to a list.
+offer fun Push(array: Value, value: Value) -> Value uses unsafe {
+  match array {
+    Value.Array(items) => {
+      items.Push(value)
+      return Value.Array(items)
+    },
+    _ => { return array },
+  }
+}
+
+offer fun Number(value: float) -> Value => Value.Number(value)
+offer fun OfInt(value: int) -> Value => Value.Number(value as float)
+offer fun OfText(value: text) -> Value => Value.Text(value)
+offer fun OfBool(value: bool) -> Value => Value.Bool(value)
+offer fun Null() -> Value => Value.Null
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun BuildsAndReadsATree() -> bool uses unsafe {
+  var ports = Array()
+  ports = Push(ports, OfInt(80))
+  ports = Push(ports, OfInt(443))
+  var server = Object()
+  server = Put(server, "host", OfText("example.com"))
+  server = Put(server, "ports", ports)
+  var root = Object()
+  root = Put(root, "server", server)
+
+  return Kind(root) == 5 && Len(root) == 1 &&
+         AsText(Get(root, "server.host") ?? Null(), "") ==
+             "example.com" &&
+         AsInt(Get(root, "server.ports.1") ?? Null(), 0) == 443 &&
+         Get(root, "server.nothing") == null &&
+         Get(root, "server.ports.9") == null
+}
+
+@Test
+fun WalksByNameAndNumber() -> bool uses unsafe {
+  var list = Array()
+  list = Push(list, OfText("first"))
+  var root = Object()
+  root = Put(root, "items", list)
+  // A table whose member is called `0` is reached by the same path as a
+  // list's first element, and the list is tried first.
+  var numbered = Object()
+  numbered = Put(numbered, "0", OfText("by name"))
+  root = Put(root, "odd", numbered)
+  return AsText(Get(root, "items.0") ?? Null(), "") == "first" &&
+         AsText(Get(root, "odd.0") ?? Null(), "") == "by name" &&
+         NameAt(root, 0) == "items" &&
+         Kind(ValueAt(root, 0)) == 4
+}

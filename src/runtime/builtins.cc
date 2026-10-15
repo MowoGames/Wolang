@@ -154,6 +154,7 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_args_at", reinterpret_cast<void*>(&wolang_args_at)},
       {"wolang_resolve", reinterpret_cast<void*>(&wolang_resolve)},
       {"wolang_spawn", reinterpret_cast<void*>(&wolang_spawn)},
+      {"wolang_print", reinterpret_cast<void*>(&wolang_print)},
       {"wolang_socket_open",
        reinterpret_cast<void*>(&wolang_socket_open)},
       {"wolang_socket_connect",
