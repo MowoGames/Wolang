@@ -1,0 +1,1575 @@
+// YAML.
+//
+// The format configuration is written in when someone decided JSON was
+// unfriendly: indentation instead of brackets, three ways to quote a
+// string, two ways to fold one across lines, anchors that repeat a
+// value, tags that name a type, and documents in a stream.
+//
+// It reads into `std.doc`'s value, like every other format here (D162),
+// and resolves the core schema: `~` and `null` are nothing, `true` and
+// `false` are truths, `0x10` is sixteen, `.inf` and `.nan` are what they
+// say, a timestamp stays as text because turning one into a moment is
+// `std.time`'s question.
+//
+// What a tag does: the standard ones (`!!str`, `!!int`, `!!float`,
+// `!!bool`, `!!null`, `!!seq`, `!!map`) decide how a scalar is read, and
+// an unknown one is kept out of the way -- a document value here has no
+// room to record it, and a reader that refused the file over a tag it
+// did not know would be a reader nobody could use (D165).
+
+need std.doc.{Array, AsBool, AsInt, AsNumber, AsText, Field, Get, Null,
+              Object, OfBool, OfText, Push, Value}
+need std.list.{List, ListNew}
+need std.text.{Builder, Bytes, BuilderNew, Length, Substring, Trim}
+
+/// What a document that is not one answers with.
+offer error Malformed
+
+// ------------------------------------------------------------- lines ---
+//
+// YAML is a line format: what a line means depends on how far it is
+// indented and on what the line before it was. So the first thing that
+// happens is that the input becomes lines, each with its indentation
+// counted and its comment removed -- after which the parser is a walk
+// over an array rather than a walk over bytes with indentation counted
+// at every step.
+
+struct Line {
+  // What is on it, without the indentation and without a trailing
+  // comment.
+  var text: text
+  // How many spaces it starts with.
+  var indent: int
+  // Whether it has nothing on it: a blank line belongs to whatever
+  // block it is in and never ends one.
+  var blank: bool
+  // The whole line, kept because a block scalar takes lines as they are.
+  var raw: text
+}
+
+fun SplitLines(input: text) -> List<Line> uses unsafe {
+  var lines = ListNew<Line>()
+  const bytes = Bytes(input)
+  var at = 0
+  while at <= bytes.len {
+    var end = at
+    while end < bytes.len && bytes[end] != 10 {
+      end = end + 1
+    }
+    var raw = BuilderNew()
+    var i = at
+    while i < end {
+      if bytes[i] != 13 {
+        raw.AppendByte(bytes[i])
+      }
+      i = i + 1
+    }
+    const whole = raw.Release()
+    var indent = 0
+    const held = Bytes(whole)
+    while indent < held.len && held[indent] == 32 {
+      indent = indent + 1
+    }
+    const body = Trim(Substring(whole, indent, Length(whole)))
+    const blank = Length(body) == 0 || FirstByte(body) == 35
+    lines.Push(Line(body, indent, blank, whole))
+    if end >= bytes.len {
+      break
+    }
+    at = end + 1
+  }
+  return lines
+}
+
+fun FirstByte(value: text) -> u8 uses unsafe {
+  const bytes = Bytes(value)
+  if bytes.len == 0 {
+    return 0
+  }
+  return bytes[0]
+}
+
+fun ByteAt(value: text, at: int) -> u8 uses unsafe {
+  const bytes = Bytes(value)
+  if at < 0 || at >= bytes.len {
+    return 0
+  }
+  return bytes[at]
+}
+
+// Where the reader is in the lines, and what it has named.
+class Reader {
+  var lines: List<Line>
+  var at: int = 0
+  // `&name` anchors, so that `*name` can repeat them.
+  var anchors: List<Field>
+
+  fun AtEnd() -> bool {
+    return at >= lines.Len()
+  }
+
+  fun Current() -> Line {
+    if AtEnd() {
+      return Line("", 0, true, "")
+    }
+    return lines.At(at)
+  }
+
+  // The next line that has something on it.
+  fun SkipBlank() {
+    while !AtEnd() && lines.At(at).blank {
+      at = at + 1
+    }
+  }
+
+  fun Remember(name: text, value: Value) uses unsafe {
+    anchors.Push(Field(name, value))
+  }
+
+  fun Recall(name: text) -> Value uses unsafe {
+    var i = anchors.Len() - 1
+    while i >= 0 {
+      if anchors.At(i).name == name {
+        return anchors.At(i).value
+      }
+      i = i - 1
+    }
+    return Value.Null
+  }
+}
+
+/// Reads the first document of `input`.
+offer fun Parse(input: text) -> Value! uses unsafe {
+  const documents = ParseAll(input)?
+  if documents.Len() == 0 {
+    return Value.Null
+  }
+  return documents.At(0)
+}
+
+/// Every document in a stream, which is what `---` separates.
+offer fun ParseAll(input: text) -> List<Value>! uses unsafe {
+  var reader = Reader(SplitLines(input), 0, ListNew<Field>())
+  var documents = ListNew<Value>()
+  loop {
+    reader.SkipBlank()
+    if reader.AtEnd() {
+      break
+    }
+    const line = reader.Current()
+    if StartsWithText(line.text, "---") {
+      reader.at = reader.at + 1
+      // `--- value` puts the whole document on the marker's line.
+      const rest = Trim(Substring(line.text, 3, Length(line.text)))
+      if Length(rest) != 0 {
+        const scalar = ReadScalar(rest)
+        if !scalar.ok {
+          return Malformed
+        }
+        documents.Push(scalar.value)
+        continue
+      }
+      reader.SkipBlank()
+      if reader.AtEnd() {
+        documents.Push(Value.Null)
+        continue
+      }
+    }
+    if StartsWithText(line.text, "...") {
+      reader.at = reader.at + 1
+      continue
+    }
+    const step = ReadNode(&mut reader, reader.Current().indent)
+    if !step.ok {
+      return Malformed
+    }
+    documents.Push(step.value)
+  }
+  return documents
+}
+
+fun StartsWithText(value: text, prefix: text) -> bool uses unsafe {
+  if Length(value) < Length(prefix) {
+    return false
+  }
+  return Substring(value, 0, Length(prefix)) == prefix
+}
+
+struct Step {
+  var value: Value
+  var ok: bool
+}
+
+fun Bad() -> Step {
+  return Step(Value.Null, false)
+}
+
+// ------------------------------------------------------------- blocks ---
+
+// One node at `indent`: a block mapping, a block sequence, or a scalar.
+fun ReadNode(reader: &mut Reader, indent: int) -> Step uses unsafe {
+  reader.SkipBlank()
+  if reader.AtEnd() {
+    return Step(Value.Null, true)
+  }
+  const line = reader.Current()
+  if line.indent < indent {
+    return Step(Value.Null, true)
+  }
+  if IsSequenceLine(line.text) {
+    return ReadSequence(reader, line.indent)
+  }
+  if MappingSplit(line.text) >= 0 {
+    return ReadMapping(reader, line.indent)
+  }
+  // A scalar on its own, which may be a block scalar, an alias, or a
+  // plain value that runs over several lines.
+  reader.at = reader.at + 1
+  const step = ReadScalarOrNested(reader, line.text, line.indent)
+  if !step.ok {
+    return Bad()
+  }
+  // A plain scalar may continue on the lines under it, folded into
+  // spaces -- which is how a long sentence is written without quotes.
+  if IsPlainText(step.value) {
+    var builder = BuilderNew()
+    builder.Append(AsTextValue(step.value))
+    var folded = false
+    loop {
+      if reader.AtEnd() {
+        break
+      }
+      const next = reader.Current()
+      if next.blank || next.indent <= indent ||
+         MappingSplit(next.text) >= 0 || IsSequenceLine(next.text) {
+        break
+      }
+      builder.AppendByte(32)
+      builder.Append(next.text)
+      folded = true
+      reader.at = reader.at + 1
+    }
+    if folded {
+      return Step(OfText(builder.Release()), true)
+    }
+  }
+  return step
+}
+
+// Whether a value is a plain string, which is the only kind that
+// continues onto the next line.
+fun IsPlainText(value: Value) -> bool {
+  return match value {
+    Value.Text(_held) => true,
+    _ => false,
+  }
+}
+
+fun IsSequenceLine(value: text) -> bool uses unsafe {
+  if FirstByte(value) != 45 {
+    return false
+  }
+  // `- item`, `-` alone, but not `-5` or `---`.
+  const second = ByteAt(value, 1)
+  return Length(value) == 1 || second == 32
+}
+
+// Where the `:` that makes a line a mapping entry is, or -1.
+//
+// Not the first colon: `a: b:c` is one entry whose value is `b:c`, and
+// `{a: 1}` in a flow is not a block entry at all. What counts is a colon
+// outside quotes and brackets, followed by a blank or the end of the
+// line.
+fun MappingSplit(value: text) -> int uses unsafe {
+  const bytes = Bytes(value)
+  var depth = 0
+  var quote: u8 = 0
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if quote != 0 {
+      if byte == quote {
+        quote = 0
+      }
+      i = i + 1
+      continue
+    }
+    if byte == 34 || byte == 39 {
+      quote = byte
+      i = i + 1
+      continue
+    }
+    if byte == 91 || byte == 123 {
+      depth = depth + 1
+    } else if byte == 93 || byte == 125 {
+      depth = depth - 1
+    } else if byte == 58 && depth == 0 {
+      if i + 1 >= bytes.len || bytes[i + 1] == 32 {
+        return i
+      }
+    } else if byte == 35 && i > 0 && bytes[i - 1] == 32 {
+      // A comment ends the line.
+      return -1
+    }
+    i = i + 1
+  }
+  return -1
+}
+
+fun ReadSequence(reader: &mut Reader, indent: int) -> Step uses unsafe {
+  var items = Array()
+  loop {
+    reader.SkipBlank()
+    if reader.AtEnd() {
+      break
+    }
+    const line = reader.Current()
+    if line.indent != indent || !IsSequenceLine(line.text) {
+      break
+    }
+    const rest = Trim(Substring(line.text, 1, Length(line.text)))
+    reader.at = reader.at + 1
+    if Length(rest) == 0 {
+      // The item is whatever is indented under the dash.
+      const step = ReadNode(reader, indent + 1)
+      if !step.ok {
+        return Bad()
+      }
+      items = Push(items, step.value)
+      continue
+    }
+    // `- key: value` starts a mapping that belongs to this item, and its
+    // indentation is where the key is.
+    if MappingSplit(rest) >= 0 {
+      const step = ReadInlineMapping(reader, line, rest, indent)
+      if !step.ok {
+        return Bad()
+      }
+      items = Push(items, step.value)
+      continue
+    }
+    const scalar = ReadScalarOrNested(reader, rest, indent)
+    if !scalar.ok {
+      return Bad()
+    }
+    items = Push(items, scalar.value)
+  }
+  return Step(items, true)
+}
+
+// `- key: value`, and whatever is indented under it.
+fun ReadInlineMapping(reader: &mut Reader, line: Line, rest: text,
+                      indent: int) -> Step uses unsafe {
+  // The key's column is where `rest` begins, which is what the lines
+  // under it are measured against.
+  const column = indent + Length(line.text) - Length(rest)
+  var table = Object()
+  const first = ReadEntry(reader, rest, column)
+  if !first.ok {
+    return Bad()
+  }
+  table = PutField(table, first.name, first.value)
+  loop {
+    reader.SkipBlank()
+    if reader.AtEnd() {
+      break
+    }
+    const next = reader.Current()
+    if next.indent != column || MappingSplit(next.text) < 0 {
+      break
+    }
+    reader.at = reader.at + 1
+    const step = ReadEntry(reader, next.text, column)
+    if !step.ok {
+      return Bad()
+    }
+    table = PutField(table, step.name, step.value)
+  }
+  return Step(table, true)
+}
+
+fun ReadMapping(reader: &mut Reader, indent: int) -> Step uses unsafe {
+  var table = Object()
+  loop {
+    reader.SkipBlank()
+    if reader.AtEnd() {
+      break
+    }
+    const line = reader.Current()
+    if line.indent != indent {
+      break
+    }
+    if StartsWithText(line.text, "---") ||
+       StartsWithText(line.text, "...") {
+      break
+    }
+    if MappingSplit(line.text) < 0 {
+      break
+    }
+    reader.at = reader.at + 1
+    const step = ReadEntry(reader, line.text, indent)
+    if !step.ok {
+      return Bad()
+    }
+    // `<<: *base` merges a table in rather than adding a member, which
+    // is what the merge key is for.
+    if step.name == "<<" {
+      table = Merge(table, step.value)
+      continue
+    }
+    table = PutField(table, step.name, step.value)
+  }
+  return Step(table, true)
+}
+
+struct Entry {
+  var name: text
+  var value: Value
+  var ok: bool
+}
+
+fun BadEntry() -> Entry {
+  return Entry("", Value.Null, false)
+}
+
+fun ReadEntry(reader: &mut Reader, line: text, indent: int) -> Entry
+    uses unsafe {
+  const split = MappingSplit(line)
+  if split < 0 {
+    return BadEntry()
+  }
+  var name = Trim(Substring(line, 0, split))
+  // A quoted key is a string like any other.
+  if FirstByte(name) == 34 || FirstByte(name) == 39 {
+    const held = ReadScalar(name)
+    if held.ok {
+      name = AsTextValue(held.value)
+    }
+  }
+  const rest = Trim(Substring(line, split + 1, Length(line)))
+  if Length(rest) == 0 {
+    // The value is what is indented under the key, or nothing.
+    reader.SkipBlank()
+    if !reader.AtEnd() && reader.Current().indent > indent {
+      const step = ReadNode(reader, reader.Current().indent)
+      if !step.ok {
+        return BadEntry()
+      }
+      return Entry(name, step.value, true)
+    }
+    return Entry(name, Value.Null, true)
+  }
+  const step = ReadScalarOrNested(reader, rest, indent)
+  if !step.ok {
+    return BadEntry()
+  }
+  return Entry(name, step.value, true)
+}
+
+// What follows a `-` or a `key:` on the same line: a scalar, a flow
+// collection, a block scalar, an anchor or an alias.
+fun ReadScalarOrNested(reader: &mut Reader, rest: text, indent: int)
+    -> Step uses unsafe {
+  var held = rest
+  var anchor = ""
+  var marker = ""
+
+  // `&name` and `!tag` come before the value, in either order.
+  loop {
+    if FirstByte(held) == 38 {
+      const space = IndexOfSpace(held)
+      if space < 0 {
+        anchor = Substring(held, 1, Length(held))
+        held = ""
+        break
+      }
+      anchor = Substring(held, 1, space)
+      held = Trim(Substring(held, space, Length(held)))
+      continue
+    }
+    if FirstByte(held) == 33 {
+      const space = IndexOfSpace(held)
+      if space < 0 {
+        marker = held
+        held = ""
+        break
+      }
+      marker = Substring(held, 0, space)
+      held = Trim(Substring(held, space, Length(held)))
+      continue
+    }
+    break
+  }
+
+  if Length(held) == 0 {
+    // An anchor or a tag on its own: the value is underneath.
+    const step = ReadNode(reader, indent + 1)
+    if !step.ok {
+      return Bad()
+    }
+    const tagged = ApplyTag(marker, step.value)
+    if Length(anchor) != 0 {
+      reader.Remember(anchor, tagged)
+    }
+    return Step(tagged, true)
+  }
+
+  // `|` and `>`: the lines under this one, as one string.
+  if FirstByte(held) == 124 || FirstByte(held) == 62 {
+    const folded = FirstByte(held) == 62
+    const step = ReadLiteralBlock(reader, held, indent, folded)
+    if !step.ok {
+      return Bad()
+    }
+    if Length(anchor) != 0 {
+      reader.Remember(anchor, step.value)
+    }
+    return step
+  }
+
+  // `*name` is whatever `&name` was.
+  if FirstByte(held) == 42 {
+    return Step(reader.Recall(Trim(Substring(held, 1, Length(held)))),
+                true)
+  }
+
+  const scalar = ReadScalar(held)
+  if !scalar.ok {
+    return Bad()
+  }
+  const tagged = ApplyTag(marker, scalar.value)
+  if Length(anchor) != 0 {
+    reader.Remember(anchor, tagged)
+  }
+  return Step(tagged, true)
+}
+
+fun IndexOfSpace(value: text) -> int uses unsafe {
+  const bytes = Bytes(value)
+  var i = 0
+  while i < bytes.len {
+    if bytes[i] == 32 {
+      return i
+    }
+    i = i + 1
+  }
+  return -1
+}
+
+// `|` keeps the line breaks, `>` folds them into spaces. A `-` after
+// either drops the break at the end, a `+` keeps every one, and a digit
+// says how far the block is indented.
+fun ReadLiteralBlock(reader: &mut Reader, header: text, indent: int,
+                     folded: bool) -> Step uses unsafe {
+  var chomp = 0
+  var wanted = 0
+  const bytes = Bytes(header)
+  var i = 1
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == 45 {
+      chomp = -1
+    } else if byte == 43 {
+      chomp = 1
+    } else if byte >= 49 && byte <= 57 {
+      wanted = indent + (byte - 48) as int
+    }
+    i = i + 1
+  }
+
+  var builder = BuilderNew()
+  var blanks = 0
+  var started = false
+  loop {
+    if reader.AtEnd() {
+      break
+    }
+    const line = reader.Current()
+    if line.blank && Length(Trim(line.raw)) == 0 {
+      // A blank line inside the block is a break; one after it ends the
+      // block only if what follows is outdented.
+      blanks = blanks + 1
+      reader.at = reader.at + 1
+      continue
+    }
+    if line.indent <= indent {
+      break
+    }
+    if wanted == 0 {
+      wanted = line.indent
+    }
+    if line.indent < wanted {
+      break
+    }
+    reader.at = reader.at + 1
+    const content = Substring(line.raw, wanted, Length(line.raw))
+    if started {
+      // The breaks that were held back, and then this line.
+      if folded && blanks == 0 {
+        builder.AppendByte(32)
+      } else {
+        builder.AppendByte(10)
+      }
+      var k = 0
+      while k < blanks {
+        builder.AppendByte(10)
+        k = k + 1
+      }
+    }
+    blanks = 0
+    builder.Append(content)
+    started = true
+  }
+
+  var held = builder.Release()
+  if chomp >= 0 {
+    held = held + "\n"
+  }
+  if chomp > 0 {
+    var k = 0
+    while k < blanks {
+      held = held + "\n"
+      k = k + 1
+    }
+  }
+  return Step(OfText(held), true)
+}
+
+// ------------------------------------------------------------ scalars ---
+
+/// What a scalar on one line is, with the core schema applied.
+offer fun ReadScalar(value: text) -> Step uses unsafe {
+  const held = Trim(StripComment(value))
+  if Length(held) == 0 {
+    return Step(Value.Null, true)
+  }
+  const first = FirstByte(held)
+  if first == 91 {
+    return ReadFlowSequence(held)
+  }
+  if first == 123 {
+    return ReadFlowMapping(held)
+  }
+  if first == 34 || first == 39 {
+    return ReadQuoted(held)
+  }
+  return Step(Resolve(held), true)
+}
+
+// A `#` that starts a comment is one with a blank before it: `a#b` is a
+// scalar and `a #b` is `a` with a comment.
+fun StripComment(value: text) -> text uses unsafe {
+  const bytes = Bytes(value)
+  var quote: u8 = 0
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if quote != 0 {
+      if byte == quote {
+        quote = 0
+      }
+      i = i + 1
+      continue
+    }
+    if byte == 34 || byte == 39 {
+      quote = byte
+      i = i + 1
+      continue
+    }
+    if byte == 35 && (i == 0 || bytes[i - 1] == 32) {
+      return Substring(value, 0, i)
+    }
+    i = i + 1
+  }
+  return value
+}
+
+fun ReadQuoted(value: text) -> Step uses unsafe {
+  const bytes = Bytes(value)
+  const quote = bytes[0]
+  var builder = BuilderNew()
+  var i = 1
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == quote {
+      if quote == 39 && i + 1 < bytes.len && bytes[i + 1] == 39 {
+        // Two single quotes are one quote.
+        builder.AppendByte(39)
+        i = i + 2
+        continue
+      }
+      return Step(OfText(builder.Release()), true)
+    }
+    if byte == 92 && quote == 34 {
+      i = i + 1
+      if i >= bytes.len {
+        return Bad()
+      }
+      const escaped = bytes[i]
+      i = i + 1
+      if escaped == 110 {
+        builder.AppendByte(10)
+      } else if escaped == 116 {
+        builder.AppendByte(9)
+      } else if escaped == 114 {
+        builder.AppendByte(13)
+      } else if escaped == 48 {
+        builder.AppendByte(0)
+      } else if escaped == 34 {
+        builder.AppendByte(34)
+      } else if escaped == 92 {
+        builder.AppendByte(92)
+      } else if escaped == 117 || escaped == 85 {
+        var digits = 8
+        if escaped == 117 {
+          digits = 4
+        }
+        var point = 0
+        var k = 0
+        while k < digits {
+          if i >= bytes.len {
+            return Bad()
+          }
+          const digit = HexDigit(bytes[i])
+          if digit < 0 {
+            return Bad()
+          }
+          point = point * 16 + digit
+          i = i + 1
+          k = k + 1
+        }
+        AppendCodePoint(&mut builder, point)
+      } else {
+        builder.AppendByte(escaped)
+      }
+      continue
+    }
+    builder.AppendByte(byte)
+    i = i + 1
+  }
+  return Bad()
+}
+
+fun HexDigit(byte: u8) -> int {
+  if byte >= 48 && byte <= 57 {
+    return (byte - 48) as int
+  }
+  if byte >= 97 && byte <= 102 {
+    return (byte - 87) as int
+  }
+  if byte >= 65 && byte <= 70 {
+    return (byte - 55) as int
+  }
+  return -1
+}
+
+fun AppendCodePoint(builder: &mut Builder, point: int) uses unsafe {
+  if point < 0x80 {
+    builder.AppendByte(point as u8)
+  } else if point < 0x800 {
+    builder.AppendByte((192 + point / 64) as u8)
+    builder.AppendByte((128 + point % 64) as u8)
+  } else if point < 0x10000 {
+    builder.AppendByte((224 + point / 4096) as u8)
+    builder.AppendByte((128 + point / 64 % 64) as u8)
+    builder.AppendByte((128 + point % 64) as u8)
+  } else {
+    builder.AppendByte((240 + point / 262144) as u8)
+    builder.AppendByte((128 + point / 4096 % 64) as u8)
+    builder.AppendByte((128 + point / 64 % 64) as u8)
+    builder.AppendByte((128 + point % 64) as u8)
+  }
+}
+
+/// A plain scalar, as the core schema reads it.
+offer fun Resolve(held: text) -> Value uses unsafe {
+  if held == "~" || held == "null" || held == "Null" || held == "NULL" {
+    return Value.Null
+  }
+  if held == "true" || held == "True" || held == "TRUE" {
+    return OfBool(true)
+  }
+  if held == "false" || held == "False" || held == "FALSE" {
+    return OfBool(false)
+  }
+  if held == ".inf" || held == ".Inf" || held == ".INF" ||
+     held == "+.inf" {
+    return Value.Number(Infinity())
+  }
+  if held == "-.inf" || held == "-.Inf" || held == "-.INF" {
+    return Value.Number(0.0 - Infinity())
+  }
+  if held == ".nan" || held == ".NaN" || held == ".NAN" {
+    return Value.Number(NotANumber())
+  }
+  if const number = NumberOf(held) {
+    return Value.Number(number)
+  }
+  return OfText(held)
+}
+
+fun Infinity() -> float {
+  // Built rather than written: a literal large enough to be infinite is
+  // not something a source file should have to contain.
+  var value = 1.0e38
+  value = value * value
+  return value
+}
+
+fun NotANumber() -> float {
+  const infinite = Infinity()
+  return infinite - infinite
+}
+
+/// The number `spelled` is, in any base YAML allows, or nothing.
+offer fun NumberOf(spelled: text) -> float? uses unsafe {
+  const bytes = Bytes(spelled)
+  if bytes.len == 0 {
+    return null
+  }
+  if bytes.len > 2 && bytes[0] == 48 {
+    var base = 0
+    if bytes[1] == 120 {
+      base = 16
+    } else if bytes[1] == 111 {
+      base = 8
+    } else if bytes[1] == 98 {
+      base = 2
+    }
+    if base != 0 {
+      var total = 0.0
+      var seen = 0
+      var i = 2
+      while i < bytes.len {
+        const byte = bytes[i]
+        i = i + 1
+        if byte == 95 {
+          continue
+        }
+        const digit = HexDigit(byte)
+        if digit < 0 || digit >= base {
+          return null
+        }
+        total = total * (base as float) + (digit as float)
+        seen = seen + 1
+      }
+      if seen == 0 {
+        return null
+      }
+      return total
+    }
+  }
+
+  var sign = 1.0
+  var i = 0
+  if bytes[0] == 43 || bytes[0] == 45 {
+    if bytes[0] == 45 {
+      sign = -1.0
+    }
+    i = 1
+  }
+  var whole = 0.0
+  var digits = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == 95 {
+      i = i + 1
+      continue
+    }
+    if byte < 48 || byte > 57 {
+      break
+    }
+    whole = whole * 10.0 + ((byte - 48) as float)
+    digits = digits + 1
+    i = i + 1
+  }
+  if i < bytes.len && bytes[i] == 46 {
+    i = i + 1
+    var scale = 0.1
+    var fraction = 0
+    while i < bytes.len {
+      const byte = bytes[i]
+      if byte == 95 {
+        i = i + 1
+        continue
+      }
+      if byte < 48 || byte > 57 {
+        break
+      }
+      whole = whole + ((byte - 48) as float) * scale
+      scale = scale * 0.1
+      fraction = fraction + 1
+      i = i + 1
+    }
+    digits = digits + fraction
+  }
+  if digits == 0 {
+    return null
+  }
+  if i < bytes.len && (bytes[i] == 101 || bytes[i] == 69) {
+    i = i + 1
+    var exponent_sign = 1
+    if i < bytes.len && (bytes[i] == 43 || bytes[i] == 45) {
+      if bytes[i] == 45 {
+        exponent_sign = -1
+      }
+      i = i + 1
+    }
+    var exponent = 0
+    var seen = 0
+    while i < bytes.len {
+      const byte = bytes[i]
+      if byte < 48 || byte > 57 {
+        break
+      }
+      exponent = exponent * 10 + (byte - 48) as int
+      seen = seen + 1
+      i = i + 1
+    }
+    if seen == 0 {
+      return null
+    }
+    var step = 0
+    while step < exponent {
+      if exponent_sign > 0 {
+        whole = whole * 10.0
+      } else {
+        whole = whole / 10.0
+      }
+      step = step + 1
+    }
+  }
+  if i != bytes.len {
+    return null
+  }
+  return sign * whole
+}
+
+// --------------------------------------------------------------- flow ---
+
+fun ReadFlowSequence(value: text) -> Step uses unsafe {
+  var items = Array()
+  const inner = Trim(Inside(value))
+  if Length(inner) == 0 {
+    return Step(items, true)
+  }
+  const pieces = SplitTop(inner)
+  var i = 0
+  while i < pieces.Len() {
+    const step = ReadScalar(pieces.At(i))
+    if !step.ok {
+      return Bad()
+    }
+    items = Push(items, step.value)
+    i = i + 1
+  }
+  return Step(items, true)
+}
+
+fun ReadFlowMapping(value: text) -> Step uses unsafe {
+  var table = Object()
+  const inner = Trim(Inside(value))
+  if Length(inner) == 0 {
+    return Step(table, true)
+  }
+  const pieces = SplitTop(inner)
+  var i = 0
+  while i < pieces.Len() {
+    const piece = pieces.At(i)
+    const split = FlowSplit(piece)
+    if split < 0 {
+      // A set-like entry: a name with no value.
+      table = PutField(table, Trim(piece), Value.Null)
+      i = i + 1
+      continue
+    }
+    var name = Trim(Substring(piece, 0, split))
+    if FirstByte(name) == 34 || FirstByte(name) == 39 {
+      const held = ReadQuoted(name)
+      if held.ok {
+        name = AsTextValue(held.value)
+      }
+    }
+    const step = ReadScalar(Trim(Substring(piece, split + 1,
+                                           Length(piece))))
+    if !step.ok {
+      return Bad()
+    }
+    table = PutField(table, name, step.value)
+    i = i + 1
+  }
+  return Step(table, true)
+}
+
+// The colon of a flow entry: the first one outside quotes and brackets.
+fun FlowSplit(piece: text) -> int uses unsafe {
+  const bytes = Bytes(piece)
+  var depth = 0
+  var quote: u8 = 0
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if quote != 0 {
+      if byte == quote {
+        quote = 0
+      }
+      i = i + 1
+      continue
+    }
+    if byte == 34 || byte == 39 {
+      quote = byte
+    } else if byte == 91 || byte == 123 {
+      depth = depth + 1
+    } else if byte == 93 || byte == 125 {
+      depth = depth - 1
+    } else if byte == 58 && depth == 0 {
+      return i
+    }
+    i = i + 1
+  }
+  return -1
+}
+
+// What is between the outermost brackets.
+fun Inside(value: text) -> text uses unsafe {
+  const bytes = Bytes(value)
+  if bytes.len < 2 {
+    return ""
+  }
+  return Substring(value, 1, bytes.len - 1)
+}
+
+// The commas of a flow collection, ignoring the ones inside it.
+fun SplitTop(value: text) -> List<text> uses unsafe {
+  var pieces = ListNew<text>()
+  const bytes = Bytes(value)
+  var depth = 0
+  var quote: u8 = 0
+  var start = 0
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if quote != 0 {
+      if byte == quote {
+        quote = 0
+      }
+      i = i + 1
+      continue
+    }
+    if byte == 34 || byte == 39 {
+      quote = byte
+    } else if byte == 91 || byte == 123 {
+      depth = depth + 1
+    } else if byte == 93 || byte == 125 {
+      depth = depth - 1
+    } else if byte == 44 && depth == 0 {
+      pieces.Push(Trim(Substring(value, start, i)))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  pieces.Push(Trim(Substring(value, start, bytes.len)))
+  return pieces
+}
+
+// --------------------------------------------------------------- tags ---
+
+// What a tag does to a scalar. The standard ones decide how it is read;
+// an unknown one leaves the value as it was (D165).
+fun ApplyTag(marker: text, value: Value) -> Value uses unsafe {
+  if Length(marker) == 0 {
+    return value
+  }
+  const name = Trim(marker)
+  if name == "!!str" || name == "!str" {
+    return OfText(Spelled(value))
+  }
+  if name == "!!int" || name == "!!float" {
+    if const number = NumberOf(Spelled(value)) {
+      return Value.Number(number)
+    }
+    return value
+  }
+  if name == "!!bool" {
+    const held = Spelled(value)
+    return OfBool(held == "true" || held == "True" || held == "yes")
+  }
+  if name == "!!null" {
+    return Value.Null
+  }
+  return value
+}
+
+// A value as the text it was written as, which is what a `!!str` tag
+// asks for.
+fun Spelled(value: Value) -> text uses unsafe {
+  return match value {
+    Value.Null => "",
+    Value.Bool(held) => Truth(held),
+    Value.Number(held) => WholeOrNot(held),
+    Value.Text(held) => held,
+    Value.Array(_items) => "",
+    Value.Object(_fields) => "",
+  }
+}
+
+fun Truth(held: bool) -> text {
+  if held {
+    return "true"
+  }
+  return "false"
+}
+
+fun WholeOrNot(held: float) -> text {
+  if held == (held as int) as float {
+    return "{held as int}"
+  }
+  return "{held}"
+}
+
+fun AsTextValue(value: Value) -> text {
+  return match value {
+    Value.Text(held) => held,
+    _ => "",
+  }
+}
+
+// -------------------------------------------------------------- tables ---
+
+fun PutField(table: Value, name: text, value: Value) -> Value
+    uses unsafe {
+  match table {
+    Value.Object(fields) => {
+      var i = 0
+      while i < fields.Len() {
+        if fields.At(i).name == name {
+          fields.Set(i, Field(name, value))
+          return Value.Object(fields)
+        }
+        i = i + 1
+      }
+      fields.Push(Field(name, value))
+      return Value.Object(fields)
+    },
+    _ => { return table },
+  }
+}
+
+// `<<: *base` puts everything from `base` into this table, without
+// replacing what the table already says.
+fun Merge(table: Value, from: Value) -> Value uses unsafe {
+  var held = table
+  match from {
+    Value.Object(fields) => {
+      var i = 0
+      while i < fields.Len() {
+        const field = fields.At(i)
+        if !Has(held, field.name) {
+          held = PutField(held, field.name, field.value)
+        }
+        i = i + 1
+      }
+      return held
+    },
+    Value.Array(items) => {
+      // A list of tables merges each in turn, earliest winning.
+      var i = 0
+      while i < items.Len() {
+        held = Merge(held, items.At(i))
+        i = i + 1
+      }
+      return held
+    },
+    _ => { return held },
+  }
+}
+
+fun Has(table: Value, name: text) -> bool uses unsafe {
+  match table {
+    Value.Object(fields) => {
+      var i = 0
+      while i < fields.Len() {
+        if fields.At(i).name == name {
+          return true
+        }
+        i = i + 1
+      }
+      return false
+    },
+    _ => { return false },
+  }
+}
+
+// ------------------------------------------------------------ writing ---
+
+/// A value as YAML.
+///
+/// Block style, two spaces an indent, which is what a person writing it
+/// by hand would have written.
+offer fun Write(value: Value) -> text uses unsafe {
+  var builder = BuilderNew()
+  WriteNode(&mut builder, value, 0, false)
+  return builder.Release()
+}
+
+fun WriteNode(builder: &mut Builder, value: Value, indent: int,
+              inline_start: bool) uses unsafe {
+  match value {
+    Value.Object(fields) => {
+      if fields.Len() == 0 {
+        WriteIndent(builder, indent, inline_start)
+        builder.Append("\{\}")
+        builder.AppendByte(10)
+        return
+      }
+      var i = 0
+      while i < fields.Len() {
+        const field = fields.At(i)
+        WriteIndent(builder, indent, inline_start && i == 0)
+        builder.Append(WriteKey(field.name))
+        builder.AppendByte(58)
+        if IsScalar(field.value) {
+          builder.AppendByte(32)
+          builder.Append(WriteScalar(field.value))
+          builder.AppendByte(10)
+        } else if IsEmpty(field.value) {
+          builder.AppendByte(32)
+          builder.Append(EmptyOf(field.value))
+          builder.AppendByte(10)
+        } else {
+          builder.AppendByte(10)
+          WriteNode(builder, field.value, indent + 1, false)
+        }
+        i = i + 1
+      }
+    },
+    Value.Array(items) => {
+      if items.Len() == 0 {
+        WriteIndent(builder, indent, inline_start)
+        builder.Append("[]")
+        builder.AppendByte(10)
+        return
+      }
+      var i = 0
+      while i < items.Len() {
+        WriteIndent(builder, indent, inline_start && i == 0)
+        builder.Append("- ")
+        const held = items.At(i)
+        if IsScalar(held) {
+          builder.Append(WriteScalar(held))
+          builder.AppendByte(10)
+        } else if IsEmpty(held) {
+          builder.Append(EmptyOf(held))
+          builder.AppendByte(10)
+        } else {
+          // The first line of the nested value goes on this one.
+          WriteNode(builder, held, indent + 1, true)
+        }
+        i = i + 1
+      }
+    },
+    _ => {
+      WriteIndent(builder, indent, inline_start)
+      builder.Append(WriteScalar(value))
+      builder.AppendByte(10)
+    },
+  }
+}
+
+fun WriteIndent(builder: &mut Builder, indent: int, skip: bool)
+    uses unsafe {
+  if skip {
+    return
+  }
+  var i = 0
+  while i < indent * 2 {
+    builder.AppendByte(32)
+    i = i + 1
+  }
+}
+
+fun IsScalar(value: Value) -> bool {
+  return match value {
+    Value.Array(_items) => false,
+    Value.Object(_fields) => false,
+    _ => true,
+  }
+}
+
+fun IsEmpty(value: Value) -> bool uses unsafe {
+  return match value {
+    Value.Array(items) => items.Len() == 0,
+    Value.Object(fields) => fields.Len() == 0,
+    _ => false,
+  }
+}
+
+fun EmptyOf(value: Value) -> text {
+  return match value {
+    Value.Array(_items) => "[]",
+    _ => "\{\}",
+  }
+}
+
+fun WriteKey(name: text) -> text uses unsafe {
+  if NeedsQuotes(name) {
+    return Quoted(name)
+  }
+  return name
+}
+
+fun WriteScalar(value: Value) -> text uses unsafe {
+  return match value {
+    Value.Null => "null",
+    Value.Bool(held) => Truth(held),
+    Value.Number(held) => WholeOrNot(held),
+    Value.Text(held) => WriteText(held),
+    _ => "",
+  }
+}
+
+// A string is written bare when it cannot be mistaken for anything else,
+// and quoted when it can: `yes`, `3`, `null` and a string with a colon
+// in it all have to be quoted or they come back as something else.
+fun WriteText(held: text) -> text uses unsafe {
+  if Length(held) == 0 {
+    return "\"\""
+  }
+  if NeedsQuotes(held) {
+    return Quoted(held)
+  }
+  const resolved = Resolve(held)
+  match resolved {
+    Value.Text(_same) => { return held },
+    _ => { return Quoted(held) },
+  }
+}
+
+fun NeedsQuotes(held: text) -> bool uses unsafe {
+  const bytes = Bytes(held)
+  if bytes.len == 0 {
+    return true
+  }
+  const first = bytes[0]
+  if first == 32 || first == 45 || first == 63 || first == 58 ||
+     first == 38 || first == 42 || first == 33 || first == 35 ||
+     first == 124 || first == 62 || first == 37 || first == 64 ||
+     first == 96 || first == 34 || first == 39 || first == 91 ||
+     first == 123 {
+    return true
+  }
+  if bytes[bytes.len - 1] == 32 {
+    return true
+  }
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == 58 || byte == 10 || byte == 13 || byte == 9 {
+      return true
+    }
+    if byte == 35 && i > 0 && bytes[i - 1] == 32 {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+fun Quoted(held: text) -> text uses unsafe {
+  var builder = BuilderNew()
+  builder.AppendByte(34)
+  const bytes = Bytes(held)
+  var i = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == 34 || byte == 92 {
+      builder.AppendByte(92)
+      builder.AppendByte(byte)
+    } else if byte == 10 {
+      builder.AppendByte(92)
+      builder.AppendByte(110)
+    } else if byte == 9 {
+      builder.AppendByte(92)
+      builder.AppendByte(116)
+    } else if byte == 13 {
+      builder.AppendByte(92)
+      builder.AppendByte(114)
+    } else {
+      builder.AppendByte(byte)
+    }
+    i = i + 1
+  }
+  builder.AppendByte(34)
+  return builder.Release()
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun ReadsABlockDocument() -> bool uses unsafe {
+  const source = "# a comment\n" +
+      "name: wolang\n" +
+      "version: 1\n" +
+      "fast: true\n" +
+      "nothing: ~\n" +
+      "server:\n" +
+      "  host: example.com\n" +
+      "  ports:\n" +
+      "    - 80\n" +
+      "    - 443\n" +
+      "tags: [systems, games]\n" +
+      "limits: \{ cpu: 2, memory: 512 \}\n"
+  match Parse(source) {
+    Ok(v) => {
+      return AsText(Get(v, "name") ?? Null(), "") == "wolang" &&
+             AsInt(Get(v, "version") ?? Null(), 0) == 1 &&
+             AsBool(Get(v, "fast") ?? Null(), false) &&
+             IsNullValue(Get(v, "nothing") ?? OfBool(true)) &&
+             AsText(Get(v, "server.host") ?? Null(), "") ==
+                 "example.com" &&
+             AsInt(Get(v, "server.ports.1") ?? Null(), 0) == 443 &&
+             AsText(Get(v, "tags.0") ?? Null(), "") == "systems" &&
+             AsInt(Get(v, "limits.memory") ?? Null(), 0) == 512
+    },
+    Malformed => { return false },
+  }
+}
+
+fun IsNullValue(value: Value) -> bool {
+  return match value {
+    Value.Null => true,
+    _ => false,
+  }
+}
+
+@Test
+fun ReadsListsOfTables() -> bool uses unsafe {
+  const source = "servers:\n" +
+                 "  - host: a\n" +
+                 "    port: 1\n" +
+                 "  - host: b\n" +
+                 "    port: 2\n"
+  match Parse(source) {
+    Ok(v) => {
+      return AsText(Get(v, "servers.0.host") ?? Null(), "") == "a" &&
+             AsInt(Get(v, "servers.1.port") ?? Null(), 0) == 2
+    },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun ReadsBlockScalars() -> bool uses unsafe {
+  const source = "kept: |\n" +
+                 "  one\n" +
+                 "  two\n" +
+                 "folded: >\n" +
+                 "  one\n" +
+                 "  two\n" +
+                 "clipped: |-\n" +
+                 "  only\n" +
+                 "after: 1\n"
+  match Parse(source) {
+    Ok(v) => {
+      return AsText(Get(v, "kept") ?? Null(), "") == "one\ntwo\n" &&
+             AsText(Get(v, "folded") ?? Null(), "") == "one two\n" &&
+             AsText(Get(v, "clipped") ?? Null(), "") == "only" &&
+             AsInt(Get(v, "after") ?? Null(), 0) == 1
+    },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun ReadsQuotesAndNumbers() -> bool uses unsafe {
+  const source = "a: \"two\\nlines\"\n" +
+                 "b: 'it''s here'\n" +
+                 "c: 0x10\n" +
+                 "d: -2.5e2\n" +
+                 "e: 1_000\n" +
+                 "f: \"3\"\n" +
+                 "g: no colon here\n"
+  match Parse(source) {
+    Ok(v) => {
+      return AsText(Get(v, "a") ?? Null(), "") == "two\nlines" &&
+             AsText(Get(v, "b") ?? Null(), "") == "it's here" &&
+             AsInt(Get(v, "c") ?? Null(), 0) == 16 &&
+             AsNumber(Get(v, "d") ?? Null(), 0.0) == -250.0 &&
+             AsInt(Get(v, "e") ?? Null(), 0) == 1000 &&
+             AsText(Get(v, "f") ?? Null(), "") == "3" &&
+             AsText(Get(v, "g") ?? Null(), "") == "no colon here"
+    },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun ReadsAnchorsAndMerges() -> bool uses unsafe {
+  const source = "base: &base\n" +
+                 "  host: localhost\n" +
+                 "  port: 80\n" +
+                 "live:\n" +
+                 "  <<: *base\n" +
+                 "  port: 443\n"
+  match Parse(source) {
+    Ok(v) => {
+      return AsText(Get(v, "live.host") ?? Null(), "") == "localhost" &&
+             AsInt(Get(v, "live.port") ?? Null(), 0) == 443 &&
+             AsInt(Get(v, "base.port") ?? Null(), 0) == 80
+    },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun ReadsEveryDocumentInAStream() -> bool uses unsafe {
+  const source = "---\na: 1\n---\na: 2\n...\n"
+  match ParseAll(source) {
+    Ok(documents) => {
+      return documents.Len() == 2 &&
+             AsInt(Get(documents.At(1), "a") ?? Null(), 0) == 2
+    },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun AppliesStandardTags() -> bool uses unsafe {
+  const source = "a: !!str 3\nb: !!int \"7\"\nc: !custom 5\n"
+  match Parse(source) {
+    Ok(v) => {
+      return AsText(Get(v, "a") ?? Null(), "") == "3" &&
+             AsInt(Get(v, "b") ?? Null(), 0) == 7 &&
+             AsInt(Get(v, "c") ?? Null(), 0) == 5
+    },
+    Malformed => { return false },
+  }
+}
+
+@Test
+fun WritesWhatItRead() -> bool uses unsafe {
+  const source = "name: wolang\n" +
+                 "ports:\n" +
+                 "  - 80\n" +
+                 "  - 443\n" +
+                 "server:\n" +
+                 "  host: example.com\n" +
+                 "quoted: \"yes\"\n"
+  match Parse(source) {
+    Ok(value) => {
+      match Parse(Write(value)) {
+        Ok(again) => {
+          return AsText(Get(again, "name") ?? Null(), "") == "wolang" &&
+                 AsInt(Get(again, "ports.1") ?? Null(), 0) == 443 &&
+                 AsText(Get(again, "server.host") ?? Null(), "") ==
+                     "example.com" &&
+                 // `yes` would come back as a truth if it were written
+                 // bare, which is the oldest hole in YAML.
+                 AsText(Get(again, "quoted") ?? Null(), "") == "yes"
+        },
+        Malformed => { return false },
+      }
+    },
+    Malformed => { return false },
+  }
+}
