@@ -104,6 +104,39 @@ cmake --preset asan && cmake --build --preset asan -j && ctest --preset asan
 cmake --preset release -DWOLANG_ALL_TARGETS=OFF -DWOLANG_BUILD_TESTS=OFF
 ```
 
+## Checking the other back end without another machine
+
+There are two machine-code back ends -- arm64 and x86-64 -- and a laptop
+runs one of them. On an Apple Silicon machine the `x64` preset builds a
+real x86-64 binary, and Rosetta runs it:
+
+```sh
+cmake --preset x64 && cmake --build --preset x64 -j
+./build/x64/tests/wolang_tests          # the whole suite, as x86-64
+./build/x64/tools/wolang/wolang fuzz --seed 1 --count 150
+```
+
+This is worth doing after any change to a back end. The first time it was
+run, 94 tests into the suite the x86-64 build crashed, and seven real
+bugs were behind it (D195 to D198).
+
+When something does crash there, the crash is in generated code and has
+no source line on it. What to do:
+
+```sh
+wolang asm --raw file.wo                # the bytes of each function, hex
+```
+
+Then hand those bytes to a disassembler -- `llvm-mc --disassemble
+--arch=x86-64` takes `0x..` separated by spaces -- and compare what the
+two back ends emitted for the same program. The one that answers
+correctly is the specification.
+
+```sh
+# The same function from both, side by side.
+wolang asm --raw probe.wo | sed -n '/@Probe:/,$p'
+```
+
 ## What gets built
 
 ```

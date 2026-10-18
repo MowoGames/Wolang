@@ -416,12 +416,35 @@ class FunctionEmitter {
     spill_base_ = offset;
     offset += allocation_.spill_count * 8;
 
+    // One swap slot per block parameter, for the one case a jump cannot
+    // be done with direct moves: when the values going around a loop
+    // have to trade places.
+    //
+    // A slot is as wide as the widest *aggregate* a block parameter is,
+    // not eight bytes. The other back end was told this and this one was
+    // not (D107): a sixteen-byte slice copied into an eight-byte slot
+    // wrote over the next slot, so a loop that carried a slice and a
+    // counter came back round with the counter in the slice's length
+    // (D200).
     uint32_t widest = 0;
+    swap_stride_ = 8;
     for (const ir::Block& block : function_.blocks) {
       widest = std::max(widest, block.param_count);
+      for (uint32_t i = 0; i < block.param_count; ++i) {
+        const ir::InstId param = block.instructions[i];
+        if (!function_.Contains(param)) {
+          continue;
+        }
+        const TypeId type = TypeOf(param);
+        if (type.is_valid() &&
+            layouts_.ClassOf(type) == abi::ValueClass::kAggregate) {
+          swap_stride_ = std::max(swap_stride_, layouts_.SizeOf(type));
+        }
+      }
     }
+    swap_stride_ = abi::AlignUp(swap_stride_, 16);
     swap_base_ = offset;
-    offset += widest * 8;
+    offset += widest * swap_stride_;
 
     // Where the result of an aggregate return goes. It arrives in a
     // register that any call would overwrite, so the frame keeps it.
@@ -525,72 +548,78 @@ class FunctionEmitter {
       ++shift;
     }
 
+    // The value is copied out of wherever it was handed over first.
+    // `left` is in one of the low scratch registers, which is where the
+    // operands of the instruction that called this live, and the
+    // sequence below needs two temporaries of its own: writing one of
+    // those over `left` and then reading `left` again for the remainder
+    // was a `% 64` that answered with something else (D199).
+    const Register original = Scratch(5);
+    const Register work = Scratch(0);
+    const Register temp = Scratch(6);
+    assembler_.Mov(IWidth::k64, original, left);
+    assembler_.Mov(IWidth::k64, work, original);
+
     const Register reg = DestInt(id, 0);
-    const Register held = Scratch(0);
-    assembler_.Mov(IWidth::k64, held, left);
-    if (!is_signed) {
-      if (inst.opcode == ir::Opcode::kRem) {
-        const Register mask_register = Scratch(1);
-        assembler_.MovImmediate(width, mask_register,
-                                shift == 0 ? 0 : magnitude - 1);
-        if (shift == 0) {
-          assembler_.MovImmediate(width, held, 0);
-        } else {
-          assembler_.And(width, held, mask_register);
-        }
-      } else if (shift != 0) {
-        assembler_.ShrImmediate(width, held,
-                                static_cast<uint8_t>(shift));
-      }
+    const auto finish = [&]() {
       if (width == IWidth::k32) {
-        Canonicalize(held, operand_type, reg);
+        Canonicalize(work, operand_type, reg);
       } else {
-        assembler_.Mov(IWidth::k64, reg, held);
+        assembler_.Mov(IWidth::k64, reg, work);
       }
       FinishInt(id, reg);
+    };
+
+    if (!is_signed) {
+      if (inst.opcode == ir::Opcode::kRem) {
+        // What is left below the shift, which for a power of two is the
+        // bits the shift would have thrown away.
+        if (shift == 0) {
+          assembler_.MovImmediate(width, work, 0);
+        } else {
+          assembler_.MovImmediate(width, temp, magnitude - 1);
+          assembler_.And(width, work, temp);
+        }
+      } else if (shift != 0) {
+        assembler_.ShrImmediate(width, work,
+                                static_cast<uint8_t>(shift));
+      }
+      finish();
       return true;
     }
 
     // The bias that makes the shift round towards zero: the sign bit
     // smeared across the low `shift` bits.
     if (shift != 0) {
-      const Register sign = Scratch(1);
-      assembler_.Mov(IWidth::k64, sign, left);
-      assembler_.SarImmediate(width, sign,
+      assembler_.Mov(IWidth::k64, temp, original);
+      assembler_.SarImmediate(width, temp,
                               static_cast<uint8_t>(bits - 1));
-      assembler_.ShrImmediate(width, sign,
+      assembler_.ShrImmediate(width, temp,
                               static_cast<uint8_t>(bits - shift));
-      assembler_.Add(width, held, sign);
-      assembler_.SarImmediate(width, held,
+      assembler_.Add(width, work, temp);
+      assembler_.SarImmediate(width, work,
                               static_cast<uint8_t>(shift));
     }
     if (negative) {
       if (magnitude == 1) {
-        const Register lowest = Scratch(1);
-        assembler_.MovImmediate(width, lowest, LowestOf(operand_type));
-        assembler_.Cmp(width, left, lowest);
+        // The one division by minus one that overflows.
+        assembler_.MovImmediate(width, temp, LowestOf(operand_type));
+        assembler_.Cmp(width, original, temp);
         const Label overflow = TrapLabel(ir::TrapKind::kOverflow, id,
                                          "the quotient does not fit");
         assembler_.Jcc(Condition::kEqual, overflow);
       }
-      assembler_.Neg(width, held);
+      assembler_.Neg(width, work);
     }
     if (inst.opcode == ir::Opcode::kRem) {
       // `x - (x / d) * d`, with the divisor as it was written.
-      const Register scaled = Scratch(1);
-      assembler_.MovImmediate(width, scaled, divisor & mask);
-      assembler_.Imul(width, held, scaled);
-      const Register remainder = Scratch(2);
-      assembler_.Mov(IWidth::k64, remainder, left);
-      assembler_.Sub(width, remainder, held);
-      assembler_.Mov(IWidth::k64, held, remainder);
+      assembler_.MovImmediate(width, temp, divisor & mask);
+      assembler_.Imul(width, work, temp);
+      assembler_.Mov(IWidth::k64, temp, original);
+      assembler_.Sub(width, temp, work);
+      assembler_.Mov(IWidth::k64, work, temp);
     }
-    if (width == IWidth::k32) {
-      Canonicalize(held, operand_type, reg);
-    } else {
-      assembler_.Mov(IWidth::k64, reg, held);
-    }
-    FinishInt(id, reg);
+    finish();
     return true;
   }
 

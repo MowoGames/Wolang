@@ -2577,6 +2577,43 @@ fun Mixed(a: f64, b: int, c: f64, d: int, e: f64, f: int, g: f64, h: int,
                    "78");
 }
 
+WOLANG_TEST(CodegenTest, CarriesASliceAndACounterAroundALoop) {
+  // Values that trade places around a loop go through swap slots, and a
+  // slice needs a slot wider than a word: in eight bytes it keeps its
+  // address and loses its length. One back end was told that and the
+  // other was not, so this walked an array on one machine and indexed
+  // past the end of it on the other (D200).
+  Fixture f(R"(
+fun Fill(out: []u8, count: int) -> int {
+  var written = 0
+  var i = 0
+  while i < count {
+    const digit = (i * 3) % 7
+    i = i + 1
+    if digit == 0 {
+      // The `continue` is what makes the loop carry its values round
+      // rather than fall through with them.
+      continue
+    }
+    out[written] = digit as u8
+    written = written + 1
+  }
+  // The length as the loop left it, and what was written through it.
+  var total = out.len * 1000 + written * 10
+  if out.len > 0 {
+    total = total + out[0] as int
+  }
+  return total
+}
+
+fun Walks() -> int {
+  var buffer: [11]u8
+  return Fill(buffer, 11)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Walks", {}), "11093");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

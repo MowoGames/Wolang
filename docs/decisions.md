@@ -2453,3 +2453,30 @@ the register, and both back ends took the whole sixty-four bits. So
 high bits were someone else's arithmetic. The result is now narrowed to
 its type where it is taken, which is one instruction and the difference
 between right and nearly right.
+
+**D199. A temporary may not be where the operand is.** The shift-instead-
+of-divide sequence (D192) was written twice, and the x86-64 copy used the
+low scratch registers for its own temporaries -- which is where the
+operands of the instruction that called it live. So `% 64` read a value
+that the sequence itself had just written over, and `std.utf8` encoded a
+code point into bytes that did not fit a byte.
+
+The lesson is about scratch registers rather than about division: a
+helper that is handed an operand register must copy it out before it
+writes any scratch it has not been told is free.
+
+**D200. The swap slots on x86-64 were a word wide.** Values that trade
+places around a loop go through a slot each, and a slice needs a slot
+wider than a word -- in eight bytes it keeps its address and loses its
+length. The arm64 emitter was told this (D107); this one was not, and
+wrote a sixteen-byte slice into an eight-byte slot, over the slot beside
+it. A loop carrying a slice and a counter came back round with the
+counter in the slice's length.
+
+Five of the standard library's tests failed on that one bug -- base32,
+SHA-256 over long input, signing, a socket talking to itself, and the
+parallel `for`. All five are loops that carry a slice.
+
+The rule this leaves behind: a bug fixed in one emitter is a bug to look
+for in the other, and the comment that explains the fix should be read as
+a question about the other machine.
