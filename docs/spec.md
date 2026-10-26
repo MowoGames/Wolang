@@ -76,8 +76,8 @@ from elsewhere and offers its own.
 parser where they introduce a declaration:
 
 ```
-always   aos      derived  dimension  effect  enter  exit  machine
-soa      state    unit     with       without
+always   aos      deinit   derived  dimension  effect  enter  exit
+machine  soa      state    unit     weak       with    without
 ```
 
 This is deliberate. Gameplay code names variables `state`, `unit` and `machine`
