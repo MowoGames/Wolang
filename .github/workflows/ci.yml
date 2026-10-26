@@ -101,11 +101,13 @@ jobs:
           $W check examples/embed/script examples/window
           $W run examples/hello.wo
 
+      # `errors.wo` and `recovery.wo` do not parse, on purpose.
       - name: Formatting
         if: matrix.preset == 'debug'
         run: |
           W=build/${{ matrix.preset }}/tools/wolang/wolang
-          $W fmt --check lib examples benchmarks
+          $W fmt --check lib benchmarks examples/*/ \
+            $(ls examples/*.wo | grep -v -e errors.wo -e recovery.wo)
 
       - name: Every file says what it includes
         if: matrix.preset == 'debug'
@@ -166,7 +168,23 @@ jobs:
         run: |
           W=build/windows/tools/wolang/wolang.exe
           $W run examples/hello.wo
-          $W check examples/server examples/window
+          $W check examples/server examples/systems examples/package
+          $W check examples/embed/script examples/window
+      - name: Formatting, includes and documentation
+        shell: bash
+        run: |
+          W=build/windows/tools/wolang/wolang.exe
+          $W test lib/game
+          $W fmt --check lib benchmarks examples/*/ \
+            $(ls examples/*.wo | grep -v -e errors.wo -e recovery.wo)
+          python tools/package/check_includes.py
+          python tools/package/check_docs.py
+      - name: The C host links against the DLL
+        shell: bash
+        run: |
+          clang-cl -nologo -Iinclude examples/embed/host.c -Fehost.exe \
+            -link build/windows/src/wolang_embed_dll.lib
+          PATH="$PWD/build/windows/src:$PATH" ./host.exe examples/embed/script
 
   embed:
     name: embed the language in C
