@@ -27,6 +27,7 @@
 // wants `_XOPEN_SOURCE` defined before it is asked for (D139).
 #if defined(_WIN32)
 #include <io.h>
+#include <process.h>
 #else
 #if !defined(_XOPEN_SOURCE)
 #define _XOPEN_SOURCE 700
@@ -36,10 +37,6 @@
 #include <unistd.h>
 #endif
 
-
-#if defined(_WIN32)
-#else
-#endif
 
 #include "wolang/base/shell.h"
 #include "wolang/base/diagnostic.h"
@@ -149,6 +146,14 @@ bool StderrIsTerminal() {
   return _isatty(_fileno(stderr)) != 0;
 #else
   return isatty(fileno(stderr)) != 0;
+#endif
+}
+
+int32_t ProcessId() {
+#if defined(_WIN32)
+  return _getpid();
+#else
+  return static_cast<int32_t>(::getpid());
 #endif
 }
 
@@ -267,13 +272,29 @@ bool CollectInputs(Database* database,
       continue;
     }
 
-    std::string error;
-    const FileId file = database->LoadFile(input, &error);
-    if (!file.is_valid()) {
-      std::fprintf(stderr, "wolang: %s\n", error.c_str());
-      return false;
+    std::vector<std::string> paths;
+    std::error_code failed;
+    if (std::filesystem::is_directory(input, failed)) {
+      for (const auto& entry : std::filesystem::recursive_directory_iterator(input, failed)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".wo" && entry.path().string().find(".wolang-cache") == std::string::npos) {
+          paths.push_back(entry.path().generic_string());
+        }
+      }
+      std::sort(paths.begin(), paths.end());
     }
-    files->push_back(file);
+    else {
+      paths.push_back(input);
+    }
+
+    for (const std::string& path : paths) {
+      std::string error;
+      const FileId file = database->LoadFile(path, &error);
+      if (!file.is_valid()) {
+        std::fprintf(stderr, "wolang: %s\n", error.c_str());
+        return false;
+      }
+      files->push_back(file);
+    }
   }
   return true;
 }
@@ -616,10 +637,19 @@ int RunFormat(const Options& options) {
       return Report(database.sources(), reported, render);
     }
 
-    const std::string formatted =
-        Format(database.sources(), database.interner(), tokens->tokens,
-               parsed->ast);
     const std::string_view original = database.sources().Text(file);
+    std::string formatted = Format(database.sources(), database.interner(), tokens->tokens, parsed->ast);
+    if (original.find("\r\n") != std::string_view::npos) {
+      std::string crlf;
+      crlf.reserve(formatted.size() + formatted.size() / 16);
+      for (const char c : formatted) {
+        if (c == '\n') {
+          crlf.push_back('\r');
+        }
+        crlf.push_back(c);
+      }
+      formatted = std::move(crlf);
+    }
 
     if (options.check_only) {
       if (formatted != original) {
@@ -734,7 +764,9 @@ void OpenLinkedLibraries(Database* database) {
       // platform's decoration.
       const bool spelled =
           library.find('/') != std::string::npos ||
+          library.find('\\') != std::string::npos ||
           library.find(".so") != std::string::npos ||
+          library.find(".dll") != std::string::npos ||
           library.find(".dylib") != std::string::npos;
       std::vector<std::string> tries;
       if (spelled) {
@@ -742,6 +774,8 @@ void OpenLinkedLibraries(Database* database) {
       } else {
 #if defined(__APPLE__)
         const std::string decorated = "lib" + library + ".dylib";
+#elif defined(_WIN32)
+        const std::string decorated = library + ".dll";
 #else
         const std::string decorated = "lib" + library + ".so";
 #endif
@@ -755,7 +789,7 @@ void OpenLinkedLibraries(Database* database) {
         // and `gfx` saying `../../build/debug/platform` has to mean the
         // same thing from every directory (D155).
         for (const std::string& path : package->manifest.link_paths) {
-          if (!path.empty() && path.front() != '/' &&
+          if (!path.empty() && !std::filesystem::path(path).is_absolute() && path.front() != '/' &&
               !package->directory.empty()) {
             tries.push_back(package->directory + "/" + path + "/" +
                             decorated);
@@ -1142,6 +1176,15 @@ std::atomic<uint32_t> taken{0};
 uint64_t samples[kMostSamples];
 std::atomic<bool> running{false};
 
+#if defined(_WIN32)
+bool Start(int) {
+  return false;
+}
+
+void Stop() {
+  running.store(false, std::memory_order_relaxed);
+}
+#else
 void OnTick(int, siginfo_t*, void* context) {
   if (!running.load(std::memory_order_relaxed)) {
     return;
@@ -1191,6 +1234,7 @@ void Stop() {
   ::setitimer(ITIMER_PROF, &off, nullptr);
   ::signal(SIGPROF, SIG_IGN);
 }
+#endif
 
 // What was sampled, by function, most first.
 void Report(const codegen::CompiledModule* compiled) {
@@ -1786,7 +1830,7 @@ std::string BuildAndRun(const std::string& source, uint64_t seed) {
   }
 
   const std::string stem = "/tmp/wolang-fuzz-" +
-                           std::to_string(static_cast<long>(::getpid())) +
+                           std::to_string(ProcessId()) +
                            "-" + std::to_string(seed);
   const codegen::FileCode files[1] = {
       codegen::FileCode{&checked->resolution, &lowered->module}};

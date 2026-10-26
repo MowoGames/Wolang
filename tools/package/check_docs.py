@@ -34,7 +34,7 @@ game = {{ path = "{root}/lib/game" }}
 
 
 def driver():
-    for build in ("debug", "release"):
+    for build in ("debug", "release", "windows"):
         held = ROOT / "build" / build / "tools" / "wolang" / "wolang"
         if held.exists():
             return held
@@ -60,7 +60,7 @@ def check(path, wolang, verbose):
             package = Path(held)
             (package / "src").mkdir()
             (package / "wolang.toml").write_text(
-                MANIFEST.format(root=ROOT), encoding="utf-8")
+                MANIFEST.format(root=ROOT.as_posix()), encoding="utf-8")
             (package / "src" / "main.wo").write_text(block,
                                                      encoding="utf-8")
             result = subprocess.run(

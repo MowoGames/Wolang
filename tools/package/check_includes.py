@@ -54,6 +54,13 @@ PLAIN = {
     "size_t": "<cstddef>",
 }
 
+# What a C header includes instead: a header a C program reads cannot
+# ask for `<cstdint>`.
+C_FORM = {
+    "<cstdint>": "<stdint.h>",
+    "<cstddef>": "<stddef.h>",
+}
+
 
 def includes_of(path):
     text = path.read_text(encoding="utf-8")
@@ -82,7 +89,7 @@ def check(path):
         if re.search(r"\bstd::" + name + r"\b", body) and wanted not in have:
             missing.add(wanted)
     for name, wanted in PLAIN.items():
-        if re.search(r"\b" + name + r"\b", body) and wanted not in have:
+        if re.search(r"\b" + name + r"\b", body) and wanted not in have and C_FORM[wanted] not in have:
             missing.add(wanted)
     return sorted(missing)
 

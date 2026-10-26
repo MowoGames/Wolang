@@ -14,17 +14,19 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <windows.h>
+
+#include <mmreg.h>
+#include <mmsystem.h>
+#include <windowsx.h>
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <mmreg.h>
-#include <mmsystem.h>
 #include <string>
 #include <thread>
 #include <vector>
-#include <windows.h>
-#include <windowsx.h>
 
 #include "platform/common.h"
 

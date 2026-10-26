@@ -60,6 +60,9 @@ option(WOLANG_ENABLE_SANITIZERS "Enable address/undefined sanitizers in Debug" O
 # file and a binary that needs no JIT (D98).
 option(WOLANG_WITH_LLVM "Build the ahead-of-time backend" ON)
 if(WOLANG_WITH_LLVM)
+    # LLVM's own config probes for libedit and zlib with C, and fails
+    # when C is not a language of the project.
+    enable_language(C)
     find_package(LLVM CONFIG QUIET)
     if(LLVM_FOUND)
         message(STATUS "Wolang: ahead-of-time backend with LLVM ${LLVM_PACKAGE_VERSION}")

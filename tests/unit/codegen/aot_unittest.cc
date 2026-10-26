@@ -3,8 +3,10 @@
 
 #include "wolang/codegen/aot.h"
 
+#if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -39,6 +41,9 @@ class Binary {
 
   // What the program printed, or a `<...>` saying what went wrong instead.
   std::string Output() {
+#if defined(_WIN32)
+    return "<linking is not wired on this system>";
+#else
     Database database;
     const FileId file = database.AddFile("<test>", code_);
     const LoweredFile* lowered = database.Lowered(file);
@@ -104,6 +109,7 @@ class Binary {
     said.append(std::to_string(WIFEXITED(status) ? WEXITSTATUS(status)
                                                  : -1));
     return said;
+#endif
   }
 
  private:
@@ -114,8 +120,16 @@ class Binary {
 
 int Binary::serial_ = 0;
 
+static bool Links() {
+#if defined(_WIN32)
+  return false;
+#else
+  return HasAotBackend();
+#endif
+}
+
 WOLANG_TEST(AotTest, RunsArithmeticAndControlFlow) {
-  if (!HasAotBackend()) {
+  if (!Links()) {
     return;
   }
   Binary program(R"(
@@ -140,7 +154,7 @@ fun main() uses unsafe {
 }
 
 WOLANG_TEST(AotTest, RunsClassesAndVirtualCalls) {
-  if (!HasAotBackend()) {
+  if (!Links()) {
     return;
   }
   Binary program(R"(
@@ -172,7 +186,7 @@ fun main() uses unsafe {
 }
 
 WOLANG_TEST(AotTest, RunsStructsOptionalsAndEnums) {
-  if (!HasAotBackend()) {
+  if (!Links()) {
     return;
   }
   Binary program(R"(
@@ -216,7 +230,7 @@ fun main() uses unsafe {
 }
 
 WOLANG_TEST(AotTest, ATrapSaysWhatHappenedAndStops) {
-  if (!HasAotBackend()) {
+  if (!Links()) {
     return;
   }
   // A binary has no interpreter under it to report a trap to, so a trap
