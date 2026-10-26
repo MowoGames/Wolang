@@ -772,7 +772,13 @@ class Lowerer {
       const InstId address = builder_->FieldAddress(
           types_->Pointer(field_type, /*is_mutable=*/true), object, index);
       builder_->Add(Opcode::kStore, TypeId{}, {address, value});
-      if (!Owns(ValueType(value)) && !IsFreshHandle(value)) {
+      if (IsWeakField(type, index)) {
+        WeakRetainValue(value, field_type);
+        if (IsFreshHandle(value)) {
+          ReleaseValue(value, field_type);
+        }
+      }
+      else if (!Owns(ValueType(value)) && !IsFreshHandle(value)) {
         RetainValue(value, ValueType(value));
       }
       ++index;
@@ -2310,13 +2316,19 @@ class Lowerer {
       }
     }
 
-    for (const auto& [field, held] : StoredFields(type)) {
-      const TypeId erased = Erase(held);
+    for (const StoredField& field : StoredFields(type)) {
+      const TypeId erased = Erase(field.Type);
       if (!Counts(erased)) {
         continue;
       }
-      const InstId address = builder.FieldAddress(types_->Pointer(erased, /*is_mutable=*/true), self, field);
-      ReleaseValue(builder.Add(Opcode::kLoad, erased, {address}), erased);
+      const InstId address = builder.FieldAddress(types_->Pointer(erased, /*is_mutable=*/true), self, field.Index);
+      const InstId held = builder.Add(Opcode::kLoad, erased, {address});
+      if (field.Weak) {
+        WeakReleaseValue(held, erased);
+      }
+      else {
+        ReleaseValue(held, erased);
+      }
     }
 
     // The handle is cast to a word first: one declaration of the free
@@ -2336,7 +2348,13 @@ class Lowerer {
   // Every field an object of |type| stores, with where it is: the root
   // class first and the descriptor before all of them, which is the order
   // `FieldIndex` counts in.
-  std::vector<std::pair<uint32_t, TypeId>> StoredFields(TypeId type) {
+  struct StoredField {
+    uint32_t Index = 0;
+    TypeId Type;
+    bool Weak = false;
+  };
+
+  std::vector<StoredField> StoredFields(TypeId type) {
     TypeId named = type;
     TypeStore::Substitution substitution;
     if (types_->KindOf(named) == TypeKind::kInstance) {
@@ -2354,19 +2372,72 @@ class Lowerer {
     }
     std::reverse(chain.begin(), chain.end());
 
-    std::vector<std::pair<uint32_t, TypeId>> fields;
+    std::vector<StoredField> fields;
     uint32_t index = HasClassHeader(named) ? 1u : 0u;
     for (TypeId current : chain) {
       for (const Member& member : resolution().MembersOf(current)) {
         if (!HasStorage(member.kind)) {
           continue;
         }
-        const TypeId held = substitution.empty() ? member.type : types_->Substitute(member.type, substitution);
-        fields.emplace_back(index, held);
+        StoredField field;
+        field.Index = index;
+        field.Type = substitution.empty() ? member.type : types_->Substitute(member.type, substitution);
+        field.Weak = member.is_weak;
+        fields.push_back(field);
         ++index;
       }
     }
     return fields;
+  }
+
+  bool IsWeakField(TypeId owner, uint32_t index) {
+    if (!IsCountedHandle(owner)) {
+      return false;
+    }
+    for (const StoredField& field : StoredFields(Erase(owner))) {
+      if (field.Index == index) {
+        return field.Weak;
+      }
+    }
+    return false;
+  }
+
+  InstId CallObjectRuntime(std::string_view name, InstId handle, TypeId result) {
+    const Symbol symbol = interner_->Intern(name);
+    const uint32_t callee = DeclareExternal(symbol, types_->Function({types_->u64()}, result));
+    module_->functions[callee].foreign_symbol = symbol;
+    return builder_->Call(callee, result, {AsDeclared(callee, 0, handle)});
+  }
+
+  void WeakRetainValue(InstId value, TypeId optional) {
+    OnSome(value, optional, [&](InstId inner) { CallObjectRuntime("wolang_object_weak_retain", inner, types_->void_type()); });
+  }
+
+  void WeakReleaseValue(InstId value, TypeId optional) {
+    OnSome(value, optional, [&](InstId inner) { CallObjectRuntime("wolang_object_weak_release", inner, types_->void_type()); });
+  }
+
+  // What a weak field holds, as a strong reference when the object is
+  // still alive and as `null` when it is not (D207).
+  InstId Upgrade(InstId value, TypeId optional) {
+    const TypeId s32 = types_->Int(IntWidth::k32, /*is_signed=*/true);
+    const InstId slot = builder_->Add(Opcode::kAlloca, optional);
+    builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->ConstNull(optional)});
+    OnSome(value, optional, [&](InstId inner) {
+      const InstId alive = CallObjectRuntime("wolang_object_upgrade", inner, s32);
+      const InstId yes = builder_->Add(Opcode::kNe, types_->bool_type(), {alive, builder_->ConstInt(s32, 0)});
+      const BlockId keep = builder_->AddBlock("upgrade.alive");
+      const BlockId after = builder_->AddBlock("upgrade.after");
+      builder_->Branch(yes, keep, after);
+      builder_->SetCurrent(keep);
+      builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->Add(Opcode::kOptionalWrap, optional, {inner})});
+      builder_->Jump(after, {});
+      builder_->SetCurrent(after);
+    });
+
+    const InstId upgraded = builder_->Add(Opcode::kLoad, optional, {slot});
+    m_Fresh.push_back(upgraded);
+    return upgraded;
   }
 
   // A handle itself: a class, or an instance of a generic one.
@@ -2427,6 +2498,9 @@ class Lowerer {
     const Function& current = module_->functions[current_function_];
     if (!current.Contains(value)) {
       return false;
+    }
+    if (std::find(m_Fresh.begin(), m_Fresh.end(), value) != m_Fresh.end()) {
+      return true;
     }
     const Inst& inst = current.Get(value);
     switch (inst.opcode) {
@@ -3620,8 +3694,18 @@ class Lowerer {
     const InstId object =
         builder_->Add(Opcode::kOptionalValue, owner, {optional});
     const TypeId inner = Erase(types_->ElementOf(type));
-    const InstId field =
-        builder_->Extract(inner, object, FieldIndex(owner, expr.name));
+    const uint32_t index = FieldIndex(owner, expr.name);
+    InstId field;
+    if (types_->IsHandle(owner)) {
+      const InstId address = builder_->FieldAddress(types_->Pointer(inner, /*is_mutable=*/true), object, index);
+      field = builder_->Add(Opcode::kLoad, inner, {address});
+      if (IsWeakField(owner, index)) {
+        field = Upgrade(field, inner);
+      }
+    }
+    else {
+      field = builder_->Extract(inner, object, index);
+    }
     const InstId wrapped =
         builder_->Add(Opcode::kOptionalWrap, type, {field});
     builder_->Jump(join, {wrapped});
@@ -3630,6 +3714,9 @@ class Lowerer {
     builder_->Jump(join, {builder_->ConstNull(type)});
 
     builder_->SetCurrent(join);
+    if (IsFreshHandle(optional)) {
+      ReleaseValue(optional, ValueType(optional));
+    }
     return result;
   }
 
@@ -4059,8 +4146,8 @@ class Lowerer {
         return builder_->Add(Opcode::kLoad, Erase(place.root_type),
                              {place.slot});
       }
-      return builder_->Add(Opcode::kLoad, TypeAt(place),
-                           {AddressOfPlace(place)});
+      const InstId loaded = builder_->Add(Opcode::kLoad, TypeAt(place), {AddressOfPlace(place)});
+      return IsWeakPlace(place) ? Upgrade(loaded, TypeAt(place)) : loaded;
     }
     // A value with no location: the fields are read out of it.
     InstId value = place.value;
@@ -4087,6 +4174,18 @@ class Lowerer {
     if (!Counts(stored)) {
       builder_->Add(Opcode::kStore, TypeId{}, {address, value});
       InvalidateDerived(place);
+      return;
+    }
+
+    if (IsWeakPlace(place)) {
+      const InstId old = builder_->Add(Opcode::kLoad, stored, {address});
+      builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+      InvalidateDerived(place);
+      WeakRetainValue(value, stored);
+      WeakReleaseValue(old, stored);
+      if (IsFreshHandle(value)) {
+        ReleaseValue(value, stored);
+      }
       return;
     }
 
@@ -4147,6 +4246,13 @@ class Lowerer {
       return false;
     }
     return IsCountedHandle(OwnerOfLastStep(place));
+  }
+
+  bool IsWeakPlace(const Place& place) {
+    if (place.path.empty() || place.path.back().index.is_valid() || place.soa_record.is_valid()) {
+      return false;
+    }
+    return IsWeakField(OwnerOfLastStep(place), place.path.back().field);
   }
 
   // A write to a field makes every derived field that reads it stale.
@@ -6673,6 +6779,7 @@ class Lowerer {
   };
   std::vector<Owner> owners_;
   std::vector<std::pair<InstId, TypeId>> m_Temporaries;
+  std::vector<InstId> m_Fresh;
   // How many enclosing reads are through a name rather than of it.
   int borrow_depth_ = 0;
   // The module-level `var`s this file declares.

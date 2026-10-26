@@ -345,6 +345,9 @@ class Formatter {
     if (HasFlag(item.flags, ItemFlags::kDerived)) {
       Put("derived ");
     }
+    if (HasFlag(item.flags, ItemFlags::kWeak)) {
+      Put("weak ");
+    }
   }
 
   void EmitAttributes(AstRange<AttributeId> attributes) {

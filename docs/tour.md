@@ -484,9 +484,34 @@ fun main() uses io, unsafe {
 }
 ```
 
-A `class` is collected; a `struct` is a value; `Owned<T>` frees what it
-holds when it goes out of scope. A program that declares no `class` links
-no collector.
+A `struct` is a value; `Owned<T>` frees what it holds when it goes out
+of scope. A `class` is counted: every field, variable and global that
+holds one is a reference, and the last one to let go frees it -- with
+everything it holds. A cycle is the one thing counting cannot see, and
+`weak` is what breaks it:
+
+```wolang
+need std.io.{Print}
+
+class Parent {
+  var child: Child? = null
+}
+
+class Child {
+  // Does not keep the parent alive. Reading it gives `null` once the
+  // parent is gone.
+  weak var parent: Parent? = null
+}
+
+fun main() uses io {
+  var parent = Parent(null)
+  const child = Child(parent)
+  parent.child = child
+  if child.parent != null {
+    Print("still here")
+  }
+}
+```
 
 ## Threads
 

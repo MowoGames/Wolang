@@ -716,6 +716,11 @@ ItemFlags Parser::ParseModifiers(Symbol* abi) {
       Advance();
       continue;
     }
+    if (AtContextual(ContextualKeyword::kWeak) && (PeekKind(1) == TokenKind::kKwVar || PeekKind(1) == TokenKind::kKwConst)) {
+      add(ItemFlags::kWeak, "weak");
+      Advance();
+      continue;
+    }
     break;
   }
   return flags;

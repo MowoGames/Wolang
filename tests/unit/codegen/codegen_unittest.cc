@@ -2624,6 +2624,65 @@ fun Chains() -> int uses unsafe {
   WOLANG_EXPECT_EQ(f.Run("Survives", {}), "84");
 }
 
+WOLANG_TEST(CodegenTest, AWeakFieldDoesNotKeepItsObject) {
+  Fixture f(R"(
+extern "C" fun wolang_objects_live() -> s64
+
+class Parent {
+  var child: Child? = null
+  var id: int = 0
+}
+
+class Child {
+  weak var parent: Parent? = null
+}
+
+fun Live() -> int uses unsafe {
+  return wolang_objects_live() as int
+}
+
+fun Cycle() -> int uses unsafe {
+  const before = Live()
+  for i in 0..10 {
+    var parent = Parent(null, i)
+    const child = Child(parent)
+    parent.child = child
+  }
+  return Live() - before
+}
+
+fun Reads() -> int {
+  var parent = Parent(null, 7)
+  const child = Child(null)
+  child.parent = parent
+  parent.child = child
+  return child.parent?.id ?? -1
+}
+
+fun Outlives() -> int {
+  const child = Child(null)
+  child.parent = Parent(null, 9)
+  return child.parent?.id ?? -1
+}
+
+fun Stays() -> int uses unsafe {
+  const before = Live()
+  const child = Child(null)
+  var kept = 0
+  for i in 0..5 {
+    const parent = Parent(null, i)
+    child.parent = parent
+    kept = kept + (child.parent?.id ?? 100)
+  }
+  return (Live() - before) * 1000 + kept + (child.parent?.id ?? 100)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Cycle", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Reads", {}), "7");
+  WOLANG_EXPECT_EQ(f.Run("Outlives", {}), "-1");
+  WOLANG_EXPECT_EQ(f.Run("Stays", {}), "1110");
+}
+
 WOLANG_TEST(CodegenTest, CallsAFunctionWithMoreArgumentsThanRegisters) {
   // A host call to a function whose arguments do not all fit in
   // registers. The body has read the rest off the stack since D154; the

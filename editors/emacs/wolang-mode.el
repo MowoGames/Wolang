@@ -10,7 +10,7 @@
 (defvar wolang-keywords
   '("fun" "task" "class" "struct" "enum" "ability" "component" "tag"
     "machine" "system" "type" "var" "const" "extend" "extern" "signal"
-    "effect" "dimension" "unit" "deinit" "derived" "virtual" "override"
+    "effect" "dimension" "unit" "deinit" "derived" "weak" "virtual" "override"
     "offer" "priv" "need" "if" "else" "match" "loop" "while" "for"
     "foreach" "in" "return" "break" "continue" "defer" "spawn" "wait"
     "on" "enter" "exit" "state" "always" "as" "mut" "uses" "where"

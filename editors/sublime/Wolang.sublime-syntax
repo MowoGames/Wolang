@@ -74,7 +74,7 @@ contexts:
   keywords:
     - match: \b(if|else|match|loop|while|for|foreach|in|return|break|continue|defer|spawn|wait|on|enter|exit|state|always)\b
       scope: keyword.control.wolang
-    - match: \b(fun|task|class|struct|enum|ability|component|tag|machine|system|type|var|const|extend|extern|signal|effect|dimension|unit|deinit|derived|virtual|override|offer|priv|need)\b
+    - match: \b(fun|task|class|struct|enum|ability|component|tag|machine|system|type|var|const|extend|extern|signal|effect|dimension|unit|deinit|derived|weak|virtual|override|offer|priv|need)\b
       scope: keyword.declaration.wolang
     - match: \b(as|mut|uses|where|unsafe|arena|comptime|self|error|with|without|before|after|aos|soa)\b
       scope: keyword.other.wolang

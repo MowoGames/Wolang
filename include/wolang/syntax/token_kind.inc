@@ -171,6 +171,7 @@ WOLANG_CONTEXTUAL(Aos, "aos")
 WOLANG_CONTEXTUAL(Soa, "soa")
 WOLANG_CONTEXTUAL(State, "state")
 WOLANG_CONTEXTUAL(Unit, "unit")
+WOLANG_CONTEXTUAL(Weak, "weak")
 // Entity query filters: `Query<mut Velocity, with Falling, without Dead>`.
 WOLANG_CONTEXTUAL(With, "with")
 WOLANG_CONTEXTUAL(Without, "without")

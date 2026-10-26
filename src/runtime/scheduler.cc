@@ -112,6 +112,13 @@ uint64_t* CountOf(void* object) {
                                      kCountBytes);
 }
 
+// The second word in front: how many weak references there are, plus one
+// for all the strong ones together. The storage goes when it reaches zero,
+// which is after the object itself has (D207).
+uint64_t* WeakCountOf(void* object) {
+  return CountOf(object) + 1;
+}
+
 static std::atomic<int64_t> sm_LiveObjects{0};
 
 int64_t wolang_objects_live() {
@@ -137,6 +144,7 @@ void* wolang_object_alloc(uint64_t size) {
   // One reference: whoever asked for it. Sixteen bytes rather than eight
   // so that what comes back is still aligned for anything.
   *CountOf(object) = 1;
+  *WeakCountOf(object) = 1;
   return object;
 }
 
@@ -169,9 +177,42 @@ void wolang_object_free(void* object) {
   if (object == nullptr || wolang_arena_owns(object)) {
     return;
   }
-  // Back to the word in front, which is where the allocation began.
   sm_LiveObjects.fetch_sub(1, std::memory_order_relaxed);
-  std::free(static_cast<uint8_t*>(object) - kCountBytes);
+  wolang_object_weak_release(object);
+}
+
+void wolang_object_weak_retain(void* object) {
+  if (object == nullptr || wolang_arena_owns(object)) {
+    return;
+  }
+  std::atomic_ref<uint64_t>(*WeakCountOf(object)).fetch_add(1, std::memory_order_relaxed);
+}
+
+void wolang_object_weak_release(void* object) {
+  if (object == nullptr || wolang_arena_owns(object)) {
+    return;
+  }
+  if (std::atomic_ref<uint64_t>(*WeakCountOf(object)).fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    std::free(static_cast<uint8_t*>(object) - kCountBytes);
+  }
+}
+
+int32_t wolang_object_upgrade(void* object) {
+  if (object == nullptr) {
+    return 0;
+  }
+  if (wolang_arena_owns(object)) {
+    return 1;
+  }
+
+  std::atomic_ref<uint64_t> count(*CountOf(object));
+  uint64_t seen = count.load(std::memory_order_relaxed);
+  while (seen != 0) {
+    if (count.compare_exchange_weak(seen, seen + 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 int64_t wolang_sched_join(int32_t handle) {

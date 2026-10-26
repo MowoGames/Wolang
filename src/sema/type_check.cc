@@ -31,6 +31,7 @@ constexpr std::string_view kBadOverride = "E0401";
 constexpr std::string_view kMissingAbilityMethod = "E0402";
 constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
+constexpr std::string_view kBadWeak = "E0131";
 constexpr std::string_view kBadConversion = "E0124";
 // Writing to a field of the receiver, which needs a receiver that is a
 // reference. A method is passed its object by value today, so the write
@@ -3559,6 +3560,20 @@ void Checker::CheckItem(ItemId id) {
           at_module_level_ = false;
           CheckItem(member);
           at_module_level_ = outer;
+        }
+        if (ast_.Contains(member) && HasFlag(ast_.Get(member).flags, ItemFlags::kWeak)) {
+          const Item& field = ast_.Get(member);
+          const TypeId held = field.type.is_valid() ? resolver_.Resolve(ast_, field.type) : TypeId{};
+          const bool optional = held.is_valid() && types_->KindOf(held) == TypeKind::kOptional;
+          const TypeId pointee = optional ? types_->ElementOf(held) : TypeId{};
+          const TypeKind kind = pointee.is_valid() ? types_->KindOf(pointee) : TypeKind::kError;
+          const bool counted = (kind == TypeKind::kNamed || kind == TypeKind::kInstance) && types_->IsHandle(pointee);
+          if (item.kind != ItemKind::kClass || !counted) {
+            std::string message = "`weak` is for a field of a class that holds a `C?` of a class; `";
+            message.append(interner_->Text(field.name));
+            message.append("` is not one");
+            Report(kBadWeak, std::move(message), field.name_span, "write `weak var name: Node?` inside a `class`");
+          }
         }
         // What a variant carries is resolved here as well, so that an
         // import used only by a payload counts as used: `Array(items:

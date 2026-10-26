@@ -59,6 +59,7 @@ class SignatureWriter {
         {ItemFlags::kAsync, "task"},     {ItemFlags::kVirtual, "virtual"},
         {ItemFlags::kOverride, "override"}, {ItemFlags::kComptime, "comptime"},
         {ItemFlags::kDerived, "derived"}, {ItemFlags::kMutable, "mut"},
+        {ItemFlags::kWeak, "weak"},
         {ItemFlags::kExtern, "extern"},   {ItemFlags::kAbilityImpl, "for"},
     };
     for (const auto& entry : kItemNames) {

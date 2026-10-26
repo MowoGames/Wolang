@@ -2563,3 +2563,25 @@ The rules now, in every tier, because all of it is lowering:
 - `T?` of a class is counted through its tag.
 
 Cycles still leak. `weak` is what breaks them, and it is next.
+
+
+**D207. `weak var` breaks a cycle.** A parent that holds its child and a
+child that holds its parent is the shape of every scene graph, and
+counting alone never frees it. A field marked `weak` holds a `C?` of a
+class without keeping it alive: reading it asks the runtime whether the
+object is still there and answers a counted reference or `null`.
+
+The second word in front of every object -- sixteen bytes were reserved
+for one count (D193) -- is the weak count, plus one for all the strong
+references together, which is the arrangement Rust's `Arc` uses. The
+object goes when the strong count reaches zero; its storage goes when
+the weak count does, so a weak field never points at freed memory. The
+upgrade is a compare-and-swap that will not raise a count from zero.
+
+`weak` is contextual, like `derived`, and only allowed on a `C?` field
+of a class (`E0131`): a weak local would be `null` by the next line, and
+a weak field of a value would be copied without being counted.
+
+Found on the way: `p?.x` on a class read the field out of the handle as
+if the handle were the object, which is a wrong answer in machine code
+and a trap in the reference tier. It reads through the address now.

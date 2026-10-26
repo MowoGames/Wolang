@@ -143,6 +143,8 @@ struct Member {
   // already replaces a base method.
   bool is_virtual = false;
   bool is_override = false;
+  // Fields: `weak var`, which does not keep the object alive.
+  bool is_weak = false;
   // Derived fields: which fields the expression reads, as indices into the
   // same table. A write to any of them is what makes the value stale, and
   // the list is here because the writer may be in another file.
@@ -156,6 +158,7 @@ struct Member {
            lhs.is_public == rhs.is_public &&
            lhs.is_virtual == rhs.is_virtual &&
            lhs.is_override == rhs.is_override &&
+           lhs.is_weak == rhs.is_weak &&
            lhs.depends_on == rhs.depends_on;
   }
 };

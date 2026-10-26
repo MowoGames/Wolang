@@ -1301,6 +1301,7 @@ void ResolveSignatures(TypeStore* types,
               HasFlag(member_entry.flags, ItemFlags::kDerived)
                   ? MemberKind::kDerived
                   : MemberKind::kField;
+          member.is_weak = HasFlag(member_entry.flags, ItemFlags::kWeak);
           break;
       }
       members.push_back(member);

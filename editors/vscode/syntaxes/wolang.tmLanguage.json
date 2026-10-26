@@ -124,7 +124,7 @@
         },
         {
           "name": "keyword.declaration.wolang",
-          "match": "\\b(fun|task|class|struct|enum|ability|component|tag|machine|system|type|var|const|extend|extern|signal|effect|dimension|unit|deinit|derived|virtual|override|offer|priv|need)\\b"
+          "match": "\\b(fun|task|class|struct|enum|ability|component|tag|machine|system|type|var|const|extend|extern|signal|effect|dimension|unit|deinit|derived|weak|virtual|override|offer|priv|need)\\b"
         },
         {
           "name": "keyword.other.wolang",

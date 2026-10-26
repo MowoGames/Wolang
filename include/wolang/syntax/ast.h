@@ -130,6 +130,8 @@ enum class ItemFlags : uint16_t {
   // tell a `task` it may `wait` on -- one with no body, which suspends once
   // -- from one whose machine lives somewhere it cannot see.
   kHasBody = 1 << 13,
+  // `weak var`: a field that does not keep what it points at alive.
+  kWeak = 1 << 14,
 };
 
 enum class ExprKind : uint8_t {

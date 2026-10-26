@@ -1404,6 +1404,40 @@ struct Holder {
   WOLANG_EXPECT(f.Messages().find("would outlive") != std::string::npos);
 }
 
+WOLANG_TEST(TypeCheck, AWeakFieldIsAnOptionalClassInAClass) {
+  Fixture fine(R"(
+class Node {
+  weak var parent: Node? = null
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0131"));
+
+  Fixture number(R"(
+class Node {
+  weak var count: int = 0
+}
+)");
+  WOLANG_EXPECT(number.HasCode("E0131"));
+
+  Fixture strong(R"(
+class Node {
+  weak var parent: Node = Node()
+}
+)");
+  WOLANG_EXPECT(strong.HasCode("E0131"));
+
+  Fixture value(R"(
+class Node {
+  var id: int = 0
+}
+
+struct Pair {
+  weak var left: Node? = null
+}
+)");
+  WOLANG_EXPECT(value.HasCode("E0131"));
+}
+
 WOLANG_TEST(TypeCheck, AParameterAndALocalMayHoldAReference) {
   Fixture f(R"(
 fun f(a: &int) -> int {

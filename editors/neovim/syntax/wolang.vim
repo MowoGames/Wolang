@@ -13,7 +13,7 @@ syn keyword wolangControl break continue defer spawn wait on enter exit
 syn keyword wolangControl state always
 syn keyword wolangDeclare fun task class struct enum ability component tag
 syn keyword wolangDeclare machine system type var const extend extern
-syn keyword wolangDeclare signal effect dimension unit deinit derived
+syn keyword wolangDeclare signal effect dimension unit deinit derived weak
 syn keyword wolangDeclare virtual override offer priv need
 syn keyword wolangOther as mut uses where unsafe arena comptime self error
 syn keyword wolangOther with without before after aos soa

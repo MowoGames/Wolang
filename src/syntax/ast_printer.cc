@@ -299,6 +299,7 @@ class Printer {
         {ItemFlags::kOverride, "override"},
         {ItemFlags::kComptime, "comptime"},
         {ItemFlags::kDerived, "derived"},
+        {ItemFlags::kWeak, "weak"},
         {ItemFlags::kExtern, "extern"},
         {ItemFlags::kHasError, "has-error"},
     };
