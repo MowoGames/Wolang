@@ -6,8 +6,11 @@
 
 #include "wolang/embed/wolang.h"
 
+#include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "harness/test.h"
 
@@ -295,6 +298,88 @@ offer fun Gone() -> int {
   WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, enemy), 0);
   WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Gone", nullptr, 0, &answer), 0);
   WOLANG_EXPECT_EQ(answer.integer, 1);
+  wolang_vm_destroy(vm);
+}
+
+static const char* const kWorkScript = R"(
+class Cell {
+  var value: int
+}
+
+var total: int = 0
+
+offer fun Work(seed: int) -> int {
+  var sum = 0
+  for i in 0..100 {
+    const cell = Cell(seed + i)
+    sum = sum + cell.value
+  }
+  total = total + 1
+  return sum
+}
+
+offer fun Total() -> int {
+  return total
+}
+)";
+
+static int32_t RunWork(WolangVm* vm, int32_t seed, int32_t times) {
+  int32_t wrong = 0;
+  for (int32_t i = 0; i < times; ++i) {
+    WolangValue argument = wolang_int(seed);
+    WolangValue answer = wolang_void();
+    if (wolang_vm_call(vm, "Work", &argument, 1, &answer) != 0 || answer.integer != seed * 100 + 4950) {
+      ++wrong;
+    }
+  }
+  return wrong;
+}
+
+WOLANG_TEST(EmbedTest, EachThreadRunsItsOwnVm) {
+  std::vector<int32_t> wrong(4, 0);
+  std::vector<std::thread> threads;
+  for (int32_t t = 0; t < 4; ++t) {
+    threads.emplace_back([t, &wrong] {
+      WolangVm* vm = wolang_vm_create();
+      if (wolang_vm_load_source(vm, "work.wo", kWorkScript) != 0) {
+        std::fprintf(stderr, "%s\n", wolang_vm_errors(vm));
+        wrong[t] = -1;
+      }
+      else {
+        wrong[t] = RunWork(vm, t, 200);
+      }
+      wolang_vm_destroy(vm);
+    });
+  }
+  for (std::thread& thread : threads) {
+    thread.join();
+  }
+  for (int32_t count : wrong) {
+    WOLANG_EXPECT_EQ(count, 0);
+  }
+}
+
+WOLANG_TEST(EmbedTest, ThreadsShareOneVmOneCallAtATime) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "work.wo", kWorkScript), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  std::vector<int32_t> wrong(4, 0);
+  std::vector<std::thread> threads;
+  for (int32_t t = 0; t < 4; ++t) {
+    threads.emplace_back([t, vm, &wrong] {
+      wrong[t] = RunWork(vm, t, 200);
+    });
+  }
+  for (std::thread& thread : threads) {
+    thread.join();
+  }
+  for (int32_t count : wrong) {
+    WOLANG_EXPECT_EQ(count, 0);
+  }
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Total", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 800);
   wolang_vm_destroy(vm);
 }
 

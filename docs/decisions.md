@@ -2720,3 +2720,12 @@ has none. Two counting gaps showed up on the way: `held = null` did not
 release what was there, because the literal had no counted type, and an
 operand made only to be compared -- `tracker.seen != null` upgrades a weak
 field into a reference of its own -- was never let go.
+
+**D214. A vm takes one call at a time, from any thread.** Every entry
+point that touches a vm holds its lock, a recursive one, so a host
+function that calls back into the vm it was called from does not
+deadlock itself. The alternative was to leave it to the host, which is
+what "not thread-safe" said before, and every engine would have written
+the same mutex. Parallelism is separate vms, which were already
+independent: the compiled tier's context belongs to its vm, the counts
+on objects are atomic, and the host's class table has its own lock.

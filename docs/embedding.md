@@ -168,11 +168,25 @@ are the language's own answer and they are not complete yet.
 
 ## Threads
 
-A `WolangVm` is not thread-safe, and one per thread is the way to use
-several: the program's module-level `var`s are process-wide, so two vms
-holding the same program share them. A host that calls into scripts from
-a job system should either serialize the calls or give each thread its
-own vm and keep the shared state on the host's side.
+Any thread may call into a `WolangVm`, and a vm takes one call at a time:
+a second thread waits for the first to come back. A call that reaches a
+host function which calls into the same vm again is the same thread and
+goes straight through. That is the whole contract (D214), and it gives
+an engine two ways to run scripts from a job system:
+
+- **One vm per worker.** Each worker loads the program into its own vm,
+  and calls run in parallel. A module-level `var` belongs to its vm, so
+  state the workers share lives on the host's side — in the engine's
+  components, which is where it was going to be anyway.
+- **One vm, many workers.** Every job calls the same vm and the calls
+  take turns. Simple, and right for scripts that are cheap next to what
+  the engine does around them.
+
+The counts on the program's objects are atomic, so an object one vm
+handed to the host can be retained and released from any thread. The
+callbacks an `extern class` registers are called on whichever thread is
+running the script at the time; an engine whose own counting is not
+thread-safe should keep those calls on the thread it counts on.
 
 ## Hot reloading
 

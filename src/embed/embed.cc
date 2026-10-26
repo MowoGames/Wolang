@@ -18,6 +18,7 @@
 #include <deque>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -110,6 +111,10 @@ struct WolangVm {
   // Kept alive for as long as the vm is: a text the program answered
   // points into one of these, so the host can read it after the call.
   std::deque<std::string> answers;
+  // One call into a vm at a time, from whichever thread makes it; the
+  // same thread may come back in through a host function (D214). Shared,
+  // because a reload builds the vm again around the lock it is holding.
+  std::shared_ptr<std::recursive_mutex> lock = std::make_shared<std::recursive_mutex>();
 };
 
 namespace {
@@ -446,6 +451,10 @@ WolangValue Unboxed(WolangVm* vm, const wolang::interp::Value& value) {
 
 extern "C" {
 
+static std::unique_lock<std::recursive_mutex> Hold(const WolangVm* vm) {
+  return vm != nullptr ? std::unique_lock<std::recursive_mutex>(*vm->lock) : std::unique_lock<std::recursive_mutex>();
+}
+
 WolangValue wolang_void(void) {
   WolangValue value;
   std::memset(&value, 0, sizeof(value));
@@ -506,6 +515,7 @@ void wolang_vm_destroy(WolangVm* vm) {
 }
 
 int32_t wolang_vm_load(WolangVm* vm, const char* path) {
+  const auto turn = Hold(vm);
   if (vm == nullptr || path == nullptr) {
     return 1;
   }
@@ -561,6 +571,7 @@ int32_t wolang_vm_load(WolangVm* vm, const char* path) {
 int32_t wolang_vm_load_source(WolangVm* vm,
                               const char* name,
                               const char* source) {
+  const auto turn = Hold(vm);
   if (vm == nullptr || source == nullptr) {
     return 1;
   }
@@ -618,6 +629,7 @@ int32_t wolang_vm_load_source(WolangVm* vm,
 }
 
 const char* wolang_vm_errors(const WolangVm* vm) {
+  const auto turn = Hold(vm);
   return vm == nullptr ? "" : vm->errors.c_str();
 }
 
@@ -642,6 +654,7 @@ const char* wolang_vm_function_name(const WolangVm* vm, int32_t index) {
 }
 
 int32_t wolang_vm_bind(WolangVm* vm, const char* symbol, void* function) {
+  const auto turn = Hold(vm);
   (void)vm;
   if (symbol == nullptr || function == nullptr) {
     return 1;
@@ -653,6 +666,7 @@ int32_t wolang_vm_bind(WolangVm* vm, const char* symbol, void* function) {
 void wolang_vm_set_args(WolangVm* vm,
                         int32_t count,
                         const char* const* args) {
+  const auto turn = Hold(vm);
   (void)vm;
   wolang::runtime::wolang_args_set(count < 0 ? 0 : count, args);
 }
@@ -746,6 +760,7 @@ static const Callable* FindMember(const WolangVm* vm, const std::string& name) {
 }
 
 int32_t wolang_vm_object_retain(WolangVm* vm, WolangValue object) {
+  const auto turn = Hold(vm);
   if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr) {
     return 1;
   }
@@ -754,6 +769,7 @@ int32_t wolang_vm_object_retain(WolangVm* vm, WolangValue object) {
 }
 
 int32_t wolang_vm_object_release(WolangVm* vm, WolangValue object) {
+  const auto turn = Hold(vm);
   if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr) {
     return 1;
   }
@@ -772,6 +788,7 @@ int32_t wolang_vm_object_release(WolangVm* vm, WolangValue object) {
 }
 
 int32_t wolang_vm_object_call(WolangVm* vm, WolangValue object, const char* method, const WolangValue* arguments, int32_t count, WolangValue* out) {
+  const auto turn = Hold(vm);
   if (vm == nullptr || !vm->ok || object.kind != kWolangObject || object.handle == nullptr || method == nullptr) {
     return 1;
   }
@@ -796,6 +813,7 @@ int32_t wolang_vm_object_call(WolangVm* vm, WolangValue object, const char* meth
 }
 
 int32_t wolang_vm_object_get(WolangVm* vm, WolangValue object, const char* field, WolangValue* out) {
+  const auto turn = Hold(vm);
   if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr || field == nullptr || out == nullptr) {
     return 1;
   }
@@ -854,6 +872,7 @@ int32_t wolang_vm_call(WolangVm* vm,
                        const WolangValue* arguments,
                        int32_t count,
                        WolangValue* out) {
+  const auto turn = Hold(vm);
   if (vm == nullptr) {
     return 1;
   }
@@ -888,6 +907,7 @@ int32_t wolang_vm_call(WolangVm* vm,
 // ------------------------------------------------------------- handles ---
 
 WolangFunction* wolang_vm_function(WolangVm* vm, const char* name) {
+  const auto turn = Hold(vm);
   // A `Callable` *is* the handle: the list does not move while a program
   // is loaded, and a reload clears it -- which is why the header says a
   // handle does not survive one.
@@ -899,6 +919,7 @@ int32_t wolang_call(WolangFunction* function,
                     const WolangValue* arguments,
                     int32_t count,
                     WolangValue* out) {
+  const auto turn = Hold(function != nullptr ? reinterpret_cast<const Callable*>(function)->vm : nullptr);
   if (function == nullptr) {
     return 1;
   }
@@ -1047,6 +1068,7 @@ void* GlobalStorage(WolangVm* vm, const char* name, TypeId* type) {
 int32_t wolang_vm_get_global(WolangVm* vm,
                              const char* name,
                              WolangValue* out) {
+  const auto turn = Hold(vm);
   TypeId type;
   void* storage = GlobalStorage(vm, name, &type);
   if (storage == nullptr || out == nullptr) {
@@ -1104,6 +1126,7 @@ int32_t wolang_vm_get_global(WolangVm* vm,
 int32_t wolang_vm_set_global(WolangVm* vm,
                              const char* name,
                              WolangValue value) {
+  const auto turn = Hold(vm);
   TypeId type;
   void* storage = GlobalStorage(vm, name, &type);
   if (storage == nullptr) {
@@ -1199,6 +1222,7 @@ void Written(const std::string& text) {
 }  // namespace
 
 void wolang_vm_set_writer(WolangVm* vm, WolangWriter writer, void* user) {
+  const auto turn = Hold(vm);
   (void)vm;
   host_writer = writer;
   host_writer_user = user;
@@ -1208,6 +1232,7 @@ void wolang_vm_set_writer(WolangVm* vm, WolangWriter writer, void* user) {
 
 void wolang_vm_set_reporter(WolangVm* vm, WolangWriter reporter,
                             void* user) {
+  const auto turn = Hold(vm);
   (void)vm;
   host_reporter = reporter;
   host_reporter_user = user;
@@ -1218,18 +1243,21 @@ void wolang_vm_set_reporter(WolangVm* vm, WolangWriter reporter,
 // -------------------------------------------------------------- limits ---
 
 void wolang_vm_set_step_limit(WolangVm* vm, uint64_t steps) {
+  const auto turn = Hold(vm);
   if (vm != nullptr) {
     vm->steps = steps;
   }
 }
 
 void wolang_vm_set_compiled(WolangVm* vm, int32_t allowed) {
+  const auto turn = Hold(vm);
   if (vm != nullptr) {
     vm->allow_compiled = allowed != 0;
   }
 }
 
 void wolang_vm_set_initialize(WolangVm* vm, int32_t initialize) {
+  const auto turn = Hold(vm);
   if (vm != nullptr) {
     vm->initialize = initialize != 0;
   }
@@ -1238,20 +1266,23 @@ void wolang_vm_set_initialize(WolangVm* vm, int32_t initialize) {
 // ------------------------------------------------------------- reloads ---
 
 int32_t wolang_vm_reload(WolangVm* vm) {
+  const auto turn = Hold(vm);
   if (vm == nullptr) {
     return 1;
   }
   const std::vector<WolangVm::Loaded> again = vm->loaded;
+  const std::shared_ptr<std::recursive_mutex> lock = vm->lock;
   // A fresh database, because a query cache remembers what the files
   // said: reloading is loading again, not re-asking.
   vm->~WolangVm();
   new (vm) WolangVm();
+  vm->lock = lock;
   int32_t status = 0;
-  for (const WolangVm::Loaded& held : again) {
-    status |= held.from_source
-                  ? wolang_vm_load_source(vm, held.path.c_str(),
-                                          held.source.c_str())
-                  : wolang_vm_load(vm, held.path.c_str());
+  for (const WolangVm::Loaded& file : again) {
+    status |= file.from_source
+                  ? wolang_vm_load_source(vm, file.path.c_str(),
+                                          file.source.c_str())
+                  : wolang_vm_load(vm, file.path.c_str());
   }
   return status;
 }
