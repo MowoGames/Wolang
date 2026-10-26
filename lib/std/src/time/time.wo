@@ -5,10 +5,9 @@
 // clock for "when was that", which does when the system is corrected
 // (D92). Mixing them up is the bug this separation exists to prevent.
 
-// `CLOCK_MONOTONIC` and `CLOCK_REALTIME` on Darwin and Linux alike. The
-// numbers differ between the two systems for the *other* clocks, which is
-// why only these two are offered.
-const kMonotonic: int = 6
+// The runtime picks the system's own clock for each: the numbers differ
+// between systems, and Linux's 6 is the coarse monotonic clock.
+const kMonotonic: int = 1
 const kRealtime: int = 0
 
 /// A point in time, as the two numbers every system reports it as.
@@ -17,13 +16,12 @@ offer struct Instant {
   var nanos: s64 = 0
 }
 
-// `timespec` is two 64-bit numbers on both systems this runs on, which is
-// what makes `Instant` the right shape to hand the kernel directly.
-extern "C" fun clock_gettime(clock: s32, out: *Instant) -> s32
+// Two 64-bit numbers, which is the shape the runtime writes.
+extern "C" fun wolang_clock(clock: s32, out: *Instant) -> s32
 
 fun Read(clock: int) -> Instant uses unsafe {
   var spec = Instant(0, 0)
-  const _status = clock_gettime(clock as s32, &spec)
+  const _status = wolang_clock(clock as s32, &spec)
   return spec
 }
 
@@ -125,11 +123,9 @@ offer fun Civil(seconds: s64) -> DateTime {
     era = (shifted - 146096) / 146097
   }
   const day_of_era = shifted - era * 146097
-  const year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 -
-                       day_of_era / 146096) / 365
+  const year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365
   const shifted_year = year_of_era + era * 400
-  const day_of_year =
-      day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100)
+  const day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100)
   const month_prime = (5 * day_of_year + 2) / 153
   const day = day_of_year - (153 * month_prime + 2) / 5 + 1
   var month = month_prime + 3
@@ -141,8 +137,15 @@ offer fun Civil(seconds: s64) -> DateTime {
     year = year + 1
   }
 
-  return DateTime(year, month, day, hour, minute, second, weekday,
-                  YearDay(year, month, day))
+  return DateTime(
+      year,
+      month,
+      day,
+      hour,
+      minute,
+      second,
+      weekday,
+      YearDay(year, month, day))
 }
 
 /// Which day of the year a date is, from one.
@@ -187,11 +190,9 @@ offer fun Epoch(moment: DateTime) -> s64 {
   }
   const year_of_era = year - era * 400
   const day_of_year = (153 * (month - 3) + 2) / 5 + moment.day - 1
-  const day_of_era =
-      year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year
+  const day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year
   const days = era * 146097 + day_of_era - 719468
-  return (days * 86400 + moment.hour * 3600 + moment.minute * 60 +
-          moment.second) as s64
+  return (days * 86400 + moment.hour * 3600 + moment.minute * 60 + moment.second) as s64
 }
 
 /// `2026-10-15T14:03:07Z`, which sorts as text and parses everywhere.
@@ -225,8 +226,7 @@ offer fun WeekdayName(weekday: int) -> text {
 
 /// The three-letter name of a month, from one.
 offer fun MonthName(month: int) -> text {
-  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
-                 "Sep", "Oct", "Nov", "Dec"]
+  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
   if month < 1 || month > 12 {
     return "Jan"
   }
@@ -250,25 +250,24 @@ fun TakesTheClockApart() -> bool uses unsafe {
   // 2026-10-15T14:03:07Z is 1792072987 seconds after the epoch.
   const moment = Civil(1792072987)
   const epoch = Civil(0)
-  return Iso(moment) == "2026-10-15T14:03:07Z" && moment.weekday == 4 &&
-         moment.yearday == 288 &&
-         Iso(epoch) == "1970-01-01T00:00:00Z" && epoch.weekday == 4 &&
-         Epoch(moment) == 1792072987 && Epoch(epoch) == 0
+  return Iso(moment) == "2026-10-15T14:03:07Z" && moment.weekday == 4 && moment.yearday == 288 && Iso(
+      epoch) == "1970-01-01T00:00:00Z" && epoch.weekday == 4 && Epoch(moment) == 1792072987 && Epoch(
+      epoch) == 0
 }
 
 @Test
 fun HandlesLeapYearsAndEdges() -> bool uses unsafe {
   const leap = Civil(1709208000)  // A leap day, at noon.
-  return IsLeapYear(2024) && !IsLeapYear(2023) && !IsLeapYear(1900) &&
-         IsLeapYear(2000) && Iso(leap) == "2024-02-29T12:00:00Z" &&
-         leap.yearday == 60 && YearDay(2023, 3, 1) == 60 &&
-         Iso(Civil(-86400)) == "1969-12-31T00:00:00Z"
+  return IsLeapYear(2024) && !IsLeapYear(2023) && !IsLeapYear(1900) && IsLeapYear(
+      2000) && Iso(leap) == "2024-02-29T12:00:00Z" && leap.yearday == 60 && YearDay(
+      2023,
+      3,
+      1) == 60 && Iso(Civil(-86400)) == "1969-12-31T00:00:00Z"
 }
 
 @Test
 fun WritesTheDateHttpWants() -> bool uses unsafe {
-  return HttpDate(1792072987) == "Thu, 15 Oct 2026 14:03:07 GMT" &&
-         HttpDate(0) == "Thu, 01 Jan 1970 00:00:00 GMT"
+  return HttpDate(1792072987) == "Thu, 15 Oct 2026 14:03:07 GMT" && HttpDate(0) == "Thu, 01 Jan 1970 00:00:00 GMT"
 }
 
 // ------------------------------------------------- zones and parsing ---
@@ -278,10 +277,13 @@ fun WritesTheDateHttpWants() -> bool uses unsafe {
 // agrees with. So these ask the system rather than shipping a table
 // that would be wrong by the time anyone ran it (D176).
 
-extern "C" fun wolang_zone_offset(seconds: s64, zone: *u8,
-                                  length: u64) -> s32
-extern "C" fun wolang_zone_name(seconds: s64, zone: *u8, length: u64,
-                                into: *mut u8, room: u64) -> s32
+extern "C" fun wolang_zone_offset(seconds: s64, zone: *u8, length: u64) -> s32
+extern "C" fun wolang_zone_name(
+    seconds: s64,
+    zone: *u8,
+    length: u64,
+    into: *mut u8,
+    room: u64) -> s32
 
 /// How many seconds `zone` is ahead of UTC at that moment.
 ///
@@ -304,8 +306,12 @@ offer fun ZoneName(seconds: s64, zone: text) -> text uses unsafe {
   if bytes.len == 0 {
     written = wolang_zone_name(seconds, 0 as *u8, 0, &mut room[0], 64)
   } else {
-    written = wolang_zone_name(seconds, &bytes[0], bytes.len as u64,
-                               &mut room[0], 64)
+    written = wolang_zone_name(
+        seconds,
+        &bytes[0],
+        bytes.len as u64,
+        &mut room[0],
+        64)
   }
   var builder = BuilderNew()
   var i = 0
@@ -362,8 +368,7 @@ offer fun ParseIso(value: text) -> s64? uses unsafe {
   var minute = 0
   var second = 0
   var at = 10
-  if bytes.len > 10 && (bytes[10] == 84 || bytes[10] == 32 ||
-                        bytes[10] == 116) {
+  if bytes.len > 10 && (bytes[10] == 84 || bytes[10] == 32 || bytes[10] == 116) {
     if bytes.len < 16 {
       return null
     }
@@ -391,8 +396,7 @@ offer fun ParseIso(value: text) -> s64? uses unsafe {
   }
   // The weekday and the day of the year are worked out from the rest,
   // so what goes in here is anything: `Epoch` does not read them.
-  var moment = Epoch(DateTime(year, month, day, hour, minute, second, 0,
-                              1))
+  var moment = Epoch(DateTime(year, month, day, hour, minute, second, 0, 1))
 
   if at < bytes.len {
     const marker = bytes[at]
@@ -504,11 +508,9 @@ fun ReadsAndWritesIso() -> bool uses unsafe {
   const midnight = ParseIso("2026-10-15") ?? -1
   const plus_two = ParseIso("2026-10-15T20:09:23+02:00") ?? -1
   const minus = ParseIso("2026-10-15T16:09:23-02:00") ?? -1
-  const broken = ParseIso("not a date") == null &&
-                 ParseIso("2026-13-01") == null &&
-                 ParseIso("2026-10-15T25") == null
-  return back == "2026-10-15T18:09:23Z" && midnight == moment - 65363 &&
-         plus_two == moment && minus == moment && broken
+  const broken = ParseIso("not a date") == null && ParseIso("2026-13-01") == null && ParseIso(
+      "2026-10-15T25") == null
+  return back == "2026-10-15T18:09:23Z" && midnight == moment - 65363 && plus_two == moment && minus == moment && broken
 }
 
 @Test
@@ -521,17 +523,17 @@ fun KnowsAboutZones() -> bool uses unsafe {
   const kyiv_winter = ZoneOffset(winter, "Europe/Kyiv")
   const kyiv_summer = ZoneOffset(summer, "Europe/Kyiv")
   const shown = CivilIn(winter, "Europe/Kyiv")
-  return utc_offset == 0 && kyiv_winter == 7200 &&
-         kyiv_summer == 10800 && shown.hour == 14 &&
-         EpochIn(shown, "Europe/Kyiv") == winter
+  return utc_offset == 0 && kyiv_winter == 7200 && kyiv_summer == 10800 && shown.hour == 14 && EpochIn(
+      shown,
+      "Europe/Kyiv") == winter
 }
 
 @Test
 fun SaysHowLongAgo() -> bool uses unsafe {
   const now: s64 = 1000000
-  return Ago(now - 10, now) == "just now" &&
-         Ago(now - 120, now) == "2 minutes ago" &&
-         Ago(now - 3600, now) == "1 hour ago" &&
-         Ago(now - 172800, now) == "2 days ago" &&
-         Ago(now + 3600, now) == "1 hour from now"
+  return Ago(now - 10, now) == "just now" && Ago(now - 120, now) == "2 minutes ago" && Ago(
+      now - 3600,
+      now) == "1 hour ago" && Ago(now - 172800, now) == "2 days ago" && Ago(
+      now + 3600,
+      now) == "1 hour from now"
 }

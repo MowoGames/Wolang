@@ -19,6 +19,7 @@
 #include "wolang/runtime/signal.h"
 #include "wolang/runtime/sockets.h"
 #include "wolang/runtime/spawn.h"
+#include "wolang/runtime/system.h"
 #include "wolang/runtime/text.h"
 
 #include "wolang/runtime/scheduler.h"
@@ -104,6 +105,7 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_object_alloc)},
       {"wolang_object_free",
        reinterpret_cast<void*>(&wolang_object_free)},
+      {"wolang_objects_live", reinterpret_cast<void*>(&wolang_objects_live)},
       {"wolang_object_retain",
        reinterpret_cast<void*>(&wolang_object_retain)},
       {"wolang_object_release",
@@ -279,6 +281,13 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_signal_disconnect)},
       {"wolang_sched_pending",
        reinterpret_cast<void*>(&wolang_sched_pending)},
+      {"wolang_fd_read", reinterpret_cast<void*>(&wolang_fd_read)},
+      {"wolang_fd_write", reinterpret_cast<void*>(&wolang_fd_write)},
+      {"wolang_fd_close", reinterpret_cast<void*>(&wolang_fd_close)},
+      {"wolang_process_id", reinterpret_cast<void*>(&wolang_process_id)},
+      {"wolang_sleep_micros", reinterpret_cast<void*>(&wolang_sleep_micros)},
+      {"wolang_clock", reinterpret_cast<void*>(&wolang_clock)},
+      {"wolang_system", reinterpret_cast<void*>(&wolang_system)},
   };
   for (const BuiltinEntry& entry : kTable) {
     if (entry.name == name) {

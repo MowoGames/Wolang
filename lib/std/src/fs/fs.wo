@@ -13,9 +13,9 @@ need std.mem.{ArrayNew, BytesFromRaw, Free}
 // itself.
 extern "C" fun wolang_open_read(path: *u8, length: u64) -> s32
 extern "C" fun wolang_open_write(path: *u8, length: u64) -> s32
-extern "C" fun close(fd: s32) -> s32
-extern "C" fun read(fd: s32, buffer: *u8, count: u64) -> s64
-extern "C" fun write(fd: s32, buffer: *u8, count: u64) -> s64
+extern "C" fun wolang_fd_close(fd: s32) -> s32
+extern "C" fun wolang_fd_read(fd: s32, buffer: *u8, count: u64) -> s64
+extern "C" fun wolang_fd_write(fd: s32, buffer: *u8, count: u64) -> s64
 
 /// An open file. Closing it is `deinit`'s job, so a handle that goes out
 /// of scope leaves no descriptor behind.
@@ -34,7 +34,7 @@ offer class File {
 
   fun Close() uses unsafe {
     if fd >= 0 {
-      const _status = close(fd)
+      const _status = wolang_fd_close(fd)
       fd = -1
     }
   }
@@ -45,14 +45,14 @@ offer class File {
     if fd < 0 {
       return -1
     }
-    return read(fd, buffer.data, buffer.len as u64) as int
+    return wolang_fd_read(fd, buffer.data, buffer.len as u64) as int
   }
 
   fun Write(bytes: []u8) -> int uses unsafe {
     if fd < 0 {
       return -1
     }
-    return write(fd, bytes.data, bytes.len as u64) as int
+    return wolang_fd_write(fd, bytes.data, bytes.len as u64) as int
   }
 }
 
@@ -114,7 +114,7 @@ fun BytesOf(buffer: []u8, length: int) -> []u8 {
 
 @Test
 fun WritesAndReadsBack() -> bool uses unsafe {
-  const path = "/tmp/wolang-fs-test.txt"
+  const path = TempName("wolang-fs-test")
   const message = "hello from wolang"
   // A `text` is a pointer and a length; this is the view of those bytes.
   const bytes = BytesFromRaw(message.data, message.length as int)
@@ -138,7 +138,7 @@ fun WritesAndReadsBack() -> bool uses unsafe {
 
 @Test
 fun ReportsAMissingFile() -> bool uses unsafe {
-  var file = Open("/tmp/wolang-does-not-exist-9e3f")
+  var file = Open(TempName("wolang-does-not-exist"))
   return !file.IsOpen()
 }
 
@@ -156,19 +156,20 @@ extern "C" fun wolang_fs_kind(path: *u8, length: u64) -> s32
 extern "C" fun wolang_fs_size(path: *u8, length: u64) -> s64
 extern "C" fun wolang_fs_changed(path: *u8, length: u64) -> s64
 extern "C" fun wolang_fs_remove(path: *u8, length: u64) -> s32
-extern "C" fun wolang_fs_rename(from: *u8, from_length: u64, to: *u8,
-                                to_length: u64) -> s32
-extern "C" fun wolang_fs_make_directory(path: *u8, length: u64,
-                                        parents: s32) -> s32
-extern "C" fun wolang_fs_list(path: *u8, length: u64, into: *mut u8,
-                              room: u64) -> s64
+extern "C" fun wolang_fs_rename(
+    from: *u8,
+    from_length: u64,
+    to: *u8,
+    to_length: u64) -> s32
+extern "C" fun wolang_fs_make_directory(path: *u8, length: u64, parents: s32) -> s32
+extern "C" fun wolang_fs_list(path: *u8, length: u64, into: *mut u8, room: u64) -> s64
 
 /// What a path is.
 offer enum Kind {
-  Missing,
-  File,
-  Directory,
-  Other,
+  Missing
+  File
+  Directory
+  Other
 }
 
 /// Whether `path` is a file, a directory, something else, or nothing.
@@ -239,8 +240,11 @@ offer fun Rename(from: text, to: text) -> bool uses unsafe {
   if left.len == 0 || right.len == 0 {
     return false
   }
-  return wolang_fs_rename(&left[0], left.len as u64, &right[0],
-                          right.len as u64) == 0
+  return wolang_fs_rename(
+      &left[0],
+      left.len as u64,
+      &right[0],
+      right.len as u64) == 0
 }
 
 /// Makes a directory. With `parents`, every one above it too.
@@ -270,9 +274,11 @@ offer fun List(path: text) -> text uses unsafe {
   var room = 65536
   loop {
     var buffer = ArrayNew<u8>(room)
-    const written =
-        wolang_fs_list(&bytes[0], bytes.len as u64, &mut buffer[0],
-                       room as u64)
+    const written = wolang_fs_list(
+        &bytes[0],
+        bytes.len as u64,
+        &mut buffer[0],
+        room as u64)
     if written >= 0 {
       const held = TextFromRaw(&buffer[0], written as int)
       // A copy, because the buffer goes back and the names must not.
@@ -298,8 +304,8 @@ fun SaysWhatIsThereAndWhatIsNot() -> bool uses unsafe {
   const here = "lib/std/src/fs/fs.wo"
   // Run from the project root, which is where the tests run from.
   const seen = Exists(here) || !Exists(here)
-  return seen && !Exists("no/such/path/at/all.wo") &&
-         KindOf("no/such/path/at/all.wo") == Kind.Missing
+  return seen && !Exists("no/such/path/at/all.wo") && KindOf(
+      "no/such/path/at/all.wo") == Kind.Missing
 }
 
 @Test
@@ -323,10 +329,9 @@ fun MakesMovesAndRemoves() -> bool uses unsafe {
   const listing = List("wolang-fs-test/a/b")
   const gone = !Exists(first) && Exists(second)
   // And back out: the test leaves nothing behind.
-  const removed = Remove(second) && Remove("wolang-fs-test/a/b") &&
-                  Remove("wolang-fs-test/a") && Remove(root)
-  return sized && changed && moved && gone && removed &&
-         listing == "two.txt\n"
+  const removed = Remove(second) && Remove("wolang-fs-test/a/b") && Remove(
+      "wolang-fs-test/a") && Remove(root)
+  return sized && changed && moved && gone && removed && listing == "two.txt\n"
 }
 
 // ------------------------------------------- where things are, and trees ---
@@ -339,17 +344,25 @@ extern "C" fun wolang_fs_current(into: *mut u8, room: u64) -> s64
 extern "C" fun wolang_fs_set_current(path: *u8, length: u64) -> s32
 extern "C" fun wolang_fs_home(into: *mut u8, room: u64) -> s64
 extern "C" fun wolang_fs_temp_directory(into: *mut u8, room: u64) -> s64
-extern "C" fun wolang_fs_temp_name(prefix: *u8, length: u64,
-                                   into: *mut u8, room: u64) -> s64
-extern "C" fun wolang_fs_absolute(path: *u8, length: u64, into: *mut u8,
-                                  room: u64) -> s64
-extern "C" fun wolang_fs_copy(from: *u8, from_length: u64, to: *u8,
-                              to_length: u64, over: s32) -> s32
+extern "C" fun wolang_fs_temp_name(
+    prefix: *u8,
+    length: u64,
+    into: *mut u8,
+    room: u64) -> s64
+extern "C" fun wolang_fs_absolute(
+    path: *u8,
+    length: u64,
+    into: *mut u8,
+    room: u64) -> s64
+extern "C" fun wolang_fs_copy(
+    from: *u8,
+    from_length: u64,
+    to: *u8,
+    to_length: u64,
+    over: s32) -> s32
 extern "C" fun wolang_fs_remove_tree(path: *u8, length: u64) -> s32
-extern "C" fun wolang_fs_walk(path: *u8, length: u64, into: *mut u8,
-                              room: u64) -> s64
-extern "C" fun wolang_fs_append(path: *u8, length: u64, bytes: *u8,
-                                count: u64) -> s32
+extern "C" fun wolang_fs_walk(path: *u8, length: u64, into: *mut u8, room: u64) -> s64
+extern "C" fun wolang_fs_append(path: *u8, length: u64, bytes: *u8, count: u64) -> s32
 
 /// How much room a path answer is given. Longer than any system allows.
 const kPathRoom: int = 4096
@@ -371,8 +384,7 @@ fun Answered(written: s64, room: []u8) -> text uses unsafe {
 /// The directory the program is running in.
 offer fun Current() -> text uses unsafe {
   var room = ArrayNew<u8>(kPathRoom)
-  const held = Answered(wolang_fs_current(&mut room[0],
-                                          kPathRoom as u64), room)
+  const held = Answered(wolang_fs_current(&mut room[0], kPathRoom as u64), room)
   Free(room)
   return held
 }
@@ -389,8 +401,7 @@ offer fun SetCurrent(path: text) -> bool uses unsafe {
 /// The person's home directory, or "".
 offer fun Home() -> text uses unsafe {
   var room = ArrayNew<u8>(kPathRoom)
-  const held = Answered(wolang_fs_home(&mut room[0], kPathRoom as u64),
-                        room)
+  const held = Answered(wolang_fs_home(&mut room[0], kPathRoom as u64), room)
   Free(room)
   return held
 }
@@ -399,7 +410,8 @@ offer fun Home() -> text uses unsafe {
 offer fun TempDirectory() -> text uses unsafe {
   var room = ArrayNew<u8>(kPathRoom)
   const held = Answered(
-      wolang_fs_temp_directory(&mut room[0], kPathRoom as u64), room)
+      wolang_fs_temp_directory(&mut room[0], kPathRoom as u64),
+      room)
   Free(room)
   return held
 }
@@ -413,11 +425,13 @@ offer fun TempName(prefix: text) -> text uses unsafe {
   var room = ArrayNew<u8>(kPathRoom)
   var written: s64 = -1
   if bytes.len == 0 {
-    written = wolang_fs_temp_name(0 as *u8, 0, &mut room[0],
-                                  kPathRoom as u64)
+    written = wolang_fs_temp_name(0 as *u8, 0, &mut room[0], kPathRoom as u64)
   } else {
-    written = wolang_fs_temp_name(&bytes[0], bytes.len as u64,
-                                  &mut room[0], kPathRoom as u64)
+    written = wolang_fs_temp_name(
+        &bytes[0],
+        bytes.len as u64,
+        &mut room[0],
+        kPathRoom as u64)
   }
   const held = Answered(written, room)
   Free(room)
@@ -432,8 +446,12 @@ offer fun Absolute(path: text) -> text uses unsafe {
   }
   var room = ArrayNew<u8>(kPathRoom)
   const held = Answered(
-      wolang_fs_absolute(&bytes[0], bytes.len as u64, &mut room[0],
-                         kPathRoom as u64), room)
+      wolang_fs_absolute(
+          &bytes[0],
+          bytes.len as u64,
+          &mut room[0],
+          kPathRoom as u64),
+      room)
   Free(room)
   return held
 }
@@ -449,8 +467,12 @@ offer fun Copy(from: text, to: text, over: bool) -> bool uses unsafe {
   if over {
     replace = 1
   }
-  return wolang_fs_copy(&left[0], left.len as u64, &right[0],
-                        right.len as u64, replace) == 0
+  return wolang_fs_copy(
+      &left[0],
+      left.len as u64,
+      &right[0],
+      right.len as u64,
+      replace) == 0
 }
 
 /// Takes a directory and everything in it away.
@@ -476,8 +498,8 @@ offer fun Walk(path: text) -> text uses unsafe {
   const kRoom = 1048576
   var room = ArrayNew<u8>(kRoom)
   const held = Answered(
-      wolang_fs_walk(&bytes[0], bytes.len as u64, &mut room[0],
-                     kRoom as u64), room)
+      wolang_fs_walk(&bytes[0], bytes.len as u64, &mut room[0], kRoom as u64),
+      room)
   Free(room)
   return held
 }
@@ -490,11 +512,13 @@ offer fun Append(path: text, value: text) -> bool uses unsafe {
     return false
   }
   if held.len == 0 {
-    return wolang_fs_append(&bytes[0], bytes.len as u64, 0 as *u8,
-                            0) == 0
+    return wolang_fs_append(&bytes[0], bytes.len as u64, 0 as *u8, 0) == 0
   }
-  return wolang_fs_append(&bytes[0], bytes.len as u64, &held[0],
-                          held.len as u64) == 0
+  return wolang_fs_append(
+      &bytes[0],
+      bytes.len as u64,
+      &held[0],
+      held.len as u64) == 0
 }
 
 /// The whole of a text file.
@@ -523,9 +547,8 @@ fun FindsItsWayAround() -> bool uses unsafe {
   const named = TempName("wolang-test")
   // An absolute path of something that is not there yet still works.
   const made = Absolute(temp + "/not-here/file.txt")
-  return Length(here) > 0 && Length(home) > 0 && Length(temp) > 0 &&
-         Length(named) > Length(temp) && Length(made) > 0 &&
-         Exists(here)
+  return Length(here) > 0 && Length(home) > 0 && Length(temp) > 0 && Length(
+      named) > Length(temp) && Length(made) > 0 && Exists(here)
 }
 
 @Test
@@ -543,8 +566,7 @@ fun CopiesAppendsAndWalks() -> bool uses unsafe {
   const read = ReadText(first, 4096)
   const copied = Copy(first, root + "/two.txt", true)
   const walked = Walk(root)
-  const answer = appended && read == "hello again" && copied &&
-                 Length(walked) > 0 && Exists(root + "/two.txt") &&
-                 RemoveTree(root) && !Exists(root)
+  const answer = appended && read == "hello again" && copied && Length(walked) > 0 && Exists(
+      root + "/two.txt") && RemoveTree(root) && !Exists(root)
   return answer
 }

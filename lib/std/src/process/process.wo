@@ -5,13 +5,13 @@
 // it. A program that builds a command out of something a user typed has a
 // hole, and `uses unsafe` is where that responsibility is recorded.
 
-need std.text.{BuilderNew, Bytes, IndexOf, Length, TextFromRaw}
+need std.env.{System}
+need std.text.{BuilderNew, Bytes, IndexOf, Length, StartsWith, TextFromRaw}
 
 extern "C" fun exit(code: s32)
-extern "C" fun getpid() -> s32
+extern "C" fun wolang_process_id() -> s32
 extern "C" fun system(command: *u8) -> s32
-extern "C" fun sleep(seconds: u32) -> u32
-extern "C" fun usleep(micros: u32) -> s32
+extern "C" fun wolang_sleep_micros(micros: u64)
 
 /// Stops the program with `code`. Nothing after this runs.
 ///
@@ -24,7 +24,7 @@ offer fun Exit(code: int) uses unsafe {
 
 /// This program's identifier.
 offer fun Id() -> int uses unsafe {
-  return getpid() as int
+  return wolang_process_id() as int
 }
 
 /// Runs `command` through the system shell and answers its exit code.
@@ -47,14 +47,7 @@ offer fun Sleep(millis: int) uses unsafe {
   if millis <= 0 {
     return
   }
-  const whole = millis / 1000
-  if whole > 0 {
-    const _left = sleep(whole as u32)
-  }
-  const rest = millis % 1000
-  if rest > 0 {
-    const _slept = usleep((rest * 1000) as u32)
-  }
+  wolang_sleep_micros((millis * 1000) as u64)
 }
 
 // ------------------------------------------------------------- tests ---
@@ -68,6 +61,9 @@ fun KnowsItsOwnIdentifier() -> bool uses unsafe {
 fun RunsACommand() -> bool uses unsafe {
   // `true` and `false` are the two programs every system has, and their
   // exit codes are the whole contract.
+  if System() == "windows" {
+    return Run("exit 0") == 0 && Run("exit 1") != 0
+  }
   return Run("true") == 0 && Run("false") != 0
 }
 
@@ -86,11 +82,17 @@ fun SleepsAndComesBack() -> bool uses unsafe {
 
 need std.mem.{ArrayNew, Free}
 
-extern "C" fun wolang_spawn(command: *u8, length: u64, input: *u8,
-                            input_length: u64, out: *mut u8,
-                            out_room: u64, out_written: *mut u64,
-                            errors: *mut u8, errors_room: u64,
-                            errors_written: *mut u64) -> s32
+extern "C" fun wolang_spawn(
+    command: *u8,
+    length: u64,
+    input: *u8,
+    input_length: u64,
+    out: *mut u8,
+    out_room: u64,
+    out_written: *mut u64,
+    errors: *mut u8,
+    errors_room: u64,
+    errors_written: *mut u64) -> s32
 
 /// What another program did.
 offer struct Said {
@@ -134,11 +136,17 @@ offer fun StartWith(command: text, input: text) -> Said uses unsafe {
     input_length = given.len as u64
   }
 
-  const code = wolang_spawn(&bytes[0], bytes.len as u64, input_at,
-                            input_length, &mut out[0],
-                            kMostOutput as u64, &mut out_written,
-                            &mut errors[0], kMostOutput as u64,
-                            &mut errors_written)
+  const code = wolang_spawn(
+      &bytes[0],
+      bytes.len as u64,
+      input_at,
+      input_length,
+      &mut out[0],
+      kMostOutput as u64,
+      &mut out_written,
+      &mut errors[0],
+      kMostOutput as u64,
+      &mut errors_written)
 
   // Copied out, because the buffers go back and the text must not.
   var said = BuilderNew()
@@ -159,37 +167,59 @@ offer fun Works(command: text) -> bool uses unsafe {
 
 @Test
 fun CollectsWhatAProgramSaid() -> bool uses unsafe {
+  if System() == "windows" {
+    const said = Start("cmd /c echo hello from the child")
+    const failed = Start("cmd /c exit 3")
+    const missing = Start("this-program-does-not-exist")
+    return said.code == 0 && said.out == "hello from the child\r\n" && said.errors == "" && failed.code == 3 && missing.code == 127
+  }
   const said = Start("echo hello from the child")
   const failed = Start("sh -c 'exit 3'")
   const missing = Start("this-program-does-not-exist")
-  return said.code == 0 && said.out == "hello from the child\n" &&
-         said.errors == "" && failed.code == 3 && missing.code == 127
+  return said.code == 0 && said.out == "hello from the child\n" && said.errors == "" && failed.code == 3 && missing.code == 127
 }
 
 @Test
 fun WritesToAProgramsInput() -> bool uses unsafe {
   // `cat` gives back whatever it was given, which is the shortest round
   // trip through a pipe there is.
+  if System() == "windows" {
+    const sorted = StartWith("sort", "through the pipe")
+    return sorted.code == 0 && StartsWith(sorted.out, "through the pipe")
+  }
   const said = StartWith("cat", "through the pipe")
   const counted = StartWith("wc -c", "12345")
-  return said.code == 0 && said.out == "through the pipe" &&
-         counted.code == 0 && counted.out.len > 0
+  return said.code == 0 && said.out == "through the pipe" && counted.code == 0 && counted.out.len > 0
 }
 
 @Test
 fun KeepsQuotedWordsWhole() -> bool uses unsafe {
   // One argument with a blank in it, which is what the quoting is for.
+  if System() == "windows" {
+    const found = StartWith(
+        "findstr '/c:one argument'",
+        "has one argument in it")
+    return found.code == 0 && StartsWith(found.out, "has one argument in it")
+  }
   const said = Start("echo 'one argument'")
   return said.code == 0 && said.out == "one argument\n"
 }
 
-extern "C" fun wolang_spawn_in(command: *u8, length: u64, input: *u8,
-                               input_length: u64, directory: *u8,
-                               directory_length: u64, environment: *u8,
-                               environment_length: u64, out: *mut u8,
-                               out_room: u64, out_written: *mut u64,
-                               errors: *mut u8, errors_room: u64,
-                               errors_written: *mut u64) -> s32
+extern "C" fun wolang_spawn_in(
+    command: *u8,
+    length: u64,
+    input: *u8,
+    input_length: u64,
+    directory: *u8,
+    directory_length: u64,
+    environment: *u8,
+    environment_length: u64,
+    out: *mut u8,
+    out_room: u64,
+    out_written: *mut u64,
+    errors: *mut u8,
+    errors_room: u64,
+    errors_written: *mut u64) -> s32
 
 /// Everything a caller may say about how a program runs.
 ///
@@ -223,8 +253,7 @@ offer fun WithDirectory(run: Command, directory: text) -> Command {
 }
 
 /// One more `NAME=value` for the child.
-offer fun WithVariable(run: Command, name: text, value: text)
-    -> Command uses unsafe {
+offer fun WithVariable(run: Command, name: text, value: text) -> Command uses unsafe {
   var held = run
   if Length(held.environment) != 0 {
     held.environment = held.environment + "\n"
@@ -267,10 +296,19 @@ offer fun StartCommand(run: Command) -> Said uses unsafe {
   }
 
   const code = wolang_spawn_in(
-      &command[0], command.len as u64, input_at, input_length,
-      directory_at, directory_length, environment_at,
-      environment_length, &mut out[0], kMostOutput as u64,
-      &mut out_written, &mut errors[0], kMostOutput as u64,
+      &command[0],
+      command.len as u64,
+      input_at,
+      input_length,
+      directory_at,
+      directory_length,
+      environment_at,
+      environment_length,
+      &mut out[0],
+      kMostOutput as u64,
+      &mut out_written,
+      &mut errors[0],
+      kMostOutput as u64,
       &mut errors_written)
 
   var said = BuilderNew()
@@ -286,10 +324,20 @@ offer fun StartCommand(run: Command) -> Said uses unsafe {
 fun RunsSomewhereWithSomething() -> bool uses unsafe {
   // `pwd` in a directory that is not this one, and a variable the
   // child can see and this process cannot.
+  if System() == "windows" {
+    var windows = CommandNew("cmd /c 'cd & echo %WOLANG_TEST_MARK%'")
+    windows = WithDirectory(windows, "C:\\Windows")
+    windows = WithVariable(windows, "WOLANG_TEST_MARK", "seen")
+    const said = StartCommand(windows)
+    return said.code == 0 && IndexOf(said.out, "Windows") >= 0 && IndexOf(
+        said.out,
+        "seen") >= 0
+  }
   var run = CommandNew("sh -c 'pwd; echo $WOLANG_TEST_MARK'")
   run = WithDirectory(run, "/tmp")
   run = WithVariable(run, "WOLANG_TEST_MARK", "seen")
   const said = StartCommand(run)
-  return said.code == 0 && IndexOf(said.out, "tmp") >= 0 &&
-         IndexOf(said.out, "seen") >= 0
+  return said.code == 0 && IndexOf(said.out, "tmp") >= 0 && IndexOf(
+      said.out,
+      "seen") >= 0
 }

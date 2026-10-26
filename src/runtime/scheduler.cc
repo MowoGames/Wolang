@@ -5,6 +5,7 @@
 
 #include "wolang/runtime/arena.h"
 
+#include <atomic>
 #include <cstdlib>
 
 #include <cstddef>
@@ -111,6 +112,12 @@ uint64_t* CountOf(void* object) {
                                      kCountBytes);
 }
 
+static std::atomic<int64_t> sm_LiveObjects{0};
+
+int64_t wolang_objects_live() {
+  return sm_LiveObjects.load(std::memory_order_relaxed);
+}
+
 void* wolang_object_alloc(uint64_t size) {
   // Zeroed, so that a field the constructor does not write reads as zero
   // rather than as whatever was there. The interpreter traps on reading an
@@ -124,6 +131,9 @@ void* wolang_object_alloc(uint64_t size) {
     return nullptr;
   }
   auto* object = static_cast<uint8_t*>(base) + kCountBytes;
+  if (!wolang_arena_owns(object)) {
+    sm_LiveObjects.fetch_add(1, std::memory_order_relaxed);
+  }
   // One reference: whoever asked for it. Sixteen bytes rather than eight
   // so that what comes back is still aligned for anything.
   *CountOf(object) = 1;
@@ -161,6 +171,7 @@ void wolang_object_free(void* object) {
     return;
   }
   // Back to the word in front, which is where the allocation began.
+  sm_LiveObjects.fetch_sub(1, std::memory_order_relaxed);
   std::free(static_cast<uint8_t*>(object) - kCountBytes);
 }
 

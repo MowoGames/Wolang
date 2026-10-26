@@ -10,11 +10,11 @@
 // re-exported, which is what lets a safe console be built over an unsafe
 // primitive. Nothing above here is unsafe.
 
-extern "C" fun write(fd: s32, buffer: *u8, count: u64) -> s64
+extern "C" fun wolang_fd_write(fd: s32, buffer: *u8, count: u64) -> s64
 
 /// Writes `text` to standard output, with no line break.
 offer fun Write(message: text) uses io, unsafe {
-  const _written = write(1, message.data, message.length)
+  const _written = wolang_fd_write(1, message.data, message.length)
 }
 
 /// Writes `text` and a line break.
@@ -38,7 +38,7 @@ offer fun Print(message: text) uses io {
 need std.mem.{ArrayNew, Free}
 need std.text.{Builder, BuilderNew}
 
-extern "C" fun read(fd: s32, buffer: *mut u8, count: u64) -> s64
+extern "C" fun wolang_fd_read(fd: s32, buffer: *mut u8, count: u64) -> s64
 
 /// Writes `message` to standard error, with a line break.
 ///
@@ -46,13 +46,13 @@ extern "C" fun read(fd: s32, buffer: *mut u8, count: u64) -> s64
 /// two wants them to go to different places, and "which stream" is not
 /// something a caller should have to pass every time.
 offer fun Warn(message: text) uses io, unsafe {
-  const _written = write(2, message.data, message.length)
-  const _break = write(2, "\n".data, 1)
+  const _written = wolang_fd_write(2, message.data, message.length)
+  const _break = wolang_fd_write(2, "\n".data, 1)
 }
 
 /// Writes `message` to standard error with no line break.
 offer fun WriteError(message: text) uses io, unsafe {
-  const _written = write(2, message.data, message.length)
+  const _written = wolang_fd_write(2, message.data, message.length)
 }
 
 /// Reads up to `limit` bytes of standard input.
@@ -68,7 +68,7 @@ offer fun ReadAll(limit: int) -> text uses io, unsafe {
     if limit - total < wanted {
       wanted = limit - total
     }
-    const received = read(0, &mut buffer[0], wanted as u64)
+    const received = wolang_fd_read(0, &mut buffer[0], wanted as u64)
     if received <= 0 {
       break
     }
@@ -93,7 +93,7 @@ offer fun ReadLine() -> text? uses io, unsafe {
   var one = ArrayNew<u8>(1)
   var seen = 0
   loop {
-    const received = read(0, &mut one[0], 1)
+    const received = wolang_fd_read(0, &mut one[0], 1)
     if received <= 0 {
       break
     }
@@ -155,7 +155,7 @@ offer class Out {
       return
     }
     const bytes = held.Text()
-    const _written = write(fd, bytes.data, bytes.length)
+    const _written = wolang_fd_write(fd, bytes.data, bytes.length)
     held.Clear()
   }
 }

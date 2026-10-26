@@ -56,6 +56,8 @@ extern "C" void wolang_object_free(void* object);
 void wolang_object_retain(void* object);
 int32_t wolang_object_release(void* object);
 
+int64_t wolang_objects_live();
+
 // Whether the task behind |handle| has finished.
 bool wolang_sched_done(int32_t handle);
 
