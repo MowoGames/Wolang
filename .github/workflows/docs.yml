@@ -1,0 +1,113 @@
+# Publishes the documentation to mowoengine.com, the way MowoEngine does
+# with its own (D210).
+#
+# The guides in docs/ and the API reference `wolang doc` writes become
+# MDX under Wolang/ in MowoGames/engine-docs, beside the engine's bundle;
+# moving mowoengine.com's engine-docs submodule deploys the site. Both
+# repositories are written with deploy keys kept as secrets here:
+# ENGINE_DOCS_DEPLOY_KEY and MOWOENGINE_COM_DEPLOY_KEY -- the same keys the
+# engine's docs workflow uses.
+
+name: docs
+
+on:
+  push:
+    branches: [alpha]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Every page compiles and every example in it builds, on every change.
+  docs-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang lld
+      - name: Build the driver
+        run: |
+          cmake --preset release -DWOLANG_WITH_LLVM=OFF -DWOLANG_BUILD_TESTS=OFF -DWOLANG_BUILD_PLATFORM=OFF
+          cmake --build --preset release -j --target wolang_cli
+      - name: The examples in the documentation compile
+        run: python3 tools/package/check_docs.py
+      - name: The bundle builds
+        run: |
+          mkdir -p /tmp/docs
+          python3 tools/package/make_site_docs.py /tmp/docs --wolang build/release/tools/wolang/wolang
+
+  docs-publish:
+    needs: docs-check
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/alpha' }}
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: docs-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install the toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang lld
+      - name: Build the driver
+        run: |
+          cmake --preset release -DWOLANG_WITH_LLVM=OFF -DWOLANG_BUILD_TESTS=OFF -DWOLANG_BUILD_PLATFORM=OFF
+          cmake --build --preset release -j --target wolang_cli
+      # One ssh alias per repository, each with its own deploy key.
+      - name: Deploy keys
+        env:
+          ENGINE_DOCS_DEPLOY_KEY: ${{ secrets.ENGINE_DOCS_DEPLOY_KEY }}
+          MOWOENGINE_COM_DEPLOY_KEY: ${{ secrets.MOWOENGINE_COM_DEPLOY_KEY }}
+        run: |
+          test -n "$ENGINE_DOCS_DEPLOY_KEY" && test -n "$MOWOENGINE_COM_DEPLOY_KEY" || { echo "deploy key secrets are not set"; exit 1; }
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$ENGINE_DOCS_DEPLOY_KEY" > ~/.ssh/engine_docs && chmod 600 ~/.ssh/engine_docs
+          printf '%s\n' "$MOWOENGINE_COM_DEPLOY_KEY" > ~/.ssh/mowoengine_com && chmod 600 ~/.ssh/mowoengine_com
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > ~/.ssh/known_hosts
+          for r in engine_docs:engine-docs mowoengine_com:mowoengine-com; do
+            printf 'Host %s\n  HostName github.com\n  User git\n  IdentityFile %s\n  IdentitiesOnly yes\n  HostKeyAlias github.com\n  UserKnownHostsFile %s\n' \
+              "${r#*:}" "$HOME/.ssh/${r%%:*}" "$HOME/.ssh/known_hosts"
+          done > ~/.ssh/config
+          echo "GIT_SSH_COMMAND=ssh -F $HOME/.ssh/config" >> "$GITHUB_ENV"
+      - name: Publish
+        run: |
+          git config --global user.name "mowo-ci"
+          git config --global user.email "ci@mowo.work"
+          WOLANG_SHA=$(git rev-parse --short=9 HEAD)
+          git clone -q "engine-docs:${GITHUB_REPOSITORY_OWNER}/engine-docs.git" /tmp/docs
+          cd /tmp/docs
+          for attempt in 1 2 3; do
+            git fetch -q origin main && git reset -q --hard origin/main
+            python3 "$GITHUB_WORKSPACE/tools/package/make_site_docs.py" /tmp/docs --wolang "$GITHUB_WORKSPACE/build/release/tools/wolang/wolang"
+            git add -A Wolang
+            if git diff --cached --quiet; then
+              echo "The Wolang docs are unchanged."
+              break
+            fi
+            git commit -q -m "Docs from Wolang ${WOLANG_SHA}"
+            git push -q origin HEAD:main && break
+            test "$attempt" -lt 3 || exit 1
+          done
+          DOCS_SHA=$(git rev-parse HEAD)
+          git clone -q --depth 20 --branch dev "mowoengine-com:${GITHUB_REPOSITORY_OWNER}/mowoengine.com.git" /tmp/site
+          cd /tmp/site
+          if [ "$(git rev-parse HEAD:engine-docs)" = "$DOCS_SHA" ]; then
+            echo "mowoengine.com already pins ${DOCS_SHA}."
+            exit 0
+          fi
+          git update-index --cacheinfo "160000,${DOCS_SHA},engine-docs"
+          git commit -q -m "chore(docs): Wolang docs from Wolang ${WOLANG_SHA}"
+          for attempt in 1 2 3; do
+            git push -q origin HEAD:dev && exit 0
+            git fetch -q --depth 20 origin dev && git rebase -q origin/dev
+          done
+          exit 1

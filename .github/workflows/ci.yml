@@ -125,8 +125,10 @@ jobs:
         if: matrix.preset == 'debug'
         run: |
           W=build/${{ matrix.preset }}/tools/wolang/wolang
-          $W doc lib/std lib/http lib/game -o /tmp/api
-          test -s /tmp/api/std.text.md
+          for package in std http game core; do
+            $W doc lib/$package -o /tmp/api-$package.md
+            test -s /tmp/api-$package.md
+          done
 
   # Windows builds and runs here and nowhere else: a laptop cannot check
   # it, and a port nobody runs is a port that does not work (D159).

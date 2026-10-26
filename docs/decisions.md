@@ -2607,3 +2607,25 @@ pass is correct and LLVM 18 and 22 agree with the interpreter; 23.1.3
 and 23.1.4 do not. `WOLANG_AOT_IR=<file>` writes the module before and
 after the optimizer, and `WOLANG_LLVM_ARGS` hands LLVM its own flags --
 `-opt-bisect-limit` is what named the pass.
+
+**D209. Classes are counted, so they do not move.** Parked on the
+`wip/value-counting` branch, not on `alpha`: counting the classes held
+by structs, enums and optionals of them is right, and getting every path
+that copies a value to agree -- `match` payloads, `if const`, `??`,
+temporaries inside expressions -- is a piece of work of its own. Until
+then a class inside a value leaks rather than being freed twice.
+
+**D210. The documentation lives on mowoengine.com.** Beside the engine's
+guides, in the same engine-docs repository the site pins:
+`tools/package/make_site_docs.py` turns `docs/` and the API reference
+`wolang doc` writes into MDX under `Wolang/Site/`, and the site renders
+them at `/docs/wolang/` and `/docs/wolang-api/`. The guides stay Markdown
+here, next to the code, and every example in them is still compiled on
+each commit; the script only escapes what MDX would read as an
+expression and turns links between files into links between pages.
+`.github/workflows/docs.yml` publishes on every push to `alpha`, the way
+the engine's docs workflow does.
+
+`wolang doc` writes one package to one file. The CI step that asked it
+for three directories and a folder of per-module files had never run.
+
