@@ -37,6 +37,9 @@ int32_t wolang_socket_listen(int64_t socket, uint32_t address,
 
 // The next connection, or -1 when there is none.
 int64_t wolang_socket_accept(int64_t socket);
+// The port a socket is bound to, which is how a listener bound to port 0
+// says which one the system picked.
+int32_t wolang_socket_port(int64_t socket);
 
 // Sends and receives. Both answer how many bytes moved, zero when the
 // other end closed, and -1 on an error.
@@ -46,6 +49,9 @@ int64_t wolang_socket_receive(int64_t socket, uint8_t* bytes,
                               int64_t room);
 
 int32_t wolang_socket_close(int64_t socket);
+// Ends both directions, which wakes a thread blocked in `accept` or
+// `receive` on it -- closing does not, everywhere.
+int32_t wolang_socket_shutdown(int64_t socket);
 
 // Whether a port may be reused the moment a program lets go of it, and
 // whether small writes go out at once. The two options a server sets.

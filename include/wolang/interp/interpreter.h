@@ -11,6 +11,7 @@
 
 #include "wolang/base/string_interner.h"
 #include "wolang/abi/layout.h"
+#include "wolang/interp/debug.h"
 #include "wolang/interp/foreign.h"
 #include "wolang/interp/intrinsics.h"
 #include "wolang/interp/value.h"
@@ -54,6 +55,9 @@ struct Limits {
   // sets a global and then calls a function, and a reset between the two
   // would wipe what it set (D137).
   bool keep_globals = false;
+  // Who to tell where the program is, and to stop when it says so. Only
+  // this tier stops: the compiled ones keep running (D216).
+  Debugger* debugger = nullptr;
 };
 
 // Executes |function| of |module| with |arguments|.

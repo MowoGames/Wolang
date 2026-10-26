@@ -25,16 +25,52 @@ Names are mangled as `wo$<file>$<name>`, so `b Steps` finds
 
 ## In an editor
 
-`editors/vscode/templates/` holds a `launch.json` and a `tasks.json`.
-Copy them into `.vscode/`: the launch configurations use either CodeLLDB
-or the C/C++ extension, and the build task is `wolang build -O0` with a
-problem matcher that turns `wolang check`'s output into clickable
-diagnostics.
+The VS Code extension debugs Wolang itself: set a breakpoint in a `.wo`
+file and press F5. Behind it is `wolang dap`, the Debug Adapter Protocol
+over standard input and output, so any editor that speaks DAP can use it.
 
-There is no Wolang-specific debug adapter, and this is why: a debug
-adapter's job is to put a debugger behind a protocol an editor speaks,
-and the debuggers that already speak it understand DWARF. A Wolang
-adapter would be a worse lldb.
+```jsonc
+{
+  "type": "wolang",
+  "request": "launch",
+  "name": "Wolang: run this package",
+  "program": "${workspaceFolder}",
+  "stopOnEntry": false
+}
+```
+
+It runs the program on the interpreter, from the IR as lowering left it:
+every local is where the source put it, and nothing the optimizer moved
+or folded is missing. Breakpoints by line, step over, into and out,
+pause, the call stack, and every local in scope with the fields of an
+object or a struct a level at a time. The interpreter is the reference
+tier and the compiled ones are checked against it (D88), so what the
+program does under the debugger is what it does compiled — only slower.
+
+### A script inside an engine
+
+A host opens a port, and the editor attaches to it:
+
+```c
+wolang_vm_debug_listen(vm, 4711);    // 0 picks a free port and answers it
+```
+
+```jsonc
+{ "type": "wolang", "request": "attach", "name": "Wolang: attach to the engine", "port": 4711 }
+```
+
+While an editor is attached every call into the vm runs on the
+interpreter, and a breakpoint stops the thread that made the call — the
+engine's frame waits while the script is looked at. When the editor
+disconnects, breakpoints go with it and calls are compiled again (D216).
+
+### Native debuggers
+
+A compiled binary is still debugged the native way, for when what you
+are after is the machine code. `editors/vscode/templates/` holds a
+`launch.json` and a `tasks.json` for CodeLLDB or the C/C++ extension, and
+the build task is `wolang build -O0` with a problem matcher that turns
+`wolang check`'s output into clickable diagnostics.
 
 ## What a trap says
 

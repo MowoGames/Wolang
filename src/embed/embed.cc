@@ -11,17 +11,21 @@
 #include "wolang/embed/wolang.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "wolang/abi/layout.h"
@@ -31,6 +35,7 @@
 #include "wolang/codegen/foreign.h"
 #include "wolang/compiler/database.h"
 #include "wolang/compiler/workspace.h"
+#include "wolang/debug/dap.h"
 #include "wolang/interp/interpreter.h"
 #include "wolang/ir/ir.h"
 #include "wolang/syntax/ast.h"
@@ -40,6 +45,7 @@
 #include "wolang/runtime/globals.h"
 #include "wolang/runtime/host.h"
 #include "wolang/runtime/scheduler.h"
+#include "wolang/runtime/sockets.h"
 #include "wolang/runtime/text.h"
 
 namespace {
@@ -82,6 +88,33 @@ struct Retired {
   std::unique_ptr<wolang::interp::ForeignCaller> foreign;
   std::unique_ptr<wolang::codegen::CompiledModule> compiled;
   std::shared_ptr<wolang::runtime::GlobalSpace> globals;
+};
+
+// An editor's way in: the socket it connects to, the connection it is on,
+// and the sessions it has had -- every one kept, because a call that was
+// stopped in one may still be on its way out of it (D216).
+struct DebugLink {
+  int64_t listener = -1;
+  std::atomic<int64_t> client{-1};
+  std::atomic<bool> closing{false};
+  std::thread thread;
+  std::mutex lock;
+  std::shared_ptr<wolang::debug::DapSession> session;
+  std::vector<std::shared_ptr<wolang::debug::DapSession>> sessions;
+
+  ~DebugLink() {
+    closing = true;
+    if (client >= 0) {
+      wolang::runtime::wolang_socket_shutdown(client);
+    }
+    // Shutting a listener down is what wakes `accept` on one system and
+    // closing it is what does on the other.
+    wolang::runtime::wolang_socket_shutdown(listener);
+    wolang::runtime::wolang_socket_close(listener);
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
 };
 
 // What `wolang_vm_function` hands out: a name, so that it means the same
@@ -143,6 +176,7 @@ struct WolangVm {
   // These outlive a reload, which builds the vm again around them.
   std::shared_ptr<std::vector<Retired>> retired = std::make_shared<std::vector<Retired>>();
   std::shared_ptr<std::deque<FunctionHandle>> handles = std::make_shared<std::deque<FunctionHandle>>();
+  std::shared_ptr<DebugLink> debug;
   // What the last reload could not carry over, one line each.
   std::string notes;
 };
@@ -730,14 +764,58 @@ static WolangValue ObjectOf(WolangVm* vm, uint64_t address, TypeId type) {
 
 // Runs |entry| with |boxed|, in machine code when there is some, and
 // answers what it returned.
+// The editor attached to |vm| right now, if one is.
+static std::shared_ptr<wolang::debug::DapSession> Attached(WolangVm* vm) {
+  if (vm->debug == nullptr) {
+    return nullptr;
+  }
+  const std::lock_guard<std::mutex> held(vm->debug->lock);
+  const std::shared_ptr<wolang::debug::DapSession>& session = vm->debug->session;
+  return session != nullptr && session->attached() && !session->finished() ? session : nullptr;
+}
+
+// Runs |entry| on the interpreter as the source wrote it -- the IR before
+// any pass, where every local is where the source put it -- with |session|
+// told where it is.
+static wolang::interp::Outcome Debugged(WolangVm* vm, const Callable* entry, const std::vector<wolang::interp::Value>& boxed, wolang::debug::DapSession* session) {
+  std::vector<const wolang::ir::Module*> modules;
+  for (FileId file : vm->files) {
+    if (const LoweredFile* lowered = vm->database.Lowered(file)) {
+      modules.push_back(&lowered->unoptimized);
+    }
+  }
+  static const wolang::FileResolution kNothing;
+  const FileId home{entry->function->source_file};
+  const LoweredFile* lowered = vm->database.Lowered(home);
+  const CheckedFile* checked = vm->database.Checked(home);
+  wolang::abi::LayoutStore layouts(vm->database.types(), checked != nullptr ? checked->resolution : kNothing);
+  vm->database.ShareMembers(&layouts);
+
+  wolang::interp::Limits limits;
+  limits.keep_globals = true;
+  limits.steps = UINT64_MAX;
+  limits.debugger = session;
+  session->SetSources(&vm->database.sources());
+  wolang::interp::Output printed;
+  const wolang::interp::Outcome outcome = wolang::interp::RunNamed(vm->database.interner(), vm->database.types(), lowered != nullptr ? lowered->unoptimized : *entry->module, entry->symbol, boxed, limits, &printed, vm->foreign.get(), &layouts, modules);
+  if (!printed.text.empty()) {
+    Written(printed.text);
+  }
+  return outcome;
+}
+
 static int32_t Invoke(WolangVm* vm, const Callable* entry, const std::vector<wolang::interp::Value>& boxed, WolangValue* out) {
   wolang::interp::Outcome outcome;
+  const std::shared_ptr<wolang::debug::DapSession> debugging = Attached(vm);
   // The compiled form where there is one, the interpreter otherwise:
   // the same choice `wolang run` makes, and the reason a host gets
   // machine-code speed without asking. A step limit keeps the call off
   // the compiled tier, because counting steps is something only the
   // interpreter does (D137).
-  if (vm->allow_compiled && vm->steps == 0 && vm->compiled != nullptr && entry->is_member && vm->compiled->Contains(entry->symbol)) {
+  if (debugging != nullptr) {
+    outcome = Debugged(vm, entry, boxed, debugging.get());
+  }
+  else if (vm->allow_compiled && vm->steps == 0 && vm->compiled != nullptr && entry->is_member && vm->compiled->Contains(entry->symbol)) {
     outcome = vm->compiled->Run(entry->symbol, boxed, nullptr, /*keep_globals=*/true);
   }
   else if (vm->allow_compiled && vm->steps == 0 && vm->compiled != nullptr &&
@@ -1541,6 +1619,7 @@ int32_t wolang_vm_reload(WolangVm* vm) {
   const std::shared_ptr<std::recursive_mutex> lock = vm->lock;
   const std::shared_ptr<std::vector<Retired>> graveyard = vm->retired;
   const std::shared_ptr<std::deque<FunctionHandle>> handles = vm->handles;
+  const std::shared_ptr<DebugLink> debug = vm->debug;
   const uint64_t steps = vm->steps;
   const bool allow_compiled = vm->allow_compiled;
   const bool initialize = vm->initialize;
@@ -1552,6 +1631,7 @@ int32_t wolang_vm_reload(WolangVm* vm) {
   vm->lock = lock;
   vm->retired = graveyard;
   vm->handles = handles;
+  vm->debug = debug;
   vm->steps = steps;
   vm->allow_compiled = allow_compiled;
   vm->initialize = initialize;
@@ -1569,6 +1649,108 @@ int32_t wolang_vm_reload(WolangVm* vm) {
     Carry(vm, before, old);
   }
   return status;
+}
+
+// One message from the editor's connection, framed the way DAP frames
+// them; |pending| keeps what arrived past the end of it.
+static std::optional<std::string> ReceiveFramed(int64_t client, std::string* pending) {
+  size_t length = 0;
+  for (;;) {
+    const size_t header = pending->find("\r\n\r\n");
+    if (header != std::string::npos) {
+      const size_t at = pending->find("Content-Length:");
+      if (at == std::string::npos || at > header) {
+        return std::nullopt;
+      }
+      length = static_cast<size_t>(std::strtoull(pending->c_str() + at + 15, nullptr, 10));
+      if (pending->size() >= header + 4 + length) {
+        std::string body = pending->substr(header + 4, length);
+        pending->erase(0, header + 4 + length);
+        return body;
+      }
+    }
+    uint8_t chunk[4096];
+    const int64_t got = wolang::runtime::wolang_socket_receive(client, chunk, sizeof(chunk));
+    if (got <= 0) {
+      return std::nullopt;
+    }
+    pending->append(reinterpret_cast<const char*>(chunk), static_cast<size_t>(got));
+  }
+}
+
+static void SendFramed(int64_t client, const std::string& body) {
+  const std::string message = "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+  size_t sent = 0;
+  while (sent < message.size()) {
+    const int64_t wrote = wolang::runtime::wolang_socket_send(client, reinterpret_cast<const uint8_t*>(message.data()) + sent, static_cast<int64_t>(message.size() - sent));
+    if (wrote <= 0) {
+      return;
+    }
+    sent += static_cast<size_t>(wrote);
+  }
+}
+
+// One editor at a time, for as long as the vm lives.
+static void Serve(DebugLink* link) {
+  while (!link->closing) {
+    const int64_t client = wolang::runtime::wolang_socket_accept(link->listener);
+    if (client < 0 || link->closing) {
+      if (client >= 0) {
+        wolang::runtime::wolang_socket_close(client);
+      }
+      return;
+    }
+    link->client = client;
+    auto session = std::make_shared<wolang::debug::DapSession>([client](const std::string& body) { SendFramed(client, body); }, [](const wolang::lsp::Json&, wolang::debug::DapSession*, std::string* error) {
+      *error = "wolang: this program is a host's and already running; attach to it instead\n";
+      return -1;
+    });
+    {
+      const std::lock_guard<std::mutex> held(link->lock);
+      link->session = session;
+      link->sessions.push_back(session);
+    }
+
+    std::string pending;
+    while (!session->finished()) {
+      const std::optional<std::string> body = ReceiveFramed(client, &pending);
+      if (!body.has_value()) {
+        break;
+      }
+      session->Handle(*body);
+    }
+    if (!session->finished() && session->attached()) {
+      session->Handle("{\"seq\":0,\"type\":\"request\",\"command\":\"disconnect\"}");
+    }
+    {
+      const std::lock_guard<std::mutex> held(link->lock);
+      link->session = nullptr;
+    }
+    link->client = -1;
+    wolang::runtime::wolang_socket_close(client);
+  }
+}
+
+int32_t wolang_vm_debug_listen(WolangVm* vm, int32_t port) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || vm->debug != nullptr || port < 0 || port > 65535) {
+    return -1;
+  }
+  const int64_t listener = wolang::runtime::wolang_socket_open();
+  if (listener < 0) {
+    return -1;
+  }
+  wolang::runtime::wolang_socket_reuse(listener, 1);
+  if (wolang::runtime::wolang_socket_listen(listener, 0x7F000001u, static_cast<uint32_t>(port), 1) != 0) {
+    wolang::runtime::wolang_socket_close(listener);
+    return -1;
+  }
+
+  auto link = std::make_shared<DebugLink>();
+  link->listener = listener;
+  link->thread = std::thread(&Serve, link.get());
+  vm->debug = link;
+  return wolang::runtime::wolang_socket_port(listener);
 }
 
 const char* wolang_vm_notes(const WolangVm* vm) {

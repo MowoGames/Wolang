@@ -144,6 +144,19 @@ struct Block {
 
 // --------------------------------------------------------------- function ---
 
+// A name the program wrote, and where a debugger finds its value: the
+// slot of a `var`, or the value of a `let` or a parameter. In scope from
+// instruction |begin| up to |end|, which is the order lowering emitted
+// them in -- the order the source wrote them (D216).
+struct DebugLocal {
+  Symbol name;
+  TypeId type;
+  InstId slot;
+  InstId value;
+  uint32_t begin = 0;
+  uint32_t end = 0xFFFFFFFFu;
+};
+
 struct Function {
   Symbol name;
   TypeId type;
@@ -207,6 +220,8 @@ struct Function {
   // debugger needs to step through Wolang rather than through machine
   // code (D118).
   std::vector<SourceSpan> spans;
+  // Every local the program named, for a debugger (D216).
+  std::vector<DebugLocal> locals;
 
   SourceSpan SpanOf(InstId id) const {
     return id.is_valid() && id.index < spans.size() ? spans[id.index]

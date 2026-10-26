@@ -105,6 +105,28 @@ extern "C" int64_t wolang_socket_accept(int64_t socket) {
   return static_cast<int64_t>(taken);
 }
 
+extern "C" int32_t wolang_socket_shutdown(int64_t socket) {
+#if defined(_WIN32)
+  return ::shutdown(Held(socket), SD_BOTH) == 0 ? 0 : -1;
+#else
+  return ::shutdown(Held(socket), SHUT_RDWR) == 0 ? 0 : -1;
+#endif
+}
+
+extern "C" int32_t wolang_socket_port(int64_t socket) {
+  sockaddr_in where;
+  std::memset(&where, 0, sizeof(where));
+#if defined(_WIN32)
+  int length = sizeof(where);
+#else
+  socklen_t length = sizeof(where);
+#endif
+  if (::getsockname(Held(socket), reinterpret_cast<sockaddr*>(&where), &length) != 0) {
+    return -1;
+  }
+  return ntohs(where.sin_port);
+}
+
 extern "C" int64_t wolang_socket_send(int64_t socket,
                                       const uint8_t* bytes,
                                       int64_t count) {

@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -26,6 +27,7 @@
 // where a signal handler finds the program counter, and on macOS it
 // wants `_XOPEN_SOURCE` defined before it is asked for (D139).
 #if defined(_WIN32)
+#include <fcntl.h>
 #include <io.h>
 #include <process.h>
 #else
@@ -48,7 +50,9 @@
 #include "wolang/compiler/database.h"
 
 #include "wolang/codegen/aot.h"
+#include "wolang/debug/dap.h"
 #include "wolang/lsp/server.h"
+#include "wolang/runtime/builtins.h"
 #include "wolang/runtime/env.h"
 #include "wolang/runtime/library.h"
 #include "wolang/runtime/journal.h"
@@ -188,7 +192,8 @@ void PrintUsage() {
       "debugger\n"
       "  repl            a session: type an expression and see it\n"
       "  lsp             speak the Language Server Protocol on stdin\n"
-      "  systems <dir>   print what systems access and when they run\n"
+      "  dap             speak the Debug Adapter Protocol on stdin\n"
+      "  systems <dir>  print what systems access and when they run\n"
       "  fuzz            generate programs and compare the tiers\n"
       "  version         print the version and exit\n"
       "  help            print this message\n"
@@ -1292,6 +1297,116 @@ void Report(const codegen::CompiledModule* compiled) {
 }
 
 }  // namespace profile
+
+// The session `wolang dap` is serving, which is where a program's output
+// goes instead of standard output: standard output is the editor's pipe.
+static debug::DapSession* sm_Session = nullptr;
+
+extern "C" int64_t WriteToEditor(int32_t fd, const char* bytes, uint64_t count) {
+  if (sm_Session != nullptr && (fd == 1 || fd == 2)) {
+    sm_Session->Output(std::string(bytes, static_cast<size_t>(count)), fd == 2 ? "stderr" : "stdout");
+    return static_cast<int64_t>(count);
+  }
+  return static_cast<int64_t>(std::fwrite(bytes, 1, static_cast<size_t>(count), fd == 2 ? stderr : stdout));
+}
+
+// Builds |program| and runs its `main` on the interpreter, unoptimized,
+// with |session| told where it is (D216).
+int DebugProgram(const Options& options, const std::string& program, debug::DapSession* session, std::string* error) {
+  Options debugging = options;
+  debugging.inputs = {program};
+  Database database;
+  DiagnosticEngine load_diagnostics;
+  std::vector<FileId> files;
+  if (!CollectInputs(&database, debugging, &load_diagnostics, &files)) {
+    *error = "wolang: cannot load " + program + "\n";
+    return -1;
+  }
+  OpenLinkedLibraries(&database);
+
+  std::vector<Diagnostic> all = load_diagnostics.diagnostics();
+  const LoweredFile* lowered_main = nullptr;
+  const CheckedFile* checked_main = nullptr;
+  std::vector<const ir::Module*> modules;
+  const Symbol main = database.interner().Intern("main");
+  for (FileId file : files) {
+    if (const std::vector<Diagnostic>* diagnostics = database.Diagnostics(file)) {
+      all.insert(all.end(), diagnostics->begin(), diagnostics->end());
+    }
+    const LoweredFile* lowered = database.Lowered(file);
+    if (lowered == nullptr) {
+      continue;
+    }
+    modules.push_back(&lowered->unoptimized);
+    if (lowered->unoptimized.Find(main) != nullptr) {
+      lowered_main = lowered;
+      checked_main = database.Checked(file);
+    }
+  }
+  for (const Diagnostic& diagnostic : all) {
+    if (diagnostic.severity == Severity::kError) {
+      Report(database.sources(), all, RenderOptions());
+      *error = "wolang: " + program + " has errors; `wolang check` lists them\n";
+      return -1;
+    }
+  }
+  if (lowered_main == nullptr || checked_main == nullptr) {
+    *error = "wolang: no `main` to run in " + program + "\n";
+    return -1;
+  }
+
+  const std::unique_ptr<interp::ForeignCaller> foreign = codegen::MakeForeignCaller();
+  abi::LayoutStore layouts(database.types(), checked_main->resolution);
+  database.ShareMembers(&layouts);
+  TaskHost host;
+  host.database = &database;
+  host.module = &lowered_main->unoptimized;
+  host.layouts = &layouts;
+  host.foreign = foreign.get();
+  host.linked = modules;
+  host.dispatch = database.interner().Intern("wolang$dispatch");
+  runtime::ResetScheduler();
+  runtime::InstallResume(&ResumeTask, &host);
+
+  session->SetSources(&database.sources());
+  interp::Limits limits;
+  limits.steps = UINT64_MAX;
+  limits.debugger = session;
+  interp::Output output;
+  const interp::Outcome outcome = interp::RunNamed(database.interner(), database.types(), lowered_main->unoptimized, main, {}, limits, &output, foreign.get(), &layouts, modules);
+  session->SetSources(nullptr);
+  if (!output.text.empty()) {
+    session->Output(output.text);
+  }
+  if (!outcome.ok()) {
+    if (outcome.message != "stopped by the debugger") {
+      session->Output("wolang: " + std::string(interp::TrapKindName(outcome.trap)) + " at " + Where(database.sources(), outcome) + ": " + outcome.message + "\n", "stderr");
+    }
+    return 1;
+  }
+  return 0;
+}
+
+// `wolang dap`: the Debug Adapter Protocol over standard input and
+// output, for an editor to start (D216).
+int RunDap(const Options& options) {
+#ifdef _WIN32
+  _setmode(_fileno(stdin), _O_BINARY);
+  _setmode(_fileno(stdout), _O_BINARY);
+#endif
+  debug::DapSession session([](const std::string& body) { debug::WriteFramed(stdout, body); }, [&options](const lsp::Json& arguments, debug::DapSession* debugged, std::string* error) { return DebugProgram(options, arguments["program"].AsString(), debugged, error); });
+  sm_Session = &session;
+  runtime::RegisterSymbol("write", reinterpret_cast<void*>(&WriteToEditor));
+  while (!session.finished()) {
+    const std::optional<std::string> body = debug::ReadFramed(stdin);
+    if (!body.has_value()) {
+      break;
+    }
+    session.Handle(*body);
+  }
+  sm_Session = nullptr;
+  return 0;
+}
 
 int RunProgram(const Options& options) {
   Database database;
@@ -2968,6 +3083,9 @@ int Run(int argc, char** argv) {
   }
   if (options.command == "debug") {
     return RunDebug(options);
+  }
+  if (options.command == "dap") {
+    return RunDap(options);
   }
   if (options.command == "lsp") {
     // The editor's end of the compiler: the same queries `check` and

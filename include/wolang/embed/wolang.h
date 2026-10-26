@@ -253,6 +253,18 @@ void wolang_vm_set_compiled(WolangVm* vm, int32_t allowed);
 // would undo everything the session did (D140).
 void wolang_vm_set_initialize(WolangVm* vm, int32_t initialize);
 
+// ------------------------------------------------------------- debugging ---
+
+// Lets an editor attach to this vm with the Debug Adapter Protocol, over
+// TCP on 127.0.0.1:|port| -- 0 for whichever port is free. Answers the
+// port, or -1.
+//
+// While an editor is attached, every call runs on the interpreter so that
+// it can stop at a breakpoint, and stops on the thread that made it: the
+// engine's frame waits while someone looks at the script (D216). When the
+// editor goes, calls are compiled again.
+int32_t wolang_vm_debug_listen(WolangVm* vm, int32_t port);
+
 // --------------------------------------------------------------- reloads ---
 
 // Loads everything again and keeps what the program had.

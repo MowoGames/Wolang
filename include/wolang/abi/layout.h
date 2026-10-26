@@ -115,6 +115,10 @@ class LayoutStore {
   // is what an enum's tag is: its type is the instruction's, not the
   // declaration's, because no member declares it.
   TypeId FieldType(TypeId type, uint32_t index) const;
+  // The name of field |index| of a struct or a class object, counted the
+  // way |FieldType| counts, or an invalid symbol for a field nothing
+  // declared by name: a descriptor, a tag, an element.
+  Symbol FieldName(TypeId type, uint32_t index) const;
   // How many fields an aggregate has.
   uint32_t FieldCount(TypeId type) const;
   // Whether an object of |type| begins with a class descriptor: the number

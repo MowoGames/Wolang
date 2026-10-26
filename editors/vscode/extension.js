@@ -398,6 +398,21 @@ function activate(context) {
       }));
   }
 
+  // The debugger is the compiler too: `wolang dap` runs a program on the
+  // interpreter and stops where it is told, and a host that embeds the
+  // language opens a port with `wolang_vm_debug_listen` to attach to.
+  context.subscriptions.push(
+    vscode.debug.registerDebugAdapterDescriptorFactory('wolang', {
+      createDebugAdapterDescriptor(session) {
+        if (session.configuration.request === 'attach') {
+          return new vscode.DebugAdapterServer(
+            session.configuration.port || 4711,
+            session.configuration.host || '127.0.0.1');
+        }
+        return new vscode.DebugAdapterExecutable(command, ['dap']);
+      },
+    }));
+
   context.subscriptions.push(
     vscode.commands.registerCommand('wolang.restart', () => {
       client.stop();

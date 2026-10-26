@@ -2754,3 +2754,28 @@ and its globals stay until the vm is destroyed. A carried value can point
 into it: a `text` literal is bytes in the old program, and freeing it
 would leave the new program holding a dangling string. Function handles
 name their function instead of pointing at it, so they survive.
+
+**D216. The debugger is the interpreter.** `docs/debugging.md` used to
+say a Wolang debug adapter would be a worse lldb. That was true for a
+binary, and no help at all for a script inside an engine, which has no
+binary of its own and runs in the JIT. Teaching three code generators to
+stop at a line -- deoptimization, patchable breakpoints, register maps
+for every local -- is the expensive way. The interpreter already runs
+every program the compiled tiers do, and the differential fuzzer keeps
+it running them the same way, so a program being debugged runs there.
+
+Lowering records every local the source named: where its value is (the
+slot of a `var`, the value of a `const` or a parameter) and the range of
+instructions it is in scope for. The debugger runs the IR as lowering
+left it, before any pass, so that table is exact. The interpreter asks
+the debugger whenever it reaches a new place in the source, and the
+session decides by line, by depth and by what the editor last asked for
+-- a call that returns lands in the middle of its caller's line, which
+is not a new line, so a breakpoint there does not fire twice.
+
+`wolang dap` speaks the protocol over standard input and output for
+`launch`. An embedding host calls `wolang_vm_debug_listen` for `attach`,
+and while an editor is attached every call into that vm runs on the
+interpreter; when it goes, the compiled tier is back. The session sits
+behind a transport it does not know about, which is how one class serves
+a pipe, a socket and a unit test.

@@ -432,6 +432,35 @@ TypeId LayoutStore::FieldType(TypeId type, uint32_t index) const {
   }
 }
 
+Symbol LayoutStore::FieldName(TypeId type, uint32_t index) const {
+  if (types_.KindOf(type) != TypeKind::kNamed && types_.KindOf(type) != TypeKind::kInstance) {
+    return Symbol();
+  }
+  if (resolution_.IsAbility(type) || IsTagged(type)) {
+    return Symbol();
+  }
+
+  uint32_t seen = 0;
+  if (HasHeader(type)) {
+    if (index == 0) {
+      return Symbol();
+    }
+    seen = 1;
+  }
+  for (TypeId current : Chain(resolution_, type)) {
+    for (const Member& member : Members(current)) {
+      if (!HasStorage(member.kind)) {
+        continue;
+      }
+      if (seen == index) {
+        return member.name;
+      }
+      ++seen;
+    }
+  }
+  return Symbol();
+}
+
 uint64_t LayoutStore::SoaPrefixOf(TypeId record, uint32_t field) {
   uint64_t prefix = 0;
   const uint32_t fields = FieldCount(record);

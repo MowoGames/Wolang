@@ -6,7 +6,10 @@
 
 #include "wolang/embed/wolang.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -15,6 +18,8 @@
 #include <vector>
 
 #include "harness/test.h"
+#include "wolang/lsp/json.h"
+#include "wolang/runtime/sockets.h"
 
 namespace {
 
@@ -486,6 +491,117 @@ WOLANG_TEST(EmbedTest, EachVmHasItsOwnGlobals) {
   WOLANG_EXPECT_EQ(answer.integer, 0);
   wolang_vm_destroy(first);
   wolang_vm_destroy(second);
+}
+
+// An editor at the other end of a vm's debugging port.
+class EditorConnection {
+ public:
+  explicit EditorConnection(int32_t port) : m_Socket(wolang::runtime::wolang_socket_open()) {
+    wolang::runtime::wolang_socket_connect(m_Socket, 0x7F000001u, static_cast<uint32_t>(port));
+  }
+
+  ~EditorConnection() { wolang::runtime::wolang_socket_close(m_Socket); }
+
+  void Send(const std::string& command, const std::string& arguments) {
+    const std::string body = "{\"seq\":" + std::to_string(++m_Sequence) + ",\"type\":\"request\",\"command\":\"" + command + "\",\"arguments\":" + arguments + "}";
+    const std::string message = "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+    wolang::runtime::wolang_socket_send(m_Socket, reinterpret_cast<const uint8_t*>(message.data()), static_cast<int64_t>(message.size()));
+  }
+
+  // The next message called |name|, whatever came before it.
+  wolang::lsp::Json WaitFor(const std::string& name) {
+    for (;;) {
+      const size_t header = m_Pending.find("\r\n\r\n");
+      if (header != std::string::npos) {
+        const size_t length = static_cast<size_t>(std::strtoull(m_Pending.c_str() + m_Pending.find("Content-Length:") + 15, nullptr, 10));
+        if (m_Pending.size() >= header + 4 + length) {
+          wolang::lsp::Json message = wolang::lsp::Json::Parse(m_Pending.substr(header + 4, length));
+          m_Pending.erase(0, header + 4 + length);
+          if (message["event"].AsString() == name || message["command"].AsString() == name) {
+            return message;
+          }
+          continue;
+        }
+      }
+      uint8_t chunk[4096];
+      const int64_t got = wolang::runtime::wolang_socket_receive(m_Socket, chunk, sizeof(chunk));
+      if (got <= 0) {
+        return wolang::lsp::Json();
+      }
+      m_Pending.append(reinterpret_cast<const char*>(chunk), static_cast<size_t>(got));
+    }
+  }
+
+ private:
+  int64_t m_Socket;
+  int64_t m_Sequence = 0;
+  std::string m_Pending;
+};
+
+WOLANG_TEST(EmbedTest, AnEditorAttachesAndStopsTheHostsCall) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "attached.wo", R"(
+var ticks: int = 0
+
+offer fun Tick(delta: int) -> int {
+  const next = ticks + delta
+  ticks = next
+  return ticks
+}
+)"), 0);
+  const int32_t port = wolang_vm_debug_listen(vm, 0);
+  WOLANG_EXPECT(port > 0);
+
+  std::string reason;
+  std::string function;
+  int64_t line = 0;
+  std::string delta;
+  std::atomic<bool> stopped_once{false};
+  std::thread editor([&] {
+    EditorConnection connection(port);
+    connection.Send("initialize", "{}");
+    connection.WaitFor("initialized");
+    connection.Send("attach", "{}");
+    connection.WaitFor("attach");
+    connection.Send("setBreakpoints", "{\"source\":{\"path\":\"attached.wo\"},\"breakpoints\":[{\"line\":6}]}");
+    connection.WaitFor("setBreakpoints");
+    connection.Send("configurationDone", "{}");
+    connection.WaitFor("configurationDone");
+
+    const wolang::lsp::Json stopped = connection.WaitFor("stopped");
+    reason = stopped["body"]["reason"].AsString();
+    stopped_once = true;
+    connection.Send("stackTrace", "{\"threadId\":1}");
+    const wolang::lsp::Json trace = connection.WaitFor("stackTrace");
+    function = trace["body"]["stackFrames"].At(0)["name"].AsString();
+    line = trace["body"]["stackFrames"].At(0)["line"].AsInt();
+    connection.Send("variables", "{\"variablesReference\":1}");
+    const wolang::lsp::Json variables = connection.WaitFor("variables");
+    delta = variables["body"]["variables"].At(0)["value"].AsString();
+    connection.Send("disconnect", "{}");
+    connection.WaitFor("disconnect");
+  });
+
+  // The host's frame, which waits at the breakpoint until the editor lets
+  // it go. The editor may not have set its breakpoint yet, so the host
+  // keeps ticking until it has been stopped once.
+  WolangValue argument = wolang_int(3);
+  WolangValue answer = wolang_void();
+  int32_t calls = 0;
+  while (!stopped_once && calls < 2000) {
+    WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Tick", &argument, 1, &answer), 0);
+    ++calls;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  editor.join();
+  WOLANG_EXPECT_EQ(reason, "breakpoint");
+  WOLANG_EXPECT_EQ(function, "Tick");
+  WOLANG_EXPECT_EQ(line, 6);
+  WOLANG_EXPECT_EQ(delta, "3");
+
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Tick", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, static_cast<int64_t>(calls + 1) * 3);
+  wolang_vm_destroy(vm);
 }
 
 WOLANG_TEST(EmbedTest, CallsBackIntoTheHost) {

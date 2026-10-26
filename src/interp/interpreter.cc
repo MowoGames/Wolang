@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 
@@ -31,6 +32,10 @@ struct Frame {
   std::vector<Value> values;
   // Storage behind every `alloca` in this activation.
   std::vector<Value> slots;
+  // What a debugger is shown: the instruction running, and the place in
+  // the source it last said it was at.
+  ir::InstId at;
+  SourceSpan last;
 };
 
 class Interpreter {
@@ -145,9 +150,150 @@ class Interpreter {
     }
 
     ++depth_;
+    stack_.push_back(&frame);
     const Value result = Execute(&frame, outcome);
+    stack_.pop_back();
     --depth_;
     return result;
+  }
+
+  // ----------------------------------------------------------- debugging --
+
+  // Tells the debugger the program got somewhere new, and stops while it
+  // says to. False when the debugger ended the run.
+  bool Reached(Frame* frame, ir::InstId id, Outcome* outcome) {
+    frame->at = id;
+    const SourceSpan span = frame->function->SpanOf(id);
+    if (span.file.index == FileId::kInvalidIndex || (span.file.index == frame->last.file.index && span.begin == frame->last.begin)) {
+      return true;
+    }
+    frame->last = span;
+    if (!limits_.debugger->Wants(span, stack_.size())) {
+      return true;
+    }
+
+    std::vector<DebugFrame> stack;
+    for (auto it = stack_.rbegin(); it != stack_.rend(); ++it) {
+      DebugFrame shown;
+      shown.Function = std::string(interner_.Text((*it)->function->name));
+      shown.Span = (*it)->function->SpanOf((*it)->at);
+      shown.Variables = VariablesOf(**it);
+      stack.push_back(std::move(shown));
+    }
+    if (limits_.debugger->Paused(stack)) {
+      return true;
+    }
+    Trap(outcome, TrapKind::kStepLimit, At(*frame->function, id), "stopped by the debugger");
+    return false;
+  }
+
+  // The locals in scope where |frame| is, a later one hiding an earlier
+  // one of the same name.
+  std::vector<DebugVariable> VariablesOf(const Frame& frame) {
+    std::vector<DebugVariable> shown;
+    for (const ir::DebugLocal& local : frame.function->locals) {
+      if (!frame.at.is_valid() || frame.at.index < local.begin || frame.at.index >= local.end) {
+        continue;
+      }
+      Value value;
+      if (local.slot.is_valid() && local.slot.index < frame.values.size()) {
+        const Value& slot = frame.values[local.slot.index];
+        if (slot.kind() == Value::Kind::kSlot && slot.slot() < frame.slots.size()) {
+          value = frame.slots[slot.slot()];
+        }
+      }
+      else if (local.value.is_valid() && local.value.index < frame.values.size()) {
+        value = frame.values[local.value.index];
+      }
+      if (value.is_undefined()) {
+        continue;
+      }
+
+      DebugVariable variable = Show(std::string(interner_.Text(local.name)), value, local.type, 1);
+      auto same = std::find_if(shown.begin(), shown.end(), [&](const DebugVariable& seen) { return seen.Name == variable.Name; });
+      if (same != shown.end()) {
+        *same = std::move(variable);
+      }
+      else {
+        shown.push_back(std::move(variable));
+      }
+    }
+    return shown;
+  }
+
+  // The bytes of a string, however this tier is holding it.
+  static std::string TextOf(const Value& value) {
+    if (value.kind() == Value::Kind::kString) {
+      return value.text();
+    }
+    if (value.kind() != Value::Kind::kAggregate || value.elements().size() != 2 || value.elements()[0].kind() != Value::Kind::kInt) {
+      return std::string();
+    }
+    const auto* bytes = reinterpret_cast<const char*>(value.elements()[0].integer());
+    const uint64_t length = value.elements()[1].integer();
+    if (bytes == nullptr) {
+      return std::string();
+    }
+    return std::string(bytes, static_cast<size_t>(std::min<uint64_t>(length, 256)));
+  }
+
+  // |value| as a debugger shows it, and the fields of an object or a
+  // struct |depth| levels down.
+  DebugVariable Show(std::string name, const Value& value, TypeId type, int depth) {
+    DebugVariable shown;
+    shown.Name = std::move(name);
+    shown.Type = type.is_valid() ? types_.Describe(interner_, type) : std::string();
+    const TypeKind kind = type.is_valid() ? types_.KindOf(type) : TypeKind::kError;
+
+    if (value.kind() == Value::Kind::kOptional) {
+      if (!value.has_value()) {
+        shown.Value = "null";
+        return shown;
+      }
+      DebugVariable inside = Show(shown.Name, value.inside(), types_.ElementOf(type), depth);
+      inside.Type = shown.Type;
+      return inside;
+    }
+    if (kind == TypeKind::kStr || kind == TypeKind::kString) {
+      shown.Value = "\"" + TextOf(value) + "\"";
+      return shown;
+    }
+    if (type.is_valid() && types_.IsHandle(type) && value.kind() == Value::Kind::kInt) {
+      const uint64_t address = value.integer();
+      if (address == 0) {
+        shown.Value = "null";
+        return shown;
+      }
+      char where[32] = {};
+      std::snprintf(where, sizeof(where), " @0x%llx", static_cast<unsigned long long>(address));
+      shown.Value = shown.Type + where;
+      if (depth > 0 && !types_.IsForeignClass(type) && layouts_ != nullptr) {
+        const abi::Layout& layout = layouts_->ObjectOf(type);
+        for (uint32_t i = 0; i < layout.offsets.size(); ++i) {
+          const Symbol field = layouts_->FieldName(type, i);
+          const TypeId field_type = layouts_->FieldType(type, i);
+          if (!field.is_valid() || !field_type.is_valid()) {
+            continue;
+          }
+          const Value read = Decode(types_, layouts_, reinterpret_cast<const uint8_t*>(address) + layout.offsets[i], field_type);
+          shown.Fields.push_back(Show(std::string(interner_.Text(field)), read, field_type, depth - 1));
+        }
+      }
+      return shown;
+    }
+    if (value.kind() == Value::Kind::kAggregate && (kind == TypeKind::kNamed || kind == TypeKind::kInstance) && layouts_ != nullptr) {
+      shown.Value = shown.Type;
+      for (uint32_t i = 0; depth > 0 && i < value.elements().size(); ++i) {
+        const Symbol field = layouts_->FieldName(type, i);
+        const TypeId field_type = layouts_->FieldType(type, i);
+        if (field.is_valid() && field_type.is_valid()) {
+          shown.Fields.push_back(Show(std::string(interner_.Text(field)), value.elements()[i], field_type, depth - 1));
+        }
+      }
+      return shown;
+    }
+    shown.Value = value.Describe();
+    return shown;
   }
 
   // Reading and writing through a raw pointer. Only a scalar: an aggregate
@@ -733,6 +879,9 @@ class Interpreter {
         }
 
         const ir::InstId id = body.instructions[i];
+        if (limits_.debugger != nullptr && !Reached(frame, id, outcome)) {
+          return Value();
+        }
         const ir::Inst& inst = function.Get(id);
         if (!ir::IsTerminator(inst.opcode)) {
           frame->values[id.index] = Evaluate(frame, id, inst, outcome);
@@ -2194,6 +2343,8 @@ class Interpreter {
   std::vector<Value> tokens_;
   uint64_t steps_ = 0;
   uint32_t depth_ = 0;
+  // The activations, outermost first, for a debugger to look at.
+  std::vector<Frame*> stack_;
 };
 
 }  // namespace

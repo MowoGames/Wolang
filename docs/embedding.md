@@ -85,6 +85,7 @@ and pointing `CMAKE_PREFIX_PATH` at it is enough.
 | **Extend** | `wolang_vm_bind` makes a host function reachable: the script declares `extern "C" fun host_log(message: *u8, length: u64)` and calls it. |
 | **Capture** | `wolang_vm_set_writer` sends the program's output to the host's console instead of standard output; `wolang_vm_set_reporter` does the same for diagnostics. |
 | **Contain** | `wolang_vm_set_step_limit` stops a call after so many instructions, for scripts the host did not write. It keeps calls on the interpreter, which is the trade. |
+| **Debug** | `wolang_vm_debug_listen` opens a port an editor attaches to with the Debug Adapter Protocol; breakpoints stop the host's call where it is. See [debugging](debugging.md). |
 | **Reload** | `wolang_vm_reload` loads everything again and keeps the program's state; `wolang_vm_file_count`/`_name` say which files to watch. |
 
 ## What crosses the boundary

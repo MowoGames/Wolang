@@ -29,6 +29,8 @@ struct Local {
   // Valid for a `let` and for a parameter: the value itself.
   InstId value;
   TypeId type;
+  // Its entry in the function's debug locals, or none.
+  uint32_t debug = 0xFFFFFFFFu;
 };
 
 // Where `break` and `continue` go, innermost last.
@@ -175,6 +177,35 @@ class Lowerer {
   }
 
  private:
+  // A name the code from here on can see, and what a debugger shows for
+  // it until the scope closes (D216).
+  void PushLocal(Local local) {
+    if (local.name.is_valid() && current_function_ < module_->functions.size()) {
+      Function& function = module_->functions[current_function_];
+      DebugLocal debug;
+      debug.name = local.name;
+      debug.type = local.type;
+      debug.slot = local.slot;
+      debug.value = local.value;
+      debug.begin = static_cast<uint32_t>(function.instructions.size());
+      local.debug = static_cast<uint32_t>(function.locals.size());
+      function.locals.push_back(debug);
+    }
+    locals_.push_back(local);
+  }
+
+  void PopLocals(size_t depth) {
+    if (current_function_ < module_->functions.size()) {
+      Function& function = module_->functions[current_function_];
+      for (size_t i = depth; i < locals_.size(); ++i) {
+        if (locals_[i].debug < function.locals.size()) {
+          function.locals[locals_[i].debug].end = static_cast<uint32_t>(function.instructions.size());
+        }
+      }
+    }
+    locals_.resize(depth);
+  }
+
   // ------------------------------------------------------- declarations --
 
   // |owner| is the type whose body this declaration is in, or an invalid id
@@ -1332,7 +1363,7 @@ class Lowerer {
     const BlockId entry = builder.AddBlock("entry");
     builder.SetCurrent(entry);
     self_ = builder.AddParam(entry, machine);
-    locals_.push_back(Local{self_name_, InstId{}, self_, machine});
+    PushLocal(Local{self_name_, InstId{}, self_, machine});
     Lower(block.body);
     if (!builder.Terminated()) {
       builder.ReturnVoid();
@@ -1627,7 +1658,7 @@ class Lowerer {
     self_ = InstId{};
     if (self_type_.is_valid()) {
       self_ = builder.AddParam(entry, self_type_);
-      locals_.push_back(Local{self_name_, InstId{}, self_, self_type_});
+      PushLocal(Local{self_name_, InstId{}, self_, self_type_});
     }
 
     return_type_ = types_->ElementOf(module_->functions[index].type);
@@ -1672,7 +1703,7 @@ class Lowerer {
       // one will mutate the object it was called on; that is D61 and it
       // needs the heap first.
       self_ = builder.AddParam(entry, self_type_);
-      locals_.push_back(Local{self_name_, InstId{}, self_, self_type_});
+      PushLocal(Local{self_name_, InstId{}, self_, self_type_});
     }
 
     for (ParamId param_id : ast().Get(item.params)) {
@@ -1692,12 +1723,12 @@ class Lowerer {
         // the frame like everything else.
         const InstId slot = builder.Add(Opcode::kAlloca, type);
         builder.Add(Opcode::kStore, TypeId{}, {slot, value});
-        locals_.push_back(Local{param.name, slot, InstId{}, type});
+        PushLocal(Local{param.name, slot, InstId{}, type});
         RememberOwner(param.name, slot, declared, /*live=*/true,
                       /*in_slot=*/true, /*is_parameter=*/true);
         continue;
       }
-      locals_.push_back(Local{param.name, InstId{}, value, type});
+      PushLocal(Local{param.name, InstId{}, value, type});
       RememberOwner(param.name, value, declared, /*live=*/true,
                     /*in_slot=*/false, /*is_parameter=*/true);
     }
@@ -2024,7 +2055,7 @@ class Lowerer {
       RunDeferred(scope_depth_);
       ForgetDeferred(scope_depth_);
       --scope_depth_;
-      locals_.resize(depth);
+      PopLocals(depth);
       return;
     }
     Value(id);
@@ -2165,7 +2196,7 @@ class Lowerer {
     if (!mutable_binding && !in_task_ &&
         !HasFlag(pattern->flags, PatternFlags::kMutable) &&
         !Releases(type)) {
-      locals_.push_back(Local{pattern->name, InstId{}, value, type});
+      PushLocal(Local{pattern->name, InstId{}, value, type});
       return;
     }
 
@@ -2182,7 +2213,7 @@ class Lowerer {
         RetainValue(stored, type);
       }
     }
-    locals_.push_back(Local{pattern->name, slot, InstId{}, Erase(type)});
+    PushLocal(Local{pattern->name, slot, InstId{}, Erase(type)});
     // The *unerased* type decides who frees: erasing is what loses the
     // difference between a string that owns its bytes and a view.
     RememberOwner(pattern->name, slot, type, value.is_valid());
@@ -5851,7 +5882,7 @@ class Lowerer {
     RunDeferred(scope_depth_);
     ForgetDeferred(scope_depth_);
     --scope_depth_;
-    locals_.resize(depth);
+    PopLocals(depth);
     if (result.is_valid() || types_->KindOf(type) == TypeKind::kVoid) {
       return result;
     }
@@ -5896,7 +5927,7 @@ class Lowerer {
         const TypeId inner = Erase(types_->ElementOf(TypeOf(expr.lhs)));
         const InstId value =
             builder_->Add(Opcode::kOptionalValue, inner, {subject});
-        locals_.push_back(Local{pattern.name, InstId{}, value, inner});
+        PushLocal(Local{pattern.name, InstId{}, value, inner});
       }
     }
     // `Value` lowers the block and yields its final expression; `Lower`
@@ -5918,7 +5949,7 @@ class Lowerer {
       builder_->Jump(join, produces ? std::vector<InstId>{then_value}
                                     : std::vector<InstId>{});
     }
-    locals_.resize(depth);
+    PopLocals(depth);
 
     builder_->SetCurrent(no);
     InstId else_value;
@@ -6048,7 +6079,7 @@ class Lowerer {
           builder_->Jump(join_block());
         }
       }
-      locals_.resize(depth);
+      PopLocals(depth);
 
       if (otherwise.is_valid()) {
         builder_->SetCurrent(otherwise);
@@ -6230,7 +6261,7 @@ class Lowerer {
       }
       if (pattern.kind == PatternKind::kBinding &&
           !IsVariantName(subject_type, pattern.name)) {
-        locals_.push_back(
+        PushLocal(
             Local{pattern.name, InstId{}, subject, subject_type});
         continue;
       }
@@ -6242,7 +6273,7 @@ class Lowerer {
         for (PatternId element : ast().Get(pattern.elements)) {
           if (ast().Contains(element) &&
               ast().Get(element).kind == PatternKind::kBinding) {
-            locals_.push_back(
+            PushLocal(
                 Local{ast().Get(element).name, InstId{}, value, held});
           }
         }
@@ -6268,7 +6299,7 @@ class Lowerer {
               Opcode::kVariantPayload, carried, {subject});
           builder_->Mutable(payload).field = index;
           builder_->Mutable(payload).payload.integer = position;
-          locals_.push_back(Local{ast().Get(element).name, InstId{},
+          PushLocal(Local{ast().Get(element).name, InstId{},
                                   payload, carried});
           ++position;
         }
@@ -6281,7 +6312,7 @@ class Lowerer {
         for (PatternId element : ast().Get(pattern.elements)) {
           if (ast().Contains(element) &&
               ast().Get(element).kind == PatternKind::kBinding) {
-            locals_.push_back(
+            PushLocal(
                 Local{ast().Get(element).name, InstId{}, value, inner});
           }
         }
@@ -6501,11 +6532,11 @@ class Lowerer {
     loops_.push_back(LoopTarget{expr.label, exit, header, scope_depth_});
     if (ast().Contains(expr.pattern) &&
         ast().Get(expr.pattern).kind == PatternKind::kBinding) {
-      locals_.push_back(Local{ast().Get(expr.pattern).name, InstId{},
+      PushLocal(Local{ast().Get(expr.pattern).name, InstId{},
                               element_value, element});
     }
     Lower(expr.rhs);
-    locals_.resize(depth);
+    PopLocals(depth);
     loops_.pop_back();
     if (!builder_->Terminated()) {
       builder_->Jump(header);
@@ -6683,7 +6714,7 @@ class Lowerer {
               static_cast<uint32_t>(i));
           const InstId value =
               builder.Add(Opcode::kLoad, inside[i], {field});
-          locals_.push_back(
+          PushLocal(
               Local{work.captures[i], InstId{}, value, inside[i]});
         }
         params.erase(params.begin());
@@ -6694,7 +6725,7 @@ class Lowerer {
         const TypeId type =
             position < params.size() ? params[position] : types_->error();
         const InstId value = builder.AddParam(entry, type);
-        locals_.push_back(Local{param.name, InstId{}, value, type});
+        PushLocal(Local{param.name, InstId{}, value, type});
         ++position;
       }
 
@@ -6763,17 +6794,17 @@ class Lowerer {
       if (IsQuery(declared)) {
         const InstId cursor = OpenQuery(world, param.type);
         cursors.push_back(cursor);
-        locals_.push_back(Local{param.name, InstId{}, cursor, declared});
+        PushLocal(Local{param.name, InstId{}, cursor, declared});
         continue;
       }
       // The time step, which is the one other thing a system may ask for.
       if (declared.is_valid() &&
           types_->KindOf(declared) == TypeKind::kFloat) {
-        locals_.push_back(Local{param.name, InstId{},
+        PushLocal(Local{param.name, InstId{},
                                 Coerce(delta, step, declared), declared});
         continue;
       }
-      locals_.push_back(
+      PushLocal(
           Local{param.name, InstId{}, builder.Undef(declared), declared});
     }
 
@@ -7009,11 +7040,11 @@ class Lowerer {
       // Bound as a slot: reading it loads through the address and writing
       // it stores through it, which is what makes `mut` in the query mean
       // what it says.
-      locals_.push_back(Local{ast().Get(expr.pattern).name, component_at,
+      PushLocal(Local{ast().Get(expr.pattern).name, component_at,
                               InstId{}, component});
     }
     Lower(expr.rhs);
-    locals_.resize(depth);
+    PopLocals(depth);
     loops_.pop_back();
     if (!builder_->Terminated()) {
       const InstId next = builder_->Add(
@@ -7129,7 +7160,7 @@ class Lowerer {
     if (ast().Contains(expr.pattern)) {
       const Pattern& pattern = ast().Get(expr.pattern);
       if (pattern.kind == PatternKind::kBinding) {
-        locals_.push_back(
+        PushLocal(
             Local{pattern.name, InstId{}, bound, bound_type});
       }
     }
@@ -7138,7 +7169,7 @@ class Lowerer {
     RunDeferred(scope_depth_);
     ForgetDeferred(scope_depth_);
     --scope_depth_;
-    locals_.resize(depth);
+    PopLocals(depth);
     if (!builder_->Terminated()) {
       builder_->Jump(step);
     }

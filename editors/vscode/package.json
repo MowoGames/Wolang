@@ -19,7 +19,8 @@
   ],
   "main": "./extension.js",
   "activationEvents": [
-    "onLanguage:wolang"
+    "onLanguage:wolang",
+    "onDebugResolve:wolang"
   ],
   "contributes": {
     "languages": [
@@ -105,6 +106,92 @@
         "command": "wolang.restart",
         "title": "Wolang: Restart the language server",
         "category": "Wolang"
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "wolang"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "wolang",
+        "label": "Wolang",
+        "languages": [
+          "wolang"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "The package directory or `.wo` file whose `main` to run.",
+                "default": "${workspaceFolder}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at the first line.",
+                "default": false
+              }
+            }
+          },
+          "attach": {
+            "required": [
+              "port"
+            ],
+            "properties": {
+              "port": {
+                "type": "number",
+                "description": "The port a host opened with `wolang_vm_debug_listen`.",
+                "default": 4711
+              },
+              "host": {
+                "type": "string",
+                "description": "Where the host runs.",
+                "default": "127.0.0.1"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "wolang",
+            "request": "launch",
+            "name": "Wolang: run this package",
+            "program": "${workspaceFolder}"
+          },
+          {
+            "type": "wolang",
+            "request": "attach",
+            "name": "Wolang: attach to the engine",
+            "port": 4711
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Wolang: Launch",
+            "description": "Run a package on the interpreter and debug it.",
+            "body": {
+              "type": "wolang",
+              "request": "launch",
+              "name": "Wolang: run this package",
+              "program": "^\"\\${workspaceFolder}\""
+            }
+          },
+          {
+            "label": "Wolang: Attach",
+            "description": "Debug the scripts of a running host.",
+            "body": {
+              "type": "wolang",
+              "request": "attach",
+              "name": "Wolang: attach to the engine",
+              "port": 4711
+            }
+          }
+        ]
       }
     ]
   },
