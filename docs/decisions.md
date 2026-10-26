@@ -2480,3 +2480,57 @@ parallel `for`. All five are loops that carry a slice.
 The rule this leaves behind: a bug fixed in one emitter is a bug to look
 for in the other, and the comment that explains the fix should be read as
 a question about the other machine.
+
+**D201. Windows x86-64 has its own calling convention.** The x86-64
+tier spoke System V everywhere, so on Windows every compiled function
+read its arguments out of `rdi` and `rsi` while the host had put them in
+`rcx` and `rdx`: `Add(2, 3)` answered 0, and every test that reached
+machine code failed or crashed. The port was never run -- CI lives in a
+GitHub workflow and the repository is on GitLab.
+
+One convention per machine, not one inside and another at the edges: the
+runtime calls compiled code directly (a parallel `for`, a system of the
+ECS), so every body has to be callable from C. On Windows that means four
+argument positions shared by integers and floats, thirty-two bytes of
+shadow space under every call, `rsi` and `rdi` saved by the callee (the
+tier uses them as scratch, so every body saves them), floating-point
+scratch only in `xmm0`-`xmm5` (the rest belong to the caller), and a
+probe of every page when a frame is bigger than one. Where an argument
+goes is answered by one cursor shared by the prologue, the call, the
+entry stub and the frame layout, so they cannot disagree again. The
+interpreter's thunk into C got the same treatment.
+
+**D202. A trap on Windows leaves without unwinding.** `longjmp` there is
+an unwind: it walks every frame between the trap and the landing pad
+through the exception tables, and generated code has none, so a trap was
+`STATUS_BAD_FUNCTION_TABLE` instead of a trap. Nothing between the two
+holds a destructor (D59), so the jump buffer's frame is cleared after
+`setjmp` and the jump becomes a plain register restore -- the same thing
+`_longjmp` is elsewhere.
+
+**D203. The standard library asks the runtime, not POSIX.** `std.io`,
+`std.fs`, `std.process` and `std.time` declared `write`, `read`, `close`,
+`getpid`, `usleep` and `clock_gettime` themselves, which is a library that
+works on two systems out of three. They call `wolang_fd_*`,
+`wolang_process_id`, `wolang_sleep_micros` and `wolang_clock` now, and
+each system answers in the runtime. It also fixed a Linux bug nobody had
+seen: clock 6 is `CLOCK_MONOTONIC` on Darwin and `CLOCK_MONOTONIC_COARSE`
+on Linux, so `Now()` there ticked in milliseconds. `std.env.System()`
+says which system it is, and the tests that start programs ask it rather
+than assuming `sh`, `cat` and `/tmp`.
+
+**D204. Time zones on Windows come from the system's ICU.** The C library
+there understands `EST5EDT` and nothing with a slash in it, so
+`Europe/Kyiv` was UTC. Windows has shipped ICU as `icu.dll` since 2019;
+it is loaded when asked for, and the C library is the fallback when it is
+missing. Still the system's database rather than one of ours (D176).
+
+**D205. What a CI that never ran was hiding.** `fmt --check lib` failed
+on every system, because a directory that is not a package was read as a
+file; forty-odd files had drifted from the formatter since. `wolang.h`,
+the header a C host includes, included `<cstdint>`, which C does not
+have. The documentation check wrote a Windows path into TOML, where its
+backslashes are escapes. The driver looked for `libwolang_platform.so`
+on Windows. Each is fixed, and the Windows job now runs everything the
+Linux one does except the ahead-of-time tier, whose linking is not wired
+there yet.
