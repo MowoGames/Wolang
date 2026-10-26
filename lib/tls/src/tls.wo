@@ -16,10 +16,10 @@ need std.net.{Connect, Socket}
 need std.mem.{ArrayNew, Free}
 need std.text.{BuilderNew, Bytes}
 
-extern "C" fun wolang_tls_open(socket: s64, host: *u8, length: u64, verify: s32) -> s64
-extern "C" fun wolang_tls_write(session: s64, bytes: *u8, count: s64) -> s64
-extern "C" fun wolang_tls_read(session: s64, bytes: *mut u8, room: s64) -> s64
-extern "C" fun wolang_tls_close(session: s64)
+extern "C" fun wolang_tls_open(socket: s64, host: *u8, length: u64, verify: s32) -> s64 uses net
+extern "C" fun wolang_tls_write(session: s64, bytes: *u8, count: s64) -> s64 uses net
+extern "C" fun wolang_tls_read(session: s64, bytes: *mut u8, room: s64) -> s64 uses net
+extern "C" fun wolang_tls_close(session: s64) uses net
 
 /// A TLS connection over a socket.
 ///
@@ -97,7 +97,7 @@ offer fun StreamNone() -> Stream {
 /// that any server can answer (D150). `verify = false` is for a
 /// development server with a certificate it signed itself, and says so
 /// at the call.
-offer fun Handshake(host: text, port: int, verify: bool) -> Stream uses unsafe {
+offer fun Handshake(host: text, port: int, verify: bool) -> Stream uses net, unsafe {
   var socket = Connect(host, port)
   if !socket.IsOpen() {
     return StreamNone()
@@ -126,7 +126,7 @@ offer fun Handshake(host: text, port: int, verify: bool) -> Stream uses unsafe {
 // ------------------------------------------------------------- tests ---
 
 @Test
-fun RefusesAHostThatIsNotThere() -> bool uses unsafe {
+fun RefusesAHostThatIsNotThere() -> bool uses net, unsafe {
   // No network needed: a name nothing resolves cannot be connected to,
   // and what comes back is a closed stream rather than a trap.
   var stream = Handshake("this.name.does.not.exist.invalid", 443, true)

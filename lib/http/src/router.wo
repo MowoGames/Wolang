@@ -279,7 +279,7 @@ fun Installed(request: Request) -> Response uses io, unsafe {
 ///
 /// What a program serving an API calls: the router says what answers
 /// what, and this is the loop around it (D112).
-offer fun ServeRoutes(port: int, most: int, router: Router) -> s32 uses io, unsafe {
+offer fun ServeRoutes(port: int, most: int, router: Router) -> s32 uses io, net, time, unsafe {
   serving = router
   return RunPolled(port, most, Installed)
 }

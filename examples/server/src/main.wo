@@ -94,11 +94,11 @@ fun Secret(_request: Request) -> Response uses unsafe {
 }
 
 // Everything under `/static/` off the disk, with the path checked.
-fun Static(request: Request) -> Response uses unsafe {
+fun Static(request: Request) -> Response uses io, unsafe {
   return ServeUnder("examples/server/public", &request, "/static/")
 }
 
-fun main() uses io, unsafe {
+fun main() uses io, net, time, unsafe {
   var api = RouterNew()
   api.Get("/users", ListUsers)
   api.Get("/users/:id", User)

@@ -349,7 +349,7 @@ fun Slice(bytes: []u8, from: int, to: int) -> []u8 uses unsafe {
 /// request allocates -- its response, the strings it interpolated -- comes
 /// from there and goes back at the end of the turn. Keep-alive is what
 /// makes that worth doing, because the connection outlives the arena.
-offer fun Serve(connection: s32, handle: fun(Request) -> Response) -> int uses io, unsafe {
+offer fun Serve(connection: s32, handle: fun(Request) -> Response) -> int uses io, net, time, unsafe {
   return ServeWith(connection, handle, LimitsDefault())
 }
 
@@ -361,7 +361,7 @@ offer fun Serve(connection: s32, handle: fun(Request) -> Response) -> int uses i
 offer fun ServeWith(
     connection: s32,
     handle: fun(Request) -> Response,
-    limits: Limits) -> int uses io, unsafe {
+    limits: Limits) -> int uses io, net, time, unsafe {
   var pool = ConnectionsNew(1, limits)
   const slot = pool.Open(connection as int)
   var served = 0
@@ -387,7 +387,7 @@ offer fun ServeWith(
 offer fun Turn(
     pool: &mut Connections,
     slot: int,
-    handle: fun(Request) -> Response) -> int uses io, unsafe {
+    handle: fun(Request) -> Response) -> int uses io, net, time, unsafe {
   const fd = pool.Fd(slot)
   if fd < 0 {
     return -1
@@ -473,7 +473,7 @@ fun Answer(
     buffer: []u8,
     received: int,
     handle: fun(Request) -> Response,
-    keep_alive: bool) -> bool uses io, unsafe {
+    keep_alive: bool) -> bool uses io, net, time, unsafe {
   const request = ParseRequest(buffer, received)
   if request.length == 0 {
     const _bad = WriteAll(
@@ -507,7 +507,7 @@ fun Answer(
 /// One write, because two writes of a small response wait for each other
 /// on a socket -- the second is held back until the first is
 /// acknowledged -- which costs more than building the string does.
-offer fun WriteResponse(connection: s32, answer: Response) -> bool uses io, unsafe {
+offer fun WriteResponse(connection: s32, answer: Response) -> bool uses io, net, time, unsafe {
   return WriteAnswer(connection, answer, true, true)
   /*with_body=*/
   /*keep_alive=*/
@@ -524,7 +524,7 @@ offer fun WriteAnswer(
     connection: s32,
     answer: Response,
     with_body: bool,
-    keep_alive: bool) -> bool uses io, unsafe {
+    keep_alive: bool) -> bool uses io, net, time, unsafe {
   var message = BuilderNew()
   message.Append("HTTP/1.1 {answer.status} {Reason(answer.status)}\r\n")
   message.Append("Content-Length: {answer.body.len}\r\n")
@@ -564,7 +564,7 @@ var date_length: int = 0
 var date_second: s64 = -1
 
 /// The date header, in the format HTTP wants.
-offer fun Date() -> text uses unsafe {
+offer fun Date() -> text uses time, unsafe {
   const now = WallClock().seconds
   if now != date_second {
     date_second = now
@@ -673,7 +673,7 @@ fun Reason(status: int) -> text {
 
 /// Listens on `port` and serves one connection after another, each inside
 /// an arena of its own.
-offer fun Run(port: int, handle: fun(Request) -> Response) -> s32 uses io, unsafe {
+offer fun Run(port: int, handle: fun(Request) -> Response) -> s32 uses io, net, time, unsafe {
   const listener = Listen(port, 128)
   if listener < 0 {
     Print("http: cannot listen")
@@ -702,7 +702,7 @@ offer fun Run(port: int, handle: fun(Request) -> Response) -> s32 uses io, unsaf
 /// `most` is how many ready descriptors one wait may report. Everything
 /// else waits for the next turn, which is what keeps one noisy client
 /// from starving the rest.
-offer fun RunPolled(port: int, most: int, handle: fun(Request) -> Response) -> s32 uses io, unsafe {
+offer fun RunPolled(port: int, most: int, handle: fun(Request) -> Response) -> s32 uses io, net, time, unsafe {
   return RunServer(port, most, handle, LimitsDefault())
 }
 
@@ -716,7 +716,7 @@ offer fun RunServer(
     port: int,
     most: int,
     handle: fun(Request) -> Response,
-    limits: Limits) -> s32 uses io, unsafe {
+    limits: Limits) -> s32 uses io, net, time, unsafe {
   return RunServerOn(Listen(port, 128), most, handle, limits)
 }
 
@@ -728,7 +728,7 @@ offer fun RunServerOn(
     listener: s32,
     most: int,
     handle: fun(Request) -> Response,
-    limits: Limits) -> s32 uses io, unsafe {
+    limits: Limits) -> s32 uses io, net, time, unsafe {
   if listener < 0 {
     Print("http: cannot listen")
     return listener

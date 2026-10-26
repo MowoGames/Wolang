@@ -7,16 +7,16 @@
 
 need std.mem.{ArrayNew, Free}
 
-extern "C" fun wolang_poll_create() -> s32
-extern "C" fun wolang_poll_close(poller: s32)
-extern "C" fun wolang_poll_add(poller: s32, fd: s32) -> s32
-extern "C" fun wolang_poll_remove(poller: s32, fd: s32) -> s32
+extern "C" fun wolang_poll_create() -> s32 uses io
+extern "C" fun wolang_poll_close(poller: s32) uses io
+extern "C" fun wolang_poll_add(poller: s32, fd: s32) -> s32 uses io
+extern "C" fun wolang_poll_remove(poller: s32, fd: s32) -> s32 uses io
 extern "C" fun wolang_poll_wait(
     poller: s32,
     timeout: s32,
     out: *mut s32,
-    max: s32) -> s32
-extern "C" fun wolang_set_nonblocking(fd: s32) -> s32
+    max: s32) -> s32 uses io
+extern "C" fun wolang_set_nonblocking(fd: s32) -> s32 uses net
 
 /// Watches descriptors and says which are readable.
 offer class Poller {
@@ -60,7 +60,7 @@ offer class Poller {
 }
 
 /// A poller that can report up to `most` ready descriptors at a time.
-offer fun PollerNew(most: int) -> Poller uses unsafe {
+offer fun PollerNew(most: int) -> Poller uses io, unsafe {
   var room = most
   if room < 8 {
     room = 8
@@ -70,6 +70,6 @@ offer fun PollerNew(most: int) -> Poller uses unsafe {
 
 /// Stops a descriptor from blocking: a read with nothing to read returns
 /// instead of waiting, which is what lets one loop serve many.
-offer fun SetNonBlocking(fd: int) -> bool uses unsafe {
+offer fun SetNonBlocking(fd: int) -> bool uses net, unsafe {
   return wolang_set_nonblocking(fd as s32) == 0
 }

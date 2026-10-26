@@ -14,7 +14,7 @@
 need std.mem.{ArrayNew, Free, Prefix}
 need std.text.{Bytes, BuilderNew, Length}
 
-extern "C" fun wolang_entropy(into: *mut u8, count: u64) -> s32
+extern "C" fun wolang_entropy(into: *mut u8, count: u64) -> s32 uses rand
 
 // ---------------------------------------------------------- SHA-256 ---
 
@@ -251,7 +251,7 @@ offer fun SameDigest(left: []u8, right: []u8) -> bool {
 ///
 /// Not `std.random`: that is a sequence, and a token made from a
 /// sequence is a token someone can continue (D170).
-offer fun RandomBytes(count: int) -> []u8 uses unsafe {
+offer fun RandomBytes(count: int) -> []u8 uses rand, unsafe {
   var bytes = ArrayNew<u8>(count)
   if count <= 0 {
     return bytes
@@ -269,7 +269,7 @@ offer fun RandomBytes(count: int) -> []u8 uses unsafe {
 }
 
 /// A token of `bytes` random bytes, as hexadecimal.
-offer fun Token(bytes: int) -> text uses unsafe {
+offer fun Token(bytes: int) -> text uses rand, unsafe {
   const held = RandomBytes(bytes)
   const written = Hex(held)
   Free(held)
@@ -277,7 +277,7 @@ offer fun Token(bytes: int) -> text uses unsafe {
 }
 
 /// A version 4 UUID: random, in the shape everything expects.
-offer fun Uuid() -> text uses unsafe {
+offer fun Uuid() -> text uses rand, unsafe {
   var bytes = RandomBytes(16)
   // The version and the variant, which are what make it a UUID rather
   // than sixteen random bytes.
@@ -293,7 +293,7 @@ offer fun Uuid() -> text uses unsafe {
 /// Two of them made a millisecond apart sort in the order they were
 /// made, which is what a database index wants and what version 4 does
 /// not give.
-offer fun UuidAt(millis: s64) -> text uses unsafe {
+offer fun UuidAt(millis: s64) -> text uses rand, unsafe {
   var bytes = RandomBytes(16)
   var i = 0
   while i < 6 {
@@ -433,7 +433,7 @@ fun SignsAndChecks() -> bool uses unsafe {
 }
 
 @Test
-fun MakesIdentifiers() -> bool uses unsafe {
+fun MakesIdentifiers() -> bool uses rand, unsafe {
   const one = Uuid()
   const two = Uuid()
   // Thirty-six characters, dashes in four places, and version four.

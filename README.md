@@ -135,7 +135,7 @@ need http.{AppNew, Ok, Request, Response, ServeWithDefaults}
 
 fun Health(_request: Request) -> Response => Ok("ok\n")
 
-fun main() uses io, unsafe {
+fun main() uses io, net, time, unsafe {
   var app = AppNew()
   app.Get("/health", Health)
   const _code = ServeWithDefaults(app, 8080, 512)

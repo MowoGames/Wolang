@@ -59,7 +59,7 @@ offer fun LayersNew() -> Layers uses unsafe {
 offer fun Through(
     layers: &Layers,
     request: Request,
-    handle: fun(Request) -> Response) -> Response uses io, unsafe {
+    handle: fun(Request) -> Response) -> Response uses io, time, unsafe {
   var subject = request
   var answer = Status(0, "")
   var answered = false
@@ -96,12 +96,12 @@ var started: Instant = Instant(0, 0)
 ///
 /// `Timing` goes in `before` and `Logged` in `after`; `Logger(layers)`
 /// installs both, which is what a program actually wants.
-offer fun Timing(_request: &mut Request) -> Response? uses unsafe {
+offer fun Timing(_request: &mut Request) -> Response? uses time, unsafe {
   started = Now()
   return null
 }
 
-offer fun Logged(request: &Request, answer: Response) -> Response uses io, unsafe {
+offer fun Logged(request: &Request, answer: Response) -> Response uses io, time, unsafe {
   if Enabled(Level.Info) {
     const took = Elapsed(started, Now()) / 1000
     At(
@@ -214,7 +214,7 @@ offer fun RateLimit(count: int) {
   budget = count
 }
 
-offer fun Limit(_request: &mut Request) -> Response? uses unsafe {
+offer fun Limit(_request: &mut Request) -> Response? uses time, unsafe {
   if per_second <= 0 {
     return null
   }
@@ -262,7 +262,7 @@ fun Mark(_request: &Request, answer: Response) -> Response {
 }
 
 @Test
-fun RunsLayersAroundAHandler() -> bool uses io, unsafe {
+fun RunsLayersAroundAHandler() -> bool uses io, time, unsafe {
   var layers = LayersNew()
   layers.Then(Mark)
   var request = RequestNew()
@@ -273,7 +273,7 @@ fun RunsLayersAroundAHandler() -> bool uses io, unsafe {
 }
 
 @Test
-fun ABeforeLayerMayAnswerInstead() -> bool uses io, unsafe {
+fun ABeforeLayerMayAnswerInstead() -> bool uses io, time, unsafe {
   var layers = LayersNew()
   layers.Use(Deny)
   layers.Then(Mark)

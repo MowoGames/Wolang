@@ -29,7 +29,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0401`–`E0403` | inheritance, abilities, bounds | implemented (waves 4–5) |
 | `E05xx` | entities and systems | wave 11 |
 | `E06xx` | networking | wave 16 |
-| `E0701`–`E0704` | effects, determinism, capabilities | implemented (wave 5) |
+| `E0701`–`E0705` | effects, determinism, capabilities | implemented (wave 5, `E0705` in D217) |
 | `E0801` | forbidden `unsafe` | implemented (wave 5) |
 | `E09xx` | compile-time evaluation | wave 7 |
 | `E10xx` | units and dimensions | implemented (wave 4) |
@@ -150,6 +150,7 @@ unused.
 | `E0702` | this context forbids the effect | `@Deterministic` reaching `rand` |
 | `E0703` | the package was not granted the capability | `uses net` under `capabilities = "io"` |
 | `E0704` | an offered signature does not state its effects | `offer fun f()` whose body does `io` |
+| `E0705` | a sandboxed package declares `extern` | `extern class wolang { fun system(...) }` in a mod |
 | `E0801` | `unsafe` where the package forbids it | `unsafe { }` under `unsafe = "deny"` |
 | `E0301` | `wait` outside a `task` function | `fun f() { wait g() }` |
 | `E0302` | a `task` called without `wait` or `spawn` | `fun f() { g() }` where `g` is a task |

@@ -83,7 +83,7 @@ offer fun RandomNew(seed: u64) -> Random uses unsafe {
 }
 
 /// A generator seeded from the clock.
-offer fun RandomFromClock() -> Random uses unsafe {
+offer fun RandomFromClock() -> Random uses time, unsafe {
   return RandomNew(Now().nanos as u64)
 }
 

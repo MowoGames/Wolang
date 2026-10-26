@@ -210,6 +210,8 @@ constexpr std::string_view kUnstatedPublicEffect = "E0704";
 constexpr std::string_view kForbiddenEffect = "E0702";
 constexpr std::string_view kUnsafeForbidden = "E0801";
 constexpr std::string_view kUngrantedCapability = "E0703";
+// A sandboxed package declaring something outside the language (D217).
+constexpr std::string_view kSandboxedExtern = "E0705";
 constexpr std::string_view kComptimeFailed = "E0901";
 
 }  // namespace
@@ -1019,6 +1021,23 @@ void Database::RegisterQueries() {
           return row;
         };
 
+        // A sandboxed package reaches outside the language only through a
+        // package that is not: an `extern` of its own would be a door the
+        // grant knows nothing about -- an `extern class wolang { fun
+        // system() }` binds `wolang_system` -- even though calling it is
+        // `unsafe` already (D217).
+        if (sandboxed) {
+          for (ItemId id : ast.Get(ast.root())) {
+            if (!ast.Contains(id) || !HasFlag(ast.Get(id).flags, ItemFlags::kExtern)) {
+              continue;
+            }
+            std::string message = "`";
+            message.append(interner_.Text(ast.Get(id).name));
+            message.append("` is `extern`, which a sandboxed package cannot declare");
+            diagnostics.Error(kSandboxedExtern, std::move(message)).Primary(ast.Get(id).name_span, "the host's API comes from a package it trusts");
+          }
+        }
+
         for (uint32_t index = 0; index < tree->entries.size(); ++index) {
           if (tree->entries[index].parent != ItemTreeEntry::kNoParent) {
             continue;
@@ -1547,6 +1566,26 @@ PackageId Database::AddPackage(std::string name,
   packages_.push_back(std::move(package));
   BumpWorkspace();
   return PackageId{static_cast<uint32_t>(packages_.size() - 1)};
+}
+
+void Database::Restrict(PackageId package, const std::vector<std::string>& granted) {
+  if (!package.is_valid() || package.index >= packages_.size()) {
+    return;
+  }
+  Manifest& manifest = packages_[package.index].manifest;
+  std::vector<std::string> allowed;
+  for (const std::string& name : granted) {
+    if (!manifest.has_capabilities || std::find(manifest.capabilities.begin(), manifest.capabilities.end(), name) != manifest.capabilities.end()) {
+      allowed.push_back(name);
+    }
+  }
+  manifest.capabilities = std::move(allowed);
+  manifest.has_capabilities = true;
+  manifest.allow_unsafe = false;
+  manifest.link_libraries.clear();
+  manifest.link_paths.clear();
+  manifest.link_frameworks.clear();
+  BumpWorkspace();
 }
 
 const Package* Database::GetPackage(PackageId package) const {

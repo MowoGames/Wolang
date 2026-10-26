@@ -8,22 +8,22 @@
 need std.env.{System}
 need std.text.{BuilderNew, Bytes, IndexOf, Length, StartsWith, TextFromRaw}
 
-extern "C" fun exit(code: s32)
-extern "C" fun wolang_process_id() -> s32
-extern "C" fun system(command: *u8) -> s32
-extern "C" fun wolang_sleep_micros(micros: u64)
+extern "C" fun exit(code: s32) uses io
+extern "C" fun wolang_process_id() -> s32 uses io
+extern "C" fun system(command: *u8) -> s32 uses io
+extern "C" fun wolang_sleep_micros(micros: u64) uses time
 
 /// Stops the program with `code`. Nothing after this runs.
 ///
 /// Destructors do not run: a program that has to tidy up should return
 /// from `main` instead, and this is for the case where there is nothing
 /// left to tidy.
-offer fun Exit(code: int) uses unsafe {
+offer fun Exit(code: int) uses io, unsafe {
   exit(code as s32)
 }
 
 /// This program's identifier.
-offer fun Id() -> int uses unsafe {
+offer fun Id() -> int uses io, unsafe {
   return wolang_process_id() as int
 }
 
@@ -32,7 +32,7 @@ offer fun Id() -> int uses unsafe {
 /// `unsafe` because the command is a string: what is in it is the
 /// caller's responsibility, and a command built from input a program did
 /// not choose is the oldest hole there is.
-offer fun Run(command: text) -> int uses unsafe {
+offer fun Run(command: text) -> int uses io, unsafe {
   // The shell wants a C string, and a `text` is a view with a length --
   // so a copy with a zero after it is what crosses.
   var builder = BuilderNew()
@@ -43,7 +43,7 @@ offer fun Run(command: text) -> int uses unsafe {
 }
 
 /// Sleeps for `millis` milliseconds.
-offer fun Sleep(millis: int) uses unsafe {
+offer fun Sleep(millis: int) uses time, unsafe {
   if millis <= 0 {
     return
   }
@@ -53,12 +53,12 @@ offer fun Sleep(millis: int) uses unsafe {
 // ------------------------------------------------------------- tests ---
 
 @Test
-fun KnowsItsOwnIdentifier() -> bool uses unsafe {
+fun KnowsItsOwnIdentifier() -> bool uses io, unsafe {
   return Id() > 0
 }
 
 @Test
-fun RunsACommand() -> bool uses unsafe {
+fun RunsACommand() -> bool uses io, unsafe {
   // `true` and `false` are the two programs every system has, and their
   // exit codes are the whole contract.
   if System() == "windows" {
@@ -68,7 +68,7 @@ fun RunsACommand() -> bool uses unsafe {
 }
 
 @Test
-fun SleepsAndComesBack() -> bool uses unsafe {
+fun SleepsAndComesBack() -> bool uses time, unsafe {
   Sleep(1)
   return true
 }
@@ -92,7 +92,7 @@ extern "C" fun wolang_spawn(
     out_written: *mut u64,
     errors: *mut u8,
     errors_room: u64,
-    errors_written: *mut u64) -> s32
+    errors_written: *mut u64) -> s32 uses io
 
 /// What another program did.
 offer struct Said {
@@ -113,12 +113,12 @@ offer const kMostOutput: int = 1048576
 /// whole, and the program is started directly. Which is the difference
 /// between running `git` and running whatever a `;` in an argument says
 /// (D153).
-offer fun Start(command: text) -> Said uses unsafe {
+offer fun Start(command: text) -> Said uses io, unsafe {
   return StartWith(command, "")
 }
 
 /// The same, with `input` written to the program's standard input.
-offer fun StartWith(command: text, input: text) -> Said uses unsafe {
+offer fun StartWith(command: text, input: text) -> Said uses io, unsafe {
   const bytes = Bytes(command)
   if bytes.len == 0 {
     return Said(-1, "", "")
@@ -159,14 +159,14 @@ offer fun StartWith(command: text, input: text) -> Said uses unsafe {
 }
 
 /// Whether `command` exists and ran without complaint.
-offer fun Works(command: text) -> bool uses unsafe {
+offer fun Works(command: text) -> bool uses io, unsafe {
   return Start(command).code == 0
 }
 
 // ------------------------------------------------------------- tests ---
 
 @Test
-fun CollectsWhatAProgramSaid() -> bool uses unsafe {
+fun CollectsWhatAProgramSaid() -> bool uses io, unsafe {
   if System() == "windows" {
     const said = Start("cmd /c echo hello from the child")
     const failed = Start("cmd /c exit 3")
@@ -180,7 +180,7 @@ fun CollectsWhatAProgramSaid() -> bool uses unsafe {
 }
 
 @Test
-fun WritesToAProgramsInput() -> bool uses unsafe {
+fun WritesToAProgramsInput() -> bool uses io, unsafe {
   // `cat` gives back whatever it was given, which is the shortest round
   // trip through a pipe there is.
   if System() == "windows" {
@@ -193,7 +193,7 @@ fun WritesToAProgramsInput() -> bool uses unsafe {
 }
 
 @Test
-fun KeepsQuotedWordsWhole() -> bool uses unsafe {
+fun KeepsQuotedWordsWhole() -> bool uses io, unsafe {
   // One argument with a blank in it, which is what the quoting is for.
   if System() == "windows" {
     const found = StartWith(
@@ -219,7 +219,7 @@ extern "C" fun wolang_spawn_in(
     out_written: *mut u64,
     errors: *mut u8,
     errors_room: u64,
-    errors_written: *mut u64) -> s32
+    errors_written: *mut u64) -> s32 uses io
 
 /// Everything a caller may say about how a program runs.
 ///
@@ -263,7 +263,7 @@ offer fun WithVariable(run: Command, name: text, value: text) -> Command uses un
 }
 
 /// Runs what the `Command` describes.
-offer fun StartCommand(run: Command) -> Said uses unsafe {
+offer fun StartCommand(run: Command) -> Said uses io, unsafe {
   const command = Bytes(run.command)
   if command.len == 0 {
     return Said(-1, "", "")
@@ -321,7 +321,7 @@ offer fun StartCommand(run: Command) -> Said uses unsafe {
 }
 
 @Test
-fun RunsSomewhereWithSomething() -> bool uses unsafe {
+fun RunsSomewhereWithSomething() -> bool uses io, unsafe {
   // `pwd` in a directory that is not this one, and a variable the
   // child can see and this process cannot.
   if System() == "windows" {

@@ -25,17 +25,17 @@ need std.fs.{Remove, Rename, SizeOf, TempName}
 need std.mem.{ArrayNew, Free}
 need std.text.{Builder, Bytes, BuilderNew, Length, TextFromRaw}
 
-extern "C" fun wolang_file_open(path: *u8, length: u64, writable: s32) -> s32
+extern "C" fun wolang_file_open(path: *u8, length: u64, writable: s32) -> s32 uses io
 extern "C" fun wolang_file_read_at(
     handle: s32,
     offset: s64,
     into: *mut u8,
-    count: u64) -> s64
-extern "C" fun wolang_file_append(handle: s32, bytes: *u8, count: u64) -> s64
-extern "C" fun wolang_file_size(handle: s32) -> s64
-extern "C" fun wolang_file_sync(handle: s32) -> s32
-extern "C" fun wolang_file_truncate(handle: s32, size: s64) -> s32
-extern "C" fun wolang_file_close(handle: s32) -> s32
+    count: u64) -> s64 uses io
+extern "C" fun wolang_file_append(handle: s32, bytes: *u8, count: u64) -> s64 uses io
+extern "C" fun wolang_file_size(handle: s32) -> s64 uses io
+extern "C" fun wolang_file_sync(handle: s32) -> s32 uses io
+extern "C" fun wolang_file_truncate(handle: s32, size: s64) -> s32 uses io
+extern "C" fun wolang_file_close(handle: s32) -> s32 uses io
 
 /// What a store that cannot be opened or read answers with.
 offer error Unreadable
@@ -375,7 +375,7 @@ fun Written(key: text, value: text, gone: bool) -> text uses unsafe {
 }
 
 /// Opens the store at `path`, making it when it is not there.
-offer fun Open(path: text) -> Store! uses unsafe {
+offer fun Open(path: text) -> Store! uses io, unsafe {
   const bytes = Bytes(path)
   if bytes.len == 0 {
     return Unreadable
@@ -399,7 +399,7 @@ offer fun Open(path: text) -> Store! uses unsafe {
 /// an append left exactly that, and everything before it is still good.
 /// The file is truncated there, so the next append is not written after
 /// a hole.
-fun Replay(store: &mut Store) -> bool uses unsafe {
+fun Replay(store: &mut Store) -> bool uses io, unsafe {
   const size = wolang_file_size(store.handle)
   if size < 0 {
     return false
@@ -476,7 +476,7 @@ fun Replay(store: &mut Store) -> bool uses unsafe {
 }
 
 /// Closes the store. Reading or writing after this answers nothing.
-offer fun Close(store: &mut Store) uses unsafe {
+offer fun Close(store: &mut Store) uses io, unsafe {
   if store.handle >= 0 {
     const _closed = wolang_file_close(store.handle)
     store.handle = -1
@@ -486,7 +486,7 @@ offer fun Close(store: &mut Store) uses unsafe {
 // ------------------------------------------------------------- tests ---
 
 @Test
-fun KeepsWhatItWasGiven() -> bool uses unsafe {
+fun KeepsWhatItWasGiven() -> bool uses io, unsafe {
   const path = TempName("wolang-store") + ".db"
   match Open(path) {
     Ok(store) => {
@@ -512,7 +512,7 @@ fun KeepsWhatItWasGiven() -> bool uses unsafe {
 }
 
 @Test
-fun SurvivesBeingClosedAndOpened() -> bool uses unsafe {
+fun SurvivesBeingClosedAndOpened() -> bool uses io, unsafe {
   const path = TempName("wolang-store") + ".db"
   match Open(path) {
     Ok(store) => {
@@ -542,7 +542,7 @@ fun SurvivesBeingClosedAndOpened() -> bool uses unsafe {
 }
 
 @Test
-fun WalksInOrder() -> bool uses unsafe {
+fun WalksInOrder() -> bool uses io, unsafe {
   const path = TempName("wolang-store") + ".db"
   match Open(path) {
     Ok(store) => {
@@ -566,7 +566,7 @@ fun WalksInOrder() -> bool uses unsafe {
 }
 
 @Test
-fun ReclaimsWhatIsWasted() -> bool uses unsafe {
+fun ReclaimsWhatIsWasted() -> bool uses io, unsafe {
   const path = TempName("wolang-store") + ".db"
   match Open(path) {
     Ok(store) => {

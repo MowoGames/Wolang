@@ -74,7 +74,7 @@ var running: App = App(
     Layers(ListNew<Before>(), ListNew<After>()),
     Limits(1048576, 16384, true))
 
-fun Handle(request: Request) -> Response uses io, unsafe {
+fun Handle(request: Request) -> Response uses io, time, unsafe {
   return Through(&running.layers, request, Routed)
 }
 
@@ -88,7 +88,7 @@ fun Routed(request: Request) -> Response uses io, unsafe {
 /// entry point says what it serves.
 ///
 /// `most` connections at once, each with a buffer of its own.
-offer fun ServeApp(app: App, port: int, most: int) -> s32 uses io, unsafe {
+offer fun ServeApp(app: App, port: int, most: int) -> s32 uses io, net, time, unsafe {
   running = app
   At(Level.Info, "serving on port {port}")
   return RunServer(port, most, Handle, app.limits)
@@ -100,7 +100,7 @@ offer fun ServeApp(app: App, port: int, most: int) -> s32 uses io, unsafe {
 /// What a program that has not decided anything yet should call, because
 /// every one of those is something a server wants and none of them is
 /// something a handler should have to remember.
-offer fun ServeWithDefaults(app: App, port: int, most: int) -> s32 uses io, unsafe {
+offer fun ServeWithDefaults(app: App, port: int, most: int) -> s32 uses io, net, time, unsafe {
   var held = app
   held.layers.Use(Timing)
   held.layers.Use(Preflight)
@@ -117,7 +117,7 @@ offer fun ServeWithDefaults(app: App, port: int, most: int) -> s32 uses io, unsa
 var serving_port: int = 0
 var serving_most: int = 256
 
-fun ServeOneThread() uses io, unsafe {
+fun ServeOneThread() uses io, net, time, unsafe {
   // One listener per thread, on the same port: the kernel spreads
   // connections across them, so no two threads wake for the same one.
   const listener = ListenShared(serving_port, 512)
@@ -135,7 +135,7 @@ fun ServeOneThread() uses io, unsafe {
 /// sharing it across threads, and whether that is safe is the program's
 /// business -- a counter wants `std.thread.AtomicAdd` and a table wants
 /// a `Mutex` (D135).
-offer fun ServeMany(app: App, port: int, most: int, threads: int) -> s32 uses io, unsafe {
+offer fun ServeMany(app: App, port: int, most: int, threads: int) -> s32 uses io, net, time, unsafe {
   running = app
   serving_port = port
   serving_most = most
@@ -239,7 +239,7 @@ fun MountsOneRouterInsideAnother() -> bool uses io, unsafe {
 }
 
 @Test
-fun RunsLayersInAnApplication() -> bool uses io, unsafe {
+fun RunsLayersInAnApplication() -> bool uses io, time, unsafe {
   var app = AppNew()
   app.Get("/health", Greet)
   app.Then(SecurityHeaders)

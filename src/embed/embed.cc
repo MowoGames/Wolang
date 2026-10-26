@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "wolang/abi/layout.h"
@@ -179,6 +180,8 @@ struct WolangVm {
   std::shared_ptr<DebugLink> debug;
   // What the last reload could not carry over, one line each.
   std::string notes;
+  // The packages loaded as mods, and what each was granted (D217).
+  std::vector<std::pair<std::string, std::vector<std::string>>> sandboxes;
 };
 
 namespace {
@@ -585,6 +588,46 @@ void wolang_vm_destroy(WolangVm* vm) {
   delete vm;
 }
 
+// The package |directory| holds, among those loaded.
+static wolang::PackageId PackageAt(WolangVm* vm, const std::string& directory) {
+  std::error_code failed;
+  const std::filesystem::path wanted = std::filesystem::weakly_canonical(directory, failed);
+  for (size_t i = 0; i < vm->database.package_count(); ++i) {
+    const wolang::PackageId id{static_cast<uint32_t>(i)};
+    const wolang::Package* package = vm->database.GetPackage(id);
+    if (package != nullptr && std::filesystem::weakly_canonical(package->directory, failed) == wanted) {
+      return id;
+    }
+  }
+  return wolang::PackageId{};
+}
+
+int32_t wolang_vm_load_mod(WolangVm* vm, const char* path, const char* capabilities) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || path == nullptr || !wolang::IsPackageDirectory(path)) {
+    if (vm != nullptr) {
+      vm->errors = "wolang: a mod is a package directory\n";
+      vm->ok = false;
+    }
+    return 1;
+  }
+  std::vector<std::string> granted;
+  std::string list = capabilities != nullptr ? capabilities : "";
+  size_t start = 0;
+  while (start <= list.size()) {
+    const size_t comma = std::min(list.find(',', start), list.size());
+    std::string name = list.substr(start, comma - start);
+    name.erase(0, name.find_first_not_of(" \t"));
+    name.erase(name.find_last_not_of(" \t") + 1);
+    if (!name.empty()) {
+      granted.push_back(name);
+    }
+    start = comma + 1;
+  }
+  vm->sandboxes.emplace_back(path, granted);
+  return wolang_vm_load(vm, path);
+}
+
 int32_t wolang_vm_load(WolangVm* vm, const char* path) {
   const VmTurn turn(vm);
   if (vm == nullptr || path == nullptr) {
@@ -599,6 +642,11 @@ int32_t wolang_vm_load(WolangVm* vm, const char* path) {
       }
       vm->ok = false;
       return 1;
+    }
+    // A mod's grant is the host's, and it is applied before anything is
+    // checked, every time the package is loaded -- a reload included.
+    for (const std::pair<std::string, std::vector<std::string>>& sandbox : vm->sandboxes) {
+      vm->database.Restrict(PackageAt(vm, sandbox.first), sandbox.second);
     }
     for (const Module& module : vm->database.modules()) {
       for (FileId file : module.files) {
@@ -1623,6 +1671,7 @@ int32_t wolang_vm_reload(WolangVm* vm) {
   const uint64_t steps = vm->steps;
   const bool allow_compiled = vm->allow_compiled;
   const bool initialize = vm->initialize;
+  const std::vector<std::pair<std::string, std::vector<std::string>>> sandboxes = vm->sandboxes;
 
   // A fresh database, because a query cache remembers what the files
   // said: reloading is loading again, not re-asking.
@@ -1635,6 +1684,7 @@ int32_t wolang_vm_reload(WolangVm* vm) {
   vm->steps = steps;
   vm->allow_compiled = allow_compiled;
   vm->initialize = initialize;
+  vm->sandboxes = sandboxes;
   graveyard->push_back(std::move(retired));
 
   const wolang::runtime::GlobalSpaceScope entered(vm->globals.get());

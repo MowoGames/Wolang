@@ -11,21 +11,21 @@
 need std.mem.{ArrayNew, Free}
 need std.text.{BuilderNew, Bytes}
 
-extern "C" fun wolang_socket_open() -> s64
-extern "C" fun wolang_socket_connect(socket: s64, address: u32, port: u32) -> s32
+extern "C" fun wolang_socket_open() -> s64 uses net
+extern "C" fun wolang_socket_connect(socket: s64, address: u32, port: u32) -> s32 uses net
 extern "C" fun wolang_socket_listen(
     socket: s64,
     address: u32,
     port: u32,
-    backlog: s32) -> s32
-extern "C" fun wolang_socket_accept(socket: s64) -> s64
-extern "C" fun wolang_socket_send(socket: s64, bytes: *u8, count: s64) -> s64
-extern "C" fun wolang_socket_receive(socket: s64, bytes: *mut u8, room: s64) -> s64
-extern "C" fun wolang_socket_close(socket: s64) -> s32
-extern "C" fun wolang_socket_reuse(socket: s64, on: s32) -> s32
-extern "C" fun wolang_socket_nodelay(socket: s64, on: s32) -> s32
-extern "C" fun wolang_socket_blocking(socket: s64, on: s32) -> s32
-extern "C" fun wolang_resolve(host: *u8, length: u64, out: *mut u32) -> s32
+    backlog: s32) -> s32 uses net
+extern "C" fun wolang_socket_accept(socket: s64) -> s64 uses net
+extern "C" fun wolang_socket_send(socket: s64, bytes: *u8, count: s64) -> s64 uses net
+extern "C" fun wolang_socket_receive(socket: s64, bytes: *mut u8, room: s64) -> s64 uses net
+extern "C" fun wolang_socket_close(socket: s64) -> s32 uses net
+extern "C" fun wolang_socket_reuse(socket: s64, on: s32) -> s32 uses net
+extern "C" fun wolang_socket_nodelay(socket: s64, on: s32) -> s32 uses net
+extern "C" fun wolang_socket_blocking(socket: s64, on: s32) -> s32 uses net
+extern "C" fun wolang_resolve(host: *u8, length: u64, out: *mut u32) -> s32 uses net
 
 /// One connection, open until it is closed.
 offer class Socket {
@@ -181,7 +181,7 @@ offer fun ParseAddress(host: text) -> s64? uses unsafe {
 ///
 /// A dotted address is read here; a name goes to the system's resolver,
 /// because that is what every other program on the machine uses (D148).
-offer fun Resolve(host: text) -> s64? uses unsafe {
+offer fun Resolve(host: text) -> s64? uses net, unsafe {
   if const number = ParseAddress(host) {
     return number
   }
@@ -197,7 +197,7 @@ offer fun Resolve(host: text) -> s64? uses unsafe {
 }
 
 /// Connects to `host` on `port`. A closed socket when it fails.
-offer fun Connect(host: text, port: int) -> Socket uses unsafe {
+offer fun Connect(host: text, port: int) -> Socket uses net, unsafe {
   const address = Resolve(host)
   if const number = address {
     const fd = wolang_socket_open()
@@ -214,7 +214,7 @@ offer fun Connect(host: text, port: int) -> Socket uses unsafe {
 }
 
 /// A socket listening on `port`, or a closed one.
-offer fun Listen(port: int, backlog: int) -> Socket uses unsafe {
+offer fun Listen(port: int, backlog: int) -> Socket uses net, unsafe {
   const fd = wolang_socket_open()
   if fd < 0 {
     return Socket(-1)
@@ -230,7 +230,7 @@ offer fun Listen(port: int, backlog: int) -> Socket uses unsafe {
 }
 
 /// Waits for a connection on a listening socket.
-offer fun Accept(listener: Socket) -> Socket uses unsafe {
+offer fun Accept(listener: Socket) -> Socket uses net, unsafe {
   if !listener.IsOpen() {
     return Socket(-1)
   }
@@ -244,7 +244,7 @@ offer fun Accept(listener: Socket) -> Socket uses unsafe {
 // ------------------------------------------------------------- tests ---
 
 @Test
-fun ResolvesNamesAndNumbers() -> bool uses unsafe {
+fun ResolvesNamesAndNumbers() -> bool uses net, unsafe {
   // `localhost` is the one name every machine answers for, and a dotted
   // address needs no resolver at all.
   const numeric = Resolve("127.0.0.1") ?? 0
@@ -262,7 +262,7 @@ fun ReadsDottedAddresses() -> bool uses unsafe {
 }
 
 @Test
-fun TalksToItself() -> bool uses unsafe {
+fun TalksToItself() -> bool uses net, unsafe {
   // A listener and a client in one program: the loopback is the one
   // network every machine has.
   var listener = Listen(18311, 4)

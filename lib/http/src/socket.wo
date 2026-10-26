@@ -10,21 +10,21 @@
 // Windows, and a language with no conditional compilation cannot write a
 // binding twice (D158).
 
-extern "C" fun wolang_socket_open() -> s64
+extern "C" fun wolang_socket_open() -> s64 uses net
 extern "C" fun wolang_socket_listen(
     socket: s64,
     address: u32,
     port: u32,
-    backlog: s32) -> s32
-extern "C" fun wolang_socket_accept(socket: s64) -> s64
-extern "C" fun wolang_socket_send(socket: s64, bytes: *u8, count: s64) -> s64
-extern "C" fun wolang_socket_receive(socket: s64, bytes: *mut u8, room: s64) -> s64
-extern "C" fun wolang_socket_close(socket: s64) -> s32
-extern "C" fun wolang_socket_reuse(socket: s64, on: s32) -> s32
-extern "C" fun wolang_socket_nodelay(socket: s64, on: s32) -> s32
+    backlog: s32) -> s32 uses net
+extern "C" fun wolang_socket_accept(socket: s64) -> s64 uses net
+extern "C" fun wolang_socket_send(socket: s64, bytes: *u8, count: s64) -> s64 uses net
+extern "C" fun wolang_socket_receive(socket: s64, bytes: *mut u8, room: s64) -> s64 uses net
+extern "C" fun wolang_socket_close(socket: s64) -> s32 uses net
+extern "C" fun wolang_socket_reuse(socket: s64, on: s32) -> s32 uses net
+extern "C" fun wolang_socket_nodelay(socket: s64, on: s32) -> s32 uses net
 
 /// Opens a listening socket on `port`, or a negative number on failure.
-offer fun Listen(port: int, backlog: int) -> s32 uses unsafe {
+offer fun Listen(port: int, backlog: int) -> s32 uses net, unsafe {
   const fd = wolang_socket_open()
   if fd < 0 {
     return -1
@@ -48,12 +48,12 @@ offer fun Listen(port: int, backlog: int) -> s32 uses unsafe {
 /// one listener instead makes every thread wake for every connection
 /// (D135). On a system without it this is one listener, which still
 /// works with one thread.
-offer fun ListenShared(port: int, backlog: int) -> s32 uses unsafe {
+offer fun ListenShared(port: int, backlog: int) -> s32 uses net, unsafe {
   return Listen(port, backlog)
 }
 
 /// Waits for the next connection.
-offer fun Accept(listener: s32) -> s32 uses unsafe {
+offer fun Accept(listener: s32) -> s32 uses net, unsafe {
   const fd = wolang_socket_accept(listener as s64)
   if fd >= 0 {
     // Send what we write when we write it. Without this a small response
@@ -64,20 +64,20 @@ offer fun Accept(listener: s32) -> s32 uses unsafe {
   return fd as s32
 }
 
-offer fun Close(fd: s32) -> s32 uses unsafe {
+offer fun Close(fd: s32) -> s32 uses net, unsafe {
   return wolang_socket_close(fd as s64)
 }
 
 /// Reads into `buffer` and returns how many bytes arrived, or a negative
 /// number. The buffer is the caller's, which is what makes this allocate
 /// nothing per request.
-offer fun Read(fd: s32, buffer: *mut u8, capacity: int) -> int uses unsafe {
+offer fun Read(fd: s32, buffer: *mut u8, capacity: int) -> int uses net, unsafe {
   return wolang_socket_receive(fd as s64, buffer, capacity as s64) as int
 }
 
 /// Writes all of `message`, which may take more than one call: a socket
 /// is allowed to accept part of what it was given.
-offer fun WriteAll(fd: s32, message: text) -> bool uses unsafe {
+offer fun WriteAll(fd: s32, message: text) -> bool uses net, unsafe {
   var sent = 0
   const total = message.len
   while sent < total {

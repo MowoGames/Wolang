@@ -604,6 +604,83 @@ offer fun Tick(delta: int) -> int {
   wolang_vm_destroy(vm);
 }
 
+// A package on disk: a manifest and one source file.
+static std::filesystem::path WritePackage(const std::string& name, const char* manifest_extra, const char* source) {
+  const std::filesystem::path root = std::filesystem::temp_directory_path() / ("wolang_" + name);
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root / "src");
+  const std::string manifest = "[package]\nname = \"" + name + "\"\nsource = \"src\"\n" + manifest_extra;
+  WriteFile(root / "wolang.toml", manifest.c_str());
+  WriteFile(root / "src" / "main.wo", source);
+  return root;
+}
+
+WOLANG_TEST(EmbedTest, AModGetsWhatTheHostGrantsAndNothingMore) {
+  const std::string std_path = std::string(WOLANG_PROJECT_DIR) + "/lib/std";
+  const std::string dependency = "\n[dependencies]\nstd = { path = \"" + std_path + "\" }\n";
+
+  // Reading a file is `io` all the way down now, through `std.fs`.
+  const std::filesystem::path reader = WritePackage("modreader", dependency.c_str(), R"(
+need std.fs
+
+offer fun Peek() -> int uses io {
+  return fs.SizeOf("wolang.toml") as int
+}
+)");
+  WolangVm* granted = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_mod(granted, reader.string().c_str(), "io"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(granted)), "");
+  wolang_vm_destroy(granted);
+
+  WolangVm* denied = wolang_vm_create();
+  WOLANG_EXPECT(wolang_vm_load_mod(denied, reader.string().c_str(), "") != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(denied)).find("E0703") != std::string::npos);
+  wolang_vm_destroy(denied);
+
+  // A manifest that claims more than the host grants gets the host's.
+  const std::string claims = "\n[build]\ncapabilities = \"io, net\"\n" + dependency;
+  const std::filesystem::path greedy = WritePackage("modgreedy", claims.c_str(), R"(
+need std.fs
+
+offer fun Peek() -> int uses io {
+  return fs.SizeOf("wolang.toml") as int
+}
+)");
+  WolangVm* narrowed = wolang_vm_create();
+  WOLANG_EXPECT(wolang_vm_load_mod(narrowed, greedy.string().c_str(), "time") != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(narrowed)).find("E0703") != std::string::npos);
+  wolang_vm_destroy(narrowed);
+
+  // No door of its own: an `extern`, even one never called, and `unsafe`.
+  const std::filesystem::path door = WritePackage("moddoor", "", R"(
+extern class wolang {
+  fun system(command: *u8) -> s32
+}
+
+offer fun Nothing() -> int {
+  return 0
+}
+)");
+  WolangVm* sandboxed = wolang_vm_create();
+  WOLANG_EXPECT(wolang_vm_load_mod(sandboxed, door.string().c_str(), "io") != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(sandboxed)).find("E0705") != std::string::npos);
+  wolang_vm_destroy(sandboxed);
+
+  const std::filesystem::path raw = WritePackage("modraw", "", R"(
+offer fun Poke(address: u64) -> u8 uses unsafe {
+  return *(address as *u8)
+}
+)");
+  WolangVm* poking = wolang_vm_create();
+  WOLANG_EXPECT(wolang_vm_load_mod(poking, raw.string().c_str(), "io") != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(poking)).find("unsafe") != std::string::npos);
+  wolang_vm_destroy(poking);
+
+  for (const std::filesystem::path& root : {reader, greedy, door, raw}) {
+    std::filesystem::remove_all(root);
+  }
+}
+
 WOLANG_TEST(EmbedTest, CallsBackIntoTheHost) {
   WolangVm* vm = wolang_vm_create();
   WOLANG_EXPECT_EQ(

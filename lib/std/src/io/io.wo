@@ -10,7 +10,7 @@
 // re-exported, which is what lets a safe console be built over an unsafe
 // primitive. Nothing above here is unsafe.
 
-extern "C" fun wolang_fd_write(fd: s32, buffer: *u8, count: u64) -> s64
+extern "C" fun wolang_fd_write(fd: s32, buffer: *u8, count: u64) -> s64 uses io
 
 /// Writes `text` to standard output, with no line break.
 offer fun Write(message: text) uses io, unsafe {
@@ -38,7 +38,7 @@ offer fun Print(message: text) uses io {
 need std.mem.{ArrayNew, Free}
 need std.text.{Builder, BuilderNew}
 
-extern "C" fun wolang_fd_read(fd: s32, buffer: *mut u8, count: u64) -> s64
+extern "C" fun wolang_fd_read(fd: s32, buffer: *mut u8, count: u64) -> s64 uses io
 
 /// Writes `message` to standard error, with a line break.
 ///

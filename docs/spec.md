@@ -665,7 +665,10 @@ unrestricted; `capabilities = ""` sandboxes it completely. `unsafe = "deny"`
 is the same idea for one effect, reported as `E0801`.
 
 This is what makes mods safe to run: a mod package is granted what it needs,
-and the compiler refuses anything else before a line of it executes.
+and the compiler refuses anything else before a line of it executes. A
+sandboxed package may not declare `extern` (`E0705`), and an `extern`
+declaration states the capability its primitive needs — `uses io`, `uses
+net` — which, unlike `unsafe`, a wrapper that declares it does not absorb.
 
 ## 6. Units and dimensions — normative
 
@@ -1067,7 +1070,7 @@ fun Hello(request: Request) -> Response uses unsafe {
   return Ok("hello, {Query(&request, "name", "world")}\n")
 }
 
-fun main() uses io, unsafe {
+fun main() uses io, net, time, unsafe {
   var router = RouterNew()
   router.Get("/users/:id", User)
   router.Get("/hello", Hello)

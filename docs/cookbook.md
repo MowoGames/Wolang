@@ -38,7 +38,7 @@ fun User(request: Request) -> Response uses unsafe {
   return JsonOf(user)
 }
 
-fun main() uses io, unsafe {
+fun main() uses io, net, time, unsafe {
   var app = AppNew()
   app.Get("/health", Health)
   app.Get("/users/:id", User)
@@ -61,7 +61,7 @@ need std.doc.{AsText, Member, Null}
 need std.io.{Print}
 need std.json.{Parse}
 
-fun main() uses io, unsafe {
+fun main() uses io, net, time, unsafe {
   // The simple case.
   match Fetch("https://example.com/") {
     Ok(reply) => {
@@ -107,7 +107,7 @@ need std.yaml
 // Two formats whose `Parse` is called the same thing: a module brought
 // in without a name list is reached through its own name, which is how
 // a program uses both at once.
-fun Load(path: text) -> Value uses unsafe {
+fun Load(path: text) -> Value uses io, unsafe {
   const source = ReadText(path, 1048576)
   const kind = Extension(path)
   if kind == "toml" {

@@ -72,7 +72,7 @@ offer const kMostBytes: int = 8388608
 /// `404` when it is not there, which is the same answer as "you may not
 /// have it": a server that says "no such file" for one path and
 /// "forbidden" for another has told the asker which files exist.
-offer fun ServeFile(path: text) -> Response uses unsafe {
+offer fun ServeFile(path: text) -> Response uses io, unsafe {
   const bytes = ReadAll(path, kMostBytes)
   if bytes.len == 0 {
     // An empty file and a missing one read the same here. A directory
@@ -110,7 +110,7 @@ offer fun IsServable(relative: text) -> bool uses unsafe {
 /// request path with `prefix` removed. Everything about it is checked:
 /// the escapes are read back, the dots are worked out, dotfiles are
 /// refused, and the answer has to still be inside `root`.
-offer fun ServeUnder(root: text, request: &Request, prefix: text) -> Response uses unsafe {
+offer fun ServeUnder(root: text, request: &Request, prefix: text) -> Response uses io, unsafe {
   var wanted = Param(request, "path", "")
   if Length(wanted) == 0 {
     wanted = request.path
@@ -137,7 +137,7 @@ offer fun ServeUnder(root: text, request: &Request, prefix: text) -> Response us
 
 /// The one file a single-page application wants for every path it does
 /// not have a file for.
-offer fun ServeOr(root: text, request: &Request, prefix: text, fallback: text) -> Response uses unsafe {
+offer fun ServeOr(root: text, request: &Request, prefix: text, fallback: text) -> Response uses io, unsafe {
   const answer = ServeUnder(root, request, prefix)
   if answer.status == 200 {
     return answer
@@ -161,7 +161,7 @@ fun RefusesWhatItShould() -> bool uses unsafe {
 }
 
 @Test
-fun StaysInsideTheRoot() -> bool uses unsafe {
+fun StaysInsideTheRoot() -> bool uses io, unsafe {
   var request = RequestNew()
   request.path = "/static/../../etc/passwd"
   const refused = ServeUnder("/var/www", &request, "/static/")
@@ -174,7 +174,7 @@ fun StaysInsideTheRoot() -> bool uses unsafe {
 }
 
 @Test
-fun ReadsAFileThatIsThere() -> bool uses unsafe {
+fun ReadsAFileThatIsThere() -> bool uses io, unsafe {
   // This source file, served by the package that holds it.
   const answer = ServeFile("lib/http/src/files.wo")
   const missing = ServeFile("lib/http/src/nothing.wo")

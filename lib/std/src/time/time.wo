@@ -17,9 +17,9 @@ offer struct Instant {
 }
 
 // Two 64-bit numbers, which is the shape the runtime writes.
-extern "C" fun wolang_clock(clock: s32, out: *Instant) -> s32
+extern "C" fun wolang_clock(clock: s32, out: *Instant) -> s32 uses time
 
-fun Read(clock: int) -> Instant uses unsafe {
+fun Read(clock: int) -> Instant uses time, unsafe {
   var spec = Instant(0, 0)
   const _status = wolang_clock(clock as s32, &spec)
   return spec
@@ -29,12 +29,12 @@ fun Read(clock: int) -> Instant uses unsafe {
 ///
 /// Monotonic: the difference between two of these is a duration, and it
 /// is never negative no matter what happens to the system clock.
-offer fun Now() -> Instant uses unsafe {
+offer fun Now() -> Instant uses time, unsafe {
   return Read(kMonotonic)
 }
 
 /// What the system thinks the time is, as seconds since the epoch.
-offer fun WallClock() -> Instant uses unsafe {
+offer fun WallClock() -> Instant uses time, unsafe {
   return Read(kRealtime)
 }
 
@@ -52,7 +52,7 @@ offer fun ElapsedMillis(from: Instant, to: Instant) -> s64 {
 // ------------------------------------------------------------- tests ---
 
 @Test
-fun TimeMovesForward() -> bool uses unsafe {
+fun TimeMovesForward() -> bool uses time, unsafe {
   const first = Now()
   // Enough work to take measurable time, and small enough numbers that
   // the sum cannot overflow -- arithmetic traps here rather than wrapping.
@@ -69,7 +69,7 @@ fun TimeMovesForward() -> bool uses unsafe {
 }
 
 @Test
-fun TheWallClockIsPastTheEpoch() -> bool uses unsafe {
+fun TheWallClockIsPastTheEpoch() -> bool uses time, unsafe {
   // Any machine running this is well past 2020, which is 1577836800.
   return WallClock().seconds > 1577836800
 }
@@ -277,20 +277,20 @@ fun WritesTheDateHttpWants() -> bool uses unsafe {
 // agrees with. So these ask the system rather than shipping a table
 // that would be wrong by the time anyone ran it (D176).
 
-extern "C" fun wolang_zone_offset(seconds: s64, zone: *u8, length: u64) -> s32
+extern "C" fun wolang_zone_offset(seconds: s64, zone: *u8, length: u64) -> s32 uses time
 extern "C" fun wolang_zone_name(
     seconds: s64,
     zone: *u8,
     length: u64,
     into: *mut u8,
-    room: u64) -> s32
+    room: u64) -> s32 uses time
 
 /// How many seconds `zone` is ahead of UTC at that moment.
 ///
 /// The moment matters: half the world moves its clocks twice a year.
 /// An empty zone is the machine's own. `"Europe/Kyiv"`, `"UTC"`,
 /// `"America/New_York"` -- whatever the system's database holds.
-offer fun ZoneOffset(seconds: s64, zone: text) -> int uses unsafe {
+offer fun ZoneOffset(seconds: s64, zone: text) -> int uses time, unsafe {
   const bytes = Bytes(zone)
   if bytes.len == 0 {
     return wolang_zone_offset(seconds, 0 as *u8, 0) as int
@@ -299,7 +299,7 @@ offer fun ZoneOffset(seconds: s64, zone: text) -> int uses unsafe {
 }
 
 /// What the zone is called at that moment: `CET`, `PDT`, `EEST`.
-offer fun ZoneName(seconds: s64, zone: text) -> text uses unsafe {
+offer fun ZoneName(seconds: s64, zone: text) -> text uses time, unsafe {
   const bytes = Bytes(zone)
   var room = ArrayNew<u8>(64)
   var written: s32 = 0
@@ -327,7 +327,7 @@ offer fun ZoneName(seconds: s64, zone: text) -> text uses unsafe {
 ///
 /// What a program shows a person: the moment is the same, the numbers
 /// are theirs.
-offer fun CivilIn(seconds: s64, zone: text) -> DateTime uses unsafe {
+offer fun CivilIn(seconds: s64, zone: text) -> DateTime uses time, unsafe {
   return Civil(seconds + ZoneOffset(seconds, zone) as s64)
 }
 
@@ -336,7 +336,7 @@ offer fun CivilIn(seconds: s64, zone: text) -> DateTime uses unsafe {
 /// Two passes: the offset depends on the moment, and the moment is what
 /// is being worked out. The second pass is what gets the hour after a
 /// clock change right.
-offer fun EpochIn(moment: DateTime, zone: text) -> s64 uses unsafe {
+offer fun EpochIn(moment: DateTime, zone: text) -> s64 uses time, unsafe {
   const guess = Epoch(moment)
   const first = ZoneOffset(guess, zone) as s64
   const second = ZoneOffset(guess - first, zone) as s64
@@ -514,7 +514,7 @@ fun ReadsAndWritesIso() -> bool uses unsafe {
 }
 
 @Test
-fun KnowsAboutZones() -> bool uses unsafe {
+fun KnowsAboutZones() -> bool uses time, unsafe {
   // A moment in January and one in July: a zone with summer time is
   // not the same number of hours ahead in both.
   const winter = ParseIso("2026-01-15T12:00:00Z") ?? 0

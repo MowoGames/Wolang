@@ -156,16 +156,28 @@ wolang_vm_object_release(vm, enemy);
 `wolang_vm_object_retain` takes another reference, for a host that keeps
 the object in two places.
 
-## What this is not
+## Mods
 
-A sandbox. A Wolang program can declare `extern "C"` and reach anything
-the process can, the same way the standard library does: `std.fs` is
-`open` and `read`, and nothing stops a script from declaring them
-itself. The step limit bounds *time*, not reach.
+A script the host wrote is trusted: it can declare `extern "C"` and reach
+anything the process can, the same way the standard library does. A mod
+is loaded differently:
 
-A host that runs code it does not trust should run it in a process it can
-kill. Capability checks — `capabilities = ""` in a package's manifest —
-are the language's own answer and they are not complete yet.
+```c
+wolang_vm_load(vm, "scripts/engine_api");          // the host's own, trusted
+wolang_vm_load_mod(vm, "mods/better_turrets", "World, Audio");
+```
+
+The mod is granted those capabilities and nothing else, whatever its own
+manifest says. It may not use `unsafe` or declare `extern` (`E0705`), so
+the only doors out are the ones the trusted packages offer — and each of
+those states the capability it needs, down to the standard library's
+`std.fs.Open`, which is `io`. A mod that reaches past its grant does not
+load: `E0703` names the function and the capability (D217).
+
+The grant bounds *reach*. `wolang_vm_set_step_limit` bounds *time*, for a
+mod that loops forever; together they are what a mod sandbox is. Memory a
+mod allocates is not bounded, and a host that runs mods from strangers
+should still give them a vm of their own.
 
 ## Threads
 

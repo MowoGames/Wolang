@@ -2779,3 +2779,28 @@ and while an editor is attached every call into that vm runs on the
 interpreter; when it goes, the compiled tier is back. The session sits
 behind a transport it does not know about, which is how one class serves
 a pipe, a socket and a unit test.
+
+**D217. A capability is stated where the door is, and a mod's grant is the
+host's.** `capabilities = ""` looked like a sandbox and was not one.
+`unsafe` is absorbed by a declaration that states it (the rule that makes
+a safe wrapper possible), and `std.fs.Open` stated `uses unsafe` and
+nothing else -- so a package granted nothing could open files through it,
+and the compiler said nothing. Reviewing two hundred signatures by hand
+would have fixed it until the next one.
+
+The capability is stated on the `extern` declaration instead: the
+primitive that touches the world says which part, `wolang_fd_read` `uses
+io`, `wolang_socket_connect` `uses net`, `wolang_clock` `uses time`,
+`wolang_entropy` `uses rand`. `unsafe` is still absorbed and these are
+not, so they propagate through every wrapper, and the compiler found the
+two hundred signatures that had to say so (`E0701`, `E0704`). A new
+`std` function cannot forget, because it would not compile.
+
+The other half is who writes the grant. A mod's manifest is the mod's,
+so `wolang_vm_load_mod` applies the host's grant to the package before it
+is checked -- narrowed by the manifest when it lists capabilities, never
+widened -- with `unsafe` denied and the `[link]` table dropped. And a
+sandboxed package cannot declare `extern` (`E0705`): calling one would
+need `unsafe`, but an `extern class` method has no body and no effects of
+its own, so `extern class wolang { fun system(...) }` bound
+`wolang_system` without either.

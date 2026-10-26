@@ -109,8 +109,19 @@ capabilities = "io"
 ```
 
 Omitting the key leaves a package unrestricted. `capabilities = ""` grants
-nothing, which is the setting a mod loaded from a player's machine gets.
-`unsafe = "deny"` is the same idea narrowed to one effect.
+nothing. `unsafe = "deny"` is the same idea narrowed to one effect.
+
+A sandboxed package cannot declare `extern` at all (`E0705`): it reaches
+the outside world through packages that are not sandboxed, and every one
+of those says which capability each door needs. The standard library's
+`extern` declarations carry it — `wolang_fd_read` is `uses io`, a socket
+is `uses net`, the clock is `uses time` — so `std.fs.Open` is `io` to
+whoever calls it, however many safe wrappers sit in between.
+
+A mod does not get to write its own grant. A host loads one with
+`wolang_vm_load_mod(vm, path, "io")`: the capabilities are the host's, the
+mod's manifest can narrow them and cannot widen them, `unsafe` is denied
+and its `[link]` table is dropped (D217).
 
 ## Checking without a package
 

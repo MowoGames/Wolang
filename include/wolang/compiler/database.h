@@ -167,6 +167,11 @@ class Database {
                        std::string directory,
                        Manifest manifest);
   const Package* GetPackage(PackageId package) const;
+  // Sandboxes |package| whatever its own manifest says: the capabilities
+  // the host grants, narrowed by the manifest's when it lists some, no
+  // `unsafe`, and no `[link]` table (D217). A mod writes its manifest; the
+  // host that loads it decides what it may do.
+  void Restrict(PackageId package, const std::vector<std::string>& granted);
   size_t package_count() const { return packages_.size(); }
 
   ModuleId AddModule(std::string name,

@@ -437,7 +437,7 @@ Also `Open`/`Create` for a kept-open file, `KindOf`, `SizeOf`,
 need std.io.{Print}
 need std.net.{Accept, Connect, Listen, Resolve}
 
-fun main() uses io, unsafe {
+fun main() uses io, net, unsafe {
   if const address = Resolve("example.com") {
     Print("resolved to {address}")
   }
@@ -498,7 +498,7 @@ need std.io.{Print}
 need std.time.{Ago, Civil, CivilIn, Elapsed, Iso, IsoInstant, Now,
                ParseIso, WallClock, ZoneOffset}
 
-fun main() uses io, unsafe {
+fun main() uses io, time, unsafe {
   const started = Now()
   const moment = WallClock().seconds
   Print(IsoInstant(moment))                     // 2026-10-15T18:09:23Z
@@ -518,7 +518,7 @@ need std.crypto.{Hex, Hmac, SameDigest, Sha256Of, Token, Uuid, UuidAt}
 need std.io.{Print}
 need std.text.{Bytes}
 
-fun main() uses io, unsafe {
+fun main() uses io, rand, unsafe {
   Print(Hex(Sha256Of("abc")))        // ba7816bf...
   const signature = Hmac(Bytes("key"), Bytes("message"))
   Print("{SameDigest(signature, signature)}")
@@ -566,7 +566,7 @@ What it writes, the system's `gzip` reads, and the other way round.
 need std.io.{Print}
 need std.random.{RandomFromClock, RandomNew}
 
-fun main() uses io, unsafe {
+fun main() uses io, time, unsafe {
   var rng = RandomNew(42)     // the same seed is the same sequence
   Print("{rng.Next() % 6 + 1}")
   Print("{rng.Between(1, 100)}")
@@ -581,7 +581,7 @@ fun main() uses io, unsafe {
 need std.log.{Debug, Error, Info, Level, SetLevel, SetTimestamps,
               Trace, Warning}
 
-fun main() uses io, unsafe {
+fun main() uses io, time, unsafe {
   SetLevel(Level.Debug)
   SetTimestamps(true)
   Trace("the finest level, usually off")
@@ -647,7 +647,7 @@ need http.{AppNew, Fetch, Ok, Request, Response, ServeWithDefaults}
 
 fun Health(_request: Request) -> Response => Ok("ok\n")
 
-fun main() uses io, unsafe {
+fun main() uses io, net, time, unsafe {
   var app = AppNew()
   app.Get("/health", Health)
   const _code = ServeWithDefaults(app, 8080, 512)

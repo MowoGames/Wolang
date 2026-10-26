@@ -253,6 +253,14 @@ void wolang_vm_set_compiled(WolangVm* vm, int32_t allowed);
 // would undo everything the session did (D140).
 void wolang_vm_set_initialize(WolangVm* vm, int32_t initialize);
 
+// Loads a package someone else wrote -- a mod -- and grants it
+// |capabilities| and nothing more, spelled the way a `uses` clause is:
+// `"io"`, `"World, Audio"`, or `""` for nothing at all. Its own manifest
+// can narrow that and cannot widen it. It may not use `unsafe`, declare
+// `extern` (`E0705`) or link anything; it reaches the engine through the
+// packages loaded before it, which the host trusts (D217).
+int32_t wolang_vm_load_mod(WolangVm* vm, const char* path, const char* capabilities);
+
 // ------------------------------------------------------------- debugging ---
 
 // Lets an editor attach to this vm with the Debug Adapter Protocol, over

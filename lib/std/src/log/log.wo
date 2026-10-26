@@ -62,7 +62,7 @@ offer fun SetTimestamps(on: bool) {
 }
 
 /// Writes one line at `level`.
-offer fun At(level: Level, message: text) uses io, unsafe {
+offer fun At(level: Level, message: text) uses io, time, unsafe {
   if !Enabled(level) {
     return
   }
@@ -77,23 +77,23 @@ offer fun At(level: Level, message: text) uses io, unsafe {
   Warn(message)
 }
 
-offer fun Trace(message: text) uses io, unsafe {
+offer fun Trace(message: text) uses io, time, unsafe {
   At(Level.Trace, message)
 }
 
-offer fun Debug(message: text) uses io, unsafe {
+offer fun Debug(message: text) uses io, time, unsafe {
   At(Level.Debug, message)
 }
 
-offer fun Info(message: text) uses io, unsafe {
+offer fun Info(message: text) uses io, time, unsafe {
   At(Level.Info, message)
 }
 
-offer fun Warning(message: text) uses io, unsafe {
+offer fun Warning(message: text) uses io, time, unsafe {
   At(Level.Warning, message)
 }
 
-offer fun Error(message: text) uses io, unsafe {
+offer fun Error(message: text) uses io, time, unsafe {
   At(Level.Error, message)
 }
 
@@ -112,7 +112,7 @@ fun SaysWhatItsLevelAllows() -> bool uses io, unsafe {
 }
 
 @Test
-fun WritesALine() -> bool uses io, unsafe {
+fun WritesALine() -> bool uses io, time, unsafe {
   // It goes to standard error, so the test is that it comes back.
   SetTimestamps(false)
   Info("")
