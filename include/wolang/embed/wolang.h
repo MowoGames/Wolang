@@ -181,7 +181,8 @@ void wolang_vm_set_args(WolangVm* vm, int32_t count, const char* const* args);
 //
 // What an engine wants: a script's `Update` is called every frame, and a
 // name lookup per frame is a string comparison per frame for nothing. A
-// handle is valid until the program is reloaded.
+// handle names the function, so it survives a reload and calls the new
+// code afterwards (D215).
 typedef struct WolangFunction WolangFunction;
 
 WolangFunction* wolang_vm_function(WolangVm* vm, const char* name);
@@ -254,11 +255,20 @@ void wolang_vm_set_initialize(WolangVm* vm, int32_t initialize);
 
 // --------------------------------------------------------------- reloads ---
 
-// Forgets everything and loads |path| again.
+// Loads everything again and keeps what the program had.
 //
 // What hot reloading is: a script changed on disk, and the next frame
-// should run the new one. Handles from before are invalid afterwards.
+// should run the new one with the state the last frame left. A
+// module-level `var` the new program still declares, with the same type,
+// keeps its value -- objects and all. One whose class gained or lost
+// fields keeps the fields that are still there; a `var` or a field whose
+// type changed starts from its new initializer, and `wolang_vm_notes`
+// says which. Function handles stay valid (D215).
 int32_t wolang_vm_reload(WolangVm* vm);
+// What the last reload could not carry over: a `var` whose type changed,
+// a field whose type changed. One line each, empty when everything came
+// across.
+const char* wolang_vm_notes(const WolangVm* vm);
 
 // What was loaded, so a host can watch it for changes: the files of the
 // program, in load order.

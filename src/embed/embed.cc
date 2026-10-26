@@ -35,11 +35,12 @@
 #include "wolang/ir/ir.h"
 #include "wolang/syntax/ast.h"
 #include "wolang/interp/marshal.h"
-#include "wolang/runtime/host.h"
 #include "wolang/runtime/builtins.h"
 #include "wolang/runtime/env.h"
 #include "wolang/runtime/globals.h"
+#include "wolang/runtime/host.h"
 #include "wolang/runtime/scheduler.h"
+#include "wolang/runtime/text.h"
 
 namespace {
 
@@ -72,8 +73,29 @@ struct Callable {
 }  // namespace
 
 // The vm is a C type in the header and this in reality.
+// What a reload leaves behind: the program as it was, kept until the vm
+// goes away. Code built from it is never run again, but values the new
+// program carried over may still point into it -- at a string literal, at
+// an object the old code made (D215).
+struct Retired {
+  std::unique_ptr<Database> database;
+  std::unique_ptr<wolang::interp::ForeignCaller> foreign;
+  std::unique_ptr<wolang::codegen::CompiledModule> compiled;
+  std::shared_ptr<wolang::runtime::GlobalSpace> globals;
+};
+
+// What `wolang_vm_function` hands out: a name, so that it means the same
+// function after a reload as before (D215).
+struct FunctionHandle {
+  WolangVm* vm = nullptr;
+  std::string name;
+};
+
 struct WolangVm {
-  Database database;
+  // Its own allocation, so that a reload can retire it with the code that
+  // was built from it.
+  std::unique_ptr<Database> owned_database = std::make_unique<Database>();
+  Database& database = *owned_database;
   // What was loaded, so a reload can do it again and a host can watch
   // the files for changes. A path, or a name and the source the host
   // gave under it.
@@ -115,6 +137,14 @@ struct WolangVm {
   // same thread may come back in through a host function (D214). Shared,
   // because a reload builds the vm again around the lock it is holding.
   std::shared_ptr<std::recursive_mutex> lock = std::make_shared<std::recursive_mutex>();
+  // The program's module-level `var`s, which belong to this vm and to no
+  // other (D214).
+  std::shared_ptr<wolang::runtime::GlobalSpace> globals{wolang::runtime::GlobalSpaceCreate(), &wolang::runtime::GlobalSpaceDestroy};
+  // These outlive a reload, which builds the vm again around them.
+  std::shared_ptr<std::vector<Retired>> retired = std::make_shared<std::vector<Retired>>();
+  std::shared_ptr<std::deque<FunctionHandle>> handles = std::make_shared<std::deque<FunctionHandle>>();
+  // What the last reload could not carry over, one line each.
+  std::string notes;
 };
 
 namespace {
@@ -451,9 +481,16 @@ WolangValue Unboxed(WolangVm* vm, const wolang::interp::Value& value) {
 
 extern "C" {
 
-static std::unique_lock<std::recursive_mutex> Hold(const WolangVm* vm) {
-  return vm != nullptr ? std::unique_lock<std::recursive_mutex>(*vm->lock) : std::unique_lock<std::recursive_mutex>();
-}
+// A call into a vm: its lock held, and its globals the ones this thread's
+// code reads and writes.
+class VmTurn {
+ public:
+  explicit VmTurn(const WolangVm* vm) : m_Lock(vm != nullptr ? std::unique_lock<std::recursive_mutex>(*vm->lock) : std::unique_lock<std::recursive_mutex>()), m_Space(vm != nullptr ? vm->globals.get() : wolang::runtime::GlobalSpaceCurrent()) {}
+
+ private:
+  std::unique_lock<std::recursive_mutex> m_Lock;
+  wolang::runtime::GlobalSpaceScope m_Space;
+};
 
 WolangValue wolang_void(void) {
   WolangValue value;
@@ -515,7 +552,7 @@ void wolang_vm_destroy(WolangVm* vm) {
 }
 
 int32_t wolang_vm_load(WolangVm* vm, const char* path) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   if (vm == nullptr || path == nullptr) {
     return 1;
   }
@@ -571,7 +608,7 @@ int32_t wolang_vm_load(WolangVm* vm, const char* path) {
 int32_t wolang_vm_load_source(WolangVm* vm,
                               const char* name,
                               const char* source) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   if (vm == nullptr || source == nullptr) {
     return 1;
   }
@@ -629,7 +666,7 @@ int32_t wolang_vm_load_source(WolangVm* vm,
 }
 
 const char* wolang_vm_errors(const WolangVm* vm) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   return vm == nullptr ? "" : vm->errors.c_str();
 }
 
@@ -654,7 +691,7 @@ const char* wolang_vm_function_name(const WolangVm* vm, int32_t index) {
 }
 
 int32_t wolang_vm_bind(WolangVm* vm, const char* symbol, void* function) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   (void)vm;
   if (symbol == nullptr || function == nullptr) {
     return 1;
@@ -666,7 +703,7 @@ int32_t wolang_vm_bind(WolangVm* vm, const char* symbol, void* function) {
 void wolang_vm_set_args(WolangVm* vm,
                         int32_t count,
                         const char* const* args) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   (void)vm;
   wolang::runtime::wolang_args_set(count < 0 ? 0 : count, args);
 }
@@ -750,6 +787,29 @@ static int32_t Invoke(WolangVm* vm, const Callable* entry, const std::vector<wol
   return 0;
 }
 
+// The members an object or a value of |type| stores, in the order its
+// layout counts them -- the root class first -- and whether a class
+// descriptor comes before all of them.
+static std::vector<const wolang::Member*> StoredMembers(const wolang::FileResolution& resolution, TypeId type, bool* header) {
+  std::vector<TypeId> chain;
+  for (TypeId current = type; current.is_valid(); current = resolution.BaseOf(current)) {
+    chain.push_back(current);
+  }
+  std::reverse(chain.begin(), chain.end());
+
+  *header = false;
+  std::vector<const wolang::Member*> stored;
+  for (TypeId current : chain) {
+    for (const wolang::Member& member : resolution.MembersOf(current)) {
+      *header = *header || (member.kind == wolang::MemberKind::kMethod && (member.is_virtual || member.is_override));
+      if (wolang::HasStorage(member.kind)) {
+        stored.push_back(&member);
+      }
+    }
+  }
+  return stored;
+}
+
 static const Callable* FindMember(const WolangVm* vm, const std::string& name) {
   for (auto it = vm->members.rbegin(); it != vm->members.rend(); ++it) {
     if (it->name == name) {
@@ -759,8 +819,20 @@ static const Callable* FindMember(const WolangVm* vm, const std::string& name) {
   return nullptr;
 }
 
+// An object whose last reference just went: its class's `$drop` runs the
+// `deinit` and gives the storage back.
+static int32_t Destroyed(WolangVm* vm, void* object, const std::string& type) {
+  if (const Callable* drop = FindMember(vm, type + "$drop")) {
+    std::vector<wolang::interp::Value> boxed;
+    boxed.push_back(wolang::interp::Value::Int(reinterpret_cast<uint64_t>(object), wolang::IntWidth::k64, /*is_signed=*/false));
+    return Invoke(vm, drop, boxed, nullptr);
+  }
+  wolang::runtime::wolang_object_free(object);
+  return 0;
+}
+
 int32_t wolang_vm_object_retain(WolangVm* vm, WolangValue object) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr) {
     return 1;
   }
@@ -769,7 +841,7 @@ int32_t wolang_vm_object_retain(WolangVm* vm, WolangValue object) {
 }
 
 int32_t wolang_vm_object_release(WolangVm* vm, WolangValue object) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr) {
     return 1;
   }
@@ -777,18 +849,11 @@ int32_t wolang_vm_object_release(WolangVm* vm, WolangValue object) {
     return 0;
   }
 
-  const std::string type(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length));
-  if (const Callable* drop = FindMember(vm, type + "$drop")) {
-    std::vector<wolang::interp::Value> boxed;
-    boxed.push_back(wolang::interp::Value::Int(reinterpret_cast<uint64_t>(object.handle), wolang::IntWidth::k64, /*is_signed=*/false));
-    return Invoke(vm, drop, boxed, nullptr);
-  }
-  wolang::runtime::wolang_object_free(object.handle);
-  return 0;
+  return Destroyed(vm, object.handle, std::string(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length)));
 }
 
 int32_t wolang_vm_object_call(WolangVm* vm, WolangValue object, const char* method, const WolangValue* arguments, int32_t count, WolangValue* out) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   if (vm == nullptr || !vm->ok || object.kind != kWolangObject || object.handle == nullptr || method == nullptr) {
     return 1;
   }
@@ -813,7 +878,7 @@ int32_t wolang_vm_object_call(WolangVm* vm, WolangValue object, const char* meth
 }
 
 int32_t wolang_vm_object_get(WolangVm* vm, WolangValue object, const char* field, WolangValue* out) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr || field == nullptr || out == nullptr) {
     return 1;
   }
@@ -826,42 +891,27 @@ int32_t wolang_vm_object_get(WolangVm* vm, WolangValue object, const char* field
   }
   const wolang::FileResolution& resolution = checked->resolution;
 
-  std::vector<TypeId> chain;
-  for (TypeId current = type; current.is_valid(); current = resolution.BaseOf(current)) {
-    chain.push_back(current);
-  }
-  std::reverse(chain.begin(), chain.end());
   bool header = false;
-  for (TypeId current : chain) {
-    for (const wolang::Member& member : resolution.MembersOf(current)) {
-      header = header || (member.kind == wolang::MemberKind::kMethod && (member.is_virtual || member.is_override));
-    }
-  }
-
+  const std::vector<const wolang::Member*> stored = StoredMembers(resolution, type, &header);
   const wolang::Symbol name = vm->database.interner().Lookup(field);
-  uint32_t index = header ? 1u : 0u;
-  for (TypeId current : chain) {
-    for (const wolang::Member& member : resolution.MembersOf(current)) {
-      if (!wolang::HasStorage(member.kind)) {
-        continue;
-      }
-      if (member.name == name) {
-        wolang::abi::LayoutStore layouts(types, resolution);
-        vm->database.ShareMembers(&layouts);
-        const wolang::abi::Layout& layout = layouts.ObjectOf(type);
-        if (index >= layout.offsets.size()) {
-          return 1;
-        }
-        const auto* bytes = static_cast<const uint8_t*>(object.handle) + layout.offsets[index];
-        const wolang::interp::Value value = wolang::interp::Decode(types, &layouts, bytes, member.type);
-        *out = Unboxed(vm, value);
-        if (types.IsHandle(member.type) && !types.IsOptional(member.type) && value.kind() == wolang::interp::Value::Kind::kInt) {
-          *out = ObjectOf(vm, value.integer(), member.type);
-        }
-        return 0;
-      }
-      ++index;
+  for (size_t i = 0; i < stored.size(); ++i) {
+    if (stored[i]->name != name) {
+      continue;
     }
+    wolang::abi::LayoutStore layouts(types, resolution);
+    vm->database.ShareMembers(&layouts);
+    const wolang::abi::Layout& layout = layouts.ObjectOf(type);
+    const size_t index = i + (header ? 1 : 0);
+    if (index >= layout.offsets.size()) {
+      return 1;
+    }
+    const auto* bytes = static_cast<const uint8_t*>(object.handle) + layout.offsets[index];
+    const wolang::interp::Value value = wolang::interp::Decode(types, &layouts, bytes, stored[i]->type);
+    *out = Unboxed(vm, value);
+    if (types.IsHandle(stored[i]->type) && !types.IsOptional(stored[i]->type) && value.kind() == wolang::interp::Value::Kind::kInt) {
+      *out = ObjectOf(vm, value.integer(), stored[i]->type);
+    }
+    return 0;
   }
   vm->errors = std::string("wolang: no field called `") + field + "`\n";
   return 1;
@@ -872,7 +922,7 @@ int32_t wolang_vm_call(WolangVm* vm,
                        const WolangValue* arguments,
                        int32_t count,
                        WolangValue* out) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   if (vm == nullptr) {
     return 1;
   }
@@ -907,28 +957,40 @@ int32_t wolang_vm_call(WolangVm* vm,
 // ------------------------------------------------------------- handles ---
 
 WolangFunction* wolang_vm_function(WolangVm* vm, const char* name) {
-  const auto turn = Hold(vm);
-  // A `Callable` *is* the handle: the list does not move while a program
-  // is loaded, and a reload clears it -- which is why the header says a
-  // handle does not survive one.
-  return reinterpret_cast<WolangFunction*>(
-      const_cast<Callable*>(Find(vm, name)));
+  const VmTurn turn(vm);
+  if (Find(vm, name) == nullptr) {
+    return nullptr;
+  }
+  for (FunctionHandle& handle : *vm->handles) {
+    if (handle.name == name) {
+      return reinterpret_cast<WolangFunction*>(&handle);
+    }
+  }
+  vm->handles->push_back(FunctionHandle{vm, name});
+  return reinterpret_cast<WolangFunction*>(&vm->handles->back());
+}
+
+static const FunctionHandle* HandleOf(const WolangFunction* function) {
+  return reinterpret_cast<const FunctionHandle*>(function);
+}
+
+// The function a handle names in the program as it is now.
+static const Callable* Resolved(const WolangFunction* function) {
+  if (function == nullptr || HandleOf(function)->vm == nullptr) {
+    return nullptr;
+  }
+  const Callable* entry = Find(HandleOf(function)->vm, HandleOf(function)->name.c_str());
+  return entry != nullptr && entry->function != nullptr ? entry : nullptr;
 }
 
 int32_t wolang_call(WolangFunction* function,
                     const WolangValue* arguments,
                     int32_t count,
                     WolangValue* out) {
-  const auto turn = Hold(function != nullptr ? reinterpret_cast<const Callable*>(function)->vm : nullptr);
-  if (function == nullptr) {
+  if (function == nullptr || HandleOf(function)->vm == nullptr) {
     return 1;
   }
-  const auto* entry = reinterpret_cast<const Callable*>(function);
-  if (entry->vm == nullptr) {
-    return 1;
-  }
-  return wolang_vm_call(entry->vm, entry->name.c_str(), arguments, count,
-                        out);
+  return wolang_vm_call(HandleOf(function)->vm, HandleOf(function)->name.c_str(), arguments, count, out);
 }
 
 namespace {
@@ -972,23 +1034,18 @@ WolangKind KindOf(const wolang::TypeStore& types, TypeId type) {
 }  // namespace
 
 int32_t wolang_function_arity(const WolangFunction* function) {
-  if (function == nullptr) {
+  const VmTurn turn(function != nullptr ? HandleOf(function)->vm : nullptr);
+  const Callable* entry = Resolved(function);
+  if (entry == nullptr) {
     return -1;
   }
-  const auto* entry = reinterpret_cast<const Callable*>(function);
-  if (entry->vm == nullptr || entry->function == nullptr) {
-    return -1;
-  }
-  return static_cast<int32_t>(
-      entry->vm->database.types().ArgumentsOf(entry->function->type).size());
+  return static_cast<int32_t>(entry->vm->database.types().ArgumentsOf(entry->function->type).size());
 }
 
 WolangKind wolang_function_result(const WolangFunction* function) {
-  if (function == nullptr) {
-    return kWolangVoid;
-  }
-  const auto* entry = reinterpret_cast<const Callable*>(function);
-  if (entry->vm == nullptr || entry->function == nullptr) {
+  const VmTurn turn(function != nullptr ? HandleOf(function)->vm : nullptr);
+  const Callable* entry = Resolved(function);
+  if (entry == nullptr) {
     return kWolangVoid;
   }
   const wolang::TypeStore& types = entry->vm->database.types();
@@ -997,11 +1054,9 @@ WolangKind wolang_function_result(const WolangFunction* function) {
 
 WolangKind wolang_function_parameter(const WolangFunction* function,
                                      int32_t index) {
-  if (function == nullptr || index < 0) {
-    return kWolangVoid;
-  }
-  const auto* entry = reinterpret_cast<const Callable*>(function);
-  if (entry->vm == nullptr || entry->function == nullptr) {
+  const VmTurn turn(function != nullptr ? HandleOf(function)->vm : nullptr);
+  const Callable* entry = Resolved(function);
+  if (entry == nullptr || index < 0) {
     return kWolangVoid;
   }
   const wolang::TypeStore& types = entry->vm->database.types();
@@ -1013,10 +1068,9 @@ WolangKind wolang_function_parameter(const WolangFunction* function,
 }
 
 const char* wolang_function_doc(const WolangFunction* function) {
-  if (function == nullptr) {
-    return "";
-  }
-  return reinterpret_cast<const Callable*>(function)->doc.c_str();
+  const VmTurn turn(function != nullptr ? HandleOf(function)->vm : nullptr);
+  const Callable* entry = Resolved(function);
+  return entry != nullptr ? entry->doc.c_str() : "";
 }
 
 // ------------------------------------------------------------- globals ---
@@ -1068,7 +1122,7 @@ void* GlobalStorage(WolangVm* vm, const char* name, TypeId* type) {
 int32_t wolang_vm_get_global(WolangVm* vm,
                              const char* name,
                              WolangValue* out) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   TypeId type;
   void* storage = GlobalStorage(vm, name, &type);
   if (storage == nullptr || out == nullptr) {
@@ -1126,7 +1180,7 @@ int32_t wolang_vm_get_global(WolangVm* vm,
 int32_t wolang_vm_set_global(WolangVm* vm,
                              const char* name,
                              WolangValue value) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   TypeId type;
   void* storage = GlobalStorage(vm, name, &type);
   if (storage == nullptr) {
@@ -1222,7 +1276,7 @@ void Written(const std::string& text) {
 }  // namespace
 
 void wolang_vm_set_writer(WolangVm* vm, WolangWriter writer, void* user) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   (void)vm;
   host_writer = writer;
   host_writer_user = user;
@@ -1232,7 +1286,7 @@ void wolang_vm_set_writer(WolangVm* vm, WolangWriter writer, void* user) {
 
 void wolang_vm_set_reporter(WolangVm* vm, WolangWriter reporter,
                             void* user) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   (void)vm;
   host_reporter = reporter;
   host_reporter_user = user;
@@ -1243,21 +1297,21 @@ void wolang_vm_set_reporter(WolangVm* vm, WolangWriter reporter,
 // -------------------------------------------------------------- limits ---
 
 void wolang_vm_set_step_limit(WolangVm* vm, uint64_t steps) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   if (vm != nullptr) {
     vm->steps = steps;
   }
 }
 
 void wolang_vm_set_compiled(WolangVm* vm, int32_t allowed) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   if (vm != nullptr) {
     vm->allow_compiled = allowed != 0;
   }
 }
 
 void wolang_vm_set_initialize(WolangVm* vm, int32_t initialize) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   if (vm != nullptr) {
     vm->initialize = initialize != 0;
   }
@@ -1265,18 +1319,245 @@ void wolang_vm_set_initialize(WolangVm* vm, int32_t initialize) {
 
 // ------------------------------------------------------------- reloads ---
 
+// A module-level `var` of the program, and where its value is.
+struct GlobalSlot {
+  std::string Name;
+  TypeId Type;
+  void* Storage = nullptr;
+  const CheckedFile* Checked = nullptr;
+};
+
+// Every module-level `var` the host's own files declare, with storage in
+// the globals the calling thread has entered.
+static std::vector<GlobalSlot> GlobalsOf(WolangVm* vm) {
+  std::vector<GlobalSlot> slots;
+  for (FileId file : vm->own) {
+    const CheckedFile* checked = vm->database.Checked(file);
+    if (checked == nullptr) {
+      continue;
+    }
+    for (const wolang::Binding& binding : checked->resolution.scope) {
+      if (binding.kind != wolang::BindingKind::kValue || !binding.is_mutable || !binding.type.is_valid() || binding.item == wolang::Binding::kNoItem || binding.file != file.index) {
+        continue;
+      }
+      wolang::abi::LayoutStore layouts(vm->database.types(), checked->resolution);
+      vm->database.ShareMembers(&layouts);
+      const uint32_t size = std::max(layouts.SizeOf(binding.type), 1u);
+      const uint64_t token = (static_cast<uint64_t>(binding.file) << 32) | binding.item;
+      GlobalSlot slot;
+      slot.Name = std::string(vm->database.interner().Text(binding.name));
+      slot.Type = binding.type;
+      slot.Storage = wolang::runtime::wolang_global_address(token, size);
+      slot.Checked = checked;
+      slots.push_back(std::move(slot));
+    }
+  }
+  return slots;
+}
+
+// What a value of |type| is made of, spelled so that two programs answer
+// the same text exactly when the bytes of one mean the same to the other:
+// the type's name, and for a declared type every field it stores, by name
+// and by shape, all the way down. A class with a descriptor has none,
+// because which descriptor is a question about the code that made it.
+static std::string ShapeOf(Database& database, TypeId type, std::vector<TypeId>* seen) {
+  const wolang::TypeStore& types = database.types();
+  std::string shape = types.Describe(database.interner(), type);
+  const TypeKind kind = types.KindOf(type);
+  if (kind == TypeKind::kOptional || kind == TypeKind::kFallible || kind == TypeKind::kArray || kind == TypeKind::kSlice) {
+    return shape + "(" + ShapeOf(database, types.ElementOf(type), seen) + ")";
+  }
+  if ((kind != TypeKind::kNamed && kind != TypeKind::kInstance) || types.IsForeignClass(type)) {
+    return shape;
+  }
+  if (std::find(seen->begin(), seen->end(), type) != seen->end()) {
+    return shape;
+  }
+  seen->push_back(type);
+
+  const CheckedFile* checked = database.Checked(FileId{types.Get(types.StripWrappers(type)).declaring_file});
+  if (checked == nullptr) {
+    return shape + "{?}";
+  }
+  bool header = false;
+  const std::vector<const wolang::Member*> stored = StoredMembers(checked->resolution, type, &header);
+  if (header) {
+    return shape + "{virtual}";
+  }
+  shape += "{";
+  for (const wolang::Member* member : stored) {
+    shape += std::string(database.interner().Text(member->name)) + ":" + ShapeOf(database, member->type, seen) + ",";
+  }
+  for (const wolang::Member& member : checked->resolution.MembersOf(type)) {
+    if (member.kind == wolang::MemberKind::kVariant) {
+      shape += "|" + std::string(database.interner().Text(member.name)) + ":" + ShapeOf(database, member.type, seen);
+    }
+  }
+  return shape + "}";
+}
+
+static std::string Shape(Database& database, TypeId type) {
+  std::vector<TypeId> seen;
+  return ShapeOf(database, type, &seen);
+}
+
+// A value the new program's initializer made, given back before what the
+// old program had takes its place. What this does not know how to give
+// back -- a struct holding objects -- is left, which costs memory and
+// nothing else.
+static void LetGo(WolangVm* vm, TypeId type, void* storage) {
+  const wolang::TypeStore& types = vm->database.types();
+  if (types.KindOf(type) == TypeKind::kString) {
+    const uint8_t* data = nullptr;
+    std::memcpy(&data, storage, sizeof(data));
+    wolang::runtime::wolang_text_free(data);
+    return;
+  }
+  if (!types.IsHandle(type) || types.IsOptional(type)) {
+    return;
+  }
+  void* object = nullptr;
+  std::memcpy(&object, storage, sizeof(object));
+  if (object == nullptr) {
+    return;
+  }
+  if (types.IsForeignClass(type)) {
+    wolang::runtime::wolang_host_release(wolang::runtime::HostTag(types.Describe(vm->database.interner(), type)), object);
+    return;
+  }
+  if (wolang::runtime::wolang_object_release(object) == 1) {
+    Destroyed(vm, object, types.Describe(vm->database.interner(), types.StripWrappers(type)));
+  }
+}
+
+// An object whose class changed: the fields the new class still has, with
+// the same shape, take the old object's values; the rest keep what the
+// new initializer gave them.
+static void CarryFields(WolangVm* vm, Database& before, const GlobalSlot& old, const GlobalSlot& now) {
+  void* old_object = nullptr;
+  void* new_object = nullptr;
+  std::memcpy(&old_object, old.Storage, sizeof(old_object));
+  std::memcpy(&new_object, now.Storage, sizeof(new_object));
+  if (old_object == nullptr || new_object == nullptr) {
+    vm->notes += "`" + now.Name + "` starts again: its class changed\n";
+    return;
+  }
+
+  const wolang::TypeStore& old_types = before.types();
+  const wolang::TypeStore& new_types = vm->database.types();
+  const CheckedFile* old_checked = before.Checked(FileId{old_types.Get(old.Type).declaring_file});
+  const CheckedFile* new_checked = vm->database.Checked(FileId{new_types.Get(now.Type).declaring_file});
+  if (old_checked == nullptr || new_checked == nullptr) {
+    return;
+  }
+  bool old_header = false;
+  bool new_header = false;
+  const std::vector<const wolang::Member*> old_fields = StoredMembers(old_checked->resolution, old.Type, &old_header);
+  const std::vector<const wolang::Member*> new_fields = StoredMembers(new_checked->resolution, now.Type, &new_header);
+  wolang::abi::LayoutStore old_layouts(old_types, old_checked->resolution);
+  before.ShareMembers(&old_layouts);
+  wolang::abi::LayoutStore new_layouts(new_types, new_checked->resolution);
+  vm->database.ShareMembers(&new_layouts);
+  const wolang::abi::Layout& old_layout = old_layouts.ObjectOf(old.Type);
+  const wolang::abi::Layout& new_layout = new_layouts.ObjectOf(now.Type);
+
+  for (size_t i = 0; i < new_fields.size(); ++i) {
+    const std::string name(vm->database.interner().Text(new_fields[i]->name));
+    size_t found = old_fields.size();
+    for (size_t j = 0; j < old_fields.size(); ++j) {
+      if (before.interner().Text(old_fields[j]->name) == name) {
+        found = j;
+      }
+    }
+    if (found == old_fields.size()) {
+      continue;
+    }
+    const size_t new_index = i + (new_header ? 1 : 0);
+    const size_t old_index = found + (old_header ? 1 : 0);
+    if (new_index >= new_layout.offsets.size() || old_index >= old_layout.offsets.size()) {
+      continue;
+    }
+    if (Shape(before, old_fields[found]->type) != Shape(vm->database, new_fields[i]->type)) {
+      vm->notes += "`" + now.Name + "." + name + "` starts again: its type changed\n";
+      continue;
+    }
+    auto* into = static_cast<uint8_t*>(new_object) + new_layout.offsets[new_index];
+    LetGo(vm, new_fields[i]->type, into);
+    std::memcpy(into, static_cast<uint8_t*>(old_object) + old_layout.offsets[old_index], std::max(new_layouts.SizeOf(new_fields[i]->type), 1u));
+  }
+}
+
+// The old program's values, where the new program still has a place of
+// the same name and shape for them.
+//
+// A value is moved rather than copied: the old program's globals are
+// never read or released again, so what they held belongs to the new
+// program from here on, references and all.
+static void Carry(WolangVm* vm, Database& before, const std::vector<GlobalSlot>& old) {
+  for (const GlobalSlot& now : GlobalsOf(vm)) {
+    const GlobalSlot* match = nullptr;
+    for (const GlobalSlot& slot : old) {
+      if (slot.Name == now.Name) {
+        match = &slot;
+      }
+    }
+    if (match == nullptr) {
+      continue;
+    }
+    if (Shape(before, match->Type) == Shape(vm->database, now.Type)) {
+      wolang::abi::LayoutStore layouts(vm->database.types(), now.Checked->resolution);
+      vm->database.ShareMembers(&layouts);
+      LetGo(vm, now.Type, now.Storage);
+      std::memcpy(now.Storage, match->Storage, std::max(layouts.SizeOf(now.Type), 1u));
+      continue;
+    }
+    const wolang::TypeStore& old_types = before.types();
+    const wolang::TypeStore& new_types = vm->database.types();
+    const bool classes = old_types.IsHandle(match->Type) && new_types.IsHandle(now.Type) && !old_types.IsOptional(match->Type) && !new_types.IsOptional(now.Type) && !new_types.IsForeignClass(now.Type) && old_types.Describe(before.interner(), match->Type) == new_types.Describe(vm->database.interner(), now.Type);
+    if (classes) {
+      CarryFields(vm, before, *match, now);
+      continue;
+    }
+    vm->notes += "`" + now.Name + "` starts again: its type changed\n";
+  }
+}
+
 int32_t wolang_vm_reload(WolangVm* vm) {
-  const auto turn = Hold(vm);
+  const VmTurn turn(vm);
   if (vm == nullptr) {
     return 1;
   }
   const std::vector<WolangVm::Loaded> again = vm->loaded;
+  const std::vector<GlobalSlot> old = GlobalsOf(vm);
+
+  // The program as it was goes into retirement rather than away: a value
+  // carried over may point into it (D215).
+  Retired retired;
+  retired.database = std::move(vm->owned_database);
+  retired.foreign = std::move(vm->foreign);
+  retired.compiled = std::move(vm->compiled);
+  retired.globals = vm->globals;
+  Database& before = *retired.database;
   const std::shared_ptr<std::recursive_mutex> lock = vm->lock;
+  const std::shared_ptr<std::vector<Retired>> graveyard = vm->retired;
+  const std::shared_ptr<std::deque<FunctionHandle>> handles = vm->handles;
+  const uint64_t steps = vm->steps;
+  const bool allow_compiled = vm->allow_compiled;
+  const bool initialize = vm->initialize;
+
   // A fresh database, because a query cache remembers what the files
   // said: reloading is loading again, not re-asking.
   vm->~WolangVm();
   new (vm) WolangVm();
   vm->lock = lock;
+  vm->retired = graveyard;
+  vm->handles = handles;
+  vm->steps = steps;
+  vm->allow_compiled = allow_compiled;
+  vm->initialize = initialize;
+  graveyard->push_back(std::move(retired));
+
+  const wolang::runtime::GlobalSpaceScope entered(vm->globals.get());
   int32_t status = 0;
   for (const WolangVm::Loaded& file : again) {
     status |= file.from_source
@@ -1284,7 +1565,14 @@ int32_t wolang_vm_reload(WolangVm* vm) {
                                           file.source.c_str())
                   : wolang_vm_load(vm, file.path.c_str());
   }
+  if (status == 0 && vm->ok) {
+    Carry(vm, before, old);
+  }
   return status;
+}
+
+const char* wolang_vm_notes(const WolangVm* vm) {
+  return vm == nullptr ? "" : vm->notes.c_str();
 }
 
 int32_t wolang_vm_file_count(const WolangVm* vm) {

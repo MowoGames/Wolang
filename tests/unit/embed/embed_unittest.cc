@@ -8,6 +8,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -381,6 +383,109 @@ WOLANG_TEST(EmbedTest, ThreadsShareOneVmOneCallAtATime) {
   WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Total", nullptr, 0, &answer), 0);
   WOLANG_EXPECT_EQ(answer.integer, 800);
   wolang_vm_destroy(vm);
+}
+
+static void WriteFile(const std::filesystem::path& path, const char* text) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out << text;
+}
+
+WOLANG_TEST(EmbedTest, AReloadKeepsWhatTheProgramHad) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_reload_test.wo";
+  WriteFile(path, R"(
+class Player {
+  var hp: int
+}
+
+var score: int = 0
+var player: Player = Player(10)
+var label: text = "start"
+var level: int = 1
+
+offer fun Hit() {
+  score = score + 1
+  player.hp = player.hp - 1
+  label = "hit"
+  level = level + 1
+}
+
+offer fun Score() -> int {
+  return score
+}
+)");
+
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WolangFunction* score = wolang_vm_function(vm, "Score");
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Hit", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Hit", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(wolang_call(score, nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 2);
+
+  WriteFile(path, R"(
+class Player {
+  var hp: int
+  var mana: int
+}
+
+var score: int = 0
+var player: Player = Player(10, 50)
+var label: text = "start"
+var level: text = "one"
+var bonus: f64 = 1.5
+
+offer fun Score() -> int {
+  return score * 100
+}
+
+offer fun Hp() -> int {
+  return player.hp
+}
+
+offer fun Mana() -> int {
+  return player.mana
+}
+
+offer fun Label() -> text {
+  return label
+}
+
+offer fun Level() -> text {
+  return level
+}
+)");
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WOLANG_EXPECT_EQ(wolang_call(score, nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 200);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Hp", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 8);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Mana", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 50);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Label", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(TextOf(answer), "hit");
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Level", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(TextOf(answer), "one");
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_notes(vm)), "`level` starts again: its type changed\n");
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, EachVmHasItsOwnGlobals) {
+  WolangVm* first = wolang_vm_create();
+  WolangVm* second = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(first, "work.wo", kWorkScript), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(second, "work.wo", kWorkScript), 0);
+  WOLANG_EXPECT_EQ(RunWork(first, 1, 3), 0);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(first, "Total", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 3);
+  WOLANG_EXPECT_EQ(wolang_vm_call(second, "Total", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 0);
+  wolang_vm_destroy(first);
+  wolang_vm_destroy(second);
 }
 
 WOLANG_TEST(EmbedTest, CallsBackIntoTheHost) {

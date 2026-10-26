@@ -29,6 +29,27 @@ void wolang_global_reset(void);
 
 }  // extern "C"
 
+// A set of module-level `var`s: the process's, or one per embedding vm.
+// Entering one makes it the set this thread's code reads and writes, and
+// answers the one it replaces, null being the process's (D214).
+struct GlobalSpace;
+GlobalSpace* GlobalSpaceCreate();
+void GlobalSpaceDestroy(GlobalSpace* space);
+GlobalSpace* GlobalSpaceEnter(GlobalSpace* space);
+GlobalSpace* GlobalSpaceCurrent();
+
+// While it lives, |space| is the current one on this thread.
+class GlobalSpaceScope {
+ public:
+  explicit GlobalSpaceScope(GlobalSpace* space) : m_Previous(GlobalSpaceEnter(space)) {}
+  ~GlobalSpaceScope() { GlobalSpaceEnter(m_Previous); }
+  GlobalSpaceScope(const GlobalSpaceScope&) = delete;
+  GlobalSpaceScope& operator=(const GlobalSpaceScope&) = delete;
+
+ private:
+  GlobalSpace* m_Previous;
+};
+
 }  // namespace runtime
 }  // namespace wolang
 

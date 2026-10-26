@@ -10,6 +10,8 @@
 #include <thread>
 #include <vector>
 
+#include "wolang/runtime/globals.h"
+
 namespace wolang {
 namespace runtime {
 namespace {
@@ -45,7 +47,11 @@ extern "C" uint64_t wolang_thread_spawn(void (*body)(void*),
     return 0;
   }
   const std::lock_guard<std::mutex> held(TableLock());
-  Threads().emplace_back([body, argument]() { body(argument); });
+  GlobalSpace* space = GlobalSpaceCurrent();
+  Threads().emplace_back([body, argument, space]() {
+    const GlobalSpaceScope entered(space);
+    body(argument);
+  });
   return Threads().size();
 }
 
@@ -98,7 +104,9 @@ extern "C" void wolang_parallel_for(uint64_t code,
       }
       break;
     }
+    GlobalSpace* space = GlobalSpaceCurrent();
     started.emplace_back([=]() {
+      const GlobalSpaceScope entered(space);
       if (environment != 0) {
         with(environment, begin, end);
       } else {

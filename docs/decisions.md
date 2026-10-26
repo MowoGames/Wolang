@@ -2729,3 +2729,28 @@ what "not thread-safe" said before, and every engine would have written
 the same mutex. Parallelism is separate vms, which were already
 independent: the compiled tier's context belongs to its vm, the counts
 on objects are atomic, and the host's class table has its own lock.
+
+That last part was not true when it was first written: module-level
+`var`s lived in one table for the whole process, keyed by file and
+declaration, so two vms holding the same program shared them. They live
+in a global space now, one for the process and one per vm, and a call
+into a vm enters its space for the thread making it. Threads a script
+starts enter the space of the thread that started them.
+
+**D215. A reload keeps the program's state.** `wolang_vm_reload` used to
+throw everything away, which is a restart and not a reload. It builds the
+new program in a new global space, then carries each module-level `var`
+across by name when the type has the same *shape* -- the name, and for a
+declared type every stored field by name and shape, all the way down. A
+value is moved, not copied: the old program's globals are never read or
+released again. A class that gained or lost fields keeps the fields that
+are still there, written into the object the new initializer made. A
+class with virtual methods is never carried, because its descriptor
+belongs to the code that made it. Whatever starts again is listed in
+`wolang_vm_notes`.
+
+The old program is retired rather than freed -- its database, its code
+and its globals stay until the vm is destroyed. A carried value can point
+into it: a `text` literal is bytes in the old program, and freeing it
+would leave the new program holding a dangling string. Function handles
+name their function instead of pointing at it, so they survive.

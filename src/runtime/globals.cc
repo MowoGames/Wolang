@@ -9,38 +9,77 @@
 
 namespace wolang {
 namespace runtime {
-namespace {
 
 struct GlobalEntry {
   uint64_t token = 0;
+  uint64_t size = 0;
   void* storage = nullptr;
 };
 
-std::vector<GlobalEntry>& GlobalEntries() {
-  static std::vector<GlobalEntry> entries;
-  return entries;
+// Where a program's module-level `var`s live. The process has one, and
+// an embedding vm has its own, so two vms holding the same program do
+// not share them (D214).
+struct GlobalSpace {
+  std::vector<GlobalEntry> Entries;
+};
+
+static GlobalSpace& ProcessSpace() {
+  static GlobalSpace sm_Process;
+  return sm_Process;
 }
 
-}  // namespace
+static thread_local GlobalSpace* sm_Current = nullptr;
+
+static GlobalSpace& Current() {
+  return sm_Current != nullptr ? *sm_Current : ProcessSpace();
+}
+
+static void Clear(GlobalSpace& space) {
+  for (const GlobalEntry& entry : space.Entries) {
+    std::free(entry.storage);
+  }
+  space.Entries.clear();
+}
 
 extern "C" void* wolang_global_address(uint64_t token, uint64_t size) {
-  for (const GlobalEntry& entry : GlobalEntries()) {
+  GlobalSpace& space = Current();
+  for (const GlobalEntry& entry : space.Entries) {
     if (entry.token == token) {
       return entry.storage;
     }
   }
-  // Never freed: a module-level variable lives as long as the program,
-  // which is the one lifetime that needs no bookkeeping.
+  // Never freed while the space lives: a module-level variable lives as
+  // long as the program, which is the one lifetime that needs no
+  // bookkeeping.
   void* storage = std::calloc(1, size == 0 ? 1 : size);
-  GlobalEntries().push_back(GlobalEntry{token, storage});
+  space.Entries.push_back(GlobalEntry{token, size, storage});
   return storage;
 }
 
 extern "C" void wolang_global_reset(void) {
-  for (const GlobalEntry& entry : GlobalEntries()) {
-    std::free(entry.storage);
+  Clear(Current());
+}
+
+GlobalSpace* GlobalSpaceCreate() {
+  return new GlobalSpace();
+}
+
+void GlobalSpaceDestroy(GlobalSpace* space) {
+  if (space == nullptr) {
+    return;
   }
-  GlobalEntries().clear();
+  Clear(*space);
+  delete space;
+}
+
+GlobalSpace* GlobalSpaceEnter(GlobalSpace* space) {
+  GlobalSpace* previous = sm_Current;
+  sm_Current = space;
+  return previous;
+}
+
+GlobalSpace* GlobalSpaceCurrent() {
+  return sm_Current;
 }
 
 }  // namespace runtime

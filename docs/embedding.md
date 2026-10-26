@@ -85,7 +85,7 @@ and pointing `CMAKE_PREFIX_PATH` at it is enough.
 | **Extend** | `wolang_vm_bind` makes a host function reachable: the script declares `extern "C" fun host_log(message: *u8, length: u64)` and calls it. |
 | **Capture** | `wolang_vm_set_writer` sends the program's output to the host's console instead of standard output; `wolang_vm_set_reporter` does the same for diagnostics. |
 | **Contain** | `wolang_vm_set_step_limit` stops a call after so many instructions, for scripts the host did not write. It keeps calls on the interpreter, which is the trade. |
-| **Reload** | `wolang_vm_reload` loads everything again; `wolang_vm_file_count`/`_name` say which files to watch. Handles do not survive a reload. |
+| **Reload** | `wolang_vm_reload` loads everything again and keeps the program's state; `wolang_vm_file_count`/`_name` say which files to watch. |
 
 ## What crosses the boundary
 
@@ -192,10 +192,24 @@ thread-safe should keep those calls on the thread it counts on.
 
 ```c
 if (ChangedOnDisk(vm)) {
-  wolang_vm_reload(vm);              // handles from before are invalid
-  update = wolang_vm_function(vm, "Update");
+  wolang_vm_reload(vm);              // `update` still works, and runs the new code
+  Log(wolang_vm_notes(vm));          // what had to start again, if anything
 }
 ```
+
+A reload keeps what the program had. Every module-level `var` the new
+program still declares with the same type keeps its value, and that
+includes objects: a `var player: Player` is the same player, with the
+health it had. When `Player` gained a field, the player keeps the fields
+that are still there, and the new one starts from what the initializer
+gave it. A `var` or a field whose type changed starts again from its
+initializer, and `wolang_vm_notes` has a line saying so.
+
+Function handles from `wolang_vm_function` survive a reload and call the
+new code. The program as it was is kept until the vm is destroyed —
+values carried over may still point into it — so a session that reloads
+a thousand times uses a thousand programs' worth of memory, which is the
+trade for never having a dangling string.
 
 `wolang_vm_file_count`/`_name` give the files the program was built from,
 including the standard library's, so watching them is a host's own
