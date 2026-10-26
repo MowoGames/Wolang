@@ -54,10 +54,12 @@ void* FindSymbol(const std::string& name) {
       return reinterpret_cast<void*>(found);
     }
   }
-  static const char* kAlways[] = {"msvcrt.dll", "kernel32.dll",
-                                  "ws2_32.dll", "user32.dll"};
+  static const char* kAlways[] = {"ucrtbase.dll", "kernel32.dll", "ws2_32.dll", "user32.dll", "msvcrt.dll"};
   for (const char* which : kAlways) {
-    const HMODULE module = ::GetModuleHandleA(which);
+    HMODULE module = ::GetModuleHandleA(which);
+    if (module == nullptr) {
+      module = ::LoadLibraryExA(which, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    }
     if (module == nullptr) {
       continue;
     }

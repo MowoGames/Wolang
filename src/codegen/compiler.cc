@@ -35,6 +35,14 @@ bool IsSupportedTarget() {
   return HasBackend(HostTarget());
 }
 
+static void SkipUnwinding(jmp_buf* landing) {
+#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+  reinterpret_cast<_JUMP_BUFFER*>(landing)->Frame = 0;
+#else
+  (void)landing;
+#endif
+}
+
 void ReportTrap(Context* context,
                 uint32_t kind,
                 uint32_t site,
@@ -650,6 +658,7 @@ interp::Outcome CompiledModule::Impl::RunEntry(
       const_cast<void*>(block_.AddressOf(entry->stub)));
 
   if (_setjmp(landing_) == 0) {
+    SkipUnwinding(&landing_);
     stub(&context_, slots.data(), result.data());
     if (returned.is_valid()) {
       outcome.value =
@@ -790,6 +799,8 @@ bool CompiledModule::ResumeTask(Symbol dispatch,
     *faulted = true;
     return true;
   }
+
+  SkipUnwinding(&impl.landing_);
   stub(&impl.context_, slots, &result);
   *faulted = false;
   return (result & 1) != 0;

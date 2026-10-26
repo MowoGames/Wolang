@@ -187,6 +187,124 @@ class Caller : public interp::ForeignCaller {
   std::map<uint32_t, CodeBlock> thunks_;
 };
 
+#elif (defined(__x86_64__) || defined(_M_X64)) && defined(_WIN32)
+
+using x64::Address;
+using x64::Assembler;
+using x64::Condition;
+using x64::Register;
+using x64::XmmRegister;
+using FWidth = x64::FloatWidth;
+using IWidth = x64::Width;
+
+constexpr uint32_t kMaxRegisterArguments = 4;
+constexpr uint32_t kShadowBytes = 32;
+
+using Thunk = void (*)(const void*, const uint64_t*, uint64_t*, uint64_t);
+
+class Caller : public interp::ForeignCaller {
+ public:
+  bool Build() { return Thunked(0) != nullptr; }
+
+  interp::ForeignOutcome Call(
+      std::string_view symbol,
+      std::span<const interp::ForeignArgument> arguments,
+      bool returns_float,
+      uint64_t* result) override {
+    std::vector<uint64_t> words;
+    for (const interp::ForeignArgument& argument : arguments) {
+      words.push_back(argument.bits);
+    }
+
+    const uint32_t count = static_cast<uint32_t>(words.size());
+    const uint32_t spilled = count > kMaxRegisterArguments ? count - kMaxRegisterArguments : 0;
+    if (spilled > kMostSpilled) {
+      return interp::ForeignOutcome::kTooManyArguments;
+    }
+
+    words.resize(kMaxRegisterArguments + spilled, 0);
+    const Thunk thunk = Thunked(spilled);
+    if (thunk == nullptr) {
+      return interp::ForeignOutcome::kTooManyArguments;
+    }
+
+    const std::string name(symbol);
+    void* target = runtime::LookupSymbol(name);
+    if (target == nullptr) {
+      target = runtime::FindSymbol(name);
+    }
+    if (target == nullptr) {
+      return interp::ForeignOutcome::kNoSymbol;
+    }
+
+    uint64_t raw = 0;
+    thunk(target, words.data(), &raw, returns_float ? 1 : 0);
+    *result = raw;
+    return interp::ForeignOutcome::kCalled;
+  }
+
+ private:
+  Thunk Thunked(uint32_t spilled) {
+    if (spilled > kMostSpilled) {
+      return nullptr;
+    }
+    if (auto found = thunks_.find(spilled); found != thunks_.end()) {
+      return found->second.is_installed() ? reinterpret_cast<Thunk>(const_cast<void*>(found->second.AddressOf(0))) : nullptr;
+    }
+
+    static constexpr Register kIntegerArguments[kMaxRegisterArguments] = {
+        Register::kRcx, Register::kRdx, Register::kR8, Register::kR9,
+    };
+
+    Assembler a;
+    a.Push(Register::kRbp);
+    a.Mov(IWidth::k64, Register::kRbp, Register::kRsp);
+    a.SubImmediate(IWidth::k64, Register::kRsp, 16);
+    a.Store(IWidth::k64, Address{Register::kRbp, -8}, Register::kR8);
+    a.Store(IWidth::k64, Address{Register::kRbp, -16}, Register::kR9);
+    a.Mov(IWidth::k64, Register::kR10, Register::kRcx);
+    a.Mov(IWidth::k64, Register::kR11, Register::kRdx);
+
+    const uint32_t area = (kShadowBytes + spilled * 8 + 15) & ~uint32_t{15};
+    a.SubImmediate(IWidth::k64, Register::kRsp, static_cast<int32_t>(area));
+    for (uint32_t i = 0; i < spilled; ++i) {
+      a.Load(IWidth::k64, Register::kRax, Address{Register::kR11, static_cast<int32_t>((kMaxRegisterArguments + i) * 8)});
+      a.Store(IWidth::k64, Address{Register::kRsp, static_cast<int32_t>(kShadowBytes + i * 8)}, Register::kRax);
+    }
+
+    for (uint32_t i = 0; i < kMaxRegisterArguments; ++i) {
+      const Address word{Register::kR11, static_cast<int32_t>(i * 8)};
+      a.LoadFloat(FWidth::k64, static_cast<XmmRegister>(i), word);
+      a.Load(IWidth::k64, kIntegerArguments[i], word);
+    }
+    a.CallRegister(Register::kR10);
+
+    a.Load(IWidth::k64, Register::kRcx, Address{Register::kRbp, -8});
+    a.Load(IWidth::k64, Register::kR8, Address{Register::kRbp, -16});
+    const x64::Label floating = a.CreateLabel();
+    const x64::Label done = a.CreateLabel();
+    a.Test(IWidth::k64, Register::kR8, Register::kR8);
+    a.Jcc(Condition::kNotEqual, floating);
+    a.Store(IWidth::k64, Address{Register::kRcx, 0}, Register::kRax);
+    a.Jmp(done);
+    a.Bind(floating);
+    a.StoreFloat(FWidth::k64, Address{Register::kRcx, 0}, XmmRegister::kXmm0);
+    a.Bind(done);
+    a.Mov(IWidth::k64, Register::kRsp, Register::kRbp);
+    a.Pop(Register::kRbp);
+    a.Ret();
+    a.Resolve();
+
+    CodeBlock& block = thunks_[spilled];
+    if (!block.Install(a.bytes())) {
+      return nullptr;
+    }
+    return reinterpret_cast<Thunk>(const_cast<void*>(block.AddressOf(0)));
+  }
+
+  std::map<uint32_t, CodeBlock> thunks_;
+};
+
 #elif defined(__x86_64__) || defined(_M_X64)
 
 using x64::Address;

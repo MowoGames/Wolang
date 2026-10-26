@@ -69,11 +69,31 @@ constexpr Register kScratch[] = {
     Register::kRax, Register::kR10, Register::kR11, Register::kRsi,
     Register::kRdi, Register::kR8,  Register::kR9,
 };
+#if defined(_WIN32)
+constexpr XmmRegister kFloatScratch[] = {
+    XmmRegister::kXmm4, XmmRegister::kXmm5, XmmRegister::kXmm0,
+    XmmRegister::kXmm1, XmmRegister::kXmm2, XmmRegister::kXmm3,
+};
+constexpr XmmRegister kFloatTemp = XmmRegister::kXmm5;
+
+constexpr Register kArgumentRegisters[] = {
+    Register::kRcx, Register::kRdx, Register::kR8, Register::kR9,
+};
+constexpr XmmRegister kFloatArgumentRegisters[] = {
+    XmmRegister::kXmm0, XmmRegister::kXmm1, XmmRegister::kXmm2,
+    XmmRegister::kXmm3,
+};
+constexpr bool kPositionalArguments = true;
+constexpr uint32_t kShadowBytes = 32;
+constexpr uint32_t kPreservedCount = 2;
+constexpr bool kProbeStack = true;
+#else
 constexpr XmmRegister kFloatScratch[] = {
     XmmRegister::kXmm8,  XmmRegister::kXmm9,
     XmmRegister::kXmm10, XmmRegister::kXmm11,
     XmmRegister::kXmm12, XmmRegister::kXmm13,
 };
+constexpr XmmRegister kFloatTemp = XmmRegister::kXmm15;
 
 constexpr Register kArgumentRegisters[] = {
     Register::kRdi, Register::kRsi, Register::kRdx,
@@ -84,6 +104,13 @@ constexpr XmmRegister kFloatArgumentRegisters[] = {
     XmmRegister::kXmm3, XmmRegister::kXmm4, XmmRegister::kXmm5,
     XmmRegister::kXmm6, XmmRegister::kXmm7,
 };
+constexpr bool kPositionalArguments = false;
+constexpr uint32_t kShadowBytes = 0;
+constexpr uint32_t kPreservedCount = 0;
+constexpr bool kProbeStack = false;
+#endif
+constexpr Register kPreserved[] = {Register::kRsi, Register::kRdi};
+constexpr uint32_t kPageBytes = 4096;
 
 // The context, which a trap is reported through. Callee saved, so a call
 // keeps it without anyone saving it.
@@ -116,6 +143,51 @@ struct ValueInfo {
   Holding holding = Holding::kNone;
   uint32_t area = 0;
   Allocation allocation;
+};
+
+struct ArgumentPlace {
+  bool OnStack = false;
+  Register Reg = Register::kRax;
+  XmmRegister Xmm = XmmRegister::kXmm0;
+  uint32_t Stack = 0;
+};
+
+class ArgumentCursor {
+ public:
+  ArgumentPlace Next(bool is_float) {
+    ArgumentPlace place;
+    if (kPositionalArguments) {
+      if (m_Integers < std::size(kArgumentRegisters)) {
+        place.Reg = kArgumentRegisters[m_Integers];
+        place.Xmm = kFloatArgumentRegisters[m_Integers];
+        ++m_Integers;
+        return place;
+      }
+    }
+    else if (is_float) {
+      if (m_Floats < std::size(kFloatArgumentRegisters)) {
+        place.Xmm = kFloatArgumentRegisters[m_Floats++];
+        return place;
+      }
+    }
+    else if (m_Integers < std::size(kArgumentRegisters)) {
+      place.Reg = kArgumentRegisters[m_Integers++];
+      return place;
+    }
+
+    place.OnStack = true;
+    place.Stack = m_Stacked++;
+    return place;
+  }
+
+  uint32_t Stacked() const {
+    return m_Stacked;
+  }
+
+ private:
+  uint32_t m_Integers = 0;
+  uint32_t m_Floats = 0;
+  uint32_t m_Stacked = 0;
 };
 
 class FunctionEmitter {
@@ -371,14 +443,12 @@ class FunctionEmitter {
       }
       const std::span<const ir::InstId> all = function_.OperandsOf(inst);
       const size_t first = inst.opcode == ir::Opcode::kCall ? 0 : 1;
-      uint32_t integers = 0;
-      uint32_t floats = 0;
-      uint32_t spilled = 0;
+      ArgumentCursor cursor;
       // An aggregate result is passed as a hidden first pointer, so it
       // takes an integer register before any argument does.
       if (inst.type.is_valid() &&
           layouts_.ClassOf(inst.type) == abi::ValueClass::kAggregate) {
-        ++integers;
+        cursor.Next(false);
       }
       for (size_t i = first; i < all.size(); ++i) {
         const abi::ValueClass value_class =
@@ -386,20 +456,11 @@ class FunctionEmitter {
         if (value_class == abi::ValueClass::kVoid) {
           continue;
         }
-        if (value_class == abi::ValueClass::kFloat) {
-          if (floats < std::size(kFloatArgumentRegisters)) {
-            ++floats;
-            continue;
-          }
-        } else if (integers < std::size(kArgumentRegisters)) {
-          ++integers;
-          continue;
-        }
-        ++spilled;
+        cursor.Next(value_class == abi::ValueClass::kFloat);
       }
-      most = std::max(most, spilled * 8);
+      most = std::max(most, cursor.Stacked() * 8);
     }
-    return most;
+    return kShadowBytes + most;
   }
 
   std::string LayOutFrame() {
@@ -411,7 +472,7 @@ class FunctionEmitter {
     offset += outgoing_bytes_;
     saved_integers_ = allocation_.integers_used;
     saved_base_ = offset;
-    offset += saved_integers_ * 8;
+    offset += (saved_integers_ + kPreservedCount) * 8;
 
     spill_base_ = offset;
     offset += allocation_.spill_count * 8;
@@ -815,15 +876,16 @@ class FunctionEmitter {
     const Label stub = assembler_.CreateLabel();
     for (const PendingTrap& trap : pending_traps_) {
       assembler_.Bind(trap.label);
-      assembler_.MovImmediate(IWidth::k32, Register::kRsi,
+      assembler_.MovImmediate(IWidth::k32, kArgumentRegisters[1],
                               static_cast<uint32_t>(trap.kind));
-      assembler_.MovImmediate(IWidth::k32, Register::kRdx, trap.site);
+      assembler_.MovImmediate(IWidth::k32, kArgumentRegisters[2],
+                              trap.site);
       assembler_.Jmp(stub);
     }
     assembler_.Bind(stub);
-    assembler_.Mov(IWidth::k64, Register::kRdi, kContextRegister);
+    assembler_.Mov(IWidth::k64, kArgumentRegisters[0], kContextRegister);
     // The frame pointer, so the host can walk the chain of callers.
-    assembler_.Mov(IWidth::k64, Register::kRcx, Register::kRbp);
+    assembler_.Mov(IWidth::k64, kArgumentRegisters[3], Register::kRbp);
     assembler_.Load(IWidth::k64, kCallScratch,
                     Address{kContextRegister,
                             static_cast<int32_t>(kContextReportOffset)});
@@ -848,76 +910,67 @@ class FunctionEmitter {
     assembler_.Push(Register::kRbp);
     assembler_.Mov(IWidth::k64, Register::kRbp, Register::kRsp);
     assembler_.Push(kContextRegister);
-    assembler_.Push(Register::kRdx);
+    assembler_.Push(kArgumentRegisters[2]);
 
     const Register arguments = Register::kR10;
-    assembler_.Mov(IWidth::k64, arguments, Register::kRsi);
-    assembler_.Mov(IWidth::k64, kContextRegister, Register::kRdi);
+    assembler_.Mov(IWidth::k64, arguments, kArgumentRegisters[1]);
+    assembler_.Mov(IWidth::k64, kContextRegister, kArgumentRegisters[0]);
 
     const TypeId returned = types_.ElementOf(function_.type);
     const bool indirect = returned.is_valid() &&
                           layouts_.ClassOf(returned) ==
                               abi::ValueClass::kAggregate;
-    uint32_t integers = 0;
-    uint32_t floats = 0;
-    if (indirect) {
-      // Where to write the result is the hidden first argument.
-      assembler_.Mov(IWidth::k64, kArgumentRegisters[integers++],
-                     Register::kRdx);
-    }
     // How many do not fit: the body reads those off the stack (D154),
     // and this is the side that puts them there. A host call to a
     // function of eleven arguments wrote past the end of the register
     // table before this counted.
-    uint32_t spilled = 0;
-    {
-      uint32_t counted_integers = integers;
-      uint32_t counted_floats = floats;
-      for (const ir::InstId param : params) {
-        if (layouts_.ClassOf(TypeOf(param)) == abi::ValueClass::kFloat) {
-          if (counted_floats < std::size(kFloatArgumentRegisters)) {
-            ++counted_floats;
-            continue;
-          }
-        } else if (counted_integers < std::size(kArgumentRegisters)) {
-          ++counted_integers;
-          continue;
-        }
-        ++spilled;
+    ArgumentCursor counter;
+    if (indirect) {
+      counter.Next(false);
+    }
+    for (const ir::InstId param : params) {
+      const abi::ValueClass value_class = layouts_.ClassOf(TypeOf(param));
+      if (value_class == abi::ValueClass::kVoid) {
+        continue;
       }
+      counter.Next(value_class == abi::ValueClass::kFloat);
     }
     // Sixteen-byte aligned, because the three pushes above left it that
     // way and the call below needs it kept.
-    const uint32_t spill_bytes = abi::AlignUp(spilled * 8, 16);
+    const uint32_t spill_bytes =
+        abi::AlignUp(kShadowBytes + counter.Stacked() * 8, 16);
     if (spill_bytes != 0) {
       assembler_.SubImmediate(IWidth::k64, Register::kRsp, spill_bytes);
     }
 
-    uint32_t placed = 0;
+    ArgumentCursor cursor;
+    if (indirect) {
+      // Where to write the result is the hidden first argument.
+      assembler_.Mov(IWidth::k64, cursor.Next(false).Reg,
+                     kArgumentRegisters[2]);
+    }
     for (size_t i = 0; i < params.size(); ++i) {
       const TypeId type = TypeOf(params[i]);
+      const abi::ValueClass value_class = layouts_.ClassOf(type);
+      if (value_class == abi::ValueClass::kVoid) {
+        continue;
+      }
+
       const Address slot{arguments, static_cast<int32_t>(i * 8)};
-      const bool is_float =
-          layouts_.ClassOf(type) == abi::ValueClass::kFloat;
-      const bool on_stack =
-          is_float ? floats >= std::size(kFloatArgumentRegisters)
-                   : integers >= std::size(kArgumentRegisters);
-      if (on_stack) {
+      const bool is_float = value_class == abi::ValueClass::kFloat;
+      const ArgumentPlace place = cursor.Next(is_float);
+      if (place.OnStack) {
         // Through a scratch register: the value is in the array and has
         // to be in a word of the outgoing area.
         assembler_.Load(IWidth::k64, Register::kR11, slot);
-        assembler_.Store(
-            IWidth::k64,
-            Address{Register::kRsp, static_cast<int32_t>(placed * 8)},
-            Register::kR11);
-        ++placed;
+        assembler_.Store(IWidth::k64, Address{Register::kRsp, static_cast<int32_t>(kShadowBytes + place.Stack * 8)}, Register::kR11);
         continue;
       }
       if (is_float) {
-        assembler_.LoadFloat(FloatWidthOf(type),
-                             kFloatArgumentRegisters[floats++], slot);
-      } else {
-        assembler_.Load(IWidth::k64, kArgumentRegisters[integers++], slot);
+        assembler_.LoadFloat(FloatWidthOf(type), place.Xmm, slot);
+      }
+      else {
+        assembler_.Load(IWidth::k64, place.Reg, slot);
       }
     }
 
@@ -978,13 +1031,23 @@ class FunctionEmitter {
   void EmitPrologue() {
     assembler_.Push(Register::kRbp);
     assembler_.Mov(IWidth::k64, Register::kRbp, Register::kRsp);
-    if (frame_bytes_ > 0) {
+    uint32_t unprobed = frame_bytes_;
+    while (kProbeStack && unprobed > kPageBytes) {
+      assembler_.SubImmediate(IWidth::k64, Register::kRsp, static_cast<int32_t>(kPageBytes));
+      assembler_.Load(IWidth::k64, kCallScratch, Address{Register::kRsp, 0});
+      unprobed -= kPageBytes;
+    }
+
+    if (unprobed > 0) {
       assembler_.SubImmediate(IWidth::k64, Register::kRsp,
-                              static_cast<int32_t>(frame_bytes_));
+                              static_cast<int32_t>(unprobed));
     }
     for (uint32_t i = 0; i < saved_integers_; ++i) {
       assembler_.Store(IWidth::k64, Slot(saved_base_ + i * 8),
                        kIntegerPool[i]);
+    }
+    for (uint32_t i = 0; i < kPreservedCount; ++i) {
+      assembler_.Store(IWidth::k64, Slot(saved_base_ + (saved_integers_ + i) * 8), kPreserved[i]);
     }
 
     // A zero register is one of the things this machine does not have, so
@@ -1015,32 +1078,29 @@ class FunctionEmitter {
 
     const std::span<const ir::InstId> params =
         function_.ParamsOf(function_.entry());
-    uint32_t integers = 0;
-    uint32_t floats = 0;
+    ArgumentCursor cursor;
     if (indirect_) {
       assembler_.Store(IWidth::k64, Slot(indirect_base_),
-                       kArgumentRegisters[integers++]);
+                       cursor.Next(false).Reg);
     }
-    uint32_t spilled = 0;
     for (ir::InstId param : params) {
       const TypeId type = TypeOf(param);
       const abi::ValueClass value_class = layouts_.ClassOf(type);
+      if (value_class == abi::ValueClass::kVoid) {
+        continue;
+      }
 
       // Past the registers: the caller left it above this frame, with
       // the saved frame pointer and the return address in between
       // (D154).
-      const bool on_stack =
-          value_class == abi::ValueClass::kFloat
-              ? floats >= std::size(kFloatArgumentRegisters)
-              : (value_class != abi::ValueClass::kVoid &&
-                 integers >= std::size(kArgumentRegisters));
-      if (on_stack) {
+      const ArgumentPlace place =
+          cursor.Next(value_class == abi::ValueClass::kFloat);
+      if (place.OnStack) {
         const Address where =
-            Slot(frame_bytes_ + 16 + spilled * 8);
-        ++spilled;
+            Slot(frame_bytes_ + 16 + kShadowBytes + place.Stack * 8);
         if (value_class == abi::ValueClass::kFloat) {
-          assembler_.LoadFloat(FWidth::k64, XmmRegister::kXmm15, where);
-          FinishFloat(param, XmmRegister::kXmm15);
+          assembler_.LoadFloat(FWidth::k64, kFloatTemp, where);
+          FinishFloat(param, kFloatTemp);
           continue;
         }
         // rax, r10 and r11 only: the rest of the scratch list is
@@ -1064,10 +1124,10 @@ class FunctionEmitter {
       }
 
       if (value_class == abi::ValueClass::kFloat) {
-        FinishFloat(param, kFloatArgumentRegisters[floats++]);
+        FinishFloat(param, place.Xmm);
         continue;
       }
-      const Register source = kArgumentRegisters[integers++];
+      const Register source = place.Reg;
       if (value_class == abi::ValueClass::kAggregate) {
         // An aggregate arrives as a pointer and is copied into this
         // frame's area, so that every aggregate value is addressed the
@@ -1090,6 +1150,9 @@ class FunctionEmitter {
     for (uint32_t i = 0; i < saved_integers_; ++i) {
       assembler_.Load(IWidth::k64, kIntegerPool[i],
                       Slot(saved_base_ + i * 8));
+    }
+    for (uint32_t i = 0; i < kPreservedCount; ++i) {
+      assembler_.Load(IWidth::k64, kPreserved[i], Slot(saved_base_ + (saved_integers_ + i) * 8));
     }
     // From the frame pointer rather than by adding back, so the epilogue is
     // correct however the body left the stack pointer.
@@ -1768,34 +1831,7 @@ class FunctionEmitter {
     const bool indirect = returned.is_valid() &&
                           layouts_.ClassOf(returned) ==
                               abi::ValueClass::kAggregate;
-    uint32_t integers = 0;
-    uint32_t floats = 0;
-    if (indirect) {
-      assembler_.Lea(kArgumentRegisters[integers++], Slot(Info(id).area));
-    }
-    for (size_t index = 1; index < all.size(); ++index) {
-      const ir::InstId operand = all[index];
-      const TypeId type = TypeOf(operand);
-      switch (layouts_.ClassOf(type)) {
-        case abi::ValueClass::kFloat:
-          assembler_.LoadFloat(FWidth::k64,
-                               kFloatArgumentRegisters[floats++],
-                               Slot(SpillOffset(Info(operand).allocation)));
-          break;
-        case abi::ValueClass::kAggregate:
-          assembler_.Lea(kArgumentRegisters[integers++],
-                         Slot(Info(operand).area));
-          break;
-        case abi::ValueClass::kVoid:
-          break;
-        default: {
-          const Register source = UseInt(operand, 0);
-          assembler_.Mov(IWidth::k64, kArgumentRegisters[integers++],
-                         source);
-          break;
-        }
-      }
-    }
+    PassArguments(all, 1, id, indirect);
 
     assembler_.Load(IWidth::k64, kCallScratch, Slot(virtual_target_));
     assembler_.CallRegister(kCallScratch);
@@ -1815,67 +1851,7 @@ class FunctionEmitter {
     const bool indirect = returned.is_valid() &&
                           layouts_.ClassOf(returned) ==
                               abi::ValueClass::kAggregate;
-    uint32_t integers = 0;
-    uint32_t floats = 0;
-    if (indirect) {
-      assembler_.Lea(kArgumentRegisters[integers++], Slot(Info(id).area));
-    }
-
-    uint32_t spilled = 0;
-    for (size_t index = indirect_callee ? 1 : 0; index < all.size();
-         ++index) {
-      const ir::InstId operand = all[index];
-      const TypeId type = TypeOf(operand);
-      const abi::ValueClass value_class = layouts_.ClassOf(type);
-      if (value_class == abi::ValueClass::kVoid) {
-        continue;
-      }
-      const bool on_stack =
-          value_class == abi::ValueClass::kFloat
-              ? floats >= std::size(kFloatArgumentRegisters)
-              : integers >= std::size(kArgumentRegisters);
-      if (on_stack) {
-        const Address where = Slot(spilled * 8);
-        ++spilled;
-        if (value_class == abi::ValueClass::kFloat) {
-          assembler_.LoadFloat(FWidth::k64, XmmRegister::kXmm15,
-                               Slot(SpillOffset(
-                                   Info(operand).allocation)));
-          assembler_.StoreFloat(FWidth::k64, where, XmmRegister::kXmm15);
-          continue;
-        }
-        if (value_class == abi::ValueClass::kAggregate) {
-          const Register area = Scratch(0);
-          assembler_.Lea(area, Slot(Info(operand).area));
-          assembler_.Store(IWidth::k64, where, area);
-          continue;
-        }
-        assembler_.Store(IWidth::k64, where, UseInt(operand, 0));
-        continue;
-      }
-      switch (value_class) {
-        case abi::ValueClass::kFloat: {
-          // Loaded straight into the argument register: a float is always
-          // in a frame slot on this machine, so there is no move to make.
-          assembler_.LoadFloat(FWidth::k64,
-                               kFloatArgumentRegisters[floats++],
-                               Slot(SpillOffset(Info(operand).allocation)));
-          break;
-        }
-        case abi::ValueClass::kAggregate:
-          assembler_.Lea(kArgumentRegisters[integers++],
-                         Slot(Info(operand).area));
-          break;
-        default: {
-          // Through the accumulator, which is never an argument register,
-          // so that loading one argument cannot overwrite another.
-          const Register source = UseInt(operand, 0);
-          assembler_.Mov(IWidth::k64, kArgumentRegisters[integers++],
-                         source);
-          break;
-        }
-      }
-    }
+    PassArguments(all, indirect_callee ? 1 : 0, id, indirect);
 
     if (indirect_callee) {
       assembler_.CallRegister(kCallScratch);
@@ -1898,6 +1874,51 @@ class FunctionEmitter {
     }
 
     StoreResult(id, returned, indirect);
+  }
+
+  void PassArguments(std::span<const ir::InstId> all, size_t first, ir::InstId id, bool indirect) {
+    ArgumentCursor cursor;
+    if (indirect) {
+      assembler_.Lea(cursor.Next(false).Reg, Slot(Info(id).area));
+    }
+
+    for (size_t index = first; index < all.size(); ++index) {
+      const ir::InstId operand = all[index];
+      const abi::ValueClass value_class = layouts_.ClassOf(TypeOf(operand));
+      if (value_class == abi::ValueClass::kVoid) {
+        continue;
+      }
+
+      const ArgumentPlace place = cursor.Next(value_class == abi::ValueClass::kFloat);
+      if (place.OnStack) {
+        const Address where = Slot(kShadowBytes + place.Stack * 8);
+        if (value_class == abi::ValueClass::kFloat) {
+          assembler_.LoadFloat(FWidth::k64, kFloatTemp, Slot(SpillOffset(Info(operand).allocation)));
+          assembler_.StoreFloat(FWidth::k64, where, kFloatTemp);
+          continue;
+        }
+        if (value_class == abi::ValueClass::kAggregate) {
+          const Register area = Scratch(0);
+          assembler_.Lea(area, Slot(Info(operand).area));
+          assembler_.Store(IWidth::k64, where, area);
+          continue;
+        }
+        assembler_.Store(IWidth::k64, where, UseInt(operand, 0));
+        continue;
+      }
+
+      switch (value_class) {
+        case abi::ValueClass::kFloat:
+          assembler_.LoadFloat(FWidth::k64, place.Xmm, Slot(SpillOffset(Info(operand).allocation)));
+          break;
+        case abi::ValueClass::kAggregate:
+          assembler_.Lea(place.Reg, Slot(Info(operand).area));
+          break;
+        default:
+          assembler_.Mov(IWidth::k64, place.Reg, UseInt(operand, 0));
+          break;
+      }
+    }
   }
 
   // Where a call's result goes. An aggregate was written through the
