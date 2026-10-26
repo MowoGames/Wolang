@@ -1829,9 +1829,7 @@ std::string BuildAndRun(const std::string& source, uint64_t seed) {
     }
   }
 
-  const std::string stem = "/tmp/wolang-fuzz-" +
-                           std::to_string(ProcessId()) +
-                           "-" + std::to_string(seed);
+  const std::string stem = codegen::BinaryName((std::filesystem::temp_directory_path() / ("wolang-fuzz-" + std::to_string(ProcessId()) + "-" + std::to_string(seed))).string());
   const codegen::FileCode files[1] = {
       codegen::FileCode{&checked->resolution, &lowered->module}};
   codegen::AotOptions settings;
@@ -1844,9 +1842,11 @@ std::string BuildAndRun(const std::string& source, uint64_t seed) {
   if (!built.skipped.empty()) {
     return "<left out of the binary: " + built.skipped.front() + ">";
   }
-  const std::string link = "c++ -o '" + stem + "' '" + settings.object_path +
-                           "' '" + std::string(codegen::RuntimeArchive()) +
-                           "' -lpthread 2>/dev/null";
+#if defined(_WIN32)
+  const std::string link = codegen::LinkCommand(settings.object_path, stem) + " > NUL 2>&1";
+#else
+  const std::string link = codegen::LinkCommand(settings.object_path, stem) + " 2>/dev/null";
+#endif
   const int linked = std::system(link.c_str());
   std::remove(settings.object_path.c_str());
   if (linked != 0) {
@@ -1854,7 +1854,7 @@ std::string BuildAndRun(const std::string& source, uint64_t seed) {
   }
 
   std::string said;
-  FILE* running = WOLANG_POPEN((stem + " 2>&1").c_str(), "r");
+  FILE* running = WOLANG_POPEN(("\"" + stem + "\" 2>&1").c_str(), "r");
   if (running != nullptr) {
     char buffer[256];
     while (std::fgets(buffer, sizeof(buffer), running) != nullptr) {
@@ -2338,6 +2338,9 @@ int RunBuild(const Options& options) {
   std::string binary = options.output.empty() ? "a.out" : options.output;
   const std::string object =
       options.emit_object ? binary : binary + ".o";
+  if (!options.emit_object && (options.target.empty() || options.target == codegen::HostTriple())) {
+    binary = codegen::BinaryName(binary);
+  }
 
   codegen::AotOptions settings;
   settings.object_path = object;
@@ -2394,13 +2397,7 @@ int RunBuild(const Options& options) {
   // The system's linker, through its C driver: it knows where the C++
   // runtime and the platform's libraries are, and teaching this one that
   // would be a worse copy of it.
-  std::string command = "c++ -o '";
-  command.append(binary);
-  command.append("' '");
-  command.append(object);
-  command.append("' '");
-  command.append(archive);
-  command.append("' -lpthread");
+  std::string command = codegen::LinkCommand(object, binary);
   // What the packages said they need, from their `[link]` tables: a
   // package binding a C library is the one that knows which library, so
   // the manifest carries it and the link line is assembled here (D129).
@@ -2412,13 +2409,10 @@ int RunBuild(const Options& options) {
     }
     const Package& package = *held;
     for (const std::string& path : package.manifest.link_paths) {
-      command.append(" -L'");
-      command.append(path);
-      command.append("'");
+      command.append(codegen::LinkPathFlag(path));
     }
     for (const std::string& library : package.manifest.link_libraries) {
-      command.append(" -l");
-      command.append(library);
+      command.append(codegen::LinkLibraryFlag(library));
     }
     for (const std::string& framework : package.manifest.link_frameworks) {
       command.append(" -framework ");
@@ -2435,6 +2429,7 @@ int RunBuild(const Options& options) {
   // binary holds a map into it, so a debugger needs either the object or
   // a `.dSYM` beside the binary. The second one is what survives the
   // object being deleted (D118).
+#if defined(__APPLE__)
   if (!options.no_debug) {
     std::string bundle = "dsymutil '";
     bundle.append(binary);
@@ -2442,6 +2437,7 @@ int RunBuild(const Options& options) {
     const int collected = std::system(bundle.c_str());
     (void)collected;
   }
+#endif
   std::remove(object.c_str());
   std::fprintf(stdout, "%s\n", binary.c_str());
   return 0;

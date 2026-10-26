@@ -10,6 +10,7 @@ target_include_directories(wolang_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(wolang_tests PRIVATE
     WOLANG_PROJECT_DIR="${PROJECT_SOURCE_DIR}")
 target_link_libraries(wolang_tests PRIVATE wolang::core)
+wolang_ship_llvm_c(wolang_tests)
 wolang_configure_target(wolang_tests)
 
 add_test(NAME unit COMMAND wolang_tests)

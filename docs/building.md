@@ -73,6 +73,19 @@ ctest --preset windows
 The `windows` preset selects `clang-cl` explicitly. Building with
 Microsoft's own compiler does not work and the configure step says so.
 
+The ahead-of-time tier (`wolang build`) needs LLVM's C API, which the
+LLVM installer does not include. Fetch it once, then configure again:
+
+```bat
+python tools/package/fetch_llvm.py
+cmake --preset windows
+```
+
+That puts LLVM 22.1.8's headers, `LLVM-C.lib` and `LLVM-C.dll` in
+`build/llvm-sdk`; the build copies the DLL next to `wolang.exe`. LLVM
+23 miscompiles a remainder in a comparison (D208), so it is 22 on
+purpose.
+
 ## The presets
 
 | Preset | What it is for |

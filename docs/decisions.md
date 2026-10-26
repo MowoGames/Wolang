@@ -2585,3 +2585,25 @@ a weak field of a value would be copied without being counted.
 Found on the way: `p?.x` on a class read the field out of the handle as
 if the handle were the object, which is a wrong answer in machine code
 and a trap in the reference tier. It reads through the address now.
+
+**D208. Ahead of time on Windows, through `LLVM-C.dll`.** LLVM's Windows
+installer ships the DLL that is all of LLVM's C API and nothing to
+compile against it. `tools/package/fetch_llvm.py` takes the headers, the
+import library and that DLL out of the official release archive into
+`build/llvm-sdk`, CMake finds them there, and the DLL is copied beside
+the programs that load it. One DLL rather than LLVM's static libraries:
+no C runtime to agree with, every target included, and the C API is
+the only part this project uses (D98).
+
+`wolang build` links with `clang-cl` and the same C runtime the runtime
+archive was built against; `LinkCommand` is the one place that says how,
+for the driver, the fuzzer and the tests alike.
+
+Pinned to LLVM 22.1.8, not the 23 the compiler itself is built with.
+The differential fuzzer found it in the first sixty programs: LLVM 23's
+interprocedural constant propagation folds `x != 6 % x` to false when
+`x` comes from a call and is known not to be zero. The IR before the
+pass is correct and LLVM 18 and 22 agree with the interpreter; 23.1.3
+and 23.1.4 do not. `WOLANG_AOT_IR=<file>` writes the module before and
+after the optimizer, and `WOLANG_LLVM_ARGS` hands LLVM its own flags --
+`-opt-bisect-limit` is what named the pass.

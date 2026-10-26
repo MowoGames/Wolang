@@ -59,6 +59,13 @@ endif()
 if(WOLANG_WITH_LLVM)
     target_compile_definitions(wolang_core PUBLIC WOLANG_WITH_LLVM=1)
     target_include_directories(wolang_core SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+endif()
+if(WOLANG_LLVM_C)
+    # One library that is all of LLVM, every target included.
+    target_include_directories(wolang_core SYSTEM PRIVATE "${WOLANG_LLVM_C_ROOT}/include")
+    target_link_libraries(wolang_core PUBLIC "${WOLANG_LLVM_C_ROOT}/lib/LLVM-C.lib")
+    target_compile_definitions(wolang_core PUBLIC WOLANG_ALL_TARGETS=1)
+elseif(WOLANG_WITH_LLVM)
     # Every target this LLVM has, not just this machine's: a compiler
     # that can only emit code for the machine it runs on is one that
     # cannot build the Windows binary from the laptop, and `--target` is
@@ -84,6 +91,9 @@ endif()
 # to the linker without being told.
 target_compile_definitions(wolang_core PRIVATE
     WOLANG_RUNTIME_ARCHIVE="$<TARGET_FILE:wolang_runtime>"
+    # The C runtime the archive was built against, which a binary linked
+    # with it on Windows has to use as well.
+    WOLANG_RUNTIME_CRT="$<IF:$<CONFIG:Debug>,/MDd,/MD>"
     # Where the standard library is in this tree, so that `wolang new`
     # can point a package at it. An installed compiler finds it next to
     # itself instead (D132).

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <memory>
 #include <span>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -19,6 +20,7 @@
 
 #if WOLANG_WITH_LLVM
 #include <llvm-c/Analysis.h>
+#include <llvm-c/Support.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/DebugInfo.h>
 #include <llvm-c/Target.h>
@@ -57,6 +59,61 @@ std::string_view RuntimeArchive() {
 #else
   return {};
 #endif
+}
+
+std::string LinkCommand(std::string_view object, std::string_view binary) {
+  std::string command;
+#if defined(_WIN32)
+#ifdef WOLANG_RUNTIME_CRT
+  const std::string_view crt = WOLANG_RUNTIME_CRT;
+#else
+  const std::string_view crt = "/MD";
+#endif
+  command.append("clang-cl /nologo ");
+  command.append(crt);
+  command.append(" \"");
+  command.append(object);
+  command.append("\" \"");
+  command.append(RuntimeArchive());
+  command.append("\" /Fe\"");
+  command.append(binary);
+  command.append("\" /link ws2_32.lib bcrypt.lib");
+#else
+  command.append("c++ -o '");
+  command.append(binary);
+  command.append("' '");
+  command.append(object);
+  command.append("' '");
+  command.append(RuntimeArchive());
+  command.append("' -lpthread");
+#endif
+  return command;
+}
+
+std::string LinkPathFlag(std::string_view path) {
+#if defined(_WIN32)
+  return " /LIBPATH:\"" + std::string(path) + "\"";
+#else
+  return " -L'" + std::string(path) + "'";
+#endif
+}
+
+std::string LinkLibraryFlag(std::string_view library) {
+#if defined(_WIN32)
+  return " " + std::string(library) + ".lib";
+#else
+  return " -l" + std::string(library);
+#endif
+}
+
+std::string BinaryName(std::string_view stem) {
+  std::string name(stem);
+#if defined(_WIN32)
+  if (name.size() < 4 || name.compare(name.size() - 4, 4, ".exe") != 0) {
+    name.append(".exe");
+  }
+#endif
+  return name;
 }
 
 #if !WOLANG_WITH_LLVM
@@ -1727,6 +1784,37 @@ void Translator::EmitTerminator(const ir::Inst& inst) {
 
 AotResult Translator::Run(const AotOptions& options) {
   AotResult result;
+  static const bool sm_Parsed = [] {
+    const char* given = std::getenv("WOLANG_LLVM_ARGS");
+    if (given == nullptr || given[0] == 0) {
+      return false;
+    }
+
+    static std::vector<std::string> words;
+    words.push_back("wolang");
+    std::string word;
+    for (const char* c = given; ; ++c) {
+      if (*c == ' ' || *c == 0) {
+        if (!word.empty()) {
+          words.push_back(word);
+          word.clear();
+        }
+        if (*c == 0) {
+          break;
+        }
+        continue;
+      }
+      word.push_back(*c);
+    }
+
+    static std::vector<const char*> pointers;
+    for (const std::string& held : words) {
+      pointers.push_back(held.c_str());
+    }
+    LLVMParseCommandLineOptions(static_cast<int>(pointers.size()), pointers.data(), "wolang");
+    return true;
+  }();
+  (void)sm_Parsed;
   // Every target this build has, so that `--target` can name one (D160).
   // When the build asked for this machine only, that is what there is --
   // and a triple for anything else then says so rather than producing a
@@ -1838,10 +1926,21 @@ AotResult Translator::Run(const AotOptions& options) {
     LLVMDisposeMessage(complaint);
   }
 
+  if (const char* dump = std::getenv("WOLANG_AOT_IR"); dump != nullptr && dump[0] != 0) {
+    char* failed = nullptr;
+    LLVMPrintModuleToFile(mod_, dump, &failed);
+    if (failed != nullptr) {
+      LLVMDisposeMessage(failed);
+    }
+  }
+
   if (result.error.empty() && options.optimization > 0) {
     std::string pipeline = "default<O";
     pipeline.push_back(static_cast<char>('0' + options.optimization));
     pipeline.push_back('>');
+    if (const char* given = std::getenv("WOLANG_AOT_PASSES"); given != nullptr && given[0] != 0) {
+      pipeline = given;
+    }
     LLVMPassBuilderOptionsRef passes = LLVMCreatePassBuilderOptions();
     if (LLVMErrorRef failed =
             LLVMRunPasses(mod_, pipeline.c_str(), machine, passes)) {
@@ -1850,6 +1949,13 @@ AotResult Translator::Run(const AotOptions& options) {
       LLVMDisposeErrorMessage(said);
     }
     LLVMDisposePassBuilderOptions(passes);
+    if (const char* dump = std::getenv("WOLANG_AOT_IR"); dump != nullptr && dump[0] != 0) {
+      char* failed = nullptr;
+      LLVMPrintModuleToFile(mod_, (std::string(dump) + ".opt").c_str(), &failed);
+      if (failed != nullptr) {
+        LLVMDisposeMessage(failed);
+      }
+    }
   }
 
   if (result.error.empty()) {

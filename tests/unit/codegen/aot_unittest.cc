@@ -3,13 +3,16 @@
 
 #include "wolang/codegen/aot.h"
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <process.h>
+#else
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -41,9 +44,6 @@ class Binary {
 
   // What the program printed, or a `<...>` saying what went wrong instead.
   std::string Output() {
-#if defined(_WIN32)
-    return "<linking is not wired on this system>";
-#else
     Database database;
     const FileId file = database.AddFile("<test>", code_);
     const LoweredFile* lowered = database.Lowered(file);
@@ -63,12 +63,17 @@ class Binary {
 
     // A name of this process's own, so that two tests running at once do
     // not write each other's object file.
-    path_ = "/tmp/wolang-aot-" + std::to_string(::getpid()) + "-" +
-            std::to_string(++serial_);
+#if defined(_WIN32)
+    const int process = _getpid();
+#else
+    const int process = static_cast<int>(::getpid());
+#endif
+    const std::filesystem::path stem = std::filesystem::temp_directory_path() / ("wolang-aot-" + std::to_string(process) + "-" + std::to_string(++serial_));
+    path_ = BinaryName(stem.string());
     const FileCode files[1] = {
         FileCode{&checked->resolution, &lowered->module}};
     AotOptions options;
-    options.object_path = path_ + ".o";
+    options.object_path = stem.string() + ".o";
     options.optimization = 2;
     const AotResult result =
         EmitObject(database.interner(), database.types(), files, options);
@@ -79,9 +84,11 @@ class Binary {
       return "<left out: " + result.skipped.front() + ">";
     }
 
-    std::string link = "c++ -o '" + path_ + "' '" + options.object_path +
-                       "' '" + std::string(RuntimeArchive()) +
-                       "' -lpthread 2>/dev/null";
+#if defined(_WIN32)
+    const std::string link = LinkCommand(options.object_path, path_) + " > NUL 2>&1";
+#else
+    const std::string link = LinkCommand(options.object_path, path_) + " 2>/dev/null";
+#endif
     const int linked = std::system(link.c_str());
     std::remove(options.object_path.c_str());
     if (linked != 0) {
@@ -89,7 +96,11 @@ class Binary {
     }
 
     std::string said;
+#if defined(_WIN32)
+    FILE* running = ::_popen(("\"" + path_ + "\" 2>&1").c_str(), "r");
+#else
     FILE* running = ::popen((path_ + " 2>&1").c_str(), "r");
+#endif
     if (running == nullptr) {
       return "<could not run>";
     }
@@ -97,8 +108,13 @@ class Binary {
     while (std::fgets(buffer, sizeof(buffer), running) != nullptr) {
       said.append(buffer);
     }
+#if defined(_WIN32)
+    const int code = ::_pclose(running);
+#else
     const int status = ::pclose(running);
-    while (!said.empty() && said.back() == '\n') {
+    const int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
+    while (!said.empty() && (said.back() == '\n' || said.back() == '\r')) {
       said.pop_back();
     }
     // How it ended, as part of the answer: a program says what it
@@ -106,10 +122,8 @@ class Binary {
     // import `std.io` -- a single file is not a package, and the point of
     // these tests is the back end rather than the library.
     said.append(said.empty() ? "exit " : " exit ");
-    said.append(std::to_string(WIFEXITED(status) ? WEXITSTATUS(status)
-                                                 : -1));
+    said.append(std::to_string(code));
     return said;
-#endif
   }
 
  private:
@@ -121,11 +135,7 @@ class Binary {
 int Binary::serial_ = 0;
 
 static bool Links() {
-#if defined(_WIN32)
-  return false;
-#else
   return HasAotBackend();
-#endif
 }
 
 WOLANG_TEST(AotTest, RunsArithmeticAndControlFlow) {

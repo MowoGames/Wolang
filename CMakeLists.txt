@@ -64,13 +64,39 @@ if(WOLANG_WITH_LLVM)
     # when C is not a language of the project.
     enable_language(C)
     find_package(LLVM CONFIG QUIET)
+    # Windows: LLVM's installer ships `LLVM-C.dll` but not the headers or a
+    # CMake package, so the C API comes from a release archive instead --
+    # `tools/package/fetch_llvm.py` puts one in `build/llvm-sdk` (D208).
+    set(WOLANG_LLVM_C_ROOT "" CACHE PATH "An LLVM release with include/llvm-c, lib/LLVM-C.lib and bin/LLVM-C.dll")
+    if(NOT LLVM_FOUND AND WIN32 AND NOT WOLANG_LLVM_C_ROOT)
+        # 22, not 23: LLVM 23's IPSCCP folds `x != 6 % x` to false (D208).
+        set(WOLANG_LLVM_C_VERSION "22.1.8")
+        file(GLOB WOLANG_LLVM_C_FOUND "${PROJECT_SOURCE_DIR}/build/llvm-sdk/clang+llvm-${WOLANG_LLVM_C_VERSION}-*-windows-msvc")
+        if(WOLANG_LLVM_C_FOUND)
+            list(GET WOLANG_LLVM_C_FOUND 0 WOLANG_LLVM_C_FIRST)
+            set(WOLANG_LLVM_C_ROOT "${WOLANG_LLVM_C_FIRST}" CACHE PATH "" FORCE)
+        endif()
+    endif()
+    set(WOLANG_LLVM_C OFF)
     if(LLVM_FOUND)
         message(STATUS "Wolang: ahead-of-time backend with LLVM ${LLVM_PACKAGE_VERSION}")
+    elseif(WIN32 AND EXISTS "${WOLANG_LLVM_C_ROOT}/include/llvm-c/Core.h" AND EXISTS "${WOLANG_LLVM_C_ROOT}/lib/LLVM-C.lib")
+        set(WOLANG_LLVM_C ON)
+        set(WOLANG_LLVM_C_DLL "${WOLANG_LLVM_C_ROOT}/bin/LLVM-C.dll")
+        message(STATUS "Wolang: ahead-of-time backend with LLVM-C from ${WOLANG_LLVM_C_ROOT}")
     else()
         message(STATUS "Wolang: no LLVM found, building without the ahead-of-time backend")
         set(WOLANG_WITH_LLVM OFF)
     endif()
 endif()
+
+# Puts `LLVM-C.dll` beside a program that links it, which is where Windows
+# looks first.
+function(wolang_ship_llvm_c target)
+    if(WOLANG_LLVM_C AND EXISTS "${WOLANG_LLVM_C_DLL}")
+        add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different "${WOLANG_LLVM_C_DLL}" "$<TARGET_FILE_DIR:${target}>")
+    endif()
+endfunction()
 
 include(GNUInstallDirs)
 include(cmake/WolangCompilerOptions.cmake)

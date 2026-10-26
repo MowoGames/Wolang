@@ -59,6 +59,19 @@ struct AotResult {
 // True when this build has the backend at all.
 bool HasAotBackend();
 
+// The command that links |object| and the runtime into |binary| with the
+// system's own linker: `c++` where there is one, `clang-cl` on Windows.
+// What a package adds goes after it, in that linker's own spelling (D208).
+std::string LinkCommand(std::string_view object, std::string_view binary);
+
+// What the linker on this system calls a library search path and a
+// library, for the `[link]` table of a manifest.
+std::string LinkPathFlag(std::string_view path);
+std::string LinkLibraryFlag(std::string_view library);
+
+// Where a binary named |stem| ends up: `.exe` on Windows.
+std::string BinaryName(std::string_view stem);
+
 // What this machine is, as an LLVM triple. Empty when there is no
 // backend to ask. A `--target` that matches it is not a cross build, so
 // the driver links it the usual way (D160).
