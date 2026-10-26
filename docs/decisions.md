@@ -2655,3 +2655,20 @@ the engine's docs workflow does.
 `wolang doc` writes one package to one file. The CI step that asked it
 for three directories and a folder of per-module files had never run.
 
+**D211. TLS lives in the runtime, and on Windows it is Schannel.**
+`lib/tls` declared OpenSSL's functions itself and linked `ssl` and
+`crypto`, which is a package that works where OpenSSL is installed and
+nowhere else -- not on Windows, and not in a binary built ahead of time
+on a machine that has no OpenSSL headers. Four runtime calls replace it:
+`wolang_tls_open`, `_read`, `_write` and `_close`, over a runtime socket.
+
+Windows answers them with Schannel through SSPI, the TLS every Windows
+program already trusts, with the system's roots and its own name check.
+Elsewhere OpenSSL is loaded with `dlopen` the first time a stream opens,
+so a program that never speaks TLS needs no OpenSSL at all, and the
+package needs no `[link]` table. Still the system's TLS rather than ours
+(D150); only where it is reached from moved.
+
+Checked on both systems against a real server and against expired,
+self-signed and wrong-name certificates, which all refuse.
+

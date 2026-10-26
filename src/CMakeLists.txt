@@ -30,7 +30,7 @@ add_library(wolang::runtime ALIAS wolang_runtime)
 # of libc everywhere else (D159).
 if(WIN32)
     # Sockets, and the cryptographic provider a token is made from.
-    target_link_libraries(wolang_runtime PUBLIC ws2_32 bcrypt)
+    target_link_libraries(wolang_runtime PUBLIC ws2_32 bcrypt secur32)
 
 else()
     find_library(WOLANG_DL_LIB dl)
@@ -49,7 +49,7 @@ target_include_directories(wolang_core PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 if(WIN32)
-    target_link_libraries(wolang_core PUBLIC ws2_32 bcrypt)
+    target_link_libraries(wolang_core PUBLIC ws2_32 bcrypt secur32)
 
 endif()
 

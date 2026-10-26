@@ -527,9 +527,8 @@ python3 tools/package/make_amalgamation.py # компилятор одним ф�
   arm64 (нужен эмиттер arm64 с соглашением Windows).
 - ~~AOT на Windows~~ (D208): `LLVM-C.dll` 22.1.8, линковка `clang-cl`.
   LLVM 23 портит `x != 6 % x` в IPSCCP — закреплена 22.
-- TLS на Windows: `lib/tls` зовёт OpenSSL, которого на Windows нет;
-  нужен бэкенд на Schannel (без него `http`-клиент с HTTPS и сборка
-  `examples/server` через AOT не работают на Windows).
+- ~~TLS на Windows~~ (D211): Schannel на Windows, OpenSSL через `dlopen`
+  в остальных системах; HTTPS и AOT-сборка `http` работают везде.
 - Ошибка, исправленная в одном эмиттере, ищется в другом (D200) —
   проверка, а не правило на словах.
 

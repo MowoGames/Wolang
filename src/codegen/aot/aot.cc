@@ -77,7 +77,7 @@ std::string LinkCommand(std::string_view object, std::string_view binary) {
   command.append(RuntimeArchive());
   command.append("\" /Fe\"");
   command.append(binary);
-  command.append("\" /link ws2_32.lib bcrypt.lib");
+  command.append("\" /link ws2_32.lib bcrypt.lib secur32.lib");
 #else
   command.append("c++ -o '");
   command.append(binary);
@@ -86,6 +86,9 @@ std::string LinkCommand(std::string_view object, std::string_view binary) {
   command.append("' '");
   command.append(RuntimeArchive());
   command.append("' -lpthread");
+#if !defined(__APPLE__)
+  command.append(" -ldl");
+#endif
 #endif
   return command;
 }
