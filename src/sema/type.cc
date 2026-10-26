@@ -76,6 +76,8 @@ std::string_view TypeKindName(TypeKind kind) {
       return "quantity";
     case TypeKind::kErrorSet:
       return "error set";
+    case TypeKind::kProjection:
+      return "associated type";
   }
   return "error";
 }
@@ -233,6 +235,15 @@ TypeId TypeStore::Parameter(Symbol name,
   key.type.declaring_file = owner;
   key.type.declaring_item = index;
   key.args = bounds;
+  return Intern(std::move(key));
+}
+
+TypeId TypeStore::Projection(TypeId owner, Symbol name) {
+  Key key;
+  std::memset(&key.type, 0, sizeof(key.type));
+  key.type.kind = TypeKind::kProjection;
+  key.type.base = owner;
+  key.type.name = name;
   return Intern(std::move(key));
 }
 
@@ -567,10 +578,71 @@ bool CarriesElement(TypeKind kind) {
 }
 
 bool CarriesBase(TypeKind kind) {
-  return kind == TypeKind::kInstance;
+  return kind == TypeKind::kInstance || kind == TypeKind::kProjection;
 }
 
 }  // namespace
+
+bool TypeStore::MentionsProjection(TypeId id) const {
+  if (!id.is_valid()) {
+    return false;
+  }
+  const Type& type = Get(id);
+  if (type.kind == TypeKind::kProjection) {
+    return true;
+  }
+  if (CarriesElement(type.kind) && MentionsProjection(type.element)) {
+    return true;
+  }
+  if (CarriesBase(type.kind) && MentionsProjection(type.base)) {
+    return true;
+  }
+  for (TypeId arg : ArgumentsOf(id)) {
+    if (MentionsProjection(arg)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+TypeId TypeStore::AnswerProjections(TypeId id, const std::function<TypeId(TypeId, Symbol)>& answer) {
+  if (!MentionsProjection(id)) {
+    return id;
+  }
+
+  const Type type = Get(id);
+  if (type.kind == TypeKind::kProjection) {
+    return answer(AnswerProjections(type.base, answer), type.name);
+  }
+
+  std::vector<TypeId> args;
+  for (TypeId arg : ArgumentsOf(id)) {
+    args.push_back(AnswerProjections(arg, answer));
+  }
+  const TypeId element = CarriesElement(type.kind) ? AnswerProjections(type.element, answer) : type.element;
+  switch (type.kind) {
+    case TypeKind::kOptional:
+      return Optional(element);
+    case TypeKind::kFallible:
+      return Fallible(element, type.base);
+    case TypeKind::kSlice:
+      return Slice(element, type.is_soa);
+    case TypeKind::kArray:
+      return Array(element, type.length, type.is_soa);
+    case TypeKind::kPointer:
+      return Pointer(element, type.is_mutable);
+    case TypeKind::kReference:
+      return Reference(element, type.is_mutable);
+    case TypeKind::kTuple:
+      return Tuple(args);
+    case TypeKind::kFunction:
+      return Function(args, element);
+    case TypeKind::kInstance:
+      return Instance(AnswerProjections(type.base, answer), args);
+    default:
+      return id;
+  }
+}
 
 bool TypeStore::MentionsParameter(TypeId id) const {
   if (!id.is_valid()) {
@@ -630,6 +702,10 @@ bool TypeStore::Unify(TypeId pattern,
   }
 
   const Type& left = Get(pattern);
+  // Nothing can be learned about `C` from what `C.Item` turned out to be.
+  if (left.kind == TypeKind::kProjection) {
+    return true;
+  }
   if (left.kind == TypeKind::kParameter) {
     for (const auto& [parameter, bound] : *out) {
       if (parameter == pattern) {
@@ -709,6 +785,8 @@ TypeId TypeStore::Substitute(TypeId id, const Substitution& substitution) {
       return Function(args, element);
     case TypeKind::kInstance:
       return Instance(Substitute(type.base, substitution), args);
+    case TypeKind::kProjection:
+      return Projection(Substitute(type.base, substitution), type.name);
     default:
       return id;
   }
@@ -752,6 +830,9 @@ std::string TypeStore::Describe(const StringInterner& interner,
     case TypeKind::kNamed:
     case TypeKind::kParameter:
       return std::string(interner.Text(type.name));
+
+    case TypeKind::kProjection:
+      return Describe(interner, type.base) + "." + std::string(interner.Text(type.name));
 
     case TypeKind::kInstance: {
       std::string text = Describe(interner, type.base);

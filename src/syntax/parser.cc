@@ -1337,7 +1337,10 @@ ItemId Parser::ParseTypeAlias(Item item, size_t start) {
   item.kind = ItemKind::kTypeAlias;
   item.name = ExpectName(&item.name_span);
   item.generics = ParseGenericParameters();
-  if (ExpectToken(TokenKind::kEq)) {
+  if (Eat(TokenKind::kColon)) {
+    item.super_type = ParseType();
+  }
+  if (Eat(TokenKind::kEq)) {
     item.type = ParseType();
   }
   item.span = SpanFrom(start);

@@ -266,6 +266,11 @@ bool FileResolution::Satisfies(TypeId type, TypeId bound) const {
     return true;
   }
 
+  // `ListWalk<int>` satisfies what `extend ListWalk<T> as ...` declared.
+  if (types != nullptr && types->KindOf(type) == TypeKind::kInstance && Satisfies(types->Get(type).base, bound)) {
+    return true;
+  }
+
   TypeId current = type;
   for (size_t depth = 0; depth <= relations.size() && current.is_valid();
        ++depth) {
@@ -636,6 +641,21 @@ TypeId TypeResolver::ResolvePath(const Ast& ast, const TypeRef& type) {
   if (path.empty()) {
     return types_->error();
   }
+  // `C.Walker.Item` where `C` is a type parameter: each segment after the
+  // first is an associated type of what came before (D212).
+  if (path.size() > 1) {
+    for (auto it = type_parameters_.rbegin(); it != type_parameters_.rend(); ++it) {
+      if (it->first != path.front()) {
+        continue;
+      }
+      TypeId projected = it->second;
+      for (size_t i = 1; i < path.size(); ++i) {
+        projected = types_->Projection(projected, path[i]);
+      }
+      return projected;
+    }
+  }
+
   // Only the last segment names the type; earlier segments are the module or
   // the enclosing type, which module resolution already checked.
   const Symbol name = path.back();
@@ -1074,7 +1094,7 @@ void ResolveSignatures(TypeStore* types,
   for (size_t round = 0; round <= alias_count; ++round) {
     bool changed = false;
     for (uint32_t index = 0; index < tree.entries.size(); ++index) {
-      if (tree.entries[index].kind != ItemKind::kTypeAlias) {
+      if (tree.entries[index].kind != ItemKind::kTypeAlias || tree.entries[index].parent != ItemTreeEntry::kNoParent) {
         continue;
       }
       const ItemId id = ResolveItem(ast, index);
@@ -1161,6 +1181,17 @@ void ResolveSignatures(TypeStore* types,
         ++position;
         ++pushed;
       }
+      // Inside an ability, `Item` is the associated type of whatever
+      // implements it: a projection of the ability itself, which a use
+      // replaces with the type it is used on (D212).
+      if (tree.entries[owner].kind == ItemKind::kAbility && resolution->item_types[owner].is_valid()) {
+        for (uint32_t child = owner + 1; child < tree.entries.size(); ++child) {
+          if (tree.entries[child].parent == owner && tree.entries[child].kind == ItemKind::kTypeAlias) {
+            resolver.PushTypeParameter(tree.entries[child].name, types->Projection(resolution->item_types[owner], tree.entries[child].name));
+            ++pushed;
+          }
+        }
+      }
     }
 
     switch (entry.kind) {
@@ -1185,6 +1216,11 @@ void ResolveSignatures(TypeStore* types,
       case ItemKind::kTypeAlias:
         if (item.type.is_valid()) {
           resolution->item_types[index] = resolver.Resolve(ast, item.type);
+        }
+        // `type Walker: Iterator` in an ability: what the member records
+        // is the bound an implementation's choice has to satisfy.
+        else if (entry.kind == ItemKind::kTypeAlias && item.super_type.is_valid()) {
+          resolution->item_types[index] = resolver.Resolve(ast, item.super_type);
         }
         break;
       case ItemKind::kVariant: {
@@ -1296,6 +1332,9 @@ void ResolveSignatures(TypeStore* types,
         case ItemKind::kDeinit:
           member.kind = MemberKind::kDeinit;
           break;
+        case ItemKind::kTypeAlias:
+          member.kind = MemberKind::kAssociatedType;
+          break;
         default:
           member.kind =
               HasFlag(member_entry.flags, ItemFlags::kDerived)
@@ -1383,6 +1422,11 @@ void ResolveSignatures(TypeStore* types,
     if (!DeclaresAType(entry.kind) || !resolution->item_types[index].is_valid()) {
       continue;
     }
+    // A `type` inside an ability or an extend is an associated type, a
+    // member of its owner rather than a type of its own.
+    if (entry.kind == ItemKind::kTypeAlias && entry.parent != ItemTreeEntry::kNoParent) {
+      continue;
+    }
 
     TypeMembers table;
     table.type = resolution->item_types[index];
@@ -1430,14 +1474,52 @@ void ResolveSignatures(TypeStore* types,
       continue;
     }
     const Item& item = ast.Get(item_id);
-    const TypeId target = item.target_type.is_valid()
-                              ? resolver.Resolve(ast, item.target_type)
-                              : TypeId{};
+    // `extend<T> Box<T>`: the parameters it declares, the same ones its
+    // members' signatures were written in.
+    size_t declared_here = 0;
+    uint32_t position = 0;
+    for (GenericParamId generic_id : ast.Get(item.generics)) {
+      const GenericParam& generic = ast.Get(generic_id);
+      std::vector<TypeId> bounds;
+      for (TypeRefId bound : ast.Get(generic.bounds)) {
+        bounds.push_back(resolver.Resolve(ast, bound));
+      }
+      resolver.PushTypeParameter(generic.name, types->Parameter(generic.name, index, position, bounds));
+      ++position;
+      ++declared_here;
+    }
+    TypeId target = item.target_type.is_valid()
+                        ? resolver.Resolve(ast, item.target_type)
+                        : TypeId{};
     if (!target.is_valid()) {
+      resolver.PopTypeParameters(declared_here);
       continue;
     }
 
     std::vector<Member> added = members_of(index);
+
+    // `extend ListWalk<T>` for every `T`: the members belong to `ListWalk`
+    // itself, written in its own parameters, so that `ListWalk<int>` finds
+    // them the way it finds the ones declared inside it (D212).
+    if (types->KindOf(target) == TypeKind::kInstance) {
+      const TypeId base = types->Get(target).base;
+      const std::vector<TypeId> given = types->ArgumentsOf(target);
+      const std::span<const TypeId> declared = resolution->ParametersOf(base);
+      bool every = given.size() == declared.size() && !given.empty();
+      for (size_t i = 0; every && i < given.size(); ++i) {
+        every = types->KindOf(given[i]) == TypeKind::kParameter && std::count(given.begin(), given.end(), given[i]) == 1;
+      }
+      if (every) {
+        TypeStore::Substitution renamed;
+        for (size_t i = 0; i < given.size(); ++i) {
+          renamed.emplace_back(given[i], declared[i]);
+        }
+        for (Member& member : added) {
+          member.type = types->Substitute(member.type, renamed);
+        }
+        target = base;
+      }
+    }
     bool merged = false;
     for (TypeMembers& table : resolution->type_members) {
       if (table.type != target) {
@@ -1458,9 +1540,11 @@ void ResolveSignatures(TypeStore* types,
 
     // `extend T as Ability` is the declaration of conformance.
     if (!item.super_type.is_valid()) {
+      resolver.PopTypeParameters(declared_here);
       continue;
     }
     const TypeId ability = resolver.Resolve(ast, item.super_type);
+    resolver.PopTypeParameters(declared_here);
     if (!ability.is_valid()) {
       continue;
     }

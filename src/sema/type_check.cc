@@ -32,6 +32,7 @@ constexpr std::string_view kMissingAbilityMethod = "E0402";
 constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadWeak = "E0137";
+constexpr std::string_view kTypeWithoutTarget = "E0138";
 constexpr std::string_view kBadConversion = "E0124";
 // Writing to a field of the receiver, which needs a receiver that is a
 // reference. A method is passed its object by value today, so the write
@@ -421,6 +422,16 @@ class Checker {
   TypeId CheckCall(ExprId id, const Expr& expr);
   TypeId CheckIndex(const Expr& expr);
   TypeId CheckField(const Expr& expr);
+  // What a type parameter or a projection is known to be: its bounds, and
+  // for `C.Walker` the bound `type Walker: Iterator` declared (D212).
+  std::vector<TypeId> BoundsOf(TypeId type);
+  const Member* MemberThroughBounds(TypeId receiver, Symbol name, TypeId* ability);
+  // An ability's signature as it reads on |receiver|: its own `Item`
+  // becomes `receiver.Item`.
+  TypeId AsSelf(TypeId type, TypeId ability, TypeId receiver);
+  // Every projection of a concrete type replaced by what its
+  // implementation said: `ListWalk<int>.Item` is `int`.
+  TypeId Normalize(TypeId type);
   TypeId Instantiate(ExprId id, const Expr& expr, TypeId declared);
   void CheckConstructor(const Expr& expr, TypeId type);
 
@@ -431,7 +442,8 @@ class Checker {
   // The member of the enclosing type named |name|, or null when there is no
   // enclosing type or it has no such member.
   const Member* SelfMember(Symbol name) const;
-  TypeId IteratedElement(TypeId sequence) const;
+  TypeId IteratedElement(TypeId sequence);
+  TypeId IteratedWalker(TypeId iterator);
   TypeId CheckIf(const Expr& expr, TypeId expected);
   void NarrowOnNullCheck(ExprId condition);
   TypeId CheckMatch(const Expr& expr, TypeId expected);
@@ -824,8 +836,27 @@ TypeId Checker::CheckLiteral(const Expr& expr, TypeId expected) {
 // What `for x in value` binds when the value's own type says how to walk
 // it: `Iterate` hands back something with `Next` and `Value`, and this is
 // what `Value` gives.
-TypeId Checker::IteratedElement(TypeId sequence) const {
+TypeId Checker::IteratedElement(TypeId sequence) {
   const TypeId named = types_->StripWrappers(sequence);
+  // `for x in items` where `items: C` and `C: Iterable`: the walker is
+  // `C.Walker` and the element `C.Walker.Item` (D212).
+  if (types_->KindOf(named) == TypeKind::kParameter || types_->KindOf(named) == TypeKind::kProjection) {
+    TypeId ability;
+    const Member* iterate = MemberThroughBounds(named, interner_->Lookup("Iterate"), &ability);
+    if (iterate == nullptr || types_->KindOf(iterate->type) != TypeKind::kFunction) {
+      return TypeId{};
+    }
+    const TypeId walker = Normalize(AsSelf(types_->ElementOf(iterate->type), ability, named));
+    if (types_->KindOf(walker) != TypeKind::kParameter && types_->KindOf(walker) != TypeKind::kProjection) {
+      return IteratedWalker(walker);
+    }
+    TypeId walks;
+    const Member* value = MemberThroughBounds(walker, interner_->Lookup("Value"), &walks);
+    if (value == nullptr || types_->KindOf(value->type) != TypeKind::kFunction) {
+      return TypeId{};
+    }
+    return Normalize(AsSelf(types_->ElementOf(value->type), walks, walker));
+  }
   if (types_->KindOf(named) != TypeKind::kNamed &&
       types_->KindOf(named) != TypeKind::kInstance) {
     return TypeId{};
@@ -845,14 +876,24 @@ TypeId Checker::IteratedElement(TypeId sequence) const {
       types_->KindOf(iterate->type) != TypeKind::kFunction) {
     return TypeId{};
   }
-  const TypeId iterator = types_->ElementOf(iterate->type);
+  return IteratedWalker(types_->ElementOf(iterate->type));
+}
+
+TypeId Checker::IteratedWalker(TypeId iterator) {
+  const auto member_of = [&](TypeId owner, std::string_view name) {
+    const Symbol symbol = interner_->Lookup(name);
+    if (const Member* own = resolution_->FindMember(owner, symbol)) {
+      return own;
+    }
+    return resolution_->FindInheritedMember(owner, symbol);
+  };
   const Member* next = member_of(iterator, "Next");
   const Member* value = member_of(iterator, "Value");
   if (next == nullptr || value == nullptr ||
       types_->KindOf(value->type) != TypeKind::kFunction) {
     return TypeId{};
   }
-  return types_->ElementOf(value->type);
+  return Normalize(types_->ElementOf(value->type));
 }
 
 const Member* Checker::SelfMember(Symbol name) const {
@@ -1575,7 +1616,7 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
       message.append(std::to_string(args.size()));
       Report(kWrongArguments, std::move(message), expr.span);
     }
-    return types_->Substitute(result, substitution);
+    return Normalize(types_->Substitute(result, substitution));
   }
 
   if (params.size() != args.size()) {
@@ -1842,6 +1883,53 @@ void Checker::CheckConstructor(const Expr& expr, TypeId type) {
   }
 }
 
+std::vector<TypeId> Checker::BoundsOf(TypeId type) {
+  if (types_->KindOf(type) == TypeKind::kParameter) {
+    return types_->ArgumentsOf(type);
+  }
+  std::vector<TypeId> bounds;
+  if (types_->KindOf(type) != TypeKind::kProjection) {
+    return bounds;
+  }
+  const Symbol name = types_->Get(type).name;
+  for (const TypeId owner : BoundsOf(types_->Get(type).base)) {
+    const Member* associated = resolution_->FindMember(owner, name);
+    if (associated != nullptr && associated->kind == MemberKind::kAssociatedType && associated->type.is_valid()) {
+      bounds.push_back(associated->type);
+    }
+  }
+  return bounds;
+}
+
+const Member* Checker::MemberThroughBounds(TypeId receiver, Symbol name, TypeId* ability) {
+  for (const TypeId bound : BoundsOf(receiver)) {
+    if (const Member* member = resolution_->FindMember(bound, name)) {
+      *ability = bound;
+      return member;
+    }
+  }
+  return nullptr;
+}
+
+TypeId Checker::AsSelf(TypeId type, TypeId ability, TypeId receiver) {
+  return types_->AnswerProjections(type, [&](TypeId owner, Symbol name) {
+    return types_->Projection(owner == ability ? receiver : owner, name);
+  });
+}
+
+TypeId Checker::Normalize(TypeId type) {
+  return types_->AnswerProjections(type, [&](TypeId owner, Symbol name) {
+    const TypeKind kind = types_->KindOf(owner);
+    if (kind == TypeKind::kNamed || kind == TypeKind::kInstance) {
+      const Member* answer = resolution_->FindMember(owner, name);
+      if (answer != nullptr && answer->kind == MemberKind::kAssociatedType && answer->type.is_valid()) {
+        return Normalize(answer->type);
+      }
+    }
+    return types_->Projection(owner, name);
+  });
+}
+
 TypeId Checker::CheckField(const Expr& expr) {
   const TypeId object = Check(expr.lhs, TypeId{});
 
@@ -1891,13 +1979,13 @@ TypeId Checker::CheckField(const Expr& expr) {
   // A member of a type parameter is a member of what it is bound to.
   // `fun Sum<T: Shape>(s: T)` can call `s.Area()` because the bound says
   // every T has one -- which is what a bound is *for*, and without this it
-  // was a type the checker had nothing to say about.
-  if (types_->KindOf(named) == TypeKind::kParameter) {
-    for (TypeId bound : types_->ArgumentsOf(named)) {
-      if (resolution_->FindMember(bound, expr.name) != nullptr) {
-        named = bound;
-        break;
-      }
+  // was a type the checker had nothing to say about. The same for `C.Walker`,
+  // whose bound is the one its ability declared (D212).
+  TypeId self_ability;
+  const TypeId receiver = named;
+  if (types_->KindOf(named) == TypeKind::kParameter || types_->KindOf(named) == TypeKind::kProjection) {
+    if (MemberThroughBounds(named, expr.name, &self_ability) != nullptr) {
+      named = self_ability;
     }
   }
 
@@ -1998,7 +2086,11 @@ TypeId Checker::CheckField(const Expr& expr) {
     return types_->error();
   }
 
-  const TypeId type = types_->Substitute(member->type, substitution);
+  TypeId type = types_->Substitute(member->type, substitution);
+  if (self_ability.is_valid()) {
+    type = AsSelf(type, self_ability, receiver);
+  }
+  type = Normalize(type);
   return through_optional ? types_->Optional(type) : type;
 }
 
@@ -3134,6 +3226,19 @@ size_t Checker::PushGenerics(const Item& item, uint32_t owner) {
                           static_cast<uint32_t>(pushed), bounds));
     ++pushed;
   }
+
+  // Inside an ability its own `type Item` is the associated type of
+  // whatever implements it, the same reading the signatures got (D212).
+  if (item.kind == ItemKind::kAbility) {
+    const Binding* binding = Lookup(item.name);
+    const TypeId ability = binding != nullptr ? binding->type : TypeId{};
+    for (ItemId member : ast_.Get(item.members)) {
+      if (ability.is_valid() && ast_.Contains(member) && ast_.Get(member).kind == ItemKind::kTypeAlias) {
+        resolver_.PushTypeParameter(ast_.Get(member).name, types_->Projection(ability, ast_.Get(member).name));
+        ++pushed;
+      }
+    }
+  }
   return pushed;
 }
 
@@ -3387,11 +3492,11 @@ void Checker::CheckAbilityConformance(const Item& item, TypeId target) {
 
   std::string missing;
   for (const Member& required : resolution_->MembersOf(ability)) {
-    if (required.kind != MemberKind::kMethod) {
+    if (required.kind != MemberKind::kMethod && required.kind != MemberKind::kAssociatedType) {
       continue;
     }
     const Member* found = resolution_->FindMember(target, required.name);
-    if (found != nullptr && found->kind == MemberKind::kMethod) {
+    if (found != nullptr && found->kind == required.kind && (required.kind == MemberKind::kMethod || found->type.is_valid())) {
       continue;
     }
     if (!missing.empty()) {
@@ -3501,6 +3606,14 @@ void Checker::CheckItem(ItemId id) {
         message.append("` is an alias for itself");
         Report(kCyclicDeclaration, std::move(message), item.name_span);
         break;
+      }
+      // `type Item` with nothing after it only means something inside an
+      // ability, where an implementation answers it (D212).
+      if (at_module_level_ && !item.type.is_valid()) {
+        std::string message = "`type ";
+        message.append(interner_->Text(item.name));
+        message.append("` names nothing");
+        Report(kTypeWithoutTarget, std::move(message), item.name_span, "write `type Name = SomeType`");
       }
       return;
     }

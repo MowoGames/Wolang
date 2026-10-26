@@ -1438,6 +1438,67 @@ struct Pair {
   WOLANG_EXPECT(value.HasCode("E0137"));
 }
 
+WOLANG_TEST(TypeCheck, AnImplementationAnswersEveryAssociatedType) {
+  Fixture fine(R"(
+ability Walks {
+  type Item
+  fun Value() -> Item
+}
+
+class Counter {
+  var at: int = 0
+}
+
+extend Counter as Walks {
+  type Item = int
+  fun Value() -> int => at
+}
+
+fun Read<W: Walks>(walker: W) -> W.Item {
+  return walker.Value()
+}
+
+fun Use() -> int {
+  return Read(Counter(3)) + 1
+}
+)");
+  WOLANG_EXPECT_EQ(fine.Codes(), "");
+
+  Fixture missing(R"(
+ability Walks {
+  type Item
+  fun Value() -> Item
+}
+
+class Counter {
+  var at: int = 0
+}
+
+extend Counter as Walks {
+  fun Value() -> int => at
+}
+)");
+  WOLANG_EXPECT(missing.HasCode("E0402"));
+  WOLANG_EXPECT(missing.Messages().find("`Item`") != std::string::npos);
+
+  Fixture abstract(R"(
+ability Walks {
+  type Item
+  fun Value() -> Item
+}
+
+fun Add<W: Walks>(walker: W) -> int {
+  return walker.Value() + 1
+}
+)");
+  WOLANG_EXPECT(abstract.HasCode("E0108"));
+
+  Fixture nothing(R"(
+type Count
+)");
+  WOLANG_EXPECT(nothing.HasCode("E0138"));
+}
+
 WOLANG_TEST(TypeCheck, AParameterAndALocalMayHoldAReference) {
   Fixture f(R"(
 fun f(a: &int) -> int {

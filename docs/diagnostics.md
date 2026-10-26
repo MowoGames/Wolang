@@ -216,6 +216,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0401` | `override` disagrees with the base method | marked `override` with nothing to override |
 | `E0120` | a field holds a reference | `var r: &int` |
 | `E0137` | `weak` on something that is not a `C?` field of a class | `weak var count: int` |
+| `E0138` | a `type` outside an ability with nothing after it | `type Count` |
 | `E0121` | a reference would outlive what it points into | `return &local` |
 | `E0122` | a value that was moved out of is used again | `const b = a` then `Take(a)` where `a: Text` |
 | `E0123` | a variable is used before anything is written to it | `var x: int` then `return x` |

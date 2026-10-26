@@ -335,10 +335,26 @@ class Lowerer {
   // The substitution in force, applied. Inside a specialization every `T`
   // the checker recorded stands for something concrete.
   TypeId Apply(TypeId type) {
-    if (substitution_.empty() || !type.is_valid()) {
+    if (!type.is_valid()) {
       return type;
     }
-    return types_->Substitute(type, substitution_);
+    const TypeId substituted = substitution_.empty() ? type : types_->Substitute(type, substitution_);
+    return Normalize(substituted);
+  }
+
+  // `ListWalk<int>.Item` is `int`: a projection of a concrete type is what
+  // its implementation answered, asked of the file that declared it (D212).
+  TypeId Normalize(TypeId type) {
+    return types_->AnswerProjections(type, [&](TypeId owner, Symbol name) {
+      const TypeKind kind = types_->KindOf(owner);
+      if (kind == TypeKind::kNamed || kind == TypeKind::kInstance) {
+        const Member* answer = ResolutionOf(owner)->FindMember(owner, name);
+        if (answer != nullptr && answer->kind == MemberKind::kAssociatedType && answer->type.is_valid()) {
+          return Normalize(answer->type);
+        }
+      }
+      return types_->Projection(owner, name);
+    });
   }
 
   ItemId FindGeneric(Symbol name) const {
@@ -508,7 +524,7 @@ class Lowerer {
 
     Function function;
     function.name = name;
-    function.type = Erase(types_->Substitute(binding->type, substitution));
+    function.type = Erase(Normalize(types_->Substitute(binding->type, substitution)));
     function.effects = EffectsOf(item, &function.effects_known);
     // No source identity: a specialization is reached by the name it was
     // mangled with and never through the declaration it came from. Two
@@ -644,6 +660,34 @@ class Lowerer {
       return 0xFFFFFFFFu;
     }
 
+    // A method of `extend<T> Box<T>` is written in the extend's own `T`,
+    // which stands for the same argument as the declaration's (D212).
+    if (generic_owner) {
+      for (uint32_t index = member.item; index-- > 0;) {
+        const ItemId around = ResolveItem(home, index);
+        if (!home.Contains(around) || home.Get(around).kind != ItemKind::kExtend) {
+          continue;
+        }
+        const std::span<const ItemId> inside = home.Get(home.Get(around).members);
+        if (std::find(inside.begin(), inside.end(), body) == inside.end()) {
+          continue;
+        }
+        uint32_t position = 0;
+        for (GenericParamId generic_id : home.Get(home.Get(around).generics)) {
+          const GenericParam& generic = home.Get(generic_id);
+          std::vector<TypeId> bounds;
+          for (TypeRefId bound : home.Get(generic.bounds)) {
+            bounds.push_back(resolver_.Resolve(home, bound));
+          }
+          if (position < arguments.size()) {
+            substitution.emplace_back(types_->Parameter(generic.name, index, position, bounds), Erase(Apply(arguments[position])));
+          }
+          ++position;
+        }
+        break;
+      }
+    }
+
     // The name says which copy this is: a method with type parameters of
     // its own has one per set of arguments, and `Box.Map` alone would
     // make `Map<int>` and `Map<text>` the same function (D119).
@@ -676,15 +720,14 @@ class Lowerer {
     std::vector<TypeId> params;
     params.push_back(owner);
     for (TypeId param : types_->ArgumentsOf(member.type)) {
-      params.push_back(Erase(types_->Substitute(param, substitution)));
+      params.push_back(Erase(Normalize(types_->Substitute(param, substitution))));
     }
 
     Function function;
     function.name = mangled;
     function.type = types_->Function(
         params,
-        Erase(types_->Substitute(types_->ElementOf(member.type),
-                                 substitution)));
+        Erase(Normalize(types_->Substitute(types_->ElementOf(member.type), substitution))));
     // Reached by its mangled name alone, for the reason above.
     function.source_file = Function::kNoSource;
     function.source_item = Function::kNoSource;
@@ -742,9 +785,15 @@ class Lowerer {
   // for an `extend` block the type being extended.
   TypeId OwnerOf(const Item& item) {
     if (item.kind == ItemKind::kExtend) {
-      return item.target_type.is_valid()
-                 ? Erase(resolver_.Resolve(ast(), item.target_type))
-                 : TypeId{};
+      if (!item.target_type.is_valid()) {
+        return TypeId{};
+      }
+      const TypeId target = Erase(resolver_.Resolve(ast(), item.target_type));
+      // `extend<T> Box<T>` extends `Box` itself, for every `T` (D212).
+      if (!ast().Get(item.generics).empty() && types_->KindOf(target) == TypeKind::kInstance) {
+        return types_->Get(target).base;
+      }
+      return target;
     }
     const Binding* binding = resolution().Find(item.name);
     return binding != nullptr ? Erase(binding->type) : TypeId{};

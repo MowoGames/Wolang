@@ -2699,6 +2699,104 @@ fun Counted() -> int uses unsafe {
   WOLANG_EXPECT_EQ(f.Run("Counted", {}), "104");
 }
 
+WOLANG_TEST(CodegenTest, WalksThroughAssociatedTypes) {
+  Fixture f(R"(
+ability Walks {
+  type Item
+  fun Next() -> bool
+  fun Value() -> Item
+}
+
+ability Walkable {
+  type Walker: Walks
+  fun Iterate() -> Walker
+}
+
+class Range {
+  var from: int = 0
+  var to: int = 0
+}
+
+class RangeWalk {
+  var at: int = 0
+  var to: int = 0
+}
+
+extend RangeWalk as Walks {
+  type Item = int
+  fun Next() -> bool {
+    at = at + 1
+    return at < to
+  }
+  fun Value() -> int => at
+}
+
+extend Range as Walkable {
+  type Walker = RangeWalk
+  fun Iterate() -> RangeWalk => RangeWalk(from - 1, to)
+}
+
+class Box<T> {
+  var held: T
+}
+
+class BoxWalk<T> {
+  var held: T
+  var done: bool = false
+}
+
+extend<T> BoxWalk<T> as Walks {
+  type Item = T
+  fun Next() -> bool {
+    const was = done
+    done = true
+    return !was
+  }
+  fun Value() -> T => held
+}
+
+extend<T> Box<T> as Walkable {
+  type Walker = BoxWalk<T>
+  fun Iterate() -> BoxWalk<T> => BoxWalk(held, false)
+}
+
+fun Count<C: Walkable>(items: C) -> int {
+  var total = 0
+  for _x in items {
+    total = total + 1
+  }
+  return total
+}
+
+fun First<C: Walkable>(items: C) -> C.Walker.Item? {
+  var walker = items.Iterate()
+  if walker.Next() {
+    return walker.Value()
+  }
+  return null
+}
+
+fun Sum() -> int {
+  var total = 0
+  for x in Range(1, 5) {
+    total = total + x
+  }
+  return total
+}
+
+fun Counts() -> int {
+  return Count(Range(1, 5)) * 10 + Count(Box(42))
+}
+
+fun Firsts() -> int {
+  return (First(Range(7, 9)) ?? -1) * 100 + (First(Box(9)) ?? -1)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Sum", {}), "10");
+  WOLANG_EXPECT_EQ(f.Run("Counts", {}), "41");
+  WOLANG_EXPECT_EQ(f.Run("Firsts", {}), "709");
+}
+
 WOLANG_TEST(CodegenTest, AWeakFieldDoesNotKeepItsObject) {
   Fixture f(R"(
 extern "C" fun wolang_objects_live() -> s64

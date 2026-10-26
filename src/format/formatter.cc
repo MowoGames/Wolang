@@ -681,8 +681,14 @@ class Formatter {
         Put("type ");
         Put(Name(item.name));
         EmitGenerics(item.generics);
-        Put(" = ");
-        EmitType(item.type);
+        if (item.super_type.is_valid()) {
+          Put(": ");
+          EmitType(item.super_type);
+        }
+        if (item.type.is_valid()) {
+          Put(" = ");
+          EmitType(item.type);
+        }
         break;
 
       case ItemKind::kDimension: {

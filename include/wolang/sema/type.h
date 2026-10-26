@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -71,6 +72,10 @@ enum class TypeKind : uint8_t {
   kQuantity,
   // The set of errors a `T!` may carry.
   kErrorSet,
+  // `C.Item`: the associated type `Item` of whatever `C` turns out to be.
+  // The owner is `base` and the name is `name`; it becomes a concrete type
+  // once `C` does (D212).
+  kProjection,
 };
 
 // Width and signedness of an integer type.
@@ -93,6 +98,10 @@ enum class MemberKind : uint8_t {
   // `deinit { ... }`: what the type does when a value of it goes away.
   // Not a method: nothing can call it, override it or name it.
   kDeinit,
+  // `type Item` in an ability, which an implementation answers with
+  // `type Item = T`. Its type is the bound in the ability and the answer
+  // in the implementation (D212).
+  kAssociatedType,
   // `derived var x: T => expr`: a field whose value is computed from other
   // fields and kept until one of them changes.
   kDerived,
@@ -306,6 +315,12 @@ class TypeStore {
                    uint32_t index,
                    const std::vector<TypeId>& bounds = {});
   TypeId Instance(TypeId base, const std::vector<TypeId>& args);
+  TypeId Projection(TypeId owner, Symbol name);
+  // |id| with every projection in it replaced by what |answer| says it is,
+  // innermost first: `answer(owner, name)` sees an owner that has already
+  // been answered. A type with no projection in it comes back unchanged.
+  TypeId AnswerProjections(TypeId id, const std::function<TypeId(TypeId, Symbol)>& answer);
+  bool MentionsProjection(TypeId id) const;
   // `Query<mut Velocity, with Falling>`: the components it names, and
   // whether the first of them is written. The flag is what `foreach` over
   // the query needs -- the rest of the access a system declares is read
