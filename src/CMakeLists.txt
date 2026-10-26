@@ -9,6 +9,8 @@ file(GLOB_RECURSE WOLANG_CORE_HEADERS CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/include/wolang/*.inc")
 
 add_library(wolang_core STATIC ${WOLANG_CORE_SOURCES})
+# Position-independent, because `libwolang_embed.so` is built out of it.
+set_target_properties(wolang_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # The runtime on its own, as something an ahead-of-time binary can link
 # against. The same files the compiler itself holds: a program built with
