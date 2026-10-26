@@ -3,6 +3,7 @@
 
 #include "wolang/compiler/database.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "wolang/interp/interpreter.h"
