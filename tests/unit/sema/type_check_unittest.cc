@@ -1410,21 +1410,21 @@ class Node {
   weak var parent: Node? = null
 }
 )");
-  WOLANG_EXPECT(!fine.HasCode("E0131"));
+  WOLANG_EXPECT(!fine.HasCode("E0137"));
 
   Fixture number(R"(
 class Node {
   weak var count: int = 0
 }
 )");
-  WOLANG_EXPECT(number.HasCode("E0131"));
+  WOLANG_EXPECT(number.HasCode("E0137"));
 
   Fixture strong(R"(
 class Node {
   weak var parent: Node = Node()
 }
 )");
-  WOLANG_EXPECT(strong.HasCode("E0131"));
+  WOLANG_EXPECT(strong.HasCode("E0137"));
 
   Fixture value(R"(
 class Node {
@@ -1435,7 +1435,7 @@ struct Pair {
   weak var left: Node? = null
 }
 )");
-  WOLANG_EXPECT(value.HasCode("E0131"));
+  WOLANG_EXPECT(value.HasCode("E0137"));
 }
 
 WOLANG_TEST(TypeCheck, AParameterAndALocalMayHoldAReference) {

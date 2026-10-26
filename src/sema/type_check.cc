@@ -31,7 +31,7 @@ constexpr std::string_view kBadOverride = "E0401";
 constexpr std::string_view kMissingAbilityMethod = "E0402";
 constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
-constexpr std::string_view kBadWeak = "E0131";
+constexpr std::string_view kBadWeak = "E0137";
 constexpr std::string_view kBadConversion = "E0124";
 // Writing to a field of the receiver, which needs a receiver that is a
 // reference. A method is passed its object by value today, so the write

@@ -23,7 +23,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0120`–`E0126` | memory, references, conversions, receivers, generics | `E0120` (wave 5), `E0123`–`E0124` (waves 8–9), `E0125` (wave 10), `E0126` (wave 11) |
 | `E0127`–`E0129` | systems and the access graph | all wave 11 |
 | `E0130` | a module-level declaration with no type written | wave 12 |
-| `E0131` | `weak` fields | D207 |
+| `E0137` | `weak` fields | D207 |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E0301`–`E0305` | suspension and tasks | implemented (wave 10) |
 | `E0401`–`E0403` | inheritance, abilities, bounds | implemented (waves 4–5) |
@@ -215,7 +215,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0403` | a type argument does not satisfy a bound | `Hurt(rock)` where `T: Damageable` |
 | `E0401` | `override` disagrees with the base method | marked `override` with nothing to override |
 | `E0120` | a field holds a reference | `var r: &int` |
-| `E0131` | `weak` on something that is not a `C?` field of a class | `weak var count: int` |
+| `E0137` | `weak` on something that is not a `C?` field of a class | `weak var count: int` |
 | `E0121` | a reference would outlive what it points into | `return &local` |
 | `E0122` | a value that was moved out of is used again | `const b = a` then `Take(a)` where `a: Text` |
 | `E0123` | a variable is used before anything is written to it | `var x: int` then `return x` |

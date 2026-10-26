@@ -2579,7 +2579,7 @@ the weak count does, so a weak field never points at freed memory. The
 upgrade is a compare-and-swap that will not raise a count from zero.
 
 `weak` is contextual, like `derived`, and only allowed on a `C?` field
-of a class (`E0131`): a weak local would be `null` by the next line, and
+of a class (`E0137`): a weak local would be `null` by the next line, and
 a weak field of a value would be copied without being counted.
 
 Found on the way: `p?.x` on a class read the field out of the handle as
