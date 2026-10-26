@@ -6,6 +6,7 @@
 #include "wolang/runtime/arena.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 
 #include <cstddef>
@@ -121,6 +122,11 @@ uint64_t* WeakCountOf(void* object) {
 
 static std::atomic<int64_t> sm_LiveObjects{0};
 
+static bool Traced() {
+  static const bool sm_Traced = std::getenv("WOLANG_TRACE_RC") != nullptr;
+  return sm_Traced;
+}
+
 int64_t wolang_objects_live() {
   return sm_LiveObjects.load(std::memory_order_relaxed);
 }
@@ -140,6 +146,9 @@ void* wolang_object_alloc(uint64_t size) {
   auto* object = static_cast<uint8_t*>(base) + kCountBytes;
   if (!wolang_arena_owns(object)) {
     sm_LiveObjects.fetch_add(1, std::memory_order_relaxed);
+    if (Traced()) {
+      std::fprintf(stderr, "rc alloc %p %llu\n", static_cast<void*>(object), static_cast<unsigned long long>(size));
+    }
   }
   // One reference: whoever asked for it. Sixteen bytes rather than eight
   // so that what comes back is still aligned for anything.
@@ -152,7 +161,10 @@ void wolang_object_retain(void* object) {
   if (object == nullptr || wolang_arena_owns(object)) {
     return;
   }
-  std::atomic_ref<uint64_t>(*CountOf(object)).fetch_add(1, std::memory_order_relaxed);
+  const uint64_t before = std::atomic_ref<uint64_t>(*CountOf(object)).fetch_add(1, std::memory_order_relaxed);
+  if (Traced()) {
+    std::fprintf(stderr, "rc retain %p %llu\n", object, static_cast<unsigned long long>(before + 1));
+  }
 }
 
 int32_t wolang_object_release(void* object) {
@@ -167,7 +179,11 @@ int32_t wolang_object_release(void* object) {
   if (count.load(std::memory_order_relaxed) == 0) {
     return 0;
   }
-  return count.fetch_sub(1, std::memory_order_acq_rel) == 1 ? 1 : 0;
+  const uint64_t before = count.fetch_sub(1, std::memory_order_acq_rel);
+  if (Traced()) {
+    std::fprintf(stderr, "rc release %p %llu\n", object, static_cast<unsigned long long>(before - 1));
+  }
+  return before == 1 ? 1 : 0;
 }
 
 void wolang_object_free(void* object) {
@@ -178,6 +194,9 @@ void wolang_object_free(void* object) {
     return;
   }
   sm_LiveObjects.fetch_sub(1, std::memory_order_relaxed);
+  if (Traced()) {
+    std::fprintf(stderr, "rc free %p 0\n", object);
+  }
   wolang_object_weak_release(object);
 }
 
