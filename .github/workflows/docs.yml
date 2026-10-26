@@ -18,6 +18,11 @@ on:
 permissions:
   contents: read
 
+# This project is built with clang (D184), and a runner's default is gcc.
+env:
+  CC: clang
+  CXX: clang++
+
 concurrency:
   group: docs-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
