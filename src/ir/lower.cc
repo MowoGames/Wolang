@@ -2003,8 +2003,8 @@ class Lowerer {
         // counted -- `new` answers with one, and so does a call -- in
         // which case this hands that reference on rather than adding
         // another (D193).
-        if (value.is_valid() && !IsFreshHandle(value)) {
-          Retain(value, return_type_);
+        if (value.is_valid() && !IsFreshHandle(value) && !Owns(return_type_)) {
+          RetainValue(value, return_type_);
         }
         RunDeferred(0);
         // Every arena this return is leaving goes with it.
@@ -2236,9 +2236,18 @@ class Lowerer {
       return;
     }
     const TypeId type = Erase(raw);
+    if (HoldsCounted(type)) {
+      builder_->Call(ValueDropFor(type), types_->void_type(), {value});
+      return;
+    }
     if (IsOptionalHandle(type)) {
       const TypeId element = types_->ElementOf(type);
       OnSome(value, type, [&](InstId inner) { Destroy(inner, element); });
+      return;
+    }
+    if (IsFallibleCounted(type)) {
+      const TypeId element = Erase(types_->ElementOf(type));
+      OnValue(value, type, [&](InstId inner) { Destroy(inner, element); });
       return;
     }
     if (!types_->IsHandle(type)) {
@@ -2348,6 +2357,32 @@ class Lowerer {
   // Every field an object of |type| stores, with where it is: the root
   // class first and the descriptor before all of them, which is the order
   // `FieldIndex` counts in.
+  // The resolution that knows |type|'s members: this file's, or the one
+  // that declared it, which is where `Field` is when `List<Field>.At` is
+  // being lowered in the file that declares `List`.
+  const FileResolution* ResolutionOf(TypeId type) {
+    if (!resolution().MembersOf(type).empty() || !foreign_) {
+      return &resolution();
+    }
+    TypeId named = type;
+    if (types_->KindOf(named) == TypeKind::kInstance) {
+      named = types_->Get(named).base;
+    }
+    if (types_->KindOf(named) != TypeKind::kNamed) {
+      return &resolution();
+    }
+    const uint32_t file = types_->Get(named).declaring_file;
+    if (file == 0xFFFFFFFFu || file == file_index()) {
+      return &resolution();
+    }
+    const ForeignFile other = foreign_(file);
+    return other.resolution != nullptr ? other.resolution : &resolution();
+  }
+
+  std::span<const Member> MembersAnywhere(TypeId type) {
+    return ResolutionOf(type)->MembersOf(type);
+  }
+
   struct StoredField {
     uint32_t Index = 0;
     TypeId Type;
@@ -2357,9 +2392,10 @@ class Lowerer {
   std::vector<StoredField> StoredFields(TypeId type) {
     TypeId named = type;
     TypeStore::Substitution substitution;
+    const FileResolution* const where = ResolutionOf(type);
     if (types_->KindOf(named) == TypeKind::kInstance) {
       named = types_->Get(type).base;
-      const std::span<const TypeId> parameters = resolution().ParametersOf(named);
+      const std::span<const TypeId> parameters = where->ParametersOf(named);
       const std::vector<TypeId> arguments = types_->ArgumentsOf(type);
       for (size_t i = 0; i < parameters.size() && i < arguments.size(); ++i) {
         substitution.emplace_back(parameters[i], arguments[i]);
@@ -2367,15 +2403,24 @@ class Lowerer {
     }
 
     std::vector<TypeId> chain;
-    for (TypeId current = named; current.is_valid(); current = resolution().BaseOf(current)) {
+    for (TypeId current = named; current.is_valid(); current = where->BaseOf(current)) {
       chain.push_back(current);
     }
     std::reverse(chain.begin(), chain.end());
 
+    bool header = false;
+    if (types_->IsHandle(named)) {
+      for (TypeId current : chain) {
+        for (const Member& member : where->MembersOf(current)) {
+          header = header || (member.kind == MemberKind::kMethod && (member.is_virtual || member.is_override));
+        }
+      }
+    }
+
     std::vector<StoredField> fields;
-    uint32_t index = HasClassHeader(named) ? 1u : 0u;
+    uint32_t index = header ? 1u : 0u;
     for (TypeId current : chain) {
-      for (const Member& member : resolution().MembersOf(current)) {
+      for (const Member& member : where->MembersOf(current)) {
         if (!HasStorage(member.kind)) {
           continue;
         }
@@ -2436,25 +2481,263 @@ class Lowerer {
     });
 
     const InstId upgraded = builder_->Add(Opcode::kLoad, optional, {slot});
-    m_Fresh.push_back(upgraded);
+    m_Fresh.emplace_back(current_function_, upgraded);
     return upgraded;
   }
 
   // A handle itself: a class, or an instance of a generic one.
   bool IsCountedHandle(TypeId raw) {
-    const TypeId held = Erase(raw);
+    const TypeId held = Erase(Apply(raw));
     const TypeKind kind = types_->KindOf(held);
     return (kind == TypeKind::kNamed || kind == TypeKind::kInstance) && types_->IsHandle(held);
   }
 
   bool IsOptionalHandle(TypeId raw) {
-    const TypeId held = Erase(raw);
-    return types_->KindOf(held) == TypeKind::kOptional && IsCountedHandle(types_->ElementOf(held));
+    const TypeId held = Erase(Apply(raw));
+    return types_->KindOf(held) == TypeKind::kOptional && Counts(types_->ElementOf(held));
   }
 
   // Whether a value of |raw| carries a reference that is counted.
   bool Counts(TypeId raw) {
-    return raw.is_valid() && (IsCountedHandle(raw) || IsOptionalHandle(raw));
+    return raw.is_valid() && (IsCountedHandle(raw) || IsOptionalHandle(raw) || IsFallibleCounted(raw) || HoldsCounted(raw));
+  }
+
+  // A `T!` whose value is counted: `{which error, value}`, and the value
+  // is only there when the first is zero (D90).
+  bool IsFallibleCounted(TypeId raw) {
+    const TypeId held = Erase(Apply(raw));
+    return types_->KindOf(held) == TypeKind::kFallible && Counts(types_->ElementOf(held));
+  }
+
+  template <typename Then>
+  void OnValue(InstId value, TypeId fallible, Then then) {
+    const InstId tag = builder_->Extract(types_->u32(), value, 0);
+    const InstId ok = builder_->Add(Opcode::kEq, types_->bool_type(), {tag, builder_->ConstInt(types_->u32(), 0)});
+    const BlockId carry = builder_->AddBlock("value");
+    const BlockId after = builder_->AddBlock("value.after");
+    builder_->Branch(ok, carry, after);
+    builder_->SetCurrent(carry);
+    then(builder_->Extract(Erase(types_->ElementOf(fallible)), value, 1));
+    builder_->Jump(after, {});
+    builder_->SetCurrent(after);
+  }
+
+  // A value type with a counted reference somewhere in its fields: a copy
+  // of it is another holder of each, and its end lets go of each (D209).
+  bool HoldsCounted(TypeId raw) {
+    const TypeId held = Erase(Apply(raw));
+    const TypeKind kind = types_->KindOf(held);
+    if ((kind != TypeKind::kNamed && kind != TypeKind::kInstance) || types_->IsHandle(held) || resolution().IsAbility(held)) {
+      return false;
+    }
+    for (const auto& [seen, answer] : m_HoldsCounted) {
+      if (seen == held) {
+        return answer;
+      }
+    }
+
+    m_HoldsCounted.emplace_back(held, false);
+    bool answer = false;
+    for (const StoredField& field : StoredFields(held)) {
+      answer = answer || Counts(field.Type);
+    }
+    for (const std::vector<TypeId>& carried : VariantPayloads(held)) {
+      for (const TypeId field : carried) {
+        answer = answer || Counts(field);
+      }
+    }
+    for (auto& [seen, cached] : m_HoldsCounted) {
+      if (seen == held) {
+        cached = answer;
+      }
+    }
+    return answer;
+  }
+
+  // `[]Leaf$release`: lets go of every element of a slice whose storage is
+  // about to be given back. Every slot counts, not only the ones a
+  // container says it uses: storage starts as zeroes, which is an empty
+  // reference to every counted type (D209).
+  uint32_t SliceReleaseFor(TypeId slice) {
+    std::string spelled = types_->Describe(*interner_, slice);
+    spelled.append("$release");
+    const Symbol name = interner_->Intern(spelled);
+    for (const auto& [existing, index] : specializations_) {
+      if (existing == name) {
+        return index;
+      }
+    }
+
+    Function release;
+    release.name = name;
+    release.type = types_->Function({slice}, types_->void_type());
+    const auto index = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(release));
+    specializations_.emplace_back(name, index);
+
+    Builder builder(module_, FunctionId{index});
+    Builder* const outer = builder_;
+    const uint32_t outer_function = current_function_;
+    builder_ = &builder;
+    current_function_ = index;
+
+    const TypeId word = types_->u64();
+    const TypeId element = Erase(types_->ElementOf(slice));
+    const BlockId entry = builder.AddBlock("entry");
+    builder.SetCurrent(entry);
+    const InstId items = builder.AddParam(entry, slice);
+    const InstId first = builder.Extract(types_->Pointer(element, /*is_mutable=*/true), items, 0);
+    const InstId count = builder.Extract(word, items, 1);
+    const InstId at = builder.Add(Opcode::kAlloca, word);
+    builder.Add(Opcode::kStore, TypeId{}, {at, builder.ConstInt(word, 0)});
+
+    const BlockId header = builder.AddBlock("release.header");
+    const BlockId body = builder.AddBlock("release.body");
+    const BlockId exit = builder.AddBlock("release.exit");
+    builder.Jump(header);
+    builder.SetCurrent(header);
+    const InstId i = builder.Add(Opcode::kLoad, word, {at});
+    builder.Branch(builder.Add(Opcode::kLt, types_->bool_type(), {i, count}), body, exit);
+
+    builder.SetCurrent(body);
+    const InstId slot = builder.Add(Opcode::kIndexAddress, types_->Pointer(element, /*is_mutable=*/true), {first, i, count});
+    builder.Mutable(slot).is_unchecked = true;
+    ReleaseValue(builder.Add(Opcode::kLoad, element, {slot}), element);
+    const InstId next = builder.Add(Opcode::kAdd, word, {i, builder.ConstInt(word, 1)});
+    builder.Mutable(next).is_unchecked = true;
+    builder.Add(Opcode::kStore, TypeId{}, {at, next});
+    builder.Jump(header);
+
+    builder.SetCurrent(exit);
+    builder.ReturnVoid();
+
+    builder_ = outer;
+    current_function_ = outer_function;
+    return index;
+  }
+
+  // `Pair$drop`: what a value of a struct does when it goes, which is its
+  // `deinit` and then letting go of every reference it holds.
+  uint32_t ValueDropFor(TypeId type) {
+    std::string spelled = types_->Describe(*interner_, type);
+    spelled.append("$drop");
+    const Symbol name = interner_->Intern(spelled);
+    for (const auto& [existing, index] : specializations_) {
+      if (existing == name) {
+        return index;
+      }
+    }
+
+    Function drop;
+    drop.name = name;
+    drop.type = types_->Function({type}, types_->void_type());
+    const auto index = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(drop));
+    specializations_.emplace_back(name, index);
+
+    Builder builder(module_, FunctionId{index});
+    Builder* const outer = builder_;
+    const uint32_t outer_function = current_function_;
+    builder_ = &builder;
+    current_function_ = index;
+
+    const BlockId entry = builder.AddBlock("entry");
+    builder.SetCurrent(entry);
+    const InstId self = builder.AddParam(entry, type);
+    if (const Member* deinit = FindDestructor(type)) {
+      const uint32_t method = MethodIndex(type, *deinit);
+      if (method != 0xFFFFFFFFu) {
+        builder.Call(method, types_->void_type(), {self});
+      }
+    }
+    for (const StoredField& field : StoredFields(type)) {
+      const TypeId erased = Erase(field.Type);
+      if (Counts(erased)) {
+        ReleaseValue(builder.Extract(erased, self, field.Index), erased);
+      }
+    }
+    ForEachCarried(self, type, [&](InstId payload, TypeId field) { ReleaseValue(payload, field); });
+    builder.ReturnVoid();
+
+    builder_ = outer;
+    current_function_ = outer_function;
+    return index;
+  }
+
+  // What each variant of an enum carries, in declaration order; empty for
+  // anything that is not an enum.
+  std::vector<std::vector<TypeId>> VariantPayloads(TypeId owner) {
+    std::vector<std::vector<TypeId>> variants;
+    for (const Member& member : MembersAnywhere(owner)) {
+      if (member.kind != MemberKind::kVariant) {
+        continue;
+      }
+      std::vector<TypeId> carried;
+      if (types_->KindOf(member.type) == TypeKind::kFunction) {
+        for (const TypeId field : types_->ArgumentsOf(member.type)) {
+          carried.push_back(Erase(field));
+        }
+      }
+      variants.push_back(std::move(carried));
+    }
+    return variants;
+  }
+
+  // Runs |each| on every counted value the variant in |value| carries.
+  template <typename Each>
+  void ForEachCarried(InstId value, TypeId owner, Each each) {
+    const std::vector<std::vector<TypeId>> variants = VariantPayloads(owner);
+    if (variants.empty()) {
+      return;
+    }
+
+    const InstId tag = builder_->Extract(types_->u32(), value, 0);
+    for (uint32_t index = 0; index < variants.size(); ++index) {
+      bool counted = false;
+      for (const TypeId field : variants[index]) {
+        counted = counted || Counts(field);
+      }
+      if (!counted) {
+        continue;
+      }
+
+      const InstId same = builder_->Add(Opcode::kEq, types_->bool_type(), {tag, builder_->ConstInt(types_->u32(), index)});
+      const BlockId carry = builder_->AddBlock("variant.carry");
+      const BlockId after = builder_->AddBlock("variant.after");
+      builder_->Branch(same, carry, after);
+      builder_->SetCurrent(carry);
+      for (uint32_t position = 0; position < variants[index].size(); ++position) {
+        const TypeId field = variants[index][position];
+        if (!Counts(field)) {
+          continue;
+        }
+        const InstId payload = builder_->Add(Opcode::kVariantPayload, field, {value});
+        builder_->Mutable(payload).field = index;
+        builder_->Mutable(payload).payload.integer = position;
+        each(payload, field);
+      }
+      builder_->Jump(after, {});
+      builder_->SetCurrent(after);
+    }
+  }
+
+  // A struct built from |fields|: each field of the type it is declared
+  // with, and each counted one held by the new value.
+  InstId MakeValue(TypeId type, std::vector<InstId> fields) {
+    const std::vector<StoredField> stored = StoredFields(Erase(type));
+    for (size_t i = 0; i < fields.size() && i < stored.size(); ++i) {
+      const TypeId field = Erase(stored[i].Type);
+      fields[i] = Coerce(fields[i], ValueType(fields[i]), field);
+      if (Counts(field) && !Owns(field) && !IsFreshHandle(fields[i])) {
+        RetainValue(fields[i], field);
+      }
+    }
+
+    const InstId value = builder_->Add(Opcode::kMakeStruct, type, std::move(fields));
+    if (HoldsCounted(type)) {
+      m_Fresh.emplace_back(current_function_, value);
+    }
+    return value;
   }
 
   // Runs |then| on the handle inside an optional, when there is one.
@@ -2470,23 +2753,39 @@ class Lowerer {
     builder_->SetCurrent(after);
   }
 
-  void RetainValue(InstId value, TypeId raw) {
+  void RetainValue(InstId value, TypeId given) {
+    const TypeId raw = Erase(Apply(given));
     if (!value.is_valid() || !Counts(raw)) {
       return;
     }
     if (IsOptionalHandle(raw)) {
       const TypeId optional = Erase(raw);
-      OnSome(value, optional, [&](InstId inner) { Retain(inner, types_->ElementOf(optional)); });
+      OnSome(value, optional, [&](InstId inner) { RetainValue(inner, types_->ElementOf(optional)); });
+      return;
+    }
+    if (IsFallibleCounted(raw)) {
+      OnValue(value, raw, [&](InstId inner) { RetainValue(inner, types_->ElementOf(raw)); });
+      return;
+    }
+    if (HoldsCounted(raw)) {
+      for (const StoredField& field : StoredFields(Erase(raw))) {
+        const TypeId erased = Erase(field.Type);
+        if (Counts(erased)) {
+          RetainValue(builder_->Extract(erased, value, field.Index), erased);
+        }
+      }
+      ForEachCarried(value, Erase(raw), [&](InstId payload, TypeId field) { RetainValue(payload, field); });
       return;
     }
     Retain(value, raw);
   }
 
-  void ReleaseValue(InstId value, TypeId raw) {
+  void ReleaseValue(InstId value, TypeId given) {
+    const TypeId raw = Erase(Apply(given));
     if (!value.is_valid() || !Counts(raw)) {
       return;
     }
-    Destroy(value, Erase(raw));
+    Destroy(value, raw);
   }
 
   // Whether |value| is a reference nobody holds yet.
@@ -2499,7 +2798,7 @@ class Lowerer {
     if (!current.Contains(value)) {
       return false;
     }
-    if (std::find(m_Fresh.begin(), m_Fresh.end(), value) != m_Fresh.end()) {
+    if (std::find(m_Fresh.begin(), m_Fresh.end(), std::pair<uint32_t, InstId>(current_function_, value)) != m_Fresh.end()) {
       return true;
     }
     const Inst& inst = current.Get(value);
@@ -2512,6 +2811,8 @@ class Lowerer {
       case Opcode::kOptionalWrap:
       case Opcode::kCast:
         return inst.operands_count != 0 && IsFreshHandle(current.OperandsOf(inst)[0]);
+      case Opcode::kMakeStruct:
+        return types_->KindOf(Erase(inst.type)) == TypeKind::kFallible && inst.operands_count == 2 && IsFreshHandle(current.OperandsOf(inst)[1]);
       default:
         return false;
     }
@@ -2571,7 +2872,12 @@ class Lowerer {
     if (types_->KindOf(type) == TypeKind::kString) {
       return true;
     }
-    return FindDestructor(Erase(type)) != nullptr;
+    // A class is counted, so it is never moved: its `deinit` runs when the
+    // last reference goes, however many there were (D209).
+    if (IsCountedHandle(type)) {
+      return false;
+    }
+    return FindDestructor(Erase(Apply(type))) != nullptr;
   }
 
   // Whether a *binding* of |type| releases what it holds when its scope
@@ -3363,8 +3669,14 @@ class Lowerer {
     return result;
   }
 
+  // The answer owns what it holds when that is counted: the optional's
+  // value is taken from a fresh optional and retained from a borrowed one,
+  // and the fallback is held the same way. So nothing is left to release
+  // where the two paths meet (D209).
   InstId LowerCoalesce(const Expr& expr, TypeId type) {
     const InstId optional = Value(expr.lhs);
+    const bool counted = Counts(type);
+    const bool taken = IsFreshHandle(optional);
     const InstId present = builder_->Add(
         Opcode::kOptionalIsPresent, types_->bool_type(), {optional});
 
@@ -3378,13 +3690,22 @@ class Lowerer {
     builder_->SetCurrent(have);
     const InstId inside =
         builder_->Add(Opcode::kOptionalValue, type, {optional});
+    if (counted && !taken) {
+      RetainValue(inside, type);
+    }
     builder_->Jump(join, {inside});
 
     builder_->SetCurrent(fallback);
     const InstId other = Value(expr.rhs);
+    if (counted && !IsFreshHandle(other)) {
+      RetainValue(other, type);
+    }
     builder_->Jump(join, {other});
 
     builder_->SetCurrent(join);
+    if (counted) {
+      m_Fresh.emplace_back(current_function_, result);
+    }
     return result;
   }
 
@@ -4242,10 +4563,38 @@ class Lowerer {
   // Whether |place| is a field of an object rather than of a value: an
   // object's fields are released when it goes, so they hold a reference.
   bool HeldByObject(const Place& place) {
-    if (place.path.empty() || place.path.back().index.is_valid() || place.soa_record.is_valid()) {
+    if (place.path.empty() || place.soa_record.is_valid()) {
       return false;
     }
-    return IsCountedHandle(OwnerOfLastStep(place));
+    // An element of a slice: the storage is released element by element
+    // when it is freed, so a slot holds a reference too.
+    if (place.path.back().index.is_valid()) {
+      return types_->KindOf(Erase(Apply(OwnerOfLastStep(place)))) == TypeKind::kSlice;
+    }
+    if (IsCountedHandle(OwnerOfLastStep(place))) {
+      return true;
+    }
+
+    // A field of a struct, inside a binding or a global that holds the
+    // struct: the binding releases the whole value, field by field, so
+    // the field holds a reference too.
+    for (const Step& step : place.path) {
+      if (step.index.is_valid()) {
+        return false;
+      }
+    }
+    if (place.Global) {
+      return HoldsCounted(place.root_type);
+    }
+    if (!place.slot.is_valid() || Owns(place.root_type)) {
+      return false;
+    }
+    for (auto it = deferred_.rbegin(); it != deferred_.rend(); ++it) {
+      if (it->in_slot && it->value == place.slot && it->flag.is_valid()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   bool IsWeakPlace(const Place& place) {
@@ -4423,6 +4772,10 @@ class Lowerer {
                                         : ast().Get(expr.args)[0]))) ==
             TypeKind::kSlice) {
       const TypeId word = types_->u64();
+      const TypeId slice = Erase(Apply(ValueType(arguments[0])));
+      if (types_->KindOf(slice) == TypeKind::kSlice && Counts(types_->ElementOf(slice))) {
+        builder_->Call(SliceReleaseFor(slice), types_->void_type(), {arguments[0]});
+      }
       const InstId data = builder_->Extract(word, arguments[0], 0);
       const Symbol name = interner_->Intern("wolang_object_free");
       const uint32_t free = DeclareExternal(
@@ -4632,9 +4985,7 @@ class Lowerer {
         if (types_->IsHandle(built)) {
           return Coerce(NewObject(built, arguments), built, type);
         }
-        const InstId value = builder_->Add(
-            Opcode::kMakeStruct, built.is_valid() ? built : type,
-            std::move(arguments));
+        const InstId value = MakeValue(built.is_valid() ? built : type, std::move(arguments));
         return Coerce(value, built, type);
       }
       // A function from another file. Lowering is per file, so it gets a
@@ -5470,10 +5821,24 @@ class Lowerer {
   // constant, and a chain of comparisons otherwise. The checker already
   // proved the arms cover every value, so the default arm is either the
   // catch-all or unreachable.
+  // A reference made only to be looked at -- matched on, or tested for a
+  // value -- is let go when the scope it was made in ends, which is after
+  // everything that borrowed from it is done (D209).
+  void HoldTemporary(InstId value) {
+    const TypeId held = ValueType(value);
+    if (!value.is_valid() || !IsFreshHandle(value) || !Counts(held)) {
+      return;
+    }
+    const InstId slot = builder_->Add(Opcode::kAlloca, Erase(held));
+    builder_->Add(Opcode::kStore, TypeId{}, {slot, value});
+    RememberOwner(Symbol{}, slot, held, /*live=*/true);
+  }
+
   InstId LowerMatch(const Expr& expr, TypeId type) {
     const bool produces =
         type.is_valid() && types_->KindOf(type) != TypeKind::kVoid;
     const InstId subject = Value(expr.lhs);
+    HoldTemporary(subject);
     const TypeId subject_type = TypeOf(expr.lhs);
 
     // Made when something needs it rather than up front: a `match` whose
@@ -5543,7 +5908,7 @@ class Lowerer {
       if (produces) {
         const InstId value = Value(arm.body);
         if (!builder_->Terminated()) {
-          builder_->Jump(join_block(), {value});
+          builder_->Jump(join_block(), {Coerce(value, ValueType(value), Erase(type), arm.body)});
         }
       } else {
         Lower(arm.body);
@@ -5860,9 +6225,19 @@ class Lowerer {
         continue;
       }
       if (member.name == callee.name) {
-        const InstId built =
-            builder_->Add(Opcode::kMakeVariant, owner, arguments);
+        std::vector<InstId> carried = arguments;
+        const std::vector<TypeId> fields = VariantPayloads(owner)[index];
+        for (size_t i = 0; i < carried.size() && i < fields.size(); ++i) {
+          carried[i] = Coerce(carried[i], ValueType(carried[i]), fields[i]);
+          if (Counts(fields[i]) && !Owns(fields[i]) && !IsFreshHandle(carried[i])) {
+            RetainValue(carried[i], fields[i]);
+          }
+        }
+        const InstId built = builder_->Add(Opcode::kMakeVariant, owner, std::move(carried));
         builder_->Mutable(built).field = index;
+        if (HoldsCounted(owner)) {
+          m_Fresh.emplace_back(current_function_, built);
+        }
         return Coerce(built, owner, type);
       }
       ++index;
@@ -6779,7 +7154,8 @@ class Lowerer {
   };
   std::vector<Owner> owners_;
   std::vector<std::pair<InstId, TypeId>> m_Temporaries;
-  std::vector<InstId> m_Fresh;
+  std::vector<std::pair<uint32_t, InstId>> m_Fresh;
+  std::vector<std::pair<TypeId, bool>> m_HoldsCounted;
   // How many enclosing reads are through a name rather than of it.
   int borrow_depth_ = 0;
   // The module-level `var`s this file declares.

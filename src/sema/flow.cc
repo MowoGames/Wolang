@@ -127,6 +127,10 @@ class FlowChecker {
     if (types_.KindOf(type) == TypeKind::kString) {
       return true;
     }
+    // A class is counted rather than moved (D209).
+    if (types_.IsHandle(type)) {
+      return false;
+    }
     // A type that says what to do when a value of it goes away owns
     // something, and two names cannot hold it: that is the whole reason
     // `deinit` and moves are one feature (D87).

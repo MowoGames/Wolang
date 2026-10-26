@@ -2608,12 +2608,38 @@ and 23.1.4 do not. `WOLANG_AOT_IR=<file>` writes the module before and
 after the optimizer, and `WOLANG_LLVM_ARGS` hands LLVM its own flags --
 `-opt-bisect-limit` is what named the pass.
 
-**D209. Classes are counted, so they do not move.** Parked on the
-`wip/value-counting` branch, not on `alpha`: counting the classes held
-by structs, enums and optionals of them is right, and getting every path
-that copies a value to agree -- `match` payloads, `if const`, `??`,
-temporaries inside expressions -- is a piece of work of its own. Until
-then a class inside a value leaks rather than being freed twice.
+**D209. A class inside a value is counted too, and classes do not move.**
+A struct, an enum and a `T?` or `T!` of either that holds a class is a
+holder of it: a copy retains every class it carries, its end releases
+them -- `Pair$drop` for a struct, a switch on the tag for an enum -- and
+`Free` on a slice releases its elements first, because storage starts as
+zeroes and zeroes are an empty reference of every counted type.
+
+That only adds up if nothing moves a class. D87 moved a type with a
+`deinit`; for a class that made handing a `List` out of an enum's payload
+a move out of something borrowed, and the enum and the caller both freed
+it. A class is counted now whether or not it has a `deinit`, and the
+`deinit` runs when the last reference goes. Moves are left to values
+with a `deinit` and to owned strings.
+
+What it took to agree:
+
+- A call's result is fresh -- it owns what it holds -- and so are `new`,
+  a struct or variant built here, and the answer of `??`, which takes the
+  value of a fresh optional and retains that of a borrowed one. Fresh is
+  per function: an instruction id means nothing in another one.
+- The subject of a `match` that is fresh is held until the scope ends,
+  so every payload bound from it stays valid in every arm.
+- A generic method lowered for `List<Field>` asks about `Field`, not
+  `T`, and asks the file that declared `Field`, not the one that
+  declared `List`.
+- A `match` arm's answer is coerced to the type of the whole `match`;
+  `Leaf` where `Leaf?` was expected was a verifier error nobody had hit.
+
+`WOLANG_TRACE_RC=1` prints every allocation, retain, release and free,
+which is how the last of these were found. What still leaks: a `text`
+inside a document value is a view of bytes nobody owns, which is a
+question about `std.doc`, not about counting.
 
 **D210. The documentation lives on mowoengine.com.** Beside the engine's
 guides, in the same engine-docs repository the site pins:

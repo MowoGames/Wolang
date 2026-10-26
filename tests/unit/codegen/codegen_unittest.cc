@@ -1735,7 +1735,8 @@ class Buffer {
 }
 
 fun Take(b: Buffer) -> int {
-  // Took ownership: this scope destroys it.
+  // Borrowed: a class is counted, not moved (D209), so the caller still
+  // holds it.
   return b.size
 }
 
@@ -1753,13 +1754,19 @@ fun Counted() -> int {
 fun Moved() -> int {
   var b = Buffer(7)
   const size = Take(b)
-  // One: every run starts from the type's zero, so what this counts is
-  // the single destruction `Take` did (D88).
+  // None yet: `b` is still held here, and goes when this scope ends.
   return size * 100 + destroyed
+}
+
+fun Gone() -> int {
+  destroyed = 0
+  const _size = Moved()
+  return destroyed
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Counted", {}), "3");
-  WOLANG_EXPECT_EQ(f.Run("Moved", {}), "701");
+  WOLANG_EXPECT_EQ(f.Run("Moved", {}), "700");
+  WOLANG_EXPECT_EQ(f.Run("Gone", {}), "1");
 }
 
 WOLANG_TEST(CodegenTest, WritesAModuleLevelVar) {
@@ -2532,7 +2539,9 @@ fun Nested() -> int {
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Shares", {}), "71");
-  WOLANG_EXPECT_EQ(f.Run("Nested", {}), "31");
+  // The caller still holds `noisy` when it reads `gone`: borrowed, not
+  // moved (D209).
+  WOLANG_EXPECT_EQ(f.Run("Nested", {}), "30");
 }
 
 WOLANG_TEST(CodegenTest, ReleasesWhatObjectsHold) {
@@ -2622,6 +2631,72 @@ fun Chains() -> int uses unsafe {
   WOLANG_EXPECT_EQ(f.Run("Chained", {}), "11");
   WOLANG_EXPECT_EQ(f.Run("Chains", {}), "0");
   WOLANG_EXPECT_EQ(f.Run("Survives", {}), "84");
+}
+
+WOLANG_TEST(CodegenTest, ReleasesClassesHeldByValues) {
+  Fixture f(R"(
+extern "C" fun wolang_objects_live() -> s64
+
+class Leaf {
+  var id: int = 0
+}
+
+struct Pair {
+  var left: Leaf
+  var right: Leaf? = null
+}
+
+enum Shape {
+  Empty
+  One(leaf: Leaf)
+  Two(pair: Pair)
+}
+
+fun Live() -> int uses unsafe {
+  return wolang_objects_live() as int
+}
+
+fun Make(id: int) -> Shape {
+  if id % 2 == 0 {
+    return Shape.One(Leaf(id))
+  }
+  return Shape.Two(Pair(Leaf(id), Leaf(id + 1)))
+}
+
+fun Find(shape: Shape) -> Leaf? {
+  return match shape {
+    Shape.One(leaf) => leaf
+    Shape.Two(pair) => pair.right
+    Shape.Empty => null
+  }
+}
+
+fun Copied() -> int uses unsafe {
+  const was = Live()
+  var total = 0
+  for i in 0..20 {
+    const shape = Make(i)
+    const copy = shape
+    var pair = Pair(Leaf(1), null)
+    pair.right = Leaf(2)
+    pair.left = pair.right ?? Leaf(3)
+    total = total + (Find(copy)?.id ?? 0) + (Find(Make(i))?.id ?? 0)
+  }
+  return (Live() - was) * 1000 + total
+}
+
+fun Counted() -> int uses unsafe {
+  const was = Live()
+  var result: Leaf? = null
+  for i in 0..5 {
+    result = Find(Make(i))
+  }
+  const kept = result?.id ?? -1
+  return (Live() - was) * 100 + kept
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Copied", {}), "400");
+  WOLANG_EXPECT_EQ(f.Run("Counted", {}), "104");
 }
 
 WOLANG_TEST(CodegenTest, AWeakFieldDoesNotKeepItsObject) {
