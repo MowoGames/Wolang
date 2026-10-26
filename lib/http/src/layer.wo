@@ -56,9 +56,10 @@ offer fun LayersNew() -> Layers uses unsafe {
 /// layers run in reverse, so the first layer added is the outermost one,
 /// which is the order every other server does it in and the one that
 /// makes a logger added first see the final answer.
-offer fun Through(layers: &Layers, request: Request,
-                  handle: fun(Request) -> Response) -> Response
-    uses io, unsafe {
+offer fun Through(
+    layers: &Layers,
+    request: Request,
+    handle: fun(Request) -> Response) -> Response uses io, unsafe {
   var subject = request
   var answer = Status(0, "")
   var answered = false
@@ -100,12 +101,12 @@ offer fun Timing(_request: &mut Request) -> Response? uses unsafe {
   return null
 }
 
-offer fun Logged(request: &Request, answer: Response) -> Response
-    uses io, unsafe {
+offer fun Logged(request: &Request, answer: Response) -> Response uses io, unsafe {
   if Enabled(Level.Info) {
     const took = Elapsed(started, Now()) / 1000
-    At(Level.Info, "{request.method} {request.path} -> {answer.status} " +
-                   "({took}us)")
+    At(
+        Level.Info,
+        "{request.method} {request.path} -> {answer.status} " + "({took}us)")
   }
   return answer
 }
@@ -144,10 +145,8 @@ offer fun AllowCredentials(allow: bool) {
 }
 
 /// Answers a preflight request itself, and marks every other answer.
-offer fun Cors(_request: &Request, answer: Response) -> Response
-    uses unsafe {
-  var held = WithHeader(answer, "Access-Control-Allow-Origin",
-                        allowed_origin)
+offer fun Cors(_request: &Request, answer: Response) -> Response uses unsafe {
+  var held = WithHeader(answer, "Access-Control-Allow-Origin", allowed_origin)
   held = WithHeader(held, "Access-Control-Allow-Methods", allowed_methods)
   held = WithHeader(held, "Access-Control-Allow-Headers", allowed_headers)
   if allow_credentials {
@@ -169,8 +168,7 @@ offer fun Preflight(request: &mut Request) -> Response? uses unsafe {
 }
 
 /// The headers a browser should be told about every answer.
-offer fun SecurityHeaders(_request: &Request, answer: Response)
-    -> Response uses unsafe {
+offer fun SecurityHeaders(_request: &Request, answer: Response) -> Response uses unsafe {
   var held = WithHeader(answer, "X-Content-Type-Options", "nosniff")
   held = WithHeader(held, "X-Frame-Options", "DENY")
   held = WithHeader(held, "Referrer-Policy", "no-referrer")
@@ -194,12 +192,11 @@ offer fun Authorize(request: &mut Request) -> Response? uses unsafe {
   if expected_token.len == 0 {
     return null
   }
-  const token = Bearer(&(*request))
+  const token = Bearer(&*request)
   if token == expected_token {
     return null
   }
-  return WithHeader(Status(401, "unauthorized\n"), "WWW-Authenticate",
-                    "Bearer")
+  return WithHeader(Status(401, "unauthorized\n"), "WWW-Authenticate", "Bearer")
 }
 
 // A token bucket, shared by every client: how many requests are left and
@@ -227,8 +224,7 @@ offer fun Limit(_request: &mut Request) -> Response? uses unsafe {
     budget = per_second
   }
   if budget <= 0 {
-    return WithHeader(Status(429, "too many requests\n"), "Retry-After",
-                      "1")
+    return WithHeader(Status(429, "too many requests\n"), "Retry-After", "1")
   }
   budget = budget - 1
   return null
@@ -273,8 +269,7 @@ fun RunsLayersAroundAHandler() -> bool uses io, unsafe {
   request.method = "GET"
   request.path = "/"
   const answer = Through(&layers, request, Hello)
-  return answer.status == 200 && answer.body == "hello" &&
-         answer.header_count == 1 && answer.headers[0].name == "X-Mark"
+  return answer.status == 200 && answer.body == "hello" && answer.header_count == 1 && answer.headers[0].name == "X-Mark"
 }
 
 @Test
@@ -295,9 +290,7 @@ fun MarksAnswersWithCors() -> bool uses io, unsafe {
   var request = RequestNew()
   const answer = Cors(&request, Ok("x"))
   AllowOrigin("*")
-  return answer.header_count == 4 &&
-         answer.headers[0].value == "https://example.com" &&
-         answer.headers[3].name == "Vary"
+  return answer.header_count == 4 && answer.headers[0].value == "https://example.com" && answer.headers[3].name == "Vary"
 }
 
 @Test

@@ -17,7 +17,7 @@ offer fun OfBytes(bytes: []u8) -> u64 {
   var hash = kOffset
   var i = 0
   while i < bytes.len {
-    hash = hash ^ (bytes[i] as u64)
+    hash = hash ^ bytes[i] as u64
     hash = WrappingMul(hash, kPrime)
     i = i + 1
   }
@@ -36,19 +36,20 @@ offer fun OfText(value: text) -> u64 uses unsafe {
 /// and sequential identifiers are the common case.
 offer fun OfInt(value: int) -> u64 {
   var hash = value as u64
-  hash = hash ^ (hash >> 33)
+  hash = hash ^ hash >> 33
   hash = WrappingMul(hash, 18397679294719823053)
-  hash = hash ^ (hash >> 29)
+  hash = hash ^ hash >> 29
   hash = WrappingMul(hash, 14181476777654086739)
-  return hash ^ (hash >> 32)
+  return hash ^ hash >> 32
 }
 
 /// Two hashes joined, for a key made of several parts.
 offer fun Combine(left: u64, right: u64) -> u64 {
   // The constant is the golden ratio in sixty-four bits, which is what
   // spreads the bits of the second hash across the first.
-  return left ^ WrappingAdd(WrappingAdd(right, 11400714819323198485),
-                            WrappingAdd(left << 6, left >> 2))
+  return left ^ WrappingAdd(
+      WrappingAdd(right, 11400714819323198485),
+      WrappingAdd(left << 6, left >> 2))
 }
 
 /// The hash as a map wants it: a number from zero to `slots`.
@@ -56,7 +57,7 @@ offer fun Slot(hash: u64, slots: int) -> int {
   if slots <= 0 {
     return 0
   }
-  return (hash % (slots as u64)) as int
+  return (hash % slots as u64) as int
 }
 
 /// What `std.map` wants for a text key: a hash as an `int`.
@@ -73,9 +74,8 @@ offer fun TextEquals(left: text, right: text) -> bool uses unsafe {
 
 @Test
 fun HashesTheSameInputTheSameWay() -> bool uses unsafe {
-  return OfText("wolang") == OfText("wolang") &&
-         OfText("wolang") != OfText("wolanh") && OfText("") == kOffset &&
-         OfInt(7) != OfInt(8)
+  return OfText("wolang") == OfText("wolang") && OfText("wolang") != OfText(
+      "wolanh") && OfText("") == kOffset && OfInt(7) != OfInt(8)
 }
 
 @Test
@@ -83,8 +83,7 @@ fun SpreadsSequentialNumbers() -> bool uses unsafe {
   // Sixteen slots, sixteen sequential keys: a hash that took the low bits
   // would fill them evenly too, so this checks the harder case -- keys a
   // stride apart.
-  var seen = [false, false, false, false, false, false, false, false,
-              false, false, false, false, false, false, false, false]
+  var seen = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
   var filled = 0
   var i = 0
   while i < 16 {

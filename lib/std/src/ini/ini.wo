@@ -66,9 +66,10 @@ offer fun Parse(input: text) -> Value! uses unsafe {
     if Length(section) == 0 {
       root = Replace(root, name, OfText(value))
     } else {
-      root = Replace(root, section,
-                     Replace(MemberOf(root, section), name,
-                             OfText(value)))
+      root = Replace(
+          root,
+          section,
+          Replace(MemberOf(root, section), name, OfText(value)))
     }
   }
   return root
@@ -113,22 +114,22 @@ offer fun Write(value: Value) -> text uses unsafe {
                 builder.AppendByte(10)
                 j = j + 1
               }
-            },
-            _ => {},
+            }
+            _ => {}
           }
         }
         i = i + 1
       }
-    },
-    _ => {},
+    }
+    _ => {}
   }
   return builder.Release()
 }
 
 fun IsTable(value: Value) -> bool {
   return match value {
-    Value.Object(_fields) => true,
-    _ => false,
+    Value.Object(_fields) => true
+    _ => false
   }
 }
 
@@ -136,12 +137,12 @@ fun IsTable(value: Value) -> bool {
 // below a section, so anything else is written as what it says.
 fun Flatten(value: Value) -> text uses unsafe {
   return match value {
-    Value.Null => "",
-    Value.Bool(held) => Truth(held),
-    Value.Number(held) => WholeOrNot(held),
-    Value.Text(held) => held,
-    Value.Array(items) => Joined(items),
-    Value.Object(_fields) => "",
+    Value.Null => ""
+    Value.Bool(held) => Truth(held)
+    Value.Number(held) => WholeOrNot(held)
+    Value.Text(held) => held
+    Value.Array(items) => Joined(items)
+    Value.Object(_fields) => ""
   }
 }
 
@@ -153,7 +154,7 @@ fun Truth(held: bool) -> text {
 }
 
 fun WholeOrNot(held: float) -> text {
-  if held == (held as int) as float {
+  if held == held as int as float {
     return "{held as int}"
   }
   return "{held}"
@@ -244,8 +245,10 @@ fun MemberOf(value: Value, name: text) -> Value uses unsafe {
         i = i + 1
       }
       return Object()
-    },
-    _ => { return Object() },
+    }
+    _ => {
+      return Object()
+    }
   }
 }
 
@@ -262,8 +265,10 @@ fun Replace(table: Value, name: text, value: Value) -> Value uses unsafe {
       }
       fields.Push(Field(name, value))
       return Value.Object(fields)
-    },
-    _ => { return table },
+    }
+    _ => {
+      return table
+    }
   }
 }
 
@@ -271,23 +276,18 @@ fun Replace(table: Value, name: text, value: Value) -> Value uses unsafe {
 
 @Test
 fun ReadsSectionsAndPairs() -> bool uses unsafe {
-  const source = "; a comment\n" +
-                 "editor = vim\n\n" +
-                 "[server]\n" +
-                 "host = example.com\n" +
-                 "port = 8080\n" +
-                 "# another comment\n" +
-                 "greeting = \"  hello  \"\n"
+  const source = "; a comment\n" + "editor = vim\n\n" + "[server]\n" + "host = example.com\n" + "port = 8080\n" + "# another comment\n" + "greeting = \"  hello  \"\n"
   match Parse(source) {
     Ok(value) => {
-      return AsText(Get(value, "editor") ?? Null(), "") == "vim" &&
-             AsText(Get(value, "server.host") ?? Null(), "") ==
-                 "example.com" &&
-             AsText(Get(value, "server.port") ?? Null(), "") == "8080" &&
-             AsText(Get(value, "server.greeting") ?? Null(), "") ==
-                 "  hello  "
-    },
-    Malformed => { return false },
+      return AsText(Get(value, "editor") ?? Null(), "") == "vim" && AsText(
+          Get(value, "server.host") ?? Null(),
+          "") == "example.com" && AsText(
+          Get(value, "server.port") ?? Null(),
+          "") == "8080" && AsText(Get(value, "server.greeting") ?? Null(), "") == "  hello  "
+    }
+    Malformed => {
+      return false
+    }
   }
 }
 
@@ -298,8 +298,8 @@ fun RefusesWhatIsNotIni() -> bool uses unsafe {
   var i = 0
   while i < 4 {
     match Parse(broken[i]) {
-      Ok(_value) => refused = refused,
-      Malformed => refused = refused + 1,
+      Ok(_value) => refused = refused
+      Malformed => refused = refused + 1
     }
     i = i + 1
   }
@@ -313,12 +313,17 @@ fun WritesWhatItRead() -> bool uses unsafe {
     Ok(value) => {
       match Parse(Write(value)) {
         Ok(again) => {
-          return AsText(Get(again, "a") ?? Null(), "") == "1" &&
-                 AsText(Get(again, "s.b") ?? Null(), "") == "two"
-        },
-        Malformed => { return false },
+          return AsText(Get(again, "a") ?? Null(), "") == "1" && AsText(
+              Get(again, "s.b") ?? Null(),
+              "") == "two"
+        }
+        Malformed => {
+          return false
+        }
       }
-    },
-    Malformed => { return false },
+    }
+    Malformed => {
+      return false
+    }
   }
 }

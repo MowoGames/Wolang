@@ -35,7 +35,7 @@ class Bits {
         ok = false
         return 0
       }
-      held = held | (bytes[at] as u32 << count as u32)
+      held = held | bytes[at] as u32 << count as u32
       at = at + 1
       count = count + 8
     }
@@ -58,7 +58,7 @@ class Codes {
   var symbols: []int
   var ok: bool = true
 
-  deinit {
+  deinit  {
     Free(counts)
     Free(symbols)
   }
@@ -113,7 +113,7 @@ fun Decode(bits: &mut Bits, codes: &Codes) -> int {
       return codes.symbols[index + (code - first)]
     }
     index = index + count
-    first = (first + count) << 1
+    first = first + count << 1
     code = code << 1
     length = length + 1
   }
@@ -121,27 +121,12 @@ fun Decode(bits: &mut Bits, codes: &Codes) -> int {
 }
 
 // What the length and distance codes mean, as the format's two tables.
-const kLengthBase: [29]int = [
-  3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51,
-  59, 67, 83, 99, 115, 131, 163, 195, 227, 258,
-]
-const kLengthExtra: [29]int = [
-  0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,
-  4, 5, 5, 5, 5, 0,
-]
-const kDistanceBase: [30]int = [
-  1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385,
-  513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385,
-  24577,
-]
-const kDistanceExtra: [30]int = [
-  0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10,
-  10, 11, 11, 12, 12, 13, 13,
-]
+const kLengthBase: [29]int = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
+const kLengthExtra: [29]int = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
+const kDistanceBase: [30]int = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
+const kDistanceExtra: [30]int = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
 // The order the dynamic header gives the code-length code lengths in.
-const kOrder: [19]int = [
-  16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
-]
+const kOrder: [19]int = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
 
 /// Reads a deflate stream.
 offer fun Inflate(bytes: []u8) -> []u8! uses unsafe {
@@ -159,8 +144,7 @@ offer fun Inflate(bytes: []u8) -> []u8! uses unsafe {
       if bits.at + 4 > bytes.len {
         return Malformed
       }
-      const length = bytes[bits.at] as int +
-                     (bytes[bits.at + 1] as int << 8)
+      const length = bytes[bits.at] as int + (bytes[bits.at + 1] as int << 8)
       bits.at = bits.at + 4
       if bits.at + length > bytes.len {
         return Malformed
@@ -203,8 +187,11 @@ offer fun Inflate(bytes: []u8) -> []u8! uses unsafe {
 }
 
 // One compressed block, symbol by symbol.
-fun Block(bits: &mut Bits, literals: &Codes, distances: &Codes,
-          out: &mut List<u8>) -> bool uses unsafe {
+fun Block(
+    bits: &mut Bits,
+    literals: &Codes,
+    distances: &Codes,
+    out: &mut List<u8>) -> bool uses unsafe {
   loop {
     const symbol = Decode(bits, literals)
     if symbol < 0 || !bits.ok {
@@ -221,14 +208,14 @@ fun Block(bits: &mut Bits, literals: &Codes, distances: &Codes,
     if length_code >= 29 {
       return false
     }
-    const length = kLengthBase[length_code] +
-                   bits.Take(kLengthExtra[length_code]) as int
+    const length = kLengthBase[length_code] + bits.Take(
+        kLengthExtra[length_code]) as int
     const distance_code = Decode(bits, distances)
     if distance_code < 0 || distance_code >= 30 {
       return false
     }
-    const distance = kDistanceBase[distance_code] +
-                     bits.Take(kDistanceExtra[distance_code]) as int
+    const distance = kDistanceBase[distance_code] + bits.Take(
+        kDistanceExtra[distance_code]) as int
     if distance > out.Len() {
       return false
     }
@@ -364,7 +351,7 @@ class Writer {
   var count: int = 0
 
   fun Put(value: u32, width: int) uses unsafe {
-    held = held | (value << count as u32)
+    held = held | value << count as u32
     count = count + width
     while count >= 8 {
       out.Push((held % 256) as u8)
@@ -395,15 +382,15 @@ class Writer {
 // The fixed literal code for a symbol, and how wide it is.
 fun FixedCode(symbol: int) -> int {
   if symbol < 144 {
-    return 0x30 + symbol
+    return 48 + symbol
   }
   if symbol < 256 {
-    return 0x190 + symbol - 144
+    return 400 + symbol - 144
   }
   if symbol < 280 {
     return symbol - 256
   }
-  return 0xC0 + symbol - 280
+  return 192 + symbol - 280
 }
 
 fun FixedWidth(symbol: int) -> int {
@@ -481,8 +468,7 @@ offer fun Deflate(bytes: []u8) -> []u8 uses unsafe {
           break
         }
         var length = 0
-        while length < 258 && at + length < bytes.len &&
-              bytes[candidate + length] == bytes[at + length] {
+        while length < 258 && at + length < bytes.len && bytes[candidate + length] == bytes[at + length] {
           length = length + 1
         }
         if length > best_length {
@@ -500,14 +486,13 @@ offer fun Deflate(bytes: []u8) -> []u8 uses unsafe {
 
     if best_length >= 3 {
       const code = LengthCode(best_length)
-      writer.PutCode(FixedCode(257 + code) as u32,
-                     FixedWidth(257 + code))
-      writer.Put((best_length - kLengthBase[code]) as u32,
-                 kLengthExtra[code])
+      writer.PutCode(FixedCode(257 + code) as u32, FixedWidth(257 + code))
+      writer.Put((best_length - kLengthBase[code]) as u32, kLengthExtra[code])
       const distance_code = DistanceCode(best_distance)
       writer.PutCode(distance_code as u32, 5)
-      writer.Put((best_distance - kDistanceBase[distance_code]) as u32,
-                 kDistanceExtra[distance_code])
+      writer.Put(
+          (best_distance - kDistanceBase[distance_code]) as u32,
+          kDistanceExtra[distance_code])
       // Every position inside the match still goes in the table, or the
       // next match is found from nothing.
       var k = 1
@@ -519,8 +504,9 @@ offer fun Deflate(bytes: []u8) -> []u8 uses unsafe {
       }
       at = at + best_length
     } else {
-      writer.PutCode(FixedCode(bytes[at] as int) as u32,
-                     FixedWidth(bytes[at] as int))
+      writer.PutCode(
+          FixedCode(bytes[at] as int) as u32,
+          FixedWidth(bytes[at] as int))
       at = at + 1
     }
   }
@@ -581,47 +567,45 @@ offer fun Gzip(bytes: []u8) -> []u8 uses unsafe {
 
 /// Reads a gzip container.
 offer fun Gunzip(bytes: []u8) -> []u8! uses unsafe {
-  if bytes.len < 18 || bytes[0] != 31 || bytes[1] != 139 ||
-     bytes[2] != 8 {
+  if bytes.len < 18 || bytes[0] != 31 || bytes[1] != 139 || bytes[2] != 8 {
     return Malformed
   }
   const flags = bytes[3]
   var at = 10
   // The optional parts, in the order the format puts them.
-  if (flags / 4) % 2 == 1 {
+  if flags / 4 % 2 == 1 {
     if at + 2 > bytes.len {
       return Malformed
     }
     const extra = bytes[at] as int + (bytes[at + 1] as int << 8)
     at = at + 2 + extra
   }
-  if (flags / 8) % 2 == 1 {
+  if flags / 8 % 2 == 1 {
     while at < bytes.len && bytes[at] != 0 {
       at = at + 1
     }
     at = at + 1
   }
-  if (flags / 16) % 2 == 1 {
+  if flags / 16 % 2 == 1 {
     while at < bytes.len && bytes[at] != 0 {
       at = at + 1
     }
     at = at + 1
   }
-  if (flags / 2) % 2 == 1 {
+  if flags / 2 % 2 == 1 {
     at = at + 2
   }
   if at >= bytes.len {
     return Malformed
   }
-  const body = Prefix<u8>(Suffix<u8>(bytes, at),
-                          bytes.len - at - 8)
+  const body = Prefix<u8>(Suffix<u8>(bytes, at), bytes.len - at - 8)
   return Inflate(body)?
 }
 
 /// The CRC-32 a gzip container carries, which is how a reader knows the
 /// bytes arrived whole.
 offer fun Crc32(bytes: []u8) -> u32 {
-  var crc: u32 = 0xFFFFFFFF
+  var crc: u32 = 4294967295
   var i = 0
   while i < bytes.len {
     crc = crc ^ bytes[i] as u32
@@ -630,13 +614,13 @@ offer fun Crc32(bytes: []u8) -> u32 {
       const low = crc % 2
       crc = crc >> 1 as u32
       if low == 1 {
-        crc = crc ^ 0xEDB88320
+        crc = crc ^ 3988292384
       }
       bit = bit + 1
     }
     i = i + 1
   }
-  return crc ^ 0xFFFFFFFF
+  return crc ^ 4294967295
 }
 
 // ------------------------------------------------------------- tests ---
@@ -644,9 +628,7 @@ offer fun Crc32(bytes: []u8) -> u32 {
 @Test
 fun RoundTripsThroughDeflate() -> bool uses unsafe {
   const source = Bytes(
-      "the quick brown fox jumps over the lazy dog, " +
-      "the quick brown fox jumps over the lazy dog, " +
-      "the quick brown fox jumps over the lazy dog")
+      "the quick brown fox jumps over the lazy dog, " + "the quick brown fox jumps over the lazy dog, " + "the quick brown fox jumps over the lazy dog")
   const packed = Deflate(source)
   if packed.len >= source.len {
     // Repeated text has to get smaller, or the match finder is not
@@ -665,11 +647,11 @@ fun RoundTripsThroughDeflate() -> bool uses unsafe {
       Free(packed)
       Free(back)
       return same
-    },
+    }
     Malformed => {
       Free(packed)
       return false
-    },
+    }
   }
 }
 
@@ -689,19 +671,18 @@ fun RoundTripsThroughGzip() -> bool uses unsafe {
       Free(packed)
       Free(back)
       return same
-    },
+    }
     Malformed => {
       Free(packed)
       return false
-    },
+    }
   }
 }
 
 @Test
 fun ChecksWithCrc32() -> bool uses unsafe {
   // The vector everyone's CRC-32 is checked against.
-  return Crc32(Bytes("123456789")) == 0xCBF43926 &&
-         Crc32(Bytes("")) == 0
+  return Crc32(Bytes("123456789")) == 3421780262 && Crc32(Bytes("")) == 0
 }
 
 @Test
@@ -709,13 +690,13 @@ fun RefusesWhatIsNotAStream() -> bool uses unsafe {
   var refused = 0
   var empty = ArrayNew<u8>(0)
   match Inflate(empty) {
-    Ok(_held) => refused = refused,
-    Malformed => refused = refused + 1,
+    Ok(_held) => refused = refused
+    Malformed => refused = refused + 1
   }
   const text = Bytes("not compressed at all")
   match Gunzip(text) {
-    Ok(_held) => refused = refused,
-    Malformed => refused = refused + 1,
+    Ok(_held) => refused = refused
+    Malformed => refused = refused + 1
   }
   return refused == 2
 }

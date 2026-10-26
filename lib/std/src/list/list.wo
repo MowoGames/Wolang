@@ -320,11 +320,11 @@ fun AsksAboutEveryElement() -> bool uses unsafe {
   const items = list.Items()
   const limit = 3
   // The closures take `limit` with them, which is the point.
-  return Any(items, |x| x > limit) && !All(items, |x| x > limit) &&
-         Count(items, |x| x > limit) == 2 &&
-         Find(items, |x| x == limit) == 2 &&
-         Find(items, |x| x == 99) == -1 &&
-         Fold(items, 0, |total, x| total + x) == 15
+  return Any(items, |x| x > limit) && !All(items, |x| x > limit) && Count(
+      items,
+      |x| x > limit) == 2 && Find(items, |x| x == limit) == 2 && Find(
+      items,
+      |x| x == 99) == -1 && Fold(items, 0, |total, x| total + x) == 15
 }
 
 @Test

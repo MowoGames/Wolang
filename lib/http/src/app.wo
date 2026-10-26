@@ -69,9 +69,10 @@ offer fun AppNew() -> App uses unsafe {
 // The application the server loop answers from. A module-level `var` for
 // the same reason the router was one: a loop cannot carry it in a closure
 // (D106, D112).
-var running: App = App(Router(ListNew<Route>(), NotFoundHandler, false),
-                       Layers(ListNew<Before>(), ListNew<After>()),
-                       Limits(1048576, 16384, true))
+var running: App = App(
+    Router(ListNew<Route>(), NotFoundHandler, false),
+    Layers(ListNew<Before>(), ListNew<After>()),
+    Limits(1048576, 16384, true))
 
 fun Handle(request: Request) -> Response uses io, unsafe {
   return Through(&running.layers, request, Routed)
@@ -87,8 +88,7 @@ fun Routed(request: Request) -> Response uses io, unsafe {
 /// entry point says what it serves.
 ///
 /// `most` connections at once, each with a buffer of its own.
-offer fun ServeApp(app: App, port: int, most: int) -> s32
-    uses io, unsafe {
+offer fun ServeApp(app: App, port: int, most: int) -> s32 uses io, unsafe {
   running = app
   At(Level.Info, "serving on port {port}")
   return RunServer(port, most, Handle, app.limits)
@@ -100,8 +100,7 @@ offer fun ServeApp(app: App, port: int, most: int) -> s32
 /// What a program that has not decided anything yet should call, because
 /// every one of those is something a server wants and none of them is
 /// something a handler should have to remember.
-offer fun ServeWithDefaults(app: App, port: int, most: int) -> s32
-    uses io, unsafe {
+offer fun ServeWithDefaults(app: App, port: int, most: int) -> s32 uses io, unsafe {
   var held = app
   held.layers.Use(Timing)
   held.layers.Use(Preflight)
@@ -126,8 +125,7 @@ fun ServeOneThread() uses io, unsafe {
     At(Level.Error, "cannot listen on port {serving_port}")
     return
   }
-  const _code = RunServerOn(listener, serving_most, Handle,
-                            running.limits)
+  const _code = RunServerOn(listener, serving_most, Handle, running.limits)
 }
 
 /// Serves `app` on `port` from `threads` threads at once.
@@ -137,8 +135,7 @@ fun ServeOneThread() uses io, unsafe {
 /// sharing it across threads, and whether that is safe is the program's
 /// business -- a counter wants `std.thread.AtomicAdd` and a table wants
 /// a `Mutex` (D135).
-offer fun ServeMany(app: App, port: int, most: int, threads: int) -> s32
-    uses io, unsafe {
+offer fun ServeMany(app: App, port: int, most: int, threads: int) -> s32 uses io, unsafe {
   running = app
   serving_port = port
   serving_most = most
@@ -200,8 +197,7 @@ fun RoutesThroughAnApplication() -> bool uses io, unsafe {
   const first = Dispatch(&app.router, health)
   const second = Dispatch(&app.router, user)
   const third = Dispatch(&app.router, nothing)
-  return first.body == "hello" && second.body == "7" &&
-         third.status == 418
+  return first.body == "hello" && second.body == "7" && third.status == 418
 }
 
 @Test
@@ -223,10 +219,7 @@ fun AnswersHeadAndOptionsItself() -> bool uses io, unsafe {
   const answered = Dispatch(&app.router, head)
   const said = Dispatch(&app.router, options)
   const refused = Dispatch(&app.router, wrong)
-  return answered.status == 200 && said.status == 204 &&
-         said.headers[0].name == "Allow" &&
-         said.headers[0].value == "GET, POST, HEAD, OPTIONS" &&
-         refused.status == 405 && refused.headers[0].name == "Allow"
+  return answered.status == 200 && said.status == 204 && said.headers[0].name == "Allow" && said.headers[0].value == "GET, POST, HEAD, OPTIONS" && refused.status == 405 && refused.headers[0].name == "Allow"
 }
 
 @Test
@@ -240,8 +233,9 @@ fun MountsOneRouterInsideAnother() -> bool uses io, unsafe {
   request.method = "GET"
   request.path = "/api/v1/users/9"
   const answer = Dispatch(&app.router, request)
-  return answer.body == "9" && Together("/api/", "/x") == "/api/x" &&
-         Together("/", "/x") == "/x" && Together("/api", "x") == "/api/x"
+  return answer.body == "9" && Together("/api/", "/x") == "/api/x" && Together(
+      "/",
+      "/x") == "/x" && Together("/api", "x") == "/api/x"
 }
 
 @Test

@@ -17,8 +17,7 @@
 // room to record it, and a reader that refused the file over a tag it
 // did not know would be a reader nobody could use (D165).
 
-need std.doc.{Array, AsBool, AsInt, AsNumber, AsText, Field, Get, Null,
-              Object, OfBool, OfText, Push, Value}
+need std.doc.{Array, AsBool, AsInt, AsNumber, AsText, Field, Get, Null, Object, OfBool, OfText, Push, Value}
 need std.list.{List, ListNew}
 need std.text.{Builder, Bytes, BuilderNew, Length, Substring, Trim}
 
@@ -240,8 +239,8 @@ fun ReadNode(reader: &mut Reader, indent: int) -> Step uses unsafe {
         break
       }
       const next = reader.Current()
-      if next.blank || next.indent <= indent ||
-         MappingSplit(next.text) >= 0 || IsSequenceLine(next.text) {
+      if next.blank || next.indent <= indent || MappingSplit(next.text) >= 0 || IsSequenceLine(
+          next.text) {
         break
       }
       builder.AppendByte(32)
@@ -260,8 +259,8 @@ fun ReadNode(reader: &mut Reader, indent: int) -> Step uses unsafe {
 // continues onto the next line.
 fun IsPlainText(value: Value) -> bool {
   return match value {
-    Value.Text(_held) => true,
-    _ => false,
+    Value.Text(_held) => true
+    _ => false
   }
 }
 
@@ -358,8 +357,7 @@ fun ReadSequence(reader: &mut Reader, indent: int) -> Step uses unsafe {
 }
 
 // `- key: value`, and whatever is indented under it.
-fun ReadInlineMapping(reader: &mut Reader, line: Line, rest: text,
-                      indent: int) -> Step uses unsafe {
+fun ReadInlineMapping(reader: &mut Reader, line: Line, rest: text, indent: int) -> Step uses unsafe {
   // The key's column is where `rest` begins, which is what the lines
   // under it are measured against.
   const column = indent + Length(line.text) - Length(rest)
@@ -399,8 +397,7 @@ fun ReadMapping(reader: &mut Reader, indent: int) -> Step uses unsafe {
     if line.indent != indent {
       break
     }
-    if StartsWithText(line.text, "---") ||
-       StartsWithText(line.text, "...") {
+    if StartsWithText(line.text, "---") || StartsWithText(line.text, "...") {
       break
     }
     if MappingSplit(line.text) < 0 {
@@ -432,8 +429,7 @@ fun BadEntry() -> Entry {
   return Entry("", Value.Null, false)
 }
 
-fun ReadEntry(reader: &mut Reader, line: text, indent: int) -> Entry
-    uses unsafe {
+fun ReadEntry(reader: &mut Reader, line: text, indent: int) -> Entry uses unsafe {
   const split = MappingSplit(line)
   if split < 0 {
     return BadEntry()
@@ -468,8 +464,7 @@ fun ReadEntry(reader: &mut Reader, line: text, indent: int) -> Entry
 
 // What follows a `-` or a `key:` on the same line: a scalar, a flow
 // collection, a block scalar, an anchor or an alias.
-fun ReadScalarOrNested(reader: &mut Reader, rest: text, indent: int)
-    -> Step uses unsafe {
+fun ReadScalarOrNested(reader: &mut Reader, rest: text, indent: int) -> Step uses unsafe {
   var held = rest
   var anchor = ""
   var marker = ""
@@ -529,8 +524,7 @@ fun ReadScalarOrNested(reader: &mut Reader, rest: text, indent: int)
 
   // `*name` is whatever `&name` was.
   if FirstByte(held) == 42 {
-    return Step(reader.Recall(Trim(Substring(held, 1, Length(held)))),
-                true)
+    return Step(reader.Recall(Trim(Substring(held, 1, Length(held)))), true)
   }
 
   const scalar = ReadScalar(held)
@@ -559,8 +553,11 @@ fun IndexOfSpace(value: text) -> int uses unsafe {
 // `|` keeps the line breaks, `>` folds them into spaces. A `-` after
 // either drops the break at the end, a `+` keeps every one, and a digit
 // says how far the block is indented.
-fun ReadLiteralBlock(reader: &mut Reader, header: text, indent: int,
-                     folded: bool) -> Step uses unsafe {
+fun ReadLiteralBlock(
+    reader: &mut Reader,
+    header: text,
+    indent: int,
+    folded: bool) -> Step uses unsafe {
   var chomp = 0
   var wanted = 0
   const bytes = Bytes(header)
@@ -764,12 +761,12 @@ fun HexDigit(byte: u8) -> int {
 }
 
 fun AppendCodePoint(builder: &mut Builder, point: int) uses unsafe {
-  if point < 0x80 {
+  if point < 128 {
     builder.AppendByte(point as u8)
-  } else if point < 0x800 {
+  } else if point < 2048 {
     builder.AppendByte((192 + point / 64) as u8)
     builder.AppendByte((128 + point % 64) as u8)
-  } else if point < 0x10000 {
+  } else if point < 65536 {
     builder.AppendByte((224 + point / 4096) as u8)
     builder.AppendByte((128 + point / 64 % 64) as u8)
     builder.AppendByte((128 + point % 64) as u8)
@@ -792,8 +789,7 @@ offer fun Resolve(held: text) -> Value uses unsafe {
   if held == "false" || held == "False" || held == "FALSE" {
     return OfBool(false)
   }
-  if held == ".inf" || held == ".Inf" || held == ".INF" ||
-     held == "+.inf" {
+  if held == ".inf" || held == ".Inf" || held == ".INF" || held == "+.inf" {
     return Value.Number(Infinity())
   }
   if held == "-.inf" || held == "-.Inf" || held == "-.INF" {
@@ -811,7 +807,7 @@ offer fun Resolve(held: text) -> Value uses unsafe {
 fun Infinity() -> float {
   // Built rather than written: a literal large enough to be infinite is
   // not something a source file should have to contain.
-  var value = 1.0e38
+  var value = 1e+38
   value = value * value
   return value
 }
@@ -850,7 +846,7 @@ offer fun NumberOf(spelled: text) -> float? uses unsafe {
         if digit < 0 || digit >= base {
           return null
         }
-        total = total * (base as float) + (digit as float)
+        total = total * base as float + digit as float
         seen = seen + 1
       }
       if seen == 0 {
@@ -879,7 +875,7 @@ offer fun NumberOf(spelled: text) -> float? uses unsafe {
     if byte < 48 || byte > 57 {
       break
     }
-    whole = whole * 10.0 + ((byte - 48) as float)
+    whole = whole * 10.0 + (byte - 48) as float
     digits = digits + 1
     i = i + 1
   }
@@ -896,7 +892,7 @@ offer fun NumberOf(spelled: text) -> float? uses unsafe {
       if byte < 48 || byte > 57 {
         break
       }
-      whole = whole + ((byte - 48) as float) * scale
+      whole = whole + (byte - 48) as float * scale
       scale = scale * 0.1
       fraction = fraction + 1
       i = i + 1
@@ -990,8 +986,7 @@ fun ReadFlowMapping(value: text) -> Step uses unsafe {
         name = AsTextValue(held.value)
       }
     }
-    const step = ReadScalar(Trim(Substring(piece, split + 1,
-                                           Length(piece))))
+    const step = ReadScalar(Trim(Substring(piece, split + 1, Length(piece))))
     if !step.ok {
       return Bad()
     }
@@ -1104,12 +1099,12 @@ fun ApplyTag(marker: text, value: Value) -> Value uses unsafe {
 // asks for.
 fun Spelled(value: Value) -> text uses unsafe {
   return match value {
-    Value.Null => "",
-    Value.Bool(held) => Truth(held),
-    Value.Number(held) => WholeOrNot(held),
-    Value.Text(held) => held,
-    Value.Array(_items) => "",
-    Value.Object(_fields) => "",
+    Value.Null => ""
+    Value.Bool(held) => Truth(held)
+    Value.Number(held) => WholeOrNot(held)
+    Value.Text(held) => held
+    Value.Array(_items) => ""
+    Value.Object(_fields) => ""
   }
 }
 
@@ -1121,7 +1116,7 @@ fun Truth(held: bool) -> text {
 }
 
 fun WholeOrNot(held: float) -> text {
-  if held == (held as int) as float {
+  if held == held as int as float {
     return "{held as int}"
   }
   return "{held}"
@@ -1129,15 +1124,14 @@ fun WholeOrNot(held: float) -> text {
 
 fun AsTextValue(value: Value) -> text {
   return match value {
-    Value.Text(held) => held,
-    _ => "",
+    Value.Text(held) => held
+    _ => ""
   }
 }
 
 // -------------------------------------------------------------- tables ---
 
-fun PutField(table: Value, name: text, value: Value) -> Value
-    uses unsafe {
+fun PutField(table: Value, name: text, value: Value) -> Value uses unsafe {
   match table {
     Value.Object(fields) => {
       var i = 0
@@ -1150,8 +1144,10 @@ fun PutField(table: Value, name: text, value: Value) -> Value
       }
       fields.Push(Field(name, value))
       return Value.Object(fields)
-    },
-    _ => { return table },
+    }
+    _ => {
+      return table
+    }
   }
 }
 
@@ -1170,7 +1166,7 @@ fun Merge(table: Value, from: Value) -> Value uses unsafe {
         i = i + 1
       }
       return held
-    },
+    }
     Value.Array(items) => {
       // A list of tables merges each in turn, earliest winning.
       var i = 0
@@ -1179,8 +1175,10 @@ fun Merge(table: Value, from: Value) -> Value uses unsafe {
         i = i + 1
       }
       return held
-    },
-    _ => { return held },
+    }
+    _ => {
+      return held
+    }
   }
 }
 
@@ -1195,8 +1193,10 @@ fun Has(table: Value, name: text) -> bool uses unsafe {
         i = i + 1
       }
       return false
-    },
-    _ => { return false },
+    }
+    _ => {
+      return false
+    }
   }
 }
 
@@ -1212,13 +1212,16 @@ offer fun Write(value: Value) -> text uses unsafe {
   return builder.Release()
 }
 
-fun WriteNode(builder: &mut Builder, value: Value, indent: int,
-              inline_start: bool) uses unsafe {
+fun WriteNode(
+    builder: &mut Builder,
+    value: Value,
+    indent: int,
+    inline_start: bool) uses unsafe {
   match value {
     Value.Object(fields) => {
       if fields.Len() == 0 {
         WriteIndent(builder, indent, inline_start)
-        builder.Append("\{\}")
+        builder.Append("\{}")
         builder.AppendByte(10)
         return
       }
@@ -1242,7 +1245,7 @@ fun WriteNode(builder: &mut Builder, value: Value, indent: int,
         }
         i = i + 1
       }
-    },
+    }
     Value.Array(items) => {
       if items.Len() == 0 {
         WriteIndent(builder, indent, inline_start)
@@ -1267,17 +1270,16 @@ fun WriteNode(builder: &mut Builder, value: Value, indent: int,
         }
         i = i + 1
       }
-    },
+    }
     _ => {
       WriteIndent(builder, indent, inline_start)
       builder.Append(WriteScalar(value))
       builder.AppendByte(10)
-    },
+    }
   }
 }
 
-fun WriteIndent(builder: &mut Builder, indent: int, skip: bool)
-    uses unsafe {
+fun WriteIndent(builder: &mut Builder, indent: int, skip: bool) uses unsafe {
   if skip {
     return
   }
@@ -1290,24 +1292,24 @@ fun WriteIndent(builder: &mut Builder, indent: int, skip: bool)
 
 fun IsScalar(value: Value) -> bool {
   return match value {
-    Value.Array(_items) => false,
-    Value.Object(_fields) => false,
-    _ => true,
+    Value.Array(_items) => false
+    Value.Object(_fields) => false
+    _ => true
   }
 }
 
 fun IsEmpty(value: Value) -> bool uses unsafe {
   return match value {
-    Value.Array(items) => items.Len() == 0,
-    Value.Object(fields) => fields.Len() == 0,
-    _ => false,
+    Value.Array(items) => items.Len() == 0
+    Value.Object(fields) => fields.Len() == 0
+    _ => false
   }
 }
 
 fun EmptyOf(value: Value) -> text {
   return match value {
-    Value.Array(_items) => "[]",
-    _ => "\{\}",
+    Value.Array(_items) => "[]"
+    _ => "\{}"
   }
 }
 
@@ -1320,11 +1322,11 @@ fun WriteKey(name: text) -> text uses unsafe {
 
 fun WriteScalar(value: Value) -> text uses unsafe {
   return match value {
-    Value.Null => "null",
-    Value.Bool(held) => Truth(held),
-    Value.Number(held) => WholeOrNot(held),
-    Value.Text(held) => WriteText(held),
-    _ => "",
+    Value.Null => "null"
+    Value.Bool(held) => Truth(held)
+    Value.Number(held) => WholeOrNot(held)
+    Value.Text(held) => WriteText(held)
+    _ => ""
   }
 }
 
@@ -1340,8 +1342,12 @@ fun WriteText(held: text) -> text uses unsafe {
   }
   const resolved = Resolve(held)
   match resolved {
-    Value.Text(_same) => { return held },
-    _ => { return Quoted(held) },
+    Value.Text(_same) => {
+      return held
+    }
+    _ => {
+      return Quoted(held)
+    }
   }
 }
 
@@ -1351,11 +1357,7 @@ fun NeedsQuotes(held: text) -> bool uses unsafe {
     return true
   }
   const first = bytes[0]
-  if first == 32 || first == 45 || first == 63 || first == 58 ||
-     first == 38 || first == 42 || first == 33 || first == 35 ||
-     first == 124 || first == 62 || first == 37 || first == 64 ||
-     first == 96 || first == 34 || first == 39 || first == 91 ||
-     first == 123 {
+  if first == 32 || first == 45 || first == 63 || first == 58 || first == 38 || first == 42 || first == 33 || first == 35 || first == 124 || first == 62 || first == 37 || first == 64 || first == 96 || first == 34 || first == 39 || first == 91 || first == 123 {
     return true
   }
   if bytes[bytes.len - 1] == 32 {
@@ -1407,117 +1409,94 @@ fun Quoted(held: text) -> text uses unsafe {
 
 @Test
 fun ReadsABlockDocument() -> bool uses unsafe {
-  const source = "# a comment\n" +
-      "name: wolang\n" +
-      "version: 1\n" +
-      "fast: true\n" +
-      "nothing: ~\n" +
-      "server:\n" +
-      "  host: example.com\n" +
-      "  ports:\n" +
-      "    - 80\n" +
-      "    - 443\n" +
-      "tags: [systems, games]\n" +
-      "limits: \{ cpu: 2, memory: 512 \}\n"
+  const source = "# a comment\n" + "name: wolang\n" + "version: 1\n" + "fast: true\n" + "nothing: ~\n" + "server:\n" + "  host: example.com\n" + "  ports:\n" + "    - 80\n" + "    - 443\n" + "tags: [systems, games]\n" + "limits: \{ cpu: 2, memory: 512 }\n"
   match Parse(source) {
     Ok(v) => {
-      return AsText(Get(v, "name") ?? Null(), "") == "wolang" &&
-             AsInt(Get(v, "version") ?? Null(), 0) == 1 &&
-             AsBool(Get(v, "fast") ?? Null(), false) &&
-             IsNullValue(Get(v, "nothing") ?? OfBool(true)) &&
-             AsText(Get(v, "server.host") ?? Null(), "") ==
-                 "example.com" &&
-             AsInt(Get(v, "server.ports.1") ?? Null(), 0) == 443 &&
-             AsText(Get(v, "tags.0") ?? Null(), "") == "systems" &&
-             AsInt(Get(v, "limits.memory") ?? Null(), 0) == 512
-    },
-    Malformed => { return false },
+      return AsText(Get(v, "name") ?? Null(), "") == "wolang" && AsInt(
+          Get(v, "version") ?? Null(),
+          0) == 1 && AsBool(Get(v, "fast") ?? Null(), false) && IsNullValue(
+          Get(v, "nothing") ?? OfBool(true)) && AsText(
+          Get(v, "server.host") ?? Null(),
+          "") == "example.com" && AsInt(Get(v, "server.ports.1") ?? Null(), 0) == 443 && AsText(
+          Get(v, "tags.0") ?? Null(),
+          "") == "systems" && AsInt(Get(v, "limits.memory") ?? Null(), 0) == 512
+    }
+    Malformed => {
+      return false
+    }
   }
 }
 
 fun IsNullValue(value: Value) -> bool {
   return match value {
-    Value.Null => true,
-    _ => false,
+    Value.Null => true
+    _ => false
   }
 }
 
 @Test
 fun ReadsListsOfTables() -> bool uses unsafe {
-  const source = "servers:\n" +
-                 "  - host: a\n" +
-                 "    port: 1\n" +
-                 "  - host: b\n" +
-                 "    port: 2\n"
+  const source = "servers:\n" + "  - host: a\n" + "    port: 1\n" + "  - host: b\n" + "    port: 2\n"
   match Parse(source) {
     Ok(v) => {
-      return AsText(Get(v, "servers.0.host") ?? Null(), "") == "a" &&
-             AsInt(Get(v, "servers.1.port") ?? Null(), 0) == 2
-    },
-    Malformed => { return false },
+      return AsText(Get(v, "servers.0.host") ?? Null(), "") == "a" && AsInt(
+          Get(v, "servers.1.port") ?? Null(),
+          0) == 2
+    }
+    Malformed => {
+      return false
+    }
   }
 }
 
 @Test
 fun ReadsBlockScalars() -> bool uses unsafe {
-  const source = "kept: |\n" +
-                 "  one\n" +
-                 "  two\n" +
-                 "folded: >\n" +
-                 "  one\n" +
-                 "  two\n" +
-                 "clipped: |-\n" +
-                 "  only\n" +
-                 "after: 1\n"
+  const source = "kept: |\n" + "  one\n" + "  two\n" + "folded: >\n" + "  one\n" + "  two\n" + "clipped: |-\n" + "  only\n" + "after: 1\n"
   match Parse(source) {
     Ok(v) => {
-      return AsText(Get(v, "kept") ?? Null(), "") == "one\ntwo\n" &&
-             AsText(Get(v, "folded") ?? Null(), "") == "one two\n" &&
-             AsText(Get(v, "clipped") ?? Null(), "") == "only" &&
-             AsInt(Get(v, "after") ?? Null(), 0) == 1
-    },
-    Malformed => { return false },
+      return AsText(Get(v, "kept") ?? Null(), "") == "one\ntwo\n" && AsText(
+          Get(v, "folded") ?? Null(),
+          "") == "one two\n" && AsText(Get(v, "clipped") ?? Null(), "") == "only" && AsInt(
+          Get(v, "after") ?? Null(),
+          0) == 1
+    }
+    Malformed => {
+      return false
+    }
   }
 }
 
 @Test
 fun ReadsQuotesAndNumbers() -> bool uses unsafe {
-  const source = "a: \"two\\nlines\"\n" +
-                 "b: 'it''s here'\n" +
-                 "c: 0x10\n" +
-                 "d: -2.5e2\n" +
-                 "e: 1_000\n" +
-                 "f: \"3\"\n" +
-                 "g: no colon here\n"
+  const source = "a: \"two\\nlines\"\n" + "b: 'it''s here'\n" + "c: 0x10\n" + "d: -2.5e2\n" + "e: 1_000\n" + "f: \"3\"\n" + "g: no colon here\n"
   match Parse(source) {
     Ok(v) => {
-      return AsText(Get(v, "a") ?? Null(), "") == "two\nlines" &&
-             AsText(Get(v, "b") ?? Null(), "") == "it's here" &&
-             AsInt(Get(v, "c") ?? Null(), 0) == 16 &&
-             AsNumber(Get(v, "d") ?? Null(), 0.0) == -250.0 &&
-             AsInt(Get(v, "e") ?? Null(), 0) == 1000 &&
-             AsText(Get(v, "f") ?? Null(), "") == "3" &&
-             AsText(Get(v, "g") ?? Null(), "") == "no colon here"
-    },
-    Malformed => { return false },
+      return AsText(Get(v, "a") ?? Null(), "") == "two\nlines" && AsText(
+          Get(v, "b") ?? Null(),
+          "") == "it's here" && AsInt(Get(v, "c") ?? Null(), 0) == 16 && AsNumber(
+          Get(v, "d") ?? Null(),
+          0.0) == -250.0 && AsInt(Get(v, "e") ?? Null(), 0) == 1000 && AsText(
+          Get(v, "f") ?? Null(),
+          "") == "3" && AsText(Get(v, "g") ?? Null(), "") == "no colon here"
+    }
+    Malformed => {
+      return false
+    }
   }
 }
 
 @Test
 fun ReadsAnchorsAndMerges() -> bool uses unsafe {
-  const source = "base: &base\n" +
-                 "  host: localhost\n" +
-                 "  port: 80\n" +
-                 "live:\n" +
-                 "  <<: *base\n" +
-                 "  port: 443\n"
+  const source = "base: &base\n" + "  host: localhost\n" + "  port: 80\n" + "live:\n" + "  <<: *base\n" + "  port: 443\n"
   match Parse(source) {
     Ok(v) => {
-      return AsText(Get(v, "live.host") ?? Null(), "") == "localhost" &&
-             AsInt(Get(v, "live.port") ?? Null(), 0) == 443 &&
-             AsInt(Get(v, "base.port") ?? Null(), 0) == 80
-    },
-    Malformed => { return false },
+      return AsText(Get(v, "live.host") ?? Null(), "") == "localhost" && AsInt(
+          Get(v, "live.port") ?? Null(),
+          0) == 443 && AsInt(Get(v, "base.port") ?? Null(), 0) == 80
+    }
+    Malformed => {
+      return false
+    }
   }
 }
 
@@ -1526,10 +1505,13 @@ fun ReadsEveryDocumentInAStream() -> bool uses unsafe {
   const source = "---\na: 1\n---\na: 2\n...\n"
   match ParseAll(source) {
     Ok(documents) => {
-      return documents.Len() == 2 &&
-             AsInt(Get(documents.At(1), "a") ?? Null(), 0) == 2
-    },
-    Malformed => { return false },
+      return documents.Len() == 2 && AsInt(
+          Get(documents.At(1), "a") ?? Null(),
+          0) == 2
+    }
+    Malformed => {
+      return false
+    }
   }
 }
 
@@ -1538,38 +1520,38 @@ fun AppliesStandardTags() -> bool uses unsafe {
   const source = "a: !!str 3\nb: !!int \"7\"\nc: !custom 5\n"
   match Parse(source) {
     Ok(v) => {
-      return AsText(Get(v, "a") ?? Null(), "") == "3" &&
-             AsInt(Get(v, "b") ?? Null(), 0) == 7 &&
-             AsInt(Get(v, "c") ?? Null(), 0) == 5
-    },
-    Malformed => { return false },
+      return AsText(Get(v, "a") ?? Null(), "") == "3" && AsInt(
+          Get(v, "b") ?? Null(),
+          0) == 7 && AsInt(Get(v, "c") ?? Null(), 0) == 5
+    }
+    Malformed => {
+      return false
+    }
   }
 }
 
 @Test
 fun WritesWhatItRead() -> bool uses unsafe {
-  const source = "name: wolang\n" +
-                 "ports:\n" +
-                 "  - 80\n" +
-                 "  - 443\n" +
-                 "server:\n" +
-                 "  host: example.com\n" +
-                 "quoted: \"yes\"\n"
+  const source = "name: wolang\n" + "ports:\n" + "  - 80\n" + "  - 443\n" + "server:\n" + "  host: example.com\n" + "quoted: \"yes\"\n"
   match Parse(source) {
     Ok(value) => {
       match Parse(Write(value)) {
         Ok(again) => {
-          return AsText(Get(again, "name") ?? Null(), "") == "wolang" &&
-                 AsInt(Get(again, "ports.1") ?? Null(), 0) == 443 &&
-                 AsText(Get(again, "server.host") ?? Null(), "") ==
-                     "example.com" &&
-                 // `yes` would come back as a truth if it were written
-                 // bare, which is the oldest hole in YAML.
-                 AsText(Get(again, "quoted") ?? Null(), "") == "yes"
-        },
-        Malformed => { return false },
+          return AsText(Get(again, "name") ?? Null(), "") == "wolang" && AsInt(
+              Get(again, "ports.1") ?? Null(),
+              0) == 443 && AsText(Get(again, "server.host") ?? Null(), "") == "example.com" && AsText(
+              Get(again, "quoted") ?? Null(),
+              "") == "yes"
+          // `yes` would come back as a truth if it were written
+          // bare, which is the oldest hole in YAML.
+        }
+        Malformed => {
+          return false
+        }
       }
-    },
-    Malformed => { return false },
+    }
+    Malformed => {
+      return false
+    }
   }
 }

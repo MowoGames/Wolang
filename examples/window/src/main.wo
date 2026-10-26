@@ -13,9 +13,7 @@
 need std.io.{Print}
 need std.math.{Sin}
 need std.mem.{ArrayNew, Free}
-need gfx.{Available, Backend, CanvasNew, Open, OpenAudio, Rgb, Sleep,
-          Time, kClosed, kKeyDown, kKeyEscape, kKeyLeft, kKeyRight,
-          kKeySpace, kKeyUp, kPressed, kReleased, kResizable, kResized}
+need gfx.{Available, Backend, CanvasNew, Open, OpenAudio, Rgb, Sleep, Time, kClosed, kKeyDown, kKeyEscape, kKeyLeft, kKeyRight, kKeySpace, kKeyUp, kPressed, kReleased, kResizable, kResized}
 
 fun main() uses io, unsafe {
   if !Available() {
@@ -79,10 +77,18 @@ fun main() uses io, unsafe {
       }
     }
 
-    if left { x = x - 6 }
-    if right { x = x + 6 }
-    if up { y = y - 6 }
-    if down { y = y + 6 }
+    if left {
+      x = x - 6
+    }
+    if right {
+      x = x + 6
+    }
+    if up {
+      y = y - 6
+    }
+    if down {
+      y = y + 6
+    }
 
     // Something that moves on its own, so that a frame that drew is
     // obvious: a band of colour that walks across the window.
@@ -90,10 +96,14 @@ fun main() uses io, unsafe {
     const t = Time()
     var i = 0
     while i < canvas.width {
-      const wave = Sin((i as f32) * 0.02 + (t as f32) * 2.0)
+      const wave = Sin(i as f32 * 0.02 + t as f32 * 2.0)
       const height = (wave * 80.0 + 120.0) as int
-      canvas.Rect(i, canvas.height - height, 1, height,
-                  Rgb(40 + i / 4, 90, 200 - i / 6))
+      canvas.Rect(
+          i,
+          canvas.height - height,
+          1,
+          height,
+          Rgb(40 + i / 4, 90, 200 - i / 6))
       i = i + 1
     }
     canvas.Rect(x - 20, y - 20, 40, 40, Rgb(255, 220, 90))

@@ -8,9 +8,7 @@
 // Parsing answers a `Value!`: a malformed document is a thing that
 // happens to a server every day, not a reason to stop the program.
 
-need std.doc.{Array, AsBool, AsInt, AsText, At, Field, IsNull, Len,
-              Member, Null, Object, OfBool, OfInt, OfText, Push, Put,
-              Value}
+need std.doc.{Array, AsBool, AsInt, AsText, At, Field, IsNull, Len, Member, Null, Object, OfBool, OfInt, OfText, Push, Put, Value}
 need std.list.{List, ListNew}
 need std.text.{Bytes, BuilderNew, Builder}
 /// What a document that is not one answers with.
@@ -241,7 +239,7 @@ fun ParseNumber(cursor: Cursor) -> Step {
     if byte < 48 || byte > 57 {
       break
     }
-    whole = whole * 10.0 + ((byte - 48) as float)
+    whole = whole * 10.0 + (byte - 48) as float
     walk.at = walk.at + 1
     digits = digits + 1
   }
@@ -257,7 +255,7 @@ fun ParseNumber(cursor: Cursor) -> Step {
       if byte < 48 || byte > 57 {
         break
       }
-      whole = whole + ((byte - 48) as float) * scale
+      whole = whole + (byte - 48) as float * scale
       scale = scale * 0.1
       walk.at = walk.at + 1
       fraction = fraction + 1
@@ -384,12 +382,12 @@ offer fun Write(value: Value) -> text uses unsafe {
 
 fun WriteInto(builder: &mut Builder, value: Value) uses unsafe {
   match value {
-    Value.Null => builder.Append("null"),
-    Value.Bool(held) => builder.Append(TextOfBool(held)),
-    Value.Number(held) => builder.Append(TextOfNumber(held)),
-    Value.Text(held) => WriteText(builder, held),
-    Value.Array(items) => WriteArray(builder, items),
-    Value.Object(fields) => WriteObject(builder, fields),
+    Value.Null => builder.Append("null")
+    Value.Bool(held) => builder.Append(TextOfBool(held))
+    Value.Number(held) => builder.Append(TextOfNumber(held))
+    Value.Text(held) => WriteText(builder, held)
+    Value.Array(items) => WriteArray(builder, items)
+    Value.Object(fields) => WriteObject(builder, fields)
   }
 }
 
@@ -404,7 +402,7 @@ fun TextOfBool(value: bool) -> text {
 // on the other side expects of an id or a count.
 fun TextOfNumber(value: float) -> text {
   const whole = value as int
-  if (whole as float) == value {
+  if whole as float == value {
     return "{whole}"
   }
   return "{value}"
@@ -481,8 +479,7 @@ fun WriteObject(builder: &mut Builder, fields: List<Field>) uses unsafe {
 @Test
 fun ReadsADocument() -> bool uses unsafe {
   const document = Parse(
-      "\{\"name\": \"wolang\", \"stars\": 42, \"fast\": true, " +
-      "\"tags\": [\"systems\", \"games\"], \"missing\": null\}")
+      "\{\"name\": \"wolang\", \"stars\": 42, \"fast\": true, " + "\"tags\": [\"systems\", \"games\"], \"missing\": null}")
   match document {
     Ok(value) => {
       const name = AsText(Member(value, "name") ?? Null(), "")
@@ -492,23 +489,23 @@ fun ReadsADocument() -> bool uses unsafe {
       const second = AsText(At(tags, 1) ?? Null(), "")
       const missing = IsNull(Member(value, "missing") ?? OfInt(1))
       const absent = Member(value, "nothing") == null
-      return name == "wolang" && stars == 42 && fast && Len(tags) == 2 &&
-             second == "games" && missing && absent
-    },
-    Malformed => { return false },
+      return name == "wolang" && stars == 42 && fast && Len(tags) == 2 && second == "games" && missing && absent
+    }
+    Malformed => {
+      return false
+    }
   }
 }
 
 @Test
 fun RefusesADocumentThatIsNotOne() -> bool uses unsafe {
   var refused = 0
-  const broken = ["\{", "[1,", "\{\"a\"\}", "tru", "1.", "",
-                  "\{\} \{\}"]
+  const broken = ["\{", "[1,", "\{\"a\"}", "tru", "1.", "", "\{} \{}"]
   var i = 0
   while i < 7 {
     match Parse(broken[i]) {
-      Ok(_value) => refused = refused,
-      Malformed => refused = refused + 1,
+      Ok(_value) => refused = refused
+      Malformed => refused = refused + 1
     }
     i = i + 1
   }
@@ -517,11 +514,14 @@ fun RefusesADocumentThatIsNotOne() -> bool uses unsafe {
 
 @Test
 fun WritesWhatItRead() -> bool uses unsafe {
-  const source =
-      "\{\"a\":[1,2,3],\"b\":\{\"c\":\"d\"\},\"e\":true,\"f\":null\}"
+  const source = "\{\"a\":[1,2,3],\"b\":\{\"c\":\"d\"},\"e\":true,\"f\":null}"
   match Parse(source) {
-    Ok(value) => { return Write(value) == source },
-    Malformed => { return false },
+    Ok(value) => {
+      return Write(value) == source
+    }
+    Malformed => {
+      return false
+    }
   }
 }
 
@@ -533,14 +533,18 @@ fun BuildsADocument() -> bool uses unsafe {
   var object = Object()
   object = Put(object, "items", items)
   object = Put(object, "ok", OfBool(true))
-  return Write(object) == "\{\"items\":[1,\"two\"],\"ok\":true\}"
+  return Write(object) == "\{\"items\":[1,\"two\"],\"ok\":true}"
 }
 
 @Test
 fun EscapesWhatItMust() -> bool uses unsafe {
   const written = Write(OfText("a\"b\\c\nd"))
   match Parse(written) {
-    Ok(value) => { return AsText(value, "") == "a\"b\\c\nd" },
-    Malformed => { return false },
+    Ok(value) => {
+      return AsText(value, "") == "a\"b\\c\nd"
+    }
+    Malformed => {
+      return false
+    }
   }
 }

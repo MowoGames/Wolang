@@ -45,11 +45,9 @@ offer fun RedirectWith(status: int, location: text) -> Response {
 /// has to tell a person what went wrong needs more than a status line,
 /// and a body that is sometimes text and sometimes JSON is the thing that
 /// makes writing a client miserable.
-offer fun Problem(status: int, title: text, detail: text) -> Response
-    uses unsafe {
-  const body = "\{\"status\": {status}, \"title\": \"" +
-               Escaped(title) + "\", \"detail\": \"" +
-               Escaped(detail) + "\"\}\n"
+offer fun Problem(status: int, title: text, detail: text) -> Response uses unsafe {
+  const body = "\{\"status\": {status}, \"title\": \"" + Escaped(title) + "\", \"detail\": \"" + Escaped(
+      detail) + "\"}\n"
   return WithType(Status(status, body), "application/problem+json")
 }
 
@@ -87,8 +85,10 @@ offer fun Escaped(value: text) -> text uses unsafe {
 /// A body to be saved rather than shown.
 offer fun Attachment(name: text, body: text) -> Response uses unsafe {
   var answer = WithType(Status(200, body), "application/octet-stream")
-  return WithHeader(answer, "Content-Disposition",
-                    "attachment; filename=\"" + name + "\"")
+  return WithHeader(
+      answer,
+      "Content-Disposition",
+      "attachment; filename=\"" + name + "\"")
 }
 
 /// The same response, with a cookie on it.
@@ -96,8 +96,7 @@ offer fun Attachment(name: text, body: text) -> Response uses unsafe {
 /// `Path=/` and `HttpOnly` by default: a cookie a script can read is a
 /// cookie an injected script can read, and a program that wants one says
 /// so with `WithHeader` itself.
-offer fun WithCookie(answer: Response, name: text, value: text,
-                     seconds: int) -> Response uses unsafe {
+offer fun WithCookie(answer: Response, name: text, value: text, seconds: int) -> Response uses unsafe {
   var pieces = "{name}={value}; Path=/; HttpOnly; SameSite=Lax"
   if seconds >= 0 {
     pieces = pieces + "; Max-Age={seconds}"
@@ -106,10 +105,11 @@ offer fun WithCookie(answer: Response, name: text, value: text,
 }
 
 /// The same response, with the cookie called `name` taken away.
-offer fun WithoutCookie(answer: Response, name: text) -> Response
-    uses unsafe {
-  return WithHeader(answer, "Set-Cookie",
-                    "{name}=; Path=/; HttpOnly; Max-Age=0")
+offer fun WithoutCookie(answer: Response, name: text) -> Response uses unsafe {
+  return WithHeader(
+      answer,
+      "Set-Cookie",
+      "{name}=; Path=/; HttpOnly; Max-Age=0")
 }
 
 /// The same response, cacheable for `seconds`.
@@ -145,8 +145,10 @@ offer fun NotModified(request: &Request, tag: text) -> Response? uses unsafe {
 
 /// `401` with the scheme a client should use.
 offer fun Unauthorized(realm: text) -> Response uses unsafe {
-  return WithHeader(Status(401, "unauthorized\n"), "WWW-Authenticate",
-                    "Bearer realm=\"" + realm + "\"")
+  return WithHeader(
+      Status(401, "unauthorized\n"),
+      "WWW-Authenticate",
+      "Bearer realm=\"" + realm + "\"")
 }
 
 offer fun Forbidden() -> Response {
@@ -163,8 +165,10 @@ offer fun Unprocessable(why: text) -> Response {
 
 /// `429`, with how long the client should wait.
 offer fun TooMany(seconds: int) -> Response uses unsafe {
-  return WithHeader(Status(429, "too many requests\n"), "Retry-After",
-                    "{seconds}")
+  return WithHeader(
+      Status(429, "too many requests\n"),
+      "Retry-After",
+      "{seconds}")
 }
 
 /// `500`, with nothing about what went wrong.
@@ -176,8 +180,7 @@ offer fun Failed() -> Response {
 }
 
 offer fun Unavailable(seconds: int) -> Response uses unsafe {
-  return WithHeader(Status(503, "unavailable\n"), "Retry-After",
-                    "{seconds}")
+  return WithHeader(Status(503, "unavailable\n"), "Retry-After", "{seconds}")
 }
 
 // ------------------------------------------------------------- tests ---
@@ -187,30 +190,21 @@ fun WritesTheUsualAnswers() -> bool uses unsafe {
   const html = Html("<p>hi</p>")
   const redirect = Redirect("/login")
   const moved = RedirectWith(301, "/new")
-  return html.status == 200 && html.kind == "text/html; charset=utf-8" &&
-         redirect.status == 303 && redirect.header_count == 1 &&
-         redirect.headers[0].name == "Location" &&
-         redirect.headers[0].value == "/login" && moved.status == 301
+  return html.status == 200 && html.kind == "text/html; charset=utf-8" && redirect.status == 303 && redirect.header_count == 1 && redirect.headers[0].name == "Location" && redirect.headers[0].value == "/login" && moved.status == 301
 }
 
 @Test
 fun WritesAProblemDocument() -> bool uses unsafe {
   const answer = Problem(422, "invalid", "name is \"empty\"\n")
-  return answer.status == 422 &&
-         answer.kind == "application/problem+json" &&
-         Escaped("a\"b") == "a\\\"b" && Escaped("a\nb") == "a\\nb" &&
-         answer.body.len > 40
+  return answer.status == 422 && answer.kind == "application/problem+json" && Escaped(
+      "a\"b") == "a\\\"b" && Escaped("a\nb") == "a\\nb" && answer.body.len > 40
 }
 
 @Test
 fun SetsAndClearsCookies() -> bool uses unsafe {
   const set = WithCookie(Ok("x"), "session", "abc", 3600)
   const cleared = WithoutCookie(Ok("x"), "session")
-  return set.headers[0].name == "Set-Cookie" &&
-         set.headers[0].value ==
-             "session=abc; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600" &&
-         cleared.headers[0].value ==
-             "session=; Path=/; HttpOnly; Max-Age=0"
+  return set.headers[0].name == "Set-Cookie" && set.headers[0].value == "session=abc; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600" && cleared.headers[0].value == "session=; Path=/; HttpOnly; Max-Age=0"
 }
 
 @Test

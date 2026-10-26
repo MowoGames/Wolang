@@ -12,21 +12,20 @@ need std.mem.{ArrayNew, Free}
 need std.text.{BuilderNew, Bytes}
 
 extern "C" fun wolang_socket_open() -> s64
-extern "C" fun wolang_socket_connect(socket: s64, address: u32,
-                                     port: u32) -> s32
-extern "C" fun wolang_socket_listen(socket: s64, address: u32, port: u32,
-                                    backlog: s32) -> s32
+extern "C" fun wolang_socket_connect(socket: s64, address: u32, port: u32) -> s32
+extern "C" fun wolang_socket_listen(
+    socket: s64,
+    address: u32,
+    port: u32,
+    backlog: s32) -> s32
 extern "C" fun wolang_socket_accept(socket: s64) -> s64
-extern "C" fun wolang_socket_send(socket: s64, bytes: *u8,
-                                  count: s64) -> s64
-extern "C" fun wolang_socket_receive(socket: s64, bytes: *mut u8,
-                                     room: s64) -> s64
+extern "C" fun wolang_socket_send(socket: s64, bytes: *u8, count: s64) -> s64
+extern "C" fun wolang_socket_receive(socket: s64, bytes: *mut u8, room: s64) -> s64
 extern "C" fun wolang_socket_close(socket: s64) -> s32
 extern "C" fun wolang_socket_reuse(socket: s64, on: s32) -> s32
 extern "C" fun wolang_socket_nodelay(socket: s64, on: s32) -> s32
 extern "C" fun wolang_socket_blocking(socket: s64, on: s32) -> s32
-extern "C" fun wolang_resolve(host: *u8, length: u64,
-                              out: *mut u32) -> s32
+extern "C" fun wolang_resolve(host: *u8, length: u64, out: *mut u32) -> s32
 
 /// One connection, open until it is closed.
 offer class Socket {
@@ -44,9 +43,10 @@ offer class Socket {
     const bytes = Bytes(message)
     var at = 0
     while at < bytes.len {
-      const written =
-          wolang_socket_send(fd as s64, &bytes[at],
-                             (bytes.len - at) as s64)
+      const written = wolang_socket_send(
+          fd as s64,
+          &bytes[at],
+          (bytes.len - at) as s64)
       if written <= 0 {
         return false
       }
@@ -61,8 +61,10 @@ offer class Socket {
       return ""
     }
     var buffer = ArrayNew<u8>(limit)
-    const received =
-        wolang_socket_receive(fd as s64, &mut buffer[0], limit as s64)
+    const received = wolang_socket_receive(
+        fd as s64,
+        &mut buffer[0],
+        limit as s64)
     if received <= 0 {
       Free(buffer)
       return ""
@@ -171,8 +173,7 @@ offer fun ParseAddress(host: text) -> s64? uses unsafe {
   // Four bytes in the order a person writes them. As a 64-bit number,
   // because `128.0.0.0` already does not fit a signed 32-bit one -- which
   // is what made resolving a real host overflow (D148).
-  return parts[0] * 16777216 + parts[1] * 65536 + parts[2] * 256 +
-         parts[3]
+  return parts[0] * 16777216 + parts[1] * 65536 + parts[2] * 256 + parts[3]
 }
 
 /// The address `host` names, whether it is written as numbers or as a
@@ -248,18 +249,16 @@ fun ResolvesNamesAndNumbers() -> bool uses unsafe {
   // address needs no resolver at all.
   const numeric = Resolve("127.0.0.1") ?? 0
   const named = Resolve("localhost") ?? 0
-  return numeric == 2130706433 && named != 0 &&
-         Resolve("this.name.does.not.exist.invalid") == null
+  return numeric == 2130706433 && named != 0 && Resolve(
+      "this.name.does.not.exist.invalid") == null
 }
 
 @Test
 fun ReadsDottedAddresses() -> bool uses unsafe {
-  return (ParseAddress("127.0.0.1") ?? 0) == 2130706433 &&
-         (ParseAddress("255.255.255.255") ?? 0) == 4294967295 &&
-         (ParseAddress("0.0.0.0") ?? -1) == 0 &&
-         ParseAddress("256.0.0.1") == null &&
-         ParseAddress("1.2.3") == null && ParseAddress("") == null &&
-         ParseAddress("a.b.c.d") == null
+  return (ParseAddress("127.0.0.1") ?? 0) == 2130706433 && (ParseAddress(
+      "255.255.255.255") ?? 0) == 4294967295 && (ParseAddress("0.0.0.0") ?? -1) == 0 && ParseAddress(
+      "256.0.0.1") == null && ParseAddress("1.2.3") == null && ParseAddress("") == null && ParseAddress(
+      "a.b.c.d") == null
 }
 
 @Test

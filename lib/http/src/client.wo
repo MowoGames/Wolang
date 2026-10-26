@@ -13,8 +13,7 @@
 need std.net.{Connect, Socket}
 need std.time.{ElapsedMillis, Now}
 need tls.{Handshake, Stream}
-need std.text.{Builder, Bytes, BuilderNew, IndexOf, Length, StartsWith,
-               Substring, Trim}
+need std.text.{Builder, Bytes, BuilderNew, IndexOf, Length, StartsWith, Substring, Trim}
 
 // What went wrong with a call that never got an answer.
 //
@@ -62,7 +61,8 @@ offer fun ParseUrl(url: text) -> Url! uses unsafe {
   if colon >= 0 {
     parsed.host = Substring(authority, 0, colon)
     const said = ParseSigned(
-        Substring(authority, colon + 1, Length(authority)), -1)
+        Substring(authority, colon + 1, Length(authority)),
+        -1)
     if said <= 0 || said > 65535 {
       return BadUrl
     }
@@ -86,8 +86,7 @@ offer struct Reply {
 }
 
 /// The header called `name`, or `fallback`. Case does not matter.
-offer fun ReplyHeader(answer: &Reply, name: text, fallback: text) -> text
-    uses unsafe {
+offer fun ReplyHeader(answer: &Reply, name: text, fallback: text) -> text uses unsafe {
   var i = 0
   while i < answer.header_count {
     if SameName(answer.headers[i].name, name) {
@@ -105,19 +104,16 @@ offer fun Fetch(url: text) -> Reply! uses io, unsafe {
 
 /// `POST url` with a JSON body.
 offer fun PostJson(url: text, body: text) -> Reply! uses io, unsafe {
-  return Perform(WithBody(CallNew("POST", url), body,
-                          "application/json"))
+  return Perform(WithBody(CallNew("POST", url), body, "application/json"))
 }
 
 /// `PUT`, `PATCH` and `DELETE`, for an API that uses them.
 offer fun PutJson(url: text, body: text) -> Reply! uses io, unsafe {
-  return Perform(WithBody(CallNew("PUT", url), body,
-                          "application/json"))
+  return Perform(WithBody(CallNew("PUT", url), body, "application/json"))
 }
 
 offer fun PatchJson(url: text, body: text) -> Reply! uses io, unsafe {
-  return Perform(WithBody(CallNew("PATCH", url), body,
-                          "application/json"))
+  return Perform(WithBody(CallNew("PATCH", url), body, "application/json"))
 }
 
 offer fun Delete(url: text) -> Reply! uses io, unsafe {
@@ -126,8 +122,8 @@ offer fun Delete(url: text) -> Reply! uses io, unsafe {
 
 /// A form submission: `a=1&b=two`, escaped, as a browser sends it.
 offer fun PostForm(url: text, body: text) -> Reply! uses io, unsafe {
-  return Perform(WithBody(CallNew("POST", url), body,
-                          "application/x-www-form-urlencoded"))
+  return Perform(
+      WithBody(CallNew("POST", url), body, "application/x-www-form-urlencoded"))
 }
 
 /// What a built call does. `Perform`, because `Request` is what a
@@ -141,9 +137,7 @@ offer fun Perform(call: Call) -> Reply! uses io, unsafe {
   var left = call.redirects
   loop {
     const reply = Once(held)?
-    const moved = reply.status == 301 || reply.status == 302 ||
-                  reply.status == 303 || reply.status == 307 ||
-                  reply.status == 308
+    const moved = reply.status == 301 || reply.status == 302 || reply.status == 303 || reply.status == 307 || reply.status == 308
     if !moved || left <= 0 {
       return reply
     }
@@ -153,8 +147,7 @@ offer fun Perform(call: Call) -> Reply! uses io, unsafe {
     }
     left = left - 1
     held.url = Absolute(held.url, next)
-    if reply.status == 303 || reply.status == 302 ||
-       reply.status == 301 {
+    if reply.status == 303 || reply.status == 302 || reply.status == 301 {
       // What the status means: come back with a `GET` and nothing in
       // hand. `307` and `308` keep the method and the body.
       held.method = "GET"
@@ -179,8 +172,7 @@ offer fun Absolute(from: text, location: text) -> text uses unsafe {
         scheme = "https://"
       }
       var authority = target.host
-      if (target.secure && target.port != 443) ||
-         (!target.secure && target.port != 80) {
+      if target.secure && target.port != 443 || !target.secure && target.port != 80 {
         authority = "{target.host}:{target.port}"
       }
       if StartsWith(location, "/") {
@@ -196,8 +188,10 @@ offer fun Absolute(from: text, location: text) -> text uses unsafe {
         at = at - 1
       }
       return scheme + authority + Substring(directory, 0, at) + location
-    },
-    _ => { return location },
+    }
+    _ => {
+      return location
+    }
   }
 }
 
@@ -239,8 +233,7 @@ offer fun Once(call: Call) -> Reply! uses io, unsafe {
 }
 
 /// The bytes of a request.
-offer fun Written(call: Call, target: Url, keep_alive: bool) -> text
-    uses unsafe {
+offer fun Written(call: Call, target: Url, keep_alive: bool) -> text uses unsafe {
   var request = BuilderNew()
   request.Append("{call.method} {target.target} HTTP/1.1\r\n")
   request.Append("Host: {target.host}\r\n")
@@ -293,9 +286,13 @@ offer fun Open(url: text) -> Socket! uses io, unsafe {
 
 /// One request on a connection the caller owns.
 /// One request on a connection the caller owns.
-offer fun Ask(connection: &mut Socket, target: Url, method: text,
-              body: text, kind: text, keep_alive: bool) -> Reply!
-    uses io, unsafe {
+offer fun Ask(
+    connection: &mut Socket,
+    target: Url,
+    method: text,
+    body: text,
+    kind: text,
+    keep_alive: bool) -> Reply! uses io, unsafe {
   var call = CallNew(method, target.target)
   call = WithBody(call, body, kind)
   if !connection.Send(Written(call, target, keep_alive)) {
@@ -305,8 +302,7 @@ offer fun Ask(connection: &mut Socket, target: Url, method: text,
 }
 
 /// Reads an answer off a plain connection.
-offer fun Plain(connection: &mut Socket, timeout: int) -> Reply!
-    uses io, unsafe {
+offer fun Plain(connection: &mut Socket, timeout: int) -> Reply! uses io, unsafe {
   var received = BuilderNew()
   const started = Now()
   var head = -1
@@ -318,8 +314,7 @@ offer fun Plain(connection: &mut Socket, timeout: int) -> Reply!
       break
     }
     received.Append(piece)
-    const state = Progress(&mut received, &mut head, &mut length,
-                           &mut chunked)
+    const state = Progress(&mut received, &mut head, &mut length, &mut chunked)
     if state {
       break
     }
@@ -336,8 +331,7 @@ offer fun Plain(connection: &mut Socket, timeout: int) -> Reply!
 /// and a socket are two types with the same three methods, and an
 /// ability with a method per direction is more machinery than the
 /// duplication costs (D151).
-offer fun Secure(stream: &mut Stream, timeout: int) -> Reply!
-    uses io, unsafe {
+offer fun Secure(stream: &mut Stream, timeout: int) -> Reply! uses io, unsafe {
   var received = BuilderNew()
   const started = Now()
   var head = -1
@@ -349,8 +343,7 @@ offer fun Secure(stream: &mut Stream, timeout: int) -> Reply!
       break
     }
     received.Append(piece)
-    const state = Progress(&mut received, &mut head, &mut length,
-                           &mut chunked)
+    const state = Progress(&mut received, &mut head, &mut length, &mut chunked)
     if state {
       break
     }
@@ -366,9 +359,11 @@ offer fun Secure(stream: &mut Stream, timeout: int) -> Reply!
 /// The head first -- which says how the body is framed -- and then
 /// either `Content-Length` bytes or chunks up to the empty one. A read
 /// stops wherever it likes, which is why this is asked after every one.
-offer fun Progress(received: &mut Builder, head: &mut int,
-                   length: &mut int, chunked: &mut bool) -> bool
-    uses unsafe {
+offer fun Progress(
+    received: &mut Builder,
+    head: &mut int,
+    length: &mut int,
+    chunked: &mut bool) -> bool uses unsafe {
   const whole = received.Text()
   if *head < 0 {
     const blank = IndexOf(whole, "\r\n\r\n")
@@ -392,8 +387,7 @@ offer fun Progress(received: &mut Builder, head: &mut int,
 }
 
 /// The answer, with a chunked body put back together.
-offer fun Finish(whole: text, head: int, length: int, chunked: bool)
-    -> Reply! uses unsafe {
+offer fun Finish(whole: text, head: int, length: int, chunked: bool) -> Reply! uses unsafe {
   if head < 0 {
     return Truncated
   }
@@ -490,8 +484,7 @@ offer fun IsChunked(head: text) -> bool uses unsafe {
     }
     const line = Substring(head, at, end)
     const colon = IndexOf(line, ":")
-    if colon > 0 && SameName(Substring(line, 0, colon),
-                             "Transfer-Encoding") {
+    if colon > 0 && SameName(Substring(line, 0, colon), "Transfer-Encoding") {
       const value = Trim(Substring(line, colon + 1, Length(line)))
       if IndexOf(Lowered(value), "chunked") >= 0 {
         return true
@@ -534,8 +527,7 @@ fun ContentLength(head: text) -> int uses unsafe {
     if colon > 0 {
       const name = Substring(line, 0, colon)
       if SameName(name, "Content-Length") {
-        return ParseSigned(
-            Trim(Substring(line, colon + 1, Length(line))), -1)
+        return ParseSigned(Trim(Substring(line, colon + 1, Length(line))), -1)
       }
     }
     at = end
@@ -547,8 +539,7 @@ fun ContentLength(head: text) -> int uses unsafe {
 }
 
 /// What a response's bytes mean.
-offer fun ParseReply(whole: text, head: int, length: int) -> Reply!
-    uses unsafe {
+offer fun ParseReply(whole: text, head: int, length: int) -> Reply! uses unsafe {
   var answer = ReplyNew()
   const bytes = Bytes(whole)
   // `HTTP/1.1 200 OK`: the status is the second word.
@@ -582,9 +573,9 @@ offer fun ParseReply(whole: text, head: int, length: int) -> Reply!
     const line = Substring(whole, at, end)
     const colon = IndexOf(line, ":")
     if colon > 0 && answer.header_count < kMostHeaders {
-      answer.headers[answer.header_count] =
-          Pair(Substring(line, 0, colon),
-               Trim(Substring(line, colon + 1, Length(line))))
+      answer.headers[answer.header_count] = Pair(
+          Substring(line, 0, colon),
+          Trim(Substring(line, colon + 1, Length(line))))
       answer.header_count = answer.header_count + 1
     }
     at = end
@@ -615,58 +606,69 @@ offer fun ReplyNew() -> Reply {
 fun TakesUrlsApart() -> bool uses unsafe {
   match ParseUrl("http://example.com/users?page=2") {
     Ok(target) => {
-      if target.host != "example.com" || target.port != 80 ||
-         target.target != "/users?page=2" || target.secure {
+      if target.host != "example.com" || target.port != 80 || target.target != "/users?page=2" || target.secure {
         return false
       }
-    },
-    _ => { return false },
+    }
+    _ => {
+      return false
+    }
   }
   match ParseUrl("http://127.0.0.1:8080") {
     Ok(target) => {
-      if target.host != "127.0.0.1" || target.port != 8080 ||
-         target.target != "/" {
+      if target.host != "127.0.0.1" || target.port != 8080 || target.target != "/" {
         return false
       }
-    },
-    _ => { return false },
+    }
+    _ => {
+      return false
+    }
   }
   match ParseUrl("https://example.com") {
     Ok(target) => {
       if !target.secure || target.port != 443 {
         return false
       }
-    },
-    _ => { return false },
+    }
+    _ => {
+      return false
+    }
   }
   match ParseUrl("ftp://example.com") {
-    BadUrl => { return true },
-    _ => { return false },
+    BadUrl => {
+      return true
+    }
+    _ => {
+      return false
+    }
   }
 }
 
 @Test
 fun ReadsAResponse() -> bool uses unsafe {
-  const whole = "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n" +
-                "Content-Length: 13\r\nServer: wolang\r\n\r\n" +
-                "\{\"ok\":true\}\n"
+  const whole = "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n" + "Content-Length: 13\r\nServer: wolang\r\n\r\n" + "\{\"ok\":true}\n"
   const head = IndexOf(whole, "\r\n\r\n") + 4
   match ParseReply(whole, head, 13) {
     Ok(answer) => {
-      return answer.status == 201 && answer.header_count == 3 &&
-             ReplyHeader(&answer, "content-type", "") ==
-                 "application/json" &&
-             ReplyHeader(&answer, "missing", "none") == "none" &&
-             answer.body.len == 12
-    },
-    _ => { return false },
+      return answer.status == 201 && answer.header_count == 3 && ReplyHeader(
+          &answer,
+          "content-type",
+          "") == "application/json" && ReplyHeader(&answer, "missing", "none") == "none" && answer.body.len == 12
+    }
+    _ => {
+      return false
+    }
   }
 }
 
 @Test
 fun RefusesWhatIsNotHttp() -> bool uses unsafe {
   match ParseReply("not a response at all\r\n\r\n", 25, -1) {
-    NotHttp => { return true },
-    _ => { return false },
+    NotHttp => {
+      return true
+    }
+    _ => {
+      return false
+    }
   }
 }

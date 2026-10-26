@@ -12,8 +12,7 @@ need std.text.{Bytes, Length, StartsWith, Substring, Trim}
 need std.encoding.{FromUrl}
 
 /// The query parameter called `name` as a number, or `fallback`.
-offer fun QueryInt(request: &Request, name: text, fallback: int) -> int
-    uses unsafe {
+offer fun QueryInt(request: &Request, name: text, fallback: int) -> int uses unsafe {
   const held = Query(request, name, "")
   if Length(held) == 0 {
     return fallback
@@ -22,8 +21,7 @@ offer fun QueryInt(request: &Request, name: text, fallback: int) -> int
 }
 
 /// The query parameter as a flag: `true`, `1`, `yes` and `on` are true.
-offer fun QueryBool(request: &Request, name: text, fallback: bool) -> bool
-    uses unsafe {
+offer fun QueryBool(request: &Request, name: text, fallback: bool) -> bool uses unsafe {
   const held = Query(request, name, "")
   if Length(held) == 0 {
     return fallback
@@ -32,8 +30,7 @@ offer fun QueryBool(request: &Request, name: text, fallback: bool) -> bool
 }
 
 /// The path parameter called `name` as a number.
-offer fun ParamInt(request: &Request, name: text, fallback: int) -> int
-    uses unsafe {
+offer fun ParamInt(request: &Request, name: text, fallback: int) -> int uses unsafe {
   const held = Param(request, name, "")
   if Length(held) == 0 {
     return fallback
@@ -42,8 +39,7 @@ offer fun ParamInt(request: &Request, name: text, fallback: int) -> int
 }
 
 /// The query parameter with `%20` and `+` read back.
-offer fun QueryText(request: &Request, name: text, fallback: text) -> text
-    uses unsafe {
+offer fun QueryText(request: &Request, name: text, fallback: text) -> text uses unsafe {
   const held = Query(request, name, "")
   if Length(held) == 0 {
     return fallback
@@ -93,8 +89,9 @@ offer fun ContentType(request: &Request) -> text uses unsafe {
 /// Whether the body says it is JSON.
 offer fun IsJson(request: &Request) -> bool uses unsafe {
   const kind = ContentType(request)
-  return StartsWith(kind, "application/json") ||
-         StartsWith(kind, "application/problem+json")
+  return StartsWith(kind, "application/json") || StartsWith(
+      kind,
+      "application/problem+json")
 }
 
 /// The body as JSON, or the error the parser gave.
@@ -110,8 +107,7 @@ offer fun JsonBody(request: &Request) -> Value! uses unsafe {
 ///
 /// `a=1&b=two`, which is what a browser form sends: the same shape as a
 /// query string, so the same walk with the escapes read back.
-offer fun Field(request: &Request, name: text, fallback: text) -> text
-    uses unsafe {
+offer fun Field(request: &Request, name: text, fallback: text) -> text uses unsafe {
   const bytes = Bytes(request.body)
   var at = 0
   while at < bytes.len {
@@ -146,8 +142,7 @@ offer fun Bearer(request: &Request) -> text uses unsafe {
 /// The cookie called `name`, or `fallback`.
 ///
 /// One header with `a=1; b=2` in it, which is how a browser sends them.
-offer fun Cookie(request: &Request, name: text, fallback: text) -> text
-    uses unsafe {
+offer fun Cookie(request: &Request, name: text, fallback: text) -> text uses unsafe {
   const jar = Header(request, "Cookie", "")
   const bytes = Bytes(jar)
   var at = 0
@@ -239,52 +234,50 @@ fun Asked(text_of: text) -> Request uses unsafe {
 @Test
 fun ReadsNumbersAndFlags() -> bool uses unsafe {
   const request = Asked("GET /x?page=3&all=yes&bad=x HTTP/1.1\r\n\r\n")
-  return QueryInt(&request, "page", 1) == 3 &&
-         QueryInt(&request, "missing", 7) == 7 &&
-         QueryInt(&request, "bad", 9) == 9 &&
-         QueryBool(&request, "all", false) &&
-         !QueryBool(&request, "missing", false) &&
-         ParseSigned("-42", 0) == -42 && ParseSigned("", 5) == 5
+  return QueryInt(&request, "page", 1) == 3 && QueryInt(&request, "missing", 7) == 7 && QueryInt(
+      &request,
+      "bad",
+      9) == 9 && QueryBool(&request, "all", false) && !QueryBool(
+      &request,
+      "missing",
+      false) && ParseSigned("-42", 0) == -42 && ParseSigned("", 5) == 5
 }
 
 @Test
 fun ReadsAFormBody() -> bool uses unsafe {
-  const request = Asked("POST /x HTTP/1.1\r\n" +
-                        "Content-Type: application/x-www-form-urlencoded\r\n" +
-                        "Content-Length: 27\r\n\r\n" +
-                        "name=a+b&note=%D1%81&n=3")
-  return Field(&request, "name", "") == "a b" &&
-         Field(&request, "note", "") == "с" &&
-         Field(&request, "n", "") == "3" &&
-         Field(&request, "missing", "none") == "none"
+  const request = Asked(
+      "POST /x HTTP/1.1\r\n" + "Content-Type: application/x-www-form-urlencoded\r\n" + "Content-Length: 27\r\n\r\n" + "name=a+b&note=%D1%81&n=3")
+  return Field(&request, "name", "") == "a b" && Field(&request, "note", "") == "с" && Field(
+      &request,
+      "n",
+      "") == "3" && Field(&request, "missing", "none") == "none"
 }
 
 @Test
 fun ReadsTokensAndCookies() -> bool uses unsafe {
-  const request = Asked("GET / HTTP/1.1\r\nAuthorization: Bearer abc\r\n" +
-                        "Cookie: session=xyz; theme=dark\r\n" +
-                        "Accept: application/json\r\n\r\n")
-  return Bearer(&request) == "abc" &&
-         Cookie(&request, "session", "") == "xyz" &&
-         Cookie(&request, "theme", "") == "dark" &&
-         Cookie(&request, "missing", "none") == "none" &&
-         Accepts(&request, "application/json") &&
-         !Accepts(&request, "text/html")
+  const request = Asked(
+      "GET / HTTP/1.1\r\nAuthorization: Bearer abc\r\n" + "Cookie: session=xyz; theme=dark\r\n" + "Accept: application/json\r\n\r\n")
+  return Bearer(&request) == "abc" && Cookie(&request, "session", "") == "xyz" && Cookie(
+      &request,
+      "theme",
+      "") == "dark" && Cookie(&request, "missing", "none") == "none" && Accepts(
+      &request,
+      "application/json") && !Accepts(&request, "text/html")
 }
 
 @Test
 fun ReadsAJsonBody() -> bool uses unsafe {
-  const body = "\{\"name\": \"a\"\}"
-  const request = Asked("POST / HTTP/1.1\r\nContent-Type: application/json" +
-                        "\r\nContent-Length: 13\r\n\r\n" + body)
+  const body = "\{\"name\": \"a\"}"
+  const request = Asked(
+      "POST / HTTP/1.1\r\nContent-Type: application/json" + "\r\nContent-Length: 13\r\n\r\n" + body)
   if !IsJson(&request) {
     return false
   }
   const parsed = JsonBody(&request)
   var named = ""
   match parsed {
-    Ok(document) => named = AsText(Member(document, "name") ?? Null(), ""),
-    _Malformed => named = "",
+    Ok(document) => named = AsText(Member(document, "name") ?? Null(), "")
+    _Malformed => named = ""
   }
   return named == "a"
 }

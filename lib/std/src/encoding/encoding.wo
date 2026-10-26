@@ -6,8 +6,7 @@
 
 need std.text.{Builder, BuilderNew, Bytes}
 
-const kAlphabet: text =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+const kAlphabet: text = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 /// `bytes` as base64, padded with `=`.
 offer fun ToBase64(bytes: []u8) -> text uses unsafe {
@@ -242,22 +241,21 @@ fun WritesAndReadsBase64() -> bool uses unsafe {
   const encoded = TextToBase64("wolang")
   const decoded = FromBase64(encoded) ?? ""
   const padded = TextToBase64("a")
-  return encoded == "d29sYW5n" && decoded == "wolang" && padded == "YQ==" &&
-         (FromBase64("YQ==") ?? "") == "a" &&
-         (FromBase64("YWI=") ?? "") == "ab" && FromBase64("!!") == null
+  return encoded == "d29sYW5n" && decoded == "wolang" && padded == "YQ==" && (FromBase64(
+      "YQ==") ?? "") == "a" && (FromBase64("YWI=") ?? "") == "ab" && FromBase64(
+      "!!") == null
 }
 
 @Test
 fun WritesAndReadsHex() -> bool uses unsafe {
   const encoded = ToHex(Bytes("AB"))
-  return encoded == "4142" && (FromHex("4142") ?? "") == "AB" &&
-         FromHex("414") == null && FromHex("41zz") == null
+  return encoded == "4142" && (FromHex("4142") ?? "") == "AB" && FromHex("414") == null && FromHex(
+      "41zz") == null
 }
 
 @Test
 fun EscapesWhatAUrlCannotCarry() -> bool uses unsafe {
-  return ToUrl("a b&c=d") == "a%20b%26c%3Dd" &&
-         FromUrl("a%20b%26c") == "a b&c" && FromUrl("a+b") == "a b" &&
-         ToUrl("plain-name_1.txt~") == "plain-name_1.txt~" &&
-         FromUrl(ToUrl("ключ=значение")) == "ключ=значение"
+  return ToUrl("a b&c=d") == "a%20b%26c%3Dd" && FromUrl("a%20b%26c") == "a b&c" && FromUrl(
+      "a+b") == "a b" && ToUrl("plain-name_1.txt~") == "plain-name_1.txt~" && FromUrl(
+      ToUrl("ключ=значение")) == "ключ=значение"
 }

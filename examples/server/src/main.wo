@@ -10,18 +10,14 @@ need std.io.{Print}
 need std.doc.{AsText, Member, Null, Object, OfInt, OfText, Put}
 need std.json.{Malformed, Parse, Write}
 need std.log.{Level, SetLevel}
-need http.{AppNew, Authorize, Cors, Logged, SecurityHeaders, ServeApp,
-           ServeMany, Timing, BadRequest, Created, Field, JsonOf,
-           NoContent, Ok, OkJson, Param, Problem, Query, QueryInt,
-           Request, RequireToken, Response, RouterNew, ServeUnder,
-           ParseSigned, Unprocessable, WithCache, WithCookie}
+need http.{AppNew, Authorize, Cors, Logged, SecurityHeaders, ServeApp, ServeMany, Timing, BadRequest, Created, Field, JsonOf, NoContent, Ok, OkJson, Param, Problem, Query, QueryInt, Request, RequireToken, Response, RouterNew, ServeUnder, ParseSigned, Unprocessable, WithCache, WithCookie}
 
 fun Home(_request: Request) -> Response uses unsafe {
   return Ok("wolang\n")
 }
 
 fun Health(_request: Request) -> Response uses unsafe {
-  return OkJson("\{\"status\":\"ok\"\}\n")
+  return OkJson("\{\"status\":\"ok\"}\n")
 }
 
 // `/hello?name=...`, which is what a query string is for.
@@ -53,8 +49,10 @@ fun CreateUser(request: Request) -> Response uses unsafe {
       created = Put(created, "name", OfText(name))
       created = Put(created, "id", OfInt(7))
       return Created("/users/7", Write(created) + "\n")
-    },
-    Malformed => { return BadRequest("that is not JSON\n") },
+    }
+    Malformed => {
+      return BadRequest("that is not JSON\n")
+    }
   }
 }
 

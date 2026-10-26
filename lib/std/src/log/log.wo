@@ -11,33 +11,33 @@ need std.time.{Civil, Clock, WallClock}
 
 /// How much to say.
 offer enum Level {
-  Trace,
-  Debug,
-  Info,
-  Warning,
-  Error,
-  Silent,
+  Trace
+  Debug
+  Info
+  Warning
+  Error
+  Silent
 }
 
 fun Rank(level: Level) -> int {
   return match level {
-    Level.Trace => 0,
-    Level.Debug => 1,
-    Level.Info => 2,
-    Level.Warning => 3,
-    Level.Error => 4,
-    Level.Silent => 5,
+    Level.Trace => 0
+    Level.Debug => 1
+    Level.Info => 2
+    Level.Warning => 3
+    Level.Error => 4
+    Level.Silent => 5
   }
 }
 
 fun Label(level: Level) -> text {
   return match level {
-    Level.Trace => "trace",
-    Level.Debug => "debug",
-    Level.Info => "info ",
-    Level.Warning => "warn ",
-    Level.Error => "error",
-    Level.Silent => "     ",
+    Level.Trace => "trace"
+    Level.Debug => "debug"
+    Level.Info => "info "
+    Level.Warning => "warn "
+    Level.Error => "error"
+    Level.Silent => "     "
   }
 }
 

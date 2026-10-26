@@ -14,8 +14,7 @@ need std.list.{List, ListNew}
 need std.text.{Bytes, BuilderNew, Length}
 
 /// Every row of `input`, split on `separator`.
-offer fun Rows(input: text, separator: u8) -> List<List<text>>
-    uses unsafe {
+offer fun Rows(input: text, separator: u8) -> List<List<text>> uses unsafe {
   var rows = ListNew<List<text>>()
   var row = ListNew<text>()
   var field = BuilderNew()
@@ -126,8 +125,7 @@ offer fun Named(input: text, separator: u8) -> List<Value> uses unsafe {
 /// A field is quoted when it has to be -- a separator, a quote or a line
 /// break in it -- and not otherwise, which is what keeps a written file
 /// readable.
-offer fun Write(rows: &List<List<text>>, separator: u8) -> text
-    uses unsafe {
+offer fun Write(rows: &List<List<text>>, separator: u8) -> text uses unsafe {
   var builder = BuilderNew()
   var i = 0
   while i < rows.Len() {
@@ -179,18 +177,15 @@ offer fun Field(value: text, separator: u8) -> text uses unsafe {
 
 @Test
 fun ReadsQuotedFields() -> bool uses unsafe {
-  const source = "name,price,note\n" +
-                 "\"Smith, John\",10,\"he said \"\"hi\"\"\"\n" +
-                 "plain,20,\"two\nlines\"\n"
+  const source = "name,price,note\n" + "\"Smith, John\",10,\"he said \"\"hi\"\"\"\n" + "plain,20,\"two\nlines\"\n"
   const rows = Read(source)
   if rows.Len() != 3 {
     return false
   }
   const second = rows.At(1)
   const third = rows.At(2)
-  return second.At(0) == "Smith, John" && second.At(1) == "10" &&
-         second.At(2) == "he said \"hi\"" &&
-         third.At(2) == "two\nlines"
+  return second.At(0) == "Smith, John" && second.At(1) == "10" && second.At(2) == "he said \"hi\"" && third.At(
+      2) == "two\nlines"
 }
 
 @Test
@@ -202,9 +197,9 @@ fun ReadsAnotherSeparator() -> bool uses unsafe {
 @Test
 fun ReadsRowsAsTables() -> bool uses unsafe {
   const rows = Named("name,price\nbread,2\nmilk,1\n", 44)
-  return rows.Len() == 2 &&
-         AsText(Member(rows.At(0), "name") ?? Null(), "") == "bread" &&
-         AsText(Member(rows.At(1), "price") ?? Null(), "") == "1"
+  return rows.Len() == 2 && AsText(Member(rows.At(0), "name") ?? Null(), "") == "bread" && AsText(
+      Member(rows.At(1), "price") ?? Null(),
+      "") == "1"
 }
 
 @Test
@@ -213,6 +208,6 @@ fun WritesWhatItRead() -> bool uses unsafe {
   var rows = Read(source)
   const written = Write(&rows, 44)
   const again = Read(written)
-  return again.At(0).At(1) == "b,c" && again.At(0).At(2) == "d\"e" &&
-         again.At(1).At(0) == "1"
+  return again.At(0).At(1) == "b,c" && again.At(0).At(2) == "d\"e" && again.At(
+      1).At(0) == "1"
 }

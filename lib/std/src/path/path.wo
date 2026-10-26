@@ -5,8 +5,7 @@
 // about the shape of the name. One separator, because every system this
 // targets accepts `/`.
 
-need std.text.{BuilderNew, Bytes, EndsWith, Length, StartsWith,
-               Substring}
+need std.text.{BuilderNew, Bytes, EndsWith, Length, StartsWith, Substring}
 
 /// Whether `path` starts from the root.
 offer fun IsAbsolute(path: text) -> bool uses unsafe {
@@ -161,8 +160,9 @@ offer fun IsInside(path: text, directory: text) -> bool uses unsafe {
     return true
   }
   // The next byte has to be a separator, or `/ab` would be inside `/a`.
-  return Substring(whole, Length(inside), Length(inside) + 1) == "/" ||
-         EndsWith(inside, "/")
+  return Substring(whole, Length(inside), Length(inside) + 1) == "/" || EndsWith(
+      inside,
+      "/")
 }
 
 /// `path` with a different extension. An empty `extension` removes it.
@@ -183,32 +183,31 @@ offer fun WithExtension(path: text, extension: text) -> text uses unsafe {
 
 @Test
 fun TakesPathsApart() -> bool uses unsafe {
-  return Name("a/b/c.wo") == "c.wo" && Name("c.wo") == "c.wo" &&
-         Parent("a/b/c.wo") == "a/b" && Parent("c.wo") == "" &&
-         Parent("/c.wo") == "/" && Extension("a/b/c.wo") == "wo" &&
-         Extension("a/b/c") == "" && Extension(".hidden") == "" &&
-         Stem("a/b/c.wo") == "c" && Stem("c") == "c"
+  return Name("a/b/c.wo") == "c.wo" && Name("c.wo") == "c.wo" && Parent(
+      "a/b/c.wo") == "a/b" && Parent("c.wo") == "" && Parent("/c.wo") == "/" && Extension(
+      "a/b/c.wo") == "wo" && Extension("a/b/c") == "" && Extension(".hidden") == "" && Stem(
+      "a/b/c.wo") == "c" && Stem("c") == "c"
 }
 
 @Test
 fun PutsPathsTogether() -> bool uses unsafe {
-  return Join("a", "b") == "a/b" && Join("a/", "b") == "a/b" &&
-         Join("", "b") == "b" && Join("a", "/b") == "/b" &&
-         Join("a", "") == "a" &&
-         WithExtension("a/b/c.wo", "md") == "a/b/c.md" &&
-         WithExtension("c.wo", "") == "c"
+  return Join("a", "b") == "a/b" && Join("a/", "b") == "a/b" && Join("", "b") == "b" && Join(
+      "a",
+      "/b") == "/b" && Join("a", "") == "a" && WithExtension("a/b/c.wo", "md") == "a/b/c.md" && WithExtension(
+      "c.wo",
+      "") == "c"
 }
 
 @Test
 fun WorksOutDotsAndDoubles() -> bool uses unsafe {
-  return Normalize("a//b/./c") == "a/b/c" &&
-         Normalize("a/b/../c") == "a/c" && Normalize("/../a") == "/a" &&
-         Normalize("../a") == "../a" && Normalize("a/..") == "." &&
-         Normalize("/") == "/" && IsAbsolute("/a") && !IsAbsolute("a")
+  return Normalize("a//b/./c") == "a/b/c" && Normalize("a/b/../c") == "a/c" && Normalize(
+      "/../a") == "/a" && Normalize("../a") == "../a" && Normalize("a/..") == "." && Normalize(
+      "/") == "/" && IsAbsolute("/a") && !IsAbsolute("a")
 }
 
 @Test
 fun SaysWhatIsInsideWhat() -> bool uses unsafe {
-  return IsInside("/a/b/c", "/a/b") && IsInside("/a/b", "/a/b") &&
-         !IsInside("/ab/c", "/a") && !IsInside("/a", "/a/b")
+  return IsInside("/a/b/c", "/a/b") && IsInside("/a/b", "/a/b") && !IsInside(
+      "/ab/c",
+      "/a") && !IsInside("/a", "/a/b")
 }

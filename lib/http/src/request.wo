@@ -60,16 +60,13 @@ offer fun WithBearer(call: Call, token: text) -> Call uses unsafe {
 }
 
 /// `Authorization: Basic <user:password>`, base64 as the scheme wants.
-offer fun WithBasic(call: Call, user: text, password: text) -> Call
-    uses unsafe {
+offer fun WithBasic(call: Call, user: text, password: text) -> Call uses unsafe {
   const pair = user + ":" + password
-  return WithHeaderOn(call, "Authorization",
-                      "Basic " + ToBase64(Bytes(pair)))
+  return WithHeaderOn(call, "Authorization", "Basic " + ToBase64(Bytes(pair)))
 }
 
 /// The same call with `name=value` added to the query, escaped.
-offer fun WithQuery(call: Call, name: text, value: text) -> Call
-    uses unsafe {
+offer fun WithQuery(call: Call, name: text, value: text) -> Call uses unsafe {
   var held = call
   var joiner = "?"
   if IndexOf(held.url, "?") >= 0 {
@@ -108,19 +105,14 @@ fun BuildsACall() -> bool uses unsafe {
   call = WithQuery(call, "page", "2")
   call = WithQuery(call, "q", "a b")
   call = WithBearer(call, "abc")
-  call = WithBody(call, "\{\}", "application/json")
+  call = WithBody(call, "\{}", "application/json")
   call = WithTimeout(call, 1000)
-  return call.url == "http://example.com/users?page=2&q=a%20b" &&
-         call.header_count == 1 &&
-         call.headers[0].value == "Bearer abc" &&
-         call.body == "\{\}" && call.timeout == 1000 &&
-         call.redirects == 5
+  return call.url == "http://example.com/users?page=2&q=a%20b" && call.header_count == 1 && call.headers[0].value == "Bearer abc" && call.body == "\{}" && call.timeout == 1000 && call.redirects == 5
 }
 
 @Test
 fun BuildsBasicAuthentication() -> bool uses unsafe {
-  const call = WithBasic(CallNew("GET", "http://x/"), "aladdin",
-                         "opensesame")
+  const call = WithBasic(CallNew("GET", "http://x/"), "aladdin", "opensesame")
   // The example from the specification, which is why it is the one in
   // the test.
   return call.headers[0].value == "Basic YWxhZGRpbjpvcGVuc2VzYW1l"

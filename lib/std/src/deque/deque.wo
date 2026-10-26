@@ -166,9 +166,9 @@ fun TakesFromBothEnds() -> bool uses unsafe {
   }
   queue.PushFront(0)
   // 0 1 2 3 4 5
-  return queue.Len() == 6 && queue.Front() == 0 && queue.Back() == 5 &&
-         queue.Pop() == 0 && queue.PopBack() == 5 && queue.Len() == 4 &&
-         queue.At(0) == 1 && queue.At(3) == 4
+  return queue.Len() == 6 && queue.Front() == 0 && queue.Back() == 5 && queue.Pop(
+      ) == 0 && queue.PopBack() == 5 && queue.Len() == 4 && queue.At(0) == 1 && queue.At(
+      3) == 4
 }
 
 @Test

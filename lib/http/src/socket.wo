@@ -11,13 +11,14 @@
 // binding twice (D158).
 
 extern "C" fun wolang_socket_open() -> s64
-extern "C" fun wolang_socket_listen(socket: s64, address: u32, port: u32,
-                                    backlog: s32) -> s32
+extern "C" fun wolang_socket_listen(
+    socket: s64,
+    address: u32,
+    port: u32,
+    backlog: s32) -> s32
 extern "C" fun wolang_socket_accept(socket: s64) -> s64
-extern "C" fun wolang_socket_send(socket: s64, bytes: *u8,
-                                  count: s64) -> s64
-extern "C" fun wolang_socket_receive(socket: s64, bytes: *mut u8,
-                                     room: s64) -> s64
+extern "C" fun wolang_socket_send(socket: s64, bytes: *u8, count: s64) -> s64
+extern "C" fun wolang_socket_receive(socket: s64, bytes: *mut u8, room: s64) -> s64
 extern "C" fun wolang_socket_close(socket: s64) -> s32
 extern "C" fun wolang_socket_reuse(socket: s64, on: s32) -> s32
 extern "C" fun wolang_socket_nodelay(socket: s64, on: s32) -> s32
@@ -70,8 +71,7 @@ offer fun Close(fd: s32) -> s32 uses unsafe {
 /// Reads into `buffer` and returns how many bytes arrived, or a negative
 /// number. The buffer is the caller's, which is what makes this allocate
 /// nothing per request.
-offer fun Read(fd: s32, buffer: *mut u8, capacity: int) -> int
-    uses unsafe {
+offer fun Read(fd: s32, buffer: *mut u8, capacity: int) -> int uses unsafe {
   return wolang_socket_receive(fd as s64, buffer, capacity as s64) as int
 }
 
@@ -84,8 +84,10 @@ offer fun WriteAll(fd: s32, message: text) -> bool uses unsafe {
     // From where the last call stopped: a socket is allowed to take part
     // of what it was given, and starting over would send the beginning
     // twice.
-    const written = wolang_socket_send(fd as s64, message.data + sent,
-                                       (total - sent) as s64) as int
+    const written = wolang_socket_send(
+        fd as s64,
+        message.data + sent,
+        (total - sent) as s64) as int
     if written <= 0 {
       return false
     }

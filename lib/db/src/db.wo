@@ -25,12 +25,13 @@ need std.fs.{Remove, Rename, SizeOf, TempName}
 need std.mem.{ArrayNew, Free}
 need std.text.{Builder, Bytes, BuilderNew, Length, TextFromRaw}
 
-extern "C" fun wolang_file_open(path: *u8, length: u64,
-                                writable: s32) -> s32
-extern "C" fun wolang_file_read_at(handle: s32, offset: s64,
-                                   into: *mut u8, count: u64) -> s64
-extern "C" fun wolang_file_append(handle: s32, bytes: *u8,
-                                  count: u64) -> s64
+extern "C" fun wolang_file_open(path: *u8, length: u64, writable: s32) -> s32
+extern "C" fun wolang_file_read_at(
+    handle: s32,
+    offset: s64,
+    into: *mut u8,
+    count: u64) -> s64
+extern "C" fun wolang_file_append(handle: s32, bytes: *u8, count: u64) -> s64
 extern "C" fun wolang_file_size(handle: s32) -> s64
 extern "C" fun wolang_file_sync(handle: s32) -> s32
 extern "C" fun wolang_file_truncate(handle: s32, size: s64) -> s32
@@ -61,7 +62,7 @@ offer class Store {
   var dead: int = 0
   var at_end: s64 = 0
 
-  deinit {
+  deinit  {
     if handle >= 0 {
       const _closed = wolang_file_close(handle)
     }
@@ -113,8 +114,7 @@ offer class Store {
     const record = Written(key, value, false)
     const offset = at_end
     const bytes = Bytes(record)
-    if wolang_file_append(handle, &bytes[0], bytes.len as u64) !=
-       bytes.len as s64 {
+    if wolang_file_append(handle, &bytes[0], bytes.len as u64) != bytes.len as s64 {
       return false
     }
     if wolang_file_sync(handle) != 0 {
@@ -136,8 +136,7 @@ offer class Store {
     }
     const record = Written(key, "", true)
     const bytes = Bytes(record)
-    if wolang_file_append(handle, &bytes[0], bytes.len as u64) !=
-       bytes.len as s64 {
+    if wolang_file_append(handle, &bytes[0], bytes.len as u64) != bytes.len as s64 {
       return false
     }
     if wolang_file_sync(handle) != 0 {
@@ -214,15 +213,16 @@ offer class Store {
       const value = ReadValue(entry) ?? ""
       const record = Written(entry.key, value, false)
       const record_bytes = Bytes(record)
-      if wolang_file_append(target, &record_bytes[0],
-                            record_bytes.len as u64) !=
-         record_bytes.len as s64 {
+      if wolang_file_append(target, &record_bytes[0], record_bytes.len as u64) != record_bytes.len as s64 {
         const _closed = wolang_file_close(target)
         return false
       }
-      rebuilt.Push(Entry(entry.key,
-                         written + HeaderSize(entry.key) as s64,
-                         Length(value), false))
+      rebuilt.Push(
+          Entry(
+              entry.key,
+              written + HeaderSize(entry.key) as s64,
+              Length(value),
+              false))
       written = written + record_bytes.len as s64
       i = i + 1
     }
@@ -274,8 +274,7 @@ offer class Store {
     return low
   }
 
-  fun Remember(key: text, offset: s64, length: int, gone: bool)
-      uses unsafe {
+  fun Remember(key: text, offset: s64, length: int, gone: bool) uses unsafe {
     const at = LowerBound(key)
     if at < index.Len() && index.At(at).key == key {
       if index.At(at).gone && !gone {
@@ -301,8 +300,11 @@ offer class Store {
       return ""
     }
     var room = ArrayNew<u8>(entry.length)
-    const read = wolang_file_read_at(handle, entry.offset, &mut room[0],
-                                     entry.length as u64)
+    const read = wolang_file_read_at(
+        handle,
+        entry.offset,
+        &mut room[0],
+        entry.length as u64)
     if read != entry.length as s64 {
       Free(room)
       return null
@@ -408,8 +410,7 @@ fun Replay(store: &mut Store) -> bool uses unsafe {
     if at + kHeader as s64 > size {
       break
     }
-    if wolang_file_read_at(store.handle, at, &mut head[0],
-                           kHeader as u64) != kHeader as s64 {
+    if wolang_file_read_at(store.handle, at, &mut head[0], kHeader as u64) != kHeader as s64 {
       break
     }
     if head[0] != 87 || head[1] != 79 || head[2] != 1 {
@@ -422,16 +423,16 @@ fun Replay(store: &mut Store) -> bool uses unsafe {
     if key_length < 0 || value_length < 0 {
       break
     }
-    const total = kHeader as s64 + key_length as s64 +
-                  value_length as s64
+    const total = kHeader as s64 + key_length as s64 + value_length as s64
     if at + total > size {
       break
     }
     var payload = ArrayNew<u8>(key_length + value_length)
-    if wolang_file_read_at(store.handle, at + kHeader as s64,
-                           &mut payload[0],
-                           (key_length + value_length) as u64) !=
-       (key_length + value_length) as s64 {
+    if wolang_file_read_at(
+        store.handle,
+        at + kHeader as s64,
+        &mut payload[0],
+        (key_length + value_length) as u64) != (key_length + value_length) as s64 {
       Free(payload)
       break
     }
@@ -457,8 +458,11 @@ fun Replay(store: &mut Store) -> bool uses unsafe {
       }
       store.dead = store.dead + 1
     } else {
-      store.Remember(held, at + kHeader as s64 + key_length as s64,
-                     value_length, false)
+      store.Remember(
+          held,
+          at + kHeader as s64 + key_length as s64,
+          value_length,
+          false)
     }
     at = at + total
   }
@@ -487,22 +491,23 @@ fun KeepsWhatItWasGiven() -> bool uses unsafe {
   match Open(path) {
     Ok(store) => {
       var held = store
-      const put = held.Put("alpha", "one") && held.Put("beta", "two") &&
-                  held.Put("gamma", "three")
-      const read = (held.Get("beta") ?? "") == "two" &&
-                   held.Has("alpha") && !held.Has("missing") &&
-                   held.Get("missing") == null
+      const put = held.Put("alpha", "one") && held.Put("beta", "two") && held.Put(
+          "gamma",
+          "three")
+      const read = (held.Get("beta") ?? "") == "two" && held.Has("alpha") && !held.Has(
+          "missing") && held.Get("missing") == null
       // A key written twice is the newer one.
-      const again = held.Put("beta", "second") &&
-                    (held.Get("beta") ?? "") == "second"
+      const again = held.Put("beta", "second") && (held.Get("beta") ?? "") == "second"
       const counted = held.Len() == 3
-      const taken = held.Delete("alpha") && !held.Has("alpha") &&
-                    held.Len() == 2 && !held.Delete("alpha")
+      const taken = held.Delete("alpha") && !held.Has("alpha") && held.Len() == 2 && !held.Delete(
+          "alpha")
       Close(&mut held)
       const _gone = Remove(path)
       return put && read && again && counted && taken
-    },
-    Unreadable => { return false },
+    }
+    Unreadable => {
+      return false
+    }
   }
 }
 
@@ -516,19 +521,23 @@ fun SurvivesBeingClosedAndOpened() -> bool uses unsafe {
       const _b = held.Put("other", "thing")
       const _c = held.Delete("other")
       Close(&mut held)
-    },
-    Unreadable => { return false },
+    }
+    Unreadable => {
+      return false
+    }
   }
   match Open(path) {
     Ok(again) => {
       var held = again
-      const answer = (held.Get("key") ?? "") == "value" &&
-                     !held.Has("other") && held.Len() == 1
+      const answer = (held.Get("key") ?? "") == "value" && !held.Has("other") && held.Len(
+          ) == 1
       Close(&mut held)
       const _gone = Remove(path)
       return answer
-    },
-    Unreadable => { return false },
+    }
+    Unreadable => {
+      return false
+    }
   }
 }
 
@@ -544,14 +553,15 @@ fun WalksInOrder() -> bool uses unsafe {
       const _d = held.Put("user:2", "b")
       const keys = held.Keys()
       const users = held.Range("user:", "user;")
-      const answer = keys.Len() == 4 && keys.At(0) == "user:1" &&
-                     keys.At(3) == "zebra" && users.Len() == 3 &&
-                     users.At(2) == "user:3"
+      const answer = keys.Len() == 4 && keys.At(0) == "user:1" && keys.At(3) == "zebra" && users.Len(
+          ) == 3 && users.At(2) == "user:3"
       Close(&mut held)
       const _gone = Remove(path)
       return answer
-    },
-    Unreadable => { return false },
+    }
+    Unreadable => {
+      return false
+    }
   }
 }
 
@@ -570,12 +580,13 @@ fun ReclaimsWhatIsWasted() -> bool uses unsafe {
       const wasted = held.Wasted() > 0
       const packed = held.Compact()
       const after = SizeOf(path)
-      const kept = (held.Get("key") ?? "") == "value number 19" &&
-                   held.Len() == 1
+      const kept = (held.Get("key") ?? "") == "value number 19" && held.Len() == 1
       Close(&mut held)
       const _gone = Remove(path)
       return wasted && packed && kept && after < before
-    },
-    Unreadable => { return false },
+    }
+    Unreadable => {
+      return false
+    }
   }
 }

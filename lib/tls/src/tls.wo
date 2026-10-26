@@ -19,17 +19,14 @@ need std.text.{BuilderNew, Bytes}
 extern "C" fun TLS_client_method() -> *mut u8
 extern "C" fun SSL_CTX_new(method: *mut u8) -> *mut u8
 extern "C" fun SSL_CTX_free(context: *mut u8)
-extern "C" fun SSL_CTX_set_verify(context: *mut u8, mode: s32,
-                                  callback: u64)
+extern "C" fun SSL_CTX_set_verify(context: *mut u8, mode: s32, callback: u64)
 extern "C" fun SSL_CTX_set_default_verify_paths(context: *mut u8) -> s32
 extern "C" fun SSL_new(context: *mut u8) -> *mut u8
 extern "C" fun SSL_free(connection: *mut u8)
 extern "C" fun SSL_set_fd(connection: *mut u8, fd: s32) -> s32
 extern "C" fun SSL_connect(connection: *mut u8) -> s32
-extern "C" fun SSL_read(connection: *mut u8, buffer: *mut u8,
-                        count: s32) -> s32
-extern "C" fun SSL_write(connection: *mut u8, buffer: *u8,
-                         count: s32) -> s32
+extern "C" fun SSL_read(connection: *mut u8, buffer: *mut u8, count: s32) -> s32
+extern "C" fun SSL_write(connection: *mut u8, buffer: *u8, count: s32) -> s32
 extern "C" fun SSL_shutdown(connection: *mut u8) -> s32
 extern "C" fun SSL_get_error(connection: *mut u8, result: s32) -> s32
 extern "C" fun SSL_get_verify_result(connection: *mut u8) -> s64
@@ -42,8 +39,11 @@ extern "C" fun SSL_get_verify_result(connection: *mut u8) -> s64
 // `SSL_ctrl` with the control code. A binding generator cannot know
 // that, which is why a generated binding is a starting point (D130,
 // D150).
-extern "C" fun SSL_ctrl(connection: *mut u8, command: s32, argument: s64,
-                        pointer: *u8) -> s64
+extern "C" fun SSL_ctrl(
+    connection: *mut u8,
+    command: s32,
+    argument: s64,
+    pointer: *u8) -> s64
 extern "C" fun SSL_set1_host(connection: *mut u8, name: *u8) -> s32
 
 /// `SSL_CTRL_SET_TLSEXT_HOSTNAME`, and the name type the extension
@@ -80,8 +80,7 @@ offer class Stream {
     const bytes = Bytes(message)
     var at = 0
     while at < bytes.len {
-      const written =
-          SSL_write(connection, &bytes[at], (bytes.len - at) as s32)
+      const written = SSL_write(connection, &bytes[at], (bytes.len - at) as s32)
       if written <= 0 {
         return false
       }
@@ -139,8 +138,7 @@ offer fun StreamNone() -> Stream {
 /// that any server can answer (D150). `verify = false` is for a
 /// development server with a certificate it signed itself, and says so
 /// at the call.
-offer fun Handshake(host: text, port: int, verify: bool) -> Stream
-    uses unsafe {
+offer fun Handshake(host: text, port: int, verify: bool) -> Stream uses unsafe {
   var socket = Connect(host, port)
   if !socket.IsOpen() {
     return StreamNone()
@@ -168,14 +166,16 @@ offer fun Handshake(host: text, port: int, verify: bool) -> Stream
   name.Append(host)
   name.AppendByte(0)
   const terminated = name.Text()
-  const _sent =
-      SSL_ctrl(connection, kSetHostName, kHostNameType, terminated.data)
+  const _sent = SSL_ctrl(
+      connection,
+      kSetHostName,
+      kHostNameType,
+      terminated.data)
   if verify {
     const _checked = SSL_set1_host(connection, terminated.data)
   }
 
-  if SSL_set_fd(connection, socket.fd) != 1 ||
-     SSL_connect(connection) != 1 {
+  if SSL_set_fd(connection, socket.fd) != 1 || SSL_connect(connection) != 1 {
     SSL_free(connection)
     SSL_CTX_free(context)
     socket.Close()

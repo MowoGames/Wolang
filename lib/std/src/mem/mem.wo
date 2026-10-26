@@ -118,8 +118,7 @@ fun TakesTheEndOfAView() -> bool uses unsafe {
   const tail = Suffix<int>(held, 3)
   const nothing = Suffix<int>(held, 9)
   const whole = Suffix<int>(held, 0)
-  const answer = tail.len == 2 && tail[0] == 9 && tail[1] == 16 &&
-                 nothing.len == 0 && whole.len == 5
+  const answer = tail.len == 2 && tail[0] == 9 && tail[1] == 16 && nothing.len == 0 && whole.len == 5
   Free(held)
   return answer
 }

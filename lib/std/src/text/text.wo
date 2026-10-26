@@ -411,8 +411,7 @@ offer fun CountPieces(value: text, separator: text) -> int uses unsafe {
 }
 
 /// The `which`th piece, counting from zero, or "".
-offer fun PieceAt(value: text, separator: text, which: int) -> text
-    uses unsafe {
+offer fun PieceAt(value: text, separator: text, which: int) -> text uses unsafe {
   var at = 0
   for piece in Pieces(value, separator) {
     if at == which {
@@ -443,8 +442,7 @@ offer fun Join(pieces: Split, separator: text) -> text uses unsafe {
 }
 
 /// `value` with every `needle` replaced by `with`. Allocates.
-offer fun Replace(value: text, needle: text, with: text) -> text
-    uses unsafe {
+offer fun Replace(value: text, needle: text, with: text) -> text uses unsafe {
   if Length(needle) == 0 {
     return value
   }
@@ -590,7 +588,7 @@ offer fun ParseFloat(value: text) -> float? uses unsafe {
   var whole = 0.0
   var digits = 0
   while at < bytes.len && bytes[at] >= 48 && bytes[at] <= 57 {
-    whole = whole * 10.0 + ((bytes[at] - 48) as float)
+    whole = whole * 10.0 + (bytes[at] - 48) as float
     at = at + 1
     digits = digits + 1
   }
@@ -598,7 +596,7 @@ offer fun ParseFloat(value: text) -> float? uses unsafe {
     at = at + 1
     var scale = 0.1
     while at < bytes.len && bytes[at] >= 48 && bytes[at] <= 57 {
-      whole = whole + ((bytes[at] - 48) as float) * scale
+      whole = whole + (bytes[at] - 48) as float * scale
       scale = scale * 0.1
       at = at + 1
       digits = digits + 1
@@ -614,26 +612,27 @@ offer fun ParseFloat(value: text) -> float? uses unsafe {
 
 @Test
 fun LooksAtTheEndsOfAString() -> bool uses unsafe {
-  return EndsWith("hello.wo", ".wo") && !EndsWith("hello.wo", ".c") &&
-         EndsWith("x", "") && Contains("hello", "ell") &&
-         !Contains("hello", "z") && LastIndexOf("a/b/c", "/") == 3 &&
-         LastIndexOf("abc", "/") == -1
+  return EndsWith("hello.wo", ".wo") && !EndsWith("hello.wo", ".c") && EndsWith(
+      "x",
+      "") && Contains("hello", "ell") && !Contains("hello", "z") && LastIndexOf(
+      "a/b/c",
+      "/") == 3 && LastIndexOf("abc", "/") == -1
 }
 
 @Test
 fun TakesPartsOfAString() -> bool uses unsafe {
-  return Substring("hello", 1, 3) == "el" &&
-         Substring("hello", 3, 99) == "lo" &&
-         Substring("hello", 4, 2) == "" &&
-         After("key=value", "=") == "value" &&
-         Before("key=value", "=") == "key" &&
-         After("key", "=") == "" && Before("key", "=") == "key"
+  return Substring("hello", 1, 3) == "el" && Substring("hello", 3, 99) == "lo" && Substring(
+      "hello",
+      4,
+      2) == "" && After("key=value", "=") == "value" && Before("key=value", "=") == "key" && After(
+      "key",
+      "=") == "" && Before("key", "=") == "key"
 }
 
 @Test
 fun TrimsSpace() -> bool uses unsafe {
-  return Trim("  hi \n") == "hi" && Trim("   ") == "" &&
-         TrimStart(" hi ") == "hi " && TrimEnd(" hi ") == " hi"
+  return Trim("  hi \n") == "hi" && Trim("   ") == "" && TrimStart(" hi ") == "hi " && TrimEnd(
+      " hi ") == " hi"
 }
 
 @Test
@@ -644,20 +643,24 @@ fun WalksThePieces() -> bool uses unsafe {
     seen = seen + 1
     joined.Append(piece)
   }
-  return seen == 4 && joined.Text() == "abc" &&
-         CountPieces("a,b,c", ",") == 3 && CountPieces("", ",") == 1 &&
-         PieceAt("one two three", " ", 1) == "two" &&
-         PieceAt("one", " ", 3) == ""
+  return seen == 4 && joined.Text() == "abc" && CountPieces("a,b,c", ",") == 3 && CountPieces(
+      "",
+      ",") == 1 && PieceAt("one two three", " ", 1) == "two" && PieceAt(
+      "one",
+      " ",
+      3) == ""
 }
 
 @Test
 fun MakesNewStrings() -> bool uses unsafe {
-  return Join(Pieces("a,b,c", ","), "-") == "a-b-c" &&
-         Replace("a.b.c", ".", "/") == "a/b/c" &&
-         Replace("aaa", "aa", "b") == "ba" &&
-         Upper("Wolang 1") == "WOLANG 1" &&
-         Lower("Wolang 1") == "wolang 1" && Repeat("ab", 3) == "ababab" &&
-         PadStart("7", 3, "0") == "007" && PadEnd("7", 3, ".") == "7.."
+  return Join(Pieces("a,b,c", ","), "-") == "a-b-c" && Replace(
+      "a.b.c",
+      ".",
+      "/") == "a/b/c" && Replace("aaa", "aa", "b") == "ba" && Upper("Wolang 1") == "WOLANG 1" && Lower(
+      "Wolang 1") == "wolang 1" && Repeat("ab", 3) == "ababab" && PadStart(
+      "7",
+      3,
+      "0") == "007" && PadEnd("7", 3, ".") == "7.."
 }
 
 @Test
@@ -668,6 +671,5 @@ fun ReadsNumbers() -> bool uses unsafe {
   const empty = ParseInt("") == null
   const half = ParseFloat("1.5") ?? 0.0
   const bad = ParseFloat("1.5x") == null
-  return seven == 7 && negative == -42 && broken && empty &&
-         half > 1.49 && half < 1.51 && bad
+  return seven == 7 && negative == -42 && broken && empty && half > 1.49 && half < 1.51 && bad
 }

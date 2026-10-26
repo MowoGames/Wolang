@@ -14,12 +14,12 @@ need std.text.{Bytes, IndexOf, Length, Substring}
 
 /// One of the six things a document value can be.
 offer enum Value {
-  Null,
-  Bool(value: bool),
-  Number(value: float),
-  Text(value: text),
-  Array(items: List<Value>),
-  Object(fields: List<Field>),
+  Null
+  Bool(value: bool)
+  Number(value: float)
+  Text(value: text)
+  Array(items: List<Value>)
+  Object(fields: List<Field>)
 }
 
 /// A member of a table: its name and its value.
@@ -35,12 +35,12 @@ offer struct Field {
 /// write, which is most of what reading one is.
 offer fun Kind(value: Value) -> int {
   return match value {
-    Value.Null => 0,
-    Value.Bool(_held) => 1,
-    Value.Number(_held) => 2,
-    Value.Text(_held) => 3,
-    Value.Array(_items) => 4,
-    Value.Object(_fields) => 5,
+    Value.Null => 0
+    Value.Bool(_held) => 1
+    Value.Number(_held) => 2
+    Value.Text(_held) => 3
+    Value.Array(_items) => 4
+    Value.Object(_fields) => 5
   }
 }
 
@@ -59,8 +59,10 @@ offer fun Member(value: Value, name: text) -> Value? uses unsafe {
         i = i + 1
       }
       return null
-    },
-    _ => { return null },
+    }
+    _ => {
+      return null
+    }
   }
 }
 
@@ -72,8 +74,10 @@ offer fun At(value: Value, at: int) -> Value? uses unsafe {
         return null
       }
       return items.At(at)
-    },
-    _ => { return null },
+    }
+    _ => {
+      return null
+    }
   }
 }
 
@@ -139,9 +143,9 @@ fun WholeNumber(piece: text) -> int? uses unsafe {
 /// How many elements a list has, or how many members a table has.
 offer fun Len(value: Value) -> int uses unsafe {
   return match value {
-    Value.Array(items) => items.Len(),
-    Value.Object(fields) => fields.Len(),
-    _ => 0,
+    Value.Array(items) => items.Len()
+    Value.Object(fields) => fields.Len()
+    _ => 0
   }
 }
 
@@ -153,8 +157,10 @@ offer fun NameAt(value: Value, at: int) -> text uses unsafe {
         return ""
       }
       return fields.At(at).name
-    },
-    _ => { return "" },
+    }
+    _ => {
+      return ""
+    }
   }
 }
 
@@ -166,8 +172,10 @@ offer fun ValueAt(value: Value, at: int) -> Value uses unsafe {
         return Value.Null
       }
       return fields.At(at).value
-    },
-    _ => { return Value.Null },
+    }
+    _ => {
+      return Value.Null
+    }
   }
 }
 
@@ -176,39 +184,39 @@ offer fun ValueAt(value: Value, at: int) -> Value uses unsafe {
 /// The number this is, or `fallback`.
 offer fun AsNumber(value: Value, fallback: float) -> float {
   return match value {
-    Value.Number(held) => held,
-    _ => fallback,
+    Value.Number(held) => held
+    _ => fallback
   }
 }
 
 /// The whole number this is, or `fallback`.
 offer fun AsInt(value: Value, fallback: int) -> int {
   return match value {
-    Value.Number(held) => held as int,
-    _ => fallback,
+    Value.Number(held) => held as int
+    _ => fallback
   }
 }
 
 /// The text this is, or `fallback`.
 offer fun AsText(value: Value, fallback: text) -> text {
   return match value {
-    Value.Text(held) => held,
-    _ => fallback,
+    Value.Text(held) => held
+    _ => fallback
   }
 }
 
 /// The truth this is, or `fallback`.
 offer fun AsBool(value: Value, fallback: bool) -> bool {
   return match value {
-    Value.Bool(held) => held,
-    _ => fallback,
+    Value.Bool(held) => held
+    _ => fallback
   }
 }
 
 offer fun IsNull(value: Value) -> bool {
   return match value {
-    Value.Null => true,
-    _ => false,
+    Value.Null => true
+    _ => false
   }
 }
 
@@ -226,14 +234,15 @@ offer fun Array() -> Value uses unsafe {
 
 /// Puts a member in a table. The table is what it answers with, so calls
 /// chain: `Put(Put(Object(), "a", ..), "b", ..)`.
-offer fun Put(object: Value, name: text, value: Value) -> Value
-    uses unsafe {
+offer fun Put(object: Value, name: text, value: Value) -> Value uses unsafe {
   match object {
     Value.Object(fields) => {
       fields.Push(Field(name, value))
       return Value.Object(fields)
-    },
-    _ => { return object },
+    }
+    _ => {
+      return object
+    }
   }
 }
 
@@ -243,8 +252,10 @@ offer fun Push(array: Value, value: Value) -> Value uses unsafe {
     Value.Array(items) => {
       items.Push(value)
       return Value.Array(items)
-    },
-    _ => { return array },
+    }
+    _ => {
+      return array
+    }
   }
 }
 
@@ -267,12 +278,11 @@ fun BuildsAndReadsATree() -> bool uses unsafe {
   var root = Object()
   root = Put(root, "server", server)
 
-  return Kind(root) == 5 && Len(root) == 1 &&
-         AsText(Get(root, "server.host") ?? Null(), "") ==
-             "example.com" &&
-         AsInt(Get(root, "server.ports.1") ?? Null(), 0) == 443 &&
-         Get(root, "server.nothing") == null &&
-         Get(root, "server.ports.9") == null
+  return Kind(root) == 5 && Len(root) == 1 && AsText(
+      Get(root, "server.host") ?? Null(),
+      "") == "example.com" && AsInt(Get(root, "server.ports.1") ?? Null(), 0) == 443 && Get(
+      root,
+      "server.nothing") == null && Get(root, "server.ports.9") == null
 }
 
 @Test
@@ -286,8 +296,7 @@ fun WalksByNameAndNumber() -> bool uses unsafe {
   var numbered = Object()
   numbered = Put(numbered, "0", OfText("by name"))
   root = Put(root, "odd", numbered)
-  return AsText(Get(root, "items.0") ?? Null(), "") == "first" &&
-         AsText(Get(root, "odd.0") ?? Null(), "") == "by name" &&
-         NameAt(root, 0) == "items" &&
-         Kind(ValueAt(root, 0)) == 4
+  return AsText(Get(root, "items.0") ?? Null(), "") == "first" && AsText(
+      Get(root, "odd.0") ?? Null(),
+      "") == "by name" && NameAt(root, 0) == "items" && Kind(ValueAt(root, 0)) == 4
 }

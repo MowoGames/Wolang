@@ -175,8 +175,8 @@ offer fun AppendTo(builder: &mut Builder, code: int) uses unsafe {
 @Test
 fun CountsCharactersRatherThanBytes() -> bool uses unsafe {
   const greek = "αβγ"
-  return Count("abc") == 3 && Length(greek) == 6 && Count(greek) == 3 &&
-         Count("") == 0 && Count("a😀b") == 3
+  return Count("abc") == 3 && Length(greek) == 6 && Count(greek) == 3 && Count(
+      "") == 0 && Count("a😀b") == 3
 }
 
 @Test
@@ -193,6 +193,6 @@ fun WalksCodePoints() -> bool uses unsafe {
 
 @Test
 fun WritesACodePointBack() -> bool uses unsafe {
-  return Encode(97) == "a" && Encode(945) == "α" && Encode(128512) == "😀" &&
-         IsValid("αβγ") && IsValid("") && Count(Encode(128512)) == 1
+  return Encode(97) == "a" && Encode(945) == "α" && Encode(128512) == "😀" && IsValid(
+      "αβγ") && IsValid("") && Count(Encode(128512)) == 1
 }

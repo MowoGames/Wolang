@@ -27,8 +27,7 @@ offer class Router {
 
   /// Adds a route. Answers nothing: a router is built once, at the top of
   /// a program, so the calls read as a list rather than as a chain.
-  fun Add(method: text, pattern: text,
-          handle: fun(Request) -> Response) uses unsafe {
+  fun Add(method: text, pattern: text, handle: fun(Request) -> Response) uses unsafe {
     routes.Push(Route(method, pattern, handle))
   }
 
@@ -152,8 +151,7 @@ offer fun Together(prefix: text, pattern: text) -> text uses unsafe {
 /// `404` when no pattern matches the path, and `405` when one does but
 /// not for this method -- which is the difference between "no such thing"
 /// and "not like that".
-offer fun Dispatch(router: &Router, request: Request) -> Response
-    uses io, unsafe {
+offer fun Dispatch(router: &Router, request: Request) -> Response uses io, unsafe {
   var subject = request
   var matched_path = false
   var i = 0
@@ -180,11 +178,12 @@ offer fun Dispatch(router: &Router, request: Request) -> Response
     // `OPTIONS` on a path that exists is answered by saying what may be
     // done to it, which is the whole of what the method is for.
     if SameName(subject.method, "OPTIONS") {
-      return WithHeader(NoContent(), "Allow",
-                        router.Allowed(subject.path))
+      return WithHeader(NoContent(), "Allow", router.Allowed(subject.path))
     }
-    return WithHeader(Status(405, "method not allowed\n"), "Allow",
-                      router.Allowed(subject.path))
+    return WithHeader(
+        Status(405, "method not allowed\n"),
+        "Allow",
+        router.Allowed(subject.path))
   }
   if router.has_fallback {
     subject.param_count = 0
@@ -198,8 +197,7 @@ offer fun Dispatch(router: &Router, request: Request) -> Response
 ///
 /// Segment by segment: `:name` takes whatever is in that segment, `*`
 /// takes the rest, and anything else has to be equal.
-offer fun Matches(pattern: text, path: text, into: &mut Request)
-    -> bool uses unsafe {
+offer fun Matches(pattern: text, path: text, into: &mut Request) -> bool uses unsafe {
   const want = Bytes(pattern)
   const have = Bytes(path)
   var at_want = 0
@@ -281,8 +279,7 @@ fun Installed(request: Request) -> Response uses io, unsafe {
 ///
 /// What a program serving an API calls: the router says what answers
 /// what, and this is the loop around it (D112).
-offer fun ServeRoutes(port: int, most: int, router: Router) -> s32
-    uses io, unsafe {
+offer fun ServeRoutes(port: int, most: int, router: Router) -> s32 uses io, unsafe {
   serving = router
   return RunPolled(port, most, Installed)
 }
@@ -292,40 +289,47 @@ offer fun ServeRoutes(port: int, most: int, router: Router) -> s32
 @Test
 fun MatchesAPlainPath() -> bool uses unsafe {
   var request = RequestNew()
-  return Matches("/health", "/health", &mut request) &&
-         !Matches("/health", "/healthz", &mut request) &&
-         !Matches("/health", "/health/more", &mut request)
+  return Matches("/health", "/health", &mut request) && !Matches(
+      "/health",
+      "/healthz",
+      &mut request) && !Matches("/health", "/health/more", &mut request)
 }
 
 @Test
 fun TakesWhatAPatternNames() -> bool uses unsafe {
   var request = RequestNew()
-  const matched = Matches("/users/:id/posts/:post",
-                          "/users/7/posts/hello", &mut request)
-  return matched && Param(&request, "id", "") == "7" &&
-         Param(&request, "post", "") == "hello" &&
-         Param(&request, "missing", "none") == "none"
+  const matched = Matches(
+      "/users/:id/posts/:post",
+      "/users/7/posts/hello",
+      &mut request)
+  return matched && Param(&request, "id", "") == "7" && Param(
+      &request,
+      "post",
+      "") == "hello" && Param(&request, "missing", "none") == "none"
 }
 
 @Test
 fun AStarTakesTheRest() -> bool uses unsafe {
   var request = RequestNew()
-  return Matches("/files/*", "/files/a/b/c.txt", &mut request) &&
-         Matches("/files/*", "/files/", &mut request)
+  return Matches("/files/*", "/files/a/b/c.txt", &mut request) && Matches(
+      "/files/*",
+      "/files/",
+      &mut request)
 }
 
 @Test
 fun ReadsAQueryAndAHeader() -> bool uses unsafe {
-  const text = "GET /search?q=wolang&page=2 HTTP/1.1\r\n" +
-               "Host: localhost\r\nContent-Type: text/plain\r\n" +
-               "Content-Length: 5\r\n\r\nhello"
+  const text = "GET /search?q=wolang&page=2 HTTP/1.1\r\n" + "Host: localhost\r\nContent-Type: text/plain\r\n" + "Content-Length: 5\r\n\r\nhello"
   const bytes = Bytes(text)
   const request = ParseRequest(bytes, bytes.len)
-  return request.method == "GET" && request.path == "/search" &&
-         Query(&request, "q", "") == "wolang" &&
-         Query(&request, "page", "") == "2" &&
-         Query(&request, "missing", "none") == "none" &&
-         Header(&request, "host", "") == "localhost" &&
-         Header(&request, "Content-Type", "") == "text/plain" &&
-         request.body == "hello"
+  return request.method == "GET" && request.path == "/search" && Query(
+      &request,
+      "q",
+      "") == "wolang" && Query(&request, "page", "") == "2" && Query(
+      &request,
+      "missing",
+      "none") == "none" && Header(&request, "host", "") == "localhost" && Header(
+      &request,
+      "Content-Type",
+      "") == "text/plain" && request.body == "hello"
 }

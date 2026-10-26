@@ -110,8 +110,7 @@ offer fun IsServable(relative: text) -> bool uses unsafe {
 /// request path with `prefix` removed. Everything about it is checked:
 /// the escapes are read back, the dots are worked out, dotfiles are
 /// refused, and the answer has to still be inside `root`.
-offer fun ServeUnder(root: text, request: &Request, prefix: text)
-    -> Response uses unsafe {
+offer fun ServeUnder(root: text, request: &Request, prefix: text) -> Response uses unsafe {
   var wanted = Param(request, "path", "")
   if Length(wanted) == 0 {
     wanted = request.path
@@ -138,8 +137,7 @@ offer fun ServeUnder(root: text, request: &Request, prefix: text)
 
 /// The one file a single-page application wants for every path it does
 /// not have a file for.
-offer fun ServeOr(root: text, request: &Request, prefix: text,
-                  fallback: text) -> Response uses unsafe {
+offer fun ServeOr(root: text, request: &Request, prefix: text, fallback: text) -> Response uses unsafe {
   const answer = ServeUnder(root, request, prefix)
   if answer.status == 200 {
     return answer
@@ -151,19 +149,15 @@ offer fun ServeOr(root: text, request: &Request, prefix: text,
 
 @Test
 fun KnowsWhatAFileIs() -> bool uses unsafe {
-  return TypeOf("a/b.html") == "text/html; charset=utf-8" &&
-         TypeOf("style.css") == "text/css; charset=utf-8" &&
-         TypeOf("app.js") == "text/javascript; charset=utf-8" &&
-         TypeOf("data.json") == "application/json" &&
-         TypeOf("thing") == "application/octet-stream" &&
-         TypeOf("a.PNG") == "application/octet-stream"
+  return TypeOf("a/b.html") == "text/html; charset=utf-8" && TypeOf("style.css") == "text/css; charset=utf-8" && TypeOf(
+      "app.js") == "text/javascript; charset=utf-8" && TypeOf("data.json") == "application/json" && TypeOf(
+      "thing") == "application/octet-stream" && TypeOf("a.PNG") == "application/octet-stream"
 }
 
 @Test
 fun RefusesWhatItShould() -> bool uses unsafe {
-  return !IsServable(".env") && !IsServable("a/.git/config") &&
-         !IsServable("") && IsServable("a/b.css") &&
-         IsServable("index.html")
+  return !IsServable(".env") && !IsServable("a/.git/config") && !IsServable("") && IsServable(
+      "a/b.css") && IsServable("index.html")
 }
 
 @Test
@@ -184,6 +178,5 @@ fun ReadsAFileThatIsThere() -> bool uses unsafe {
   // This source file, served by the package that holds it.
   const answer = ServeFile("lib/http/src/files.wo")
   const missing = ServeFile("lib/http/src/nothing.wo")
-  return (answer.status == 200 || answer.status == 404) &&
-         missing.status == 404
+  return (answer.status == 200 || answer.status == 404) && missing.status == 404
 }

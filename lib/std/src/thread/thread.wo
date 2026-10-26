@@ -137,8 +137,7 @@ fun ReportsHowManyThreadsRun() -> bool uses unsafe {
 /// Declared with no body: what the runtime needs is the two halves of
 /// the body's function value, and lowering is the only place that can
 /// take a function value apart (D147).
-offer fun ParallelFor(count: int, threads: int, body: fun(int, int))
-    uses unsafe
+offer fun ParallelFor(count: int, threads: int, body: fun(int, int)) uses unsafe
 
 @Test
 fun SplitsALoopAcrossThreads() -> bool uses unsafe {
@@ -151,13 +150,16 @@ fun SplitsALoopAcrossThreads() -> bool uses unsafe {
     i = i + 1
   }
 
-  ParallelFor(10000, 4, |from, to| {
-    var at = from
-    while at < to {
-      numbers[at] = numbers[at] * 2
-      at = at + 1
-    }
-  })
+  ParallelFor(
+      10000,
+      4,
+      |from, to| {
+        var at = from
+        while at < to {
+          numbers[at] = numbers[at] * 2
+          at = at + 1
+        }
+      })
 
   var ok = true
   var j = 0
@@ -179,13 +181,16 @@ fun RunsEveryIndexExactlyOnce() -> bool uses unsafe {
   }
   // Zero threads is one per core, and the remainder is spread one per
   // chunk rather than left to the last.
-  ParallelFor(1000, 0, |from, to| {
-    var at = from
-    while at < to {
-      marks[at] = marks[at] + 1
-      at = at + 1
-    }
-  })
+  ParallelFor(
+      1000,
+      0,
+      |from, to| {
+        var at = from
+        while at < to {
+          marks[at] = marks[at] + 1
+          at = at + 1
+        }
+      })
   var once = true
   var j = 0
   while j < 1000 {

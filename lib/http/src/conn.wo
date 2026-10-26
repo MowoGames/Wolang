@@ -184,9 +184,10 @@ offer class Connections {
         return -2
       }
     }
-    const received =
-        Read(slots[slot].fd as s32, &mut slots[slot].buffer[slots[slot].filled],
-             Room(slot))
+    const received = Read(
+        slots[slot].fd as s32,
+        &mut slots[slot].buffer[slots[slot].filled],
+        Room(slot))
     if received > 0 {
       slots[slot].filled = slots[slot].filled + received
     }
@@ -221,8 +222,7 @@ offer class Connections {
   }
 }
 
-offer fun ConnectionsNew(most: int, limits: Limits) -> Connections
-    uses unsafe {
+offer fun ConnectionsNew(most: int, limits: Limits) -> Connections uses unsafe {
   var slots = ArrayNew<Held>(most)
   var empty = ArrayNew<u8>(0)
   var i = 0
@@ -237,8 +237,7 @@ offer fun ConnectionsNew(most: int, limits: Limits) -> Connections
 ///
 /// `-1` says "not all here yet", `-2` says "this is not a request", and
 /// `-3` says "bigger than the server allows".
-offer fun RequestLength(bytes: []u8, filled: int, limits: Limits) -> int
-    uses unsafe {
+offer fun RequestLength(bytes: []u8, filled: int, limits: Limits) -> int uses unsafe {
   const head = HeadEnd(bytes, filled)
   if head < 0 {
     if filled > limits.most_head {
@@ -266,8 +265,7 @@ offer fun RequestLength(bytes: []u8, filled: int, limits: Limits) -> int
 offer fun HeadEnd(bytes: []u8, filled: int) -> int {
   var at = 0
   while at + 3 < filled {
-    if bytes[at] == 13 && bytes[at + 1] == 10 && bytes[at + 2] == 13 &&
-       bytes[at + 3] == 10 {
+    if bytes[at] == 13 && bytes[at + 1] == 10 && bytes[at + 2] == 13 && bytes[at + 3] == 10 {
       return at + 4
     }
     at = at + 1
@@ -351,21 +349,24 @@ fun SaysWhenAWholeRequestIsHere() -> bool uses unsafe {
   const half = Bytes("GET / HTTP/1.1\r\nHost: ")
   const body = Bytes("POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhel")
   const full = Bytes("POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello")
-  return RequestLength(whole, whole.len, limits) == whole.len &&
-         RequestLength(half, half.len, limits) == -1 &&
-         RequestLength(body, body.len, limits) == -1 &&
-         RequestLength(full, full.len, limits) == full.len
+  return RequestLength(whole, whole.len, limits) == whole.len && RequestLength(
+      half,
+      half.len,
+      limits) == -1 && RequestLength(body, body.len, limits) == -1 && RequestLength(
+      full,
+      full.len,
+      limits) == full.len
 }
 
 @Test
 fun ReadsAHeaderOutOfRawBytes() -> bool uses unsafe {
-  const bytes = Bytes("POST /x HTTP/1.1\r\nContent-Length: 42\r\n" +
-                      "Connection: close\r\n\r\n")
+  const bytes = Bytes(
+      "POST /x HTTP/1.1\r\nContent-Length: 42\r\n" + "Connection: close\r\n\r\n")
   const head = HeadEnd(bytes, bytes.len)
-  return head == bytes.len &&
-         HeaderIn(bytes, head, "content-length") == "42" &&
-         HeaderIn(bytes, head, "Connection") == "close" &&
-         HeaderIn(bytes, head, "Missing") == ""
+  return head == bytes.len && HeaderIn(bytes, head, "content-length") == "42" && HeaderIn(
+      bytes,
+      head,
+      "Connection") == "close" && HeaderIn(bytes, head, "Missing") == ""
 }
 
 @Test
@@ -384,6 +385,6 @@ fun KeepsWhatCameAfterARequest() -> bool uses io, unsafe {
   const full = pool.Open(11)
   pool.Release(second)
   const reused = pool.Open(13)
-  return slot == 0 && second == 1 && full == -1 && reused == 1 &&
-         pool.Fd(0) == 7 && pool.Find(13) == 1 && pool.Find(99) == -1
+  return slot == 0 && second == 1 && full == -1 && reused == 1 && pool.Fd(0) == 7 && pool.Find(
+      13) == 1 && pool.Find(99) == -1
 }

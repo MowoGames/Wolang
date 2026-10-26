@@ -157,8 +157,8 @@ fun TakesTheOrderItWasGiven() -> bool uses unsafe {
   queue.Push(3)
   queue.Push(9)
   queue.Push(5)
-  return queue.Pop() == 9 && queue.Pop() == 5 && queue.Pop() == 3 &&
-         queue.IsEmpty()
+  return queue.Pop() == 9 && queue.Pop() == 5 && queue.Pop() == 3 && queue.IsEmpty(
+      )
 }
 
 @Test

@@ -92,8 +92,7 @@ fun Answering(status: int, body: text, kind: text) -> Response {
 ///
 /// Compared without regard to case, because a client may send
 /// `Content-Type` or `content-type` and both mean the same header.
-offer fun Header(request: &Request, name: text, fallback: text) -> text
-    uses unsafe {
+offer fun Header(request: &Request, name: text, fallback: text) -> text uses unsafe {
   var i = 0
   while i < request.header_count {
     const held = request.headers[i]
@@ -110,8 +109,7 @@ offer fun Header(request: &Request, name: text, fallback: text) -> text
 /// `?a=1&b=two` is read on demand rather than up front: most handlers
 /// want one of them, and splitting the rest costs a pass over bytes
 /// nobody reads.
-offer fun Query(request: &Request, name: text, fallback: text) -> text
-    uses unsafe {
+offer fun Query(request: &Request, name: text, fallback: text) -> text uses unsafe {
   const bytes = Bytes(request.query)
   var at = 0
   while at < bytes.len {
@@ -130,8 +128,7 @@ offer fun Query(request: &Request, name: text, fallback: text) -> text
 
 /// The path parameter called `name`, or `fallback`: what the router
 /// matched for `:name`.
-offer fun Param(request: &Request, name: text, fallback: text) -> text
-    uses unsafe {
+offer fun Param(request: &Request, name: text, fallback: text) -> text uses unsafe {
   var i = 0
   while i < request.param_count {
     const held = request.params[i]
@@ -182,8 +179,10 @@ offer fun OkJson(body: text) -> Response {
 
 /// `201 Created`, with where the thing was created.
 offer fun Created(location: text, body: text) -> Response {
-  return WithHeader(Answering(201, body, "application/json"), "Location",
-                    location)
+  return WithHeader(
+      Answering(201, body, "application/json"),
+      "Location",
+      location)
 }
 
 offer fun NoContent() -> Response {
@@ -204,8 +203,7 @@ offer fun Status(status: int, body: text) -> Response {
 
 /// The same response with one more header on it. Answers the response, so
 /// calls chain.
-offer fun WithHeader(answer: Response, name: text, value: text)
-    -> Response {
+offer fun WithHeader(answer: Response, name: text, value: text) -> Response {
   var held = answer
   if held.header_count < kMostAnswerHeaders {
     held.headers[held.header_count] = Pair(name, value)
@@ -252,8 +250,7 @@ offer fun ParseRequest(bytes: []u8, received: int) -> Request uses unsafe {
   // `HTTP/1.1` or `HTTP/1.0`, after the target. Anything else is read as
   // 1.0, which is the cautious reading: close when in doubt.
   if target_end + 8 <= bytes.len {
-    request.http_11 = bytes[target_end + 6] == 49 &&
-                      bytes[target_end + 8] == 49
+    request.http_11 = bytes[target_end + 6] == 49 && bytes[target_end + 8] == 49
   }
   // The target is `/path?query`, and the query is whatever follows the
   // first `?`.
@@ -280,9 +277,9 @@ offer fun ParseRequest(bytes: []u8, received: int) -> Request uses unsafe {
       while value < end && bytes[value] == 32 {
         value = value + 1
       }
-      request.headers[request.header_count] =
-          Pair(Slice(bytes, at, colon) as text,
-               Slice(bytes, value, end) as text)
+      request.headers[request.header_count] = Pair(
+          Slice(bytes, at, colon) as text,
+          Slice(bytes, value, end) as text)
       request.header_count = request.header_count + 1
     }
     at = end + 2
@@ -352,8 +349,7 @@ fun Slice(bytes: []u8, from: int, to: int) -> []u8 uses unsafe {
 /// request allocates -- its response, the strings it interpolated -- comes
 /// from there and goes back at the end of the turn. Keep-alive is what
 /// makes that worth doing, because the connection outlives the arena.
-offer fun Serve(connection: s32, handle: fun(Request) -> Response) -> int
-    uses io, unsafe {
+offer fun Serve(connection: s32, handle: fun(Request) -> Response) -> int uses io, unsafe {
   return ServeWith(connection, handle, LimitsDefault())
 }
 
@@ -362,8 +358,10 @@ offer fun Serve(connection: s32, handle: fun(Request) -> Response) -> int
 /// One connection, served until the client stops asking or breaks the
 /// rules: every request is read whole before the handler sees it, and
 /// what arrived after it stays for the next turn (D122).
-offer fun ServeWith(connection: s32, handle: fun(Request) -> Response,
-                    limits: Limits) -> int uses io, unsafe {
+offer fun ServeWith(
+    connection: s32,
+    handle: fun(Request) -> Response,
+    limits: Limits) -> int uses io, unsafe {
   var pool = ConnectionsNew(1, limits)
   const slot = pool.Open(connection as int)
   var served = 0
@@ -386,8 +384,10 @@ offer fun ServeWith(connection: s32, handle: fun(Request) -> Response,
 /// `1` when a request was answered, `0` when more is wanted, and `-1`
 /// when the connection is finished. A server that polls calls this once
 /// per readable connection; a blocking one calls it in a loop.
-offer fun Turn(pool: &mut Connections, slot: int,
-               handle: fun(Request) -> Response) -> int uses io, unsafe {
+offer fun Turn(
+    pool: &mut Connections,
+    slot: int,
+    handle: fun(Request) -> Response) -> int uses io, unsafe {
   const fd = pool.Fd(slot)
   if fd < 0 {
     return -1
@@ -397,8 +397,11 @@ offer fun Turn(pool: &mut Connections, slot: int,
     // -2 is "no room and not allowed to grow", which is a request bigger
     // than the server takes rather than a broken connection.
     if received == -2 {
-      const _said = WriteAnswer(fd as s32, Status(413, "too large\n"),
-                                true, false)
+      const _said = WriteAnswer(
+          fd as s32,
+          Status(413, "too large\n"),
+          true,
+          false)
     }
     return -1
   }
@@ -408,8 +411,10 @@ offer fun Turn(pool: &mut Connections, slot: int,
 
   var answered = 0
   loop {
-    const length =
-        RequestLength(pool.Bytes(slot), pool.Filled(slot), pool.limits)
+    const length = RequestLength(
+        pool.Bytes(slot),
+        pool.Filled(slot),
+        pool.limits)
     if length == -1 {
       // Not all here yet. The next read continues where this one stopped.
       if answered > 0 {
@@ -418,22 +423,32 @@ offer fun Turn(pool: &mut Connections, slot: int,
       return 0
     }
     if length == -3 {
-      const _said = WriteAnswer(fd as s32, Status(413, "too large\n"),
-                                true, false)
+      const _said = WriteAnswer(
+          fd as s32,
+          Status(413, "too large\n"),
+          true,
+          false)
       pool.SetClosing(slot, true)
       return -1
     }
     if length <= 0 {
-      const _said = WriteAnswer(fd as s32, BadRequest("bad request\n"),
-                                true, false)
+      const _said = WriteAnswer(
+          fd as s32,
+          BadRequest("bad request\n"),
+          true,
+          false)
       pool.SetClosing(slot, true)
       return -1
     }
 
     var ok = false
     arena {
-      ok = Answer(fd as s32, pool.Bytes(slot), length, handle,
-                  pool.limits.keep_alive)
+      ok = Answer(
+          fd as s32,
+          pool.Bytes(slot),
+          length,
+          handle,
+          pool.limits.keep_alive)
     }
     pool.Consume(slot, length)
     answered = answered + 1
@@ -479,8 +494,7 @@ fun Answer(
   const answer = handle(request)
   // A `HEAD` asks for the headers a `GET` would give, body length and
   // all, and gets none of the body.
-  const with_body = !SameName(request.method, "HEAD") &&
-                    answer.status != 204 && answer.status != 304
+  const with_body = !SameName(request.method, "HEAD") && answer.status != 204 && answer.status != 304
   if !WriteAnswer(connection, answer, with_body, holding) {
     return false
   }
@@ -493,10 +507,10 @@ fun Answer(
 /// One write, because two writes of a small response wait for each other
 /// on a socket -- the second is held back until the first is
 /// acknowledged -- which costs more than building the string does.
-offer fun WriteResponse(connection: s32, answer: Response) -> bool
-    uses io, unsafe {
-  return WriteAnswer(connection, answer, /*with_body=*/true,
-                     /*keep_alive=*/true)
+offer fun WriteResponse(connection: s32, answer: Response) -> bool uses io, unsafe {
+  return WriteAnswer(connection, answer, true, true)
+  /*with_body=*/
+  /*keep_alive=*/
 }
 
 /// The same, told whether to write the body and whether the connection
@@ -506,8 +520,11 @@ offer fun WriteResponse(connection: s32, answer: Response) -> bool
 /// what it would have been, which is the whole point of asking -- and a
 /// client that said `Connection: close` is told the server agrees before
 /// the socket goes away (D122).
-offer fun WriteAnswer(connection: s32, answer: Response, with_body: bool,
-                      keep_alive: bool) -> bool uses io, unsafe {
+offer fun WriteAnswer(
+    connection: s32,
+    answer: Response,
+    with_body: bool,
+    keep_alive: bool) -> bool uses io, unsafe {
   var message = BuilderNew()
   message.Append("HTTP/1.1 {answer.status} {Reason(answer.status)}\r\n")
   message.Append("Content-Length: {answer.body.len}\r\n")
@@ -685,9 +702,7 @@ offer fun Run(port: int, handle: fun(Request) -> Response) -> s32 uses io, unsaf
 /// `most` is how many ready descriptors one wait may report. Everything
 /// else waits for the next turn, which is what keeps one noisy client
 /// from starving the rest.
-offer fun RunPolled(port: int, most: int,
-                    handle: fun(Request) -> Response) -> s32
-    uses io, unsafe {
+offer fun RunPolled(port: int, most: int, handle: fun(Request) -> Response) -> s32 uses io, unsafe {
   return RunServer(port, most, handle, LimitsDefault())
 }
 
@@ -697,9 +712,11 @@ offer fun RunPolled(port: int, most: int,
 /// something to say (D95). Each connection has a buffer of its own, so a
 /// request that arrives in pieces is put together rather than parsed in
 /// halves (D122).
-offer fun RunServer(port: int, most: int,
-                    handle: fun(Request) -> Response,
-                    limits: Limits) -> s32 uses io, unsafe {
+offer fun RunServer(
+    port: int,
+    most: int,
+    handle: fun(Request) -> Response,
+    limits: Limits) -> s32 uses io, unsafe {
   return RunServerOn(Listen(port, 128), most, handle, limits)
 }
 
@@ -707,9 +724,11 @@ offer fun RunServer(port: int, most: int,
 ///
 /// What a multi-threaded server needs: each thread opens its own
 /// listener on the same port and runs this (D135).
-offer fun RunServerOn(listener: s32, most: int,
-                      handle: fun(Request) -> Response,
-                      limits: Limits) -> s32 uses io, unsafe {
+offer fun RunServerOn(
+    listener: s32,
+    most: int,
+    handle: fun(Request) -> Response,
+    limits: Limits) -> s32 uses io, unsafe {
   if listener < 0 {
     Print("http: cannot listen")
     return listener
@@ -751,7 +770,9 @@ offer fun RunServerOn(listener: s32, most: int,
             // whose bytes have no home. That is the server's back
             // pressure, and saying so beats a silent close.
             const _said = WriteAnswer(
-                connection, Status(503, "too many connections\n"), true,
+                connection,
+                Status(503, "too many connections\n"),
+                true,
                 false)
             if slot >= 0 {
               pool.Release(slot)
@@ -786,8 +807,9 @@ fun KeepsOrClosesAsTheClientAsked() -> bool uses unsafe {
   const closing = "GET / HTTP/1.1\r\nConnection: close\r\n\r\n"
   const bytes = Bytes(closing)
   const request = ParseRequest(bytes, bytes.len)
-  return SameName(Header(&request, "connection", ""), "close") &&
-         !SameName(Header(&request, "connection", ""), "keep-alive")
+  return SameName(Header(&request, "connection", ""), "close") && !SameName(
+      Header(&request, "connection", ""),
+      "keep-alive")
 }
 
 @Test

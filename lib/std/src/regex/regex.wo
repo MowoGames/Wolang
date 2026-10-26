@@ -23,16 +23,16 @@ need std.text.{Builder, Bytes, BuilderNew, Length, Substring}
 offer error BadPattern
 
 // What a step in the program is.
-const kByte: int = 0        // one literal byte
-const kAny: int = 1         // `.`
-const kClass: int = 2       // `[...]`, payload is a 256-bit set
-const kSplit: int = 3       // try `a`, then `b`
-const kJump: int = 4        // go to `a`
-const kSave: int = 5        // remember where a group starts or ends
-const kMatch: int = 6       // the end
-const kStart: int = 7       // `^`
-const kEnd: int = 8         // `$`
-const kWordEdge: int = 9    // `\b`
+const kByte: int = 0  // one literal byte
+const kAny: int = 1  // `.`
+const kClass: int = 2  // `[...]`, payload is a 256-bit set
+const kSplit: int = 3  // try `a`, then `b`
+const kJump: int = 4  // go to `a`
+const kSave: int = 5  // remember where a group starts or ends
+const kMatch: int = 6  // the end
+const kStart: int = 7  // `^`
+const kEnd: int = 8  // `$`
+const kWordEdge: int = 9  // `\b`
 const kNotWordEdge: int = 10  // `\B`
 
 struct Step {
@@ -94,8 +94,7 @@ offer fun Whole(input: text, found: &Match) -> text uses unsafe {
 
 /// The text group `index` covers, or "" when it took no part. Group 1 is
 /// the first `(`.
-offer fun Group(input: text, found: &Match, index: int) -> text
-    uses unsafe {
+offer fun Group(input: text, found: &Match, index: int) -> text uses unsafe {
   if !found.ok || index < 1 || index >= 20 {
     return ""
   }
@@ -160,8 +159,7 @@ fun Save(slot: int) -> Step {
 // end after every branch but the last. Compiling in place and inserting
 // the splits afterwards means moving every jump that crossed the
 // insertion -- which is where the first version of this got it wrong.
-fun CompileAlternation(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
-    uses unsafe {
+fun CompileAlternation(steps: &mut List<Step>, pen: &mut Pen, fold: bool) uses unsafe {
   var branches = ListNew<List<Step>>()
   loop {
     var one = ListNew<Step>()
@@ -214,8 +212,7 @@ fun CompileAlternation(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
 }
 
 // One branch: pieces until `|` or `)`.
-fun CompileSequence(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
-    uses unsafe {
+fun CompileSequence(steps: &mut List<Step>, pen: &mut Pen, fold: bool) uses unsafe {
   loop {
     if pen.at >= pen.bytes.len {
       return
@@ -236,14 +233,12 @@ fun CompileSequence(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
   }
 }
 
-fun CompilePiece(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
-    uses unsafe {
+fun CompilePiece(steps: &mut List<Step>, pen: &mut Pen, fold: bool) uses unsafe {
   const byte = pen.bytes[pen.at]
   if byte == 40 {
     pen.at = pen.at + 1
     var capturing = true
-    if pen.at + 1 < pen.bytes.len && pen.bytes[pen.at] == 63 &&
-       pen.bytes[pen.at + 1] == 58 {
+    if pen.at + 1 < pen.bytes.len && pen.bytes[pen.at] == 63 && pen.bytes[pen.at + 1] == 58 {
       capturing = false
       pen.at = pen.at + 2
     }
@@ -315,7 +310,7 @@ fun ByteStep(byte: u8, fold: bool) -> Step {
 }
 
 fun IsLetter(byte: u8) -> bool {
-  return (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+  return byte >= 65 && byte <= 90 || byte >= 97 && byte <= 122
 }
 
 fun Lower(byte: u8) -> u8 {
@@ -336,13 +331,13 @@ fun AddToClass(step: Step, byte: u8) -> Step {
   var held = step
   const index = byte as int
   if index < 64 {
-    held.class0 = held.class0 | (1 as u64 << index as u64)
+    held.class0 = held.class0 | 1 as u64 << index as u64
   } else if index < 128 {
-    held.class1 = held.class1 | (1 as u64 << (index - 64) as u64)
+    held.class1 = held.class1 | 1 as u64 << (index - 64) as u64
   } else if index < 192 {
-    held.class2 = held.class2 | (1 as u64 << (index - 128) as u64)
+    held.class2 = held.class2 | 1 as u64 << (index - 128) as u64
   } else {
-    held.class3 = held.class3 | (1 as u64 << (index - 192) as u64)
+    held.class3 = held.class3 | 1 as u64 << (index - 192) as u64
   }
   return held
 }
@@ -384,8 +379,7 @@ fun Negate(step: Step) -> Step {
   return made
 }
 
-fun CompileClass(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
-    uses unsafe {
+fun CompileClass(steps: &mut List<Step>, pen: &mut Pen, fold: bool) uses unsafe {
   pen.at = pen.at + 1
   var negated = false
   if pen.at < pen.bytes.len && pen.bytes[pen.at] == 94 {
@@ -419,8 +413,7 @@ fun CompileClass(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
     pen.at = pen.at + 1
     // `a-z`, when what follows is a dash and then something that is not
     // the closing bracket.
-    if pen.at + 1 < pen.bytes.len && pen.bytes[pen.at] == 45 &&
-       pen.bytes[pen.at + 1] != 93 {
+    if pen.at + 1 < pen.bytes.len && pen.bytes[pen.at] == 45 && pen.bytes[pen.at + 1] != 93 {
       const to = pen.bytes[pen.at + 1]
       pen.at = pen.at + 2
       step = AddRange(step, byte, to)
@@ -509,8 +502,7 @@ fun Unescape(escaped: u8) -> u8 {
   return escaped
 }
 
-fun CompileEscape(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
-    uses unsafe {
+fun CompileEscape(steps: &mut List<Step>, pen: &mut Pen, fold: bool) uses unsafe {
   pen.at = pen.at + 1
   if pen.at >= pen.bytes.len {
     pen.ok = false
@@ -526,8 +518,7 @@ fun CompileEscape(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
     steps.Push(Plain(kNotWordEdge, 0))
     return
   }
-  if escaped == 100 || escaped == 119 || escaped == 115 ||
-     escaped == 68 || escaped == 87 || escaped == 83 {
+  if escaped == 100 || escaped == 119 || escaped == 115 || escaped == 68 || escaped == 87 || escaped == 83 {
     steps.Push(AddEscape(Plain(kClass, 0), escaped))
     return
   }
@@ -535,8 +526,7 @@ fun CompileEscape(steps: &mut List<Step>, pen: &mut Pen, fold: bool)
 }
 
 // `*`, `+`, `?`, `{n,m}` after a piece, and the reluctant `?` after those.
-fun CompileRepeat(steps: &mut List<Step>, pen: &mut Pen, before: int)
-    uses unsafe {
+fun CompileRepeat(steps: &mut List<Step>, pen: &mut Pen, before: int) uses unsafe {
   if pen.at >= pen.bytes.len {
     return
   }
@@ -579,8 +569,7 @@ fun ReadCount(pen: &mut Pen) -> Count uses unsafe {
   pen.at = pen.at + 1
   var least = 0
   var digits = 0
-  while pen.at < pen.bytes.len && pen.bytes[pen.at] >= 48 &&
-        pen.bytes[pen.at] <= 57 {
+  while pen.at < pen.bytes.len && pen.bytes[pen.at] >= 48 && pen.bytes[pen.at] <= 57 {
     least = least * 10 + (pen.bytes[pen.at] - 48) as int
     digits = digits + 1
     pen.at = pen.at + 1
@@ -595,8 +584,7 @@ fun ReadCount(pen: &mut Pen) -> Count uses unsafe {
     most = -1
     var upper = 0
     var seen = 0
-    while pen.at < pen.bytes.len && pen.bytes[pen.at] >= 48 &&
-          pen.bytes[pen.at] <= 57 {
+    while pen.at < pen.bytes.len && pen.bytes[pen.at] >= 48 && pen.bytes[pen.at] <= 57 {
       upper = upper * 10 + (pen.bytes[pen.at] - 48) as int
       seen = seen + 1
       pen.at = pen.at + 1
@@ -618,8 +606,12 @@ fun ReadCount(pen: &mut Pen) -> Count uses unsafe {
 
 // The steps from `before` to the end, repeated: copied `least` times,
 // then `most - least` optional copies, or a loop when there is no most.
-fun Repeat(steps: &mut List<Step>, before: int, least: int, most: int,
-           reluctant: bool) uses unsafe {
+fun Repeat(
+    steps: &mut List<Step>,
+    before: int,
+    least: int,
+    most: int,
+    reluctant: bool) uses unsafe {
   var piece = ListNew<Step>()
   var i = before
   while i < steps.Len() {
@@ -679,8 +671,7 @@ fun Repeat(steps: &mut List<Step>, before: int, least: int, most: int,
 
 // A copy of the piece at the end, with its jumps moved to where it now
 // sits.
-fun AppendPiece(steps: &mut List<Step>, piece: &List<Step>, base: int)
-    uses unsafe {
+fun AppendPiece(steps: &mut List<Step>, piece: &List<Step>, base: int) uses unsafe {
   const shift = base
   var i = 0
   while i < piece.Len() {
@@ -702,8 +693,7 @@ offer fun Find(pattern: &Regex, input: text) -> Match uses unsafe {
 }
 
 /// The same, starting at `from`.
-offer fun FindFrom(pattern: &Regex, input: text, from: int) -> Match
-    uses unsafe {
+offer fun FindFrom(pattern: &Regex, input: text, from: int) -> Match uses unsafe {
   const bytes = Bytes(input)
   var start = from
   while start <= bytes.len {
@@ -722,8 +712,7 @@ offer fun Matches(pattern: &Regex, input: text) -> bool uses unsafe {
 }
 
 /// Every match, left to right, without overlapping.
-offer fun FindAll(pattern: &Regex, input: text) -> List<Match>
-    uses unsafe {
+offer fun FindAll(pattern: &Regex, input: text) -> List<Match> uses unsafe {
   var found = ListNew<Match>()
   const bytes = Bytes(input)
   var at = 0
@@ -747,8 +736,7 @@ offer fun FindAll(pattern: &Regex, input: text) -> List<Match>
 ///
 /// `$1` in `with` is the first group, `$0` the whole match, and `$$` a
 /// dollar sign.
-offer fun ReplaceAll(pattern: &Regex, input: text, with: text) -> text
-    uses unsafe {
+offer fun ReplaceAll(pattern: &Regex, input: text, with: text) -> text uses unsafe {
   var builder = BuilderNew()
   const found = FindAll(pattern, input)
   var at = 0
@@ -764,8 +752,11 @@ offer fun ReplaceAll(pattern: &Regex, input: text, with: text) -> text
   return builder.Release()
 }
 
-fun AppendReplacement(builder: &mut Builder, input: text, found: &Match,
-                      with: text) uses unsafe {
+fun AppendReplacement(
+    builder: &mut Builder,
+    input: text,
+    found: &Match,
+    with: text) uses unsafe {
   const bytes = Bytes(with)
   var i = 0
   while i < bytes.len {
@@ -818,8 +809,7 @@ offer fun Split(pattern: &Regex, input: text) -> List<text> uses unsafe {
 // Recursion through `Step`, with a budget: a pattern like `(a*)*b` on a
 // long line of `a`s is exponential in any backtracking matcher, and a
 // budget turns "never answers" into "answers no".
-fun Run(pattern: &Regex, bytes: []u8, start: int, found: &mut Match)
-    -> bool uses unsafe {
+fun Run(pattern: &Regex, bytes: []u8, start: int, found: &mut Match) -> bool uses unsafe {
   var slots: [40]int
   var i = 0
   while i < 40 {
@@ -842,8 +832,13 @@ fun Run(pattern: &Regex, bytes: []u8, start: int, found: &mut Match)
   return true
 }
 
-fun Walk(pattern: &Regex, bytes: []u8, step_at: int, at: int,
-         slots: &mut [40]int, budget: &mut int) -> bool uses unsafe {
+fun Walk(
+    pattern: &Regex,
+    bytes: []u8,
+    step_at: int,
+    at: int,
+    slots: &mut [40]int,
+    budget: &mut int) -> bool uses unsafe {
   if *budget <= 0 {
     return false
   }
@@ -921,8 +916,7 @@ fun Walk(pattern: &Regex, bytes: []u8, step_at: int, at: int,
 }
 
 fun IsWord(byte: u8) -> bool {
-  return (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) ||
-         (byte >= 97 && byte <= 122) || byte == 95
+  return byte >= 48 && byte <= 57 || byte >= 65 && byte <= 90 || byte >= 97 && byte <= 122 || byte == 95
 }
 
 // ------------------------------------------------------------- tests ---
@@ -931,11 +925,13 @@ fun IsWord(byte: u8) -> bool {
 fun MatchesLiteralsAndClasses() -> bool uses unsafe {
   match Compile("h[aeiou]llo", "") {
     Ok(pattern) => {
-      return Matches(&pattern, "say hello there") &&
-             Matches(&pattern, "hullo") &&
-             !Matches(&pattern, "hxllo")
-    },
-    BadPattern => { return false },
+      return Matches(&pattern, "say hello there") && Matches(&pattern, "hullo") && !Matches(
+          &pattern,
+          "hxllo")
+    }
+    BadPattern => {
+      return false
+    }
   }
 }
 
@@ -945,11 +941,14 @@ fun FindsWhereAndWhat() -> bool uses unsafe {
     Ok(pattern) => {
       const input = "write to someone@example.com today"
       const found = Find(&pattern, input)
-      return found.ok && Whole(input, &found) == "someone@example.com" &&
-             Group(input, &found, 1) == "someone" &&
-             Group(input, &found, 2) == "example"
-    },
-    BadPattern => { return false },
+      return found.ok && Whole(input, &found) == "someone@example.com" && Group(
+          input,
+          &found,
+          1) == "someone" && Group(input, &found, 2) == "example"
+    }
+    BadPattern => {
+      return false
+    }
   }
 }
 
@@ -966,22 +965,29 @@ fun RepeatsGreedilyAndNot() -> bool uses unsafe {
         Ok(shy) => {
           const second = Find(&shy, input)
           return Group(input, &second, 1) == "a"
-        },
-        BadPattern => { return false },
+        }
+        BadPattern => {
+          return false
+        }
       }
-    },
-    BadPattern => { return false },
+    }
+    BadPattern => {
+      return false
+    }
   }
 }
 
 @Test
 fun CountsRepetitions() -> bool uses unsafe {
-  match Compile("^a\{2,3\}b$", "") {
+  match Compile("^a\{2,3}b$", "") {
     Ok(pattern) => {
-      return !Matches(&pattern, "ab") && Matches(&pattern, "aab") &&
-             Matches(&pattern, "aaab") && !Matches(&pattern, "aaaab")
-    },
-    BadPattern => { return false },
+      return !Matches(&pattern, "ab") && Matches(&pattern, "aab") && Matches(
+          &pattern,
+          "aaab") && !Matches(&pattern, "aaaab")
+    }
+    BadPattern => {
+      return false
+    }
   }
 }
 
@@ -989,10 +995,13 @@ fun CountsRepetitions() -> bool uses unsafe {
 fun AlternatesAndAnchors() -> bool uses unsafe {
   match Compile("^(cat|dog|bird)$", "") {
     Ok(pattern) => {
-      return Matches(&pattern, "dog") && Matches(&pattern, "bird") &&
-             !Matches(&pattern, "dogs")
-    },
-    BadPattern => { return false },
+      return Matches(&pattern, "dog") && Matches(&pattern, "bird") && !Matches(
+          &pattern,
+          "dogs")
+    }
+    BadPattern => {
+      return false
+    }
   }
 }
 
@@ -1001,8 +1010,10 @@ fun FoldsCaseWhenAsked() -> bool uses unsafe {
   match Compile("wolang", "i") {
     Ok(pattern) => {
       return Matches(&pattern, "WOLANG") && Matches(&pattern, "WoLang")
-    },
-    BadPattern => { return false },
+    }
+    BadPattern => {
+      return false
+    }
   }
 }
 
@@ -1012,10 +1023,11 @@ fun FindsEveryMatch() -> bool uses unsafe {
     Ok(pattern) => {
       const input = "1 apple, 22 pears, 333 plums"
       const found = FindAll(&pattern, input)
-      return found.Len() == 3 &&
-             Whole(input, &found.At(2)) == "333"
-    },
-    BadPattern => { return false },
+      return found.Len() == 3 && Whole(input, &found.At(2)) == "333"
+    }
+    BadPattern => {
+      return false
+    }
   }
 }
 
@@ -1031,23 +1043,27 @@ fun ReplacesAndSplits() -> bool uses unsafe {
         Ok(comma) => {
           const pieces = Split(&comma, "one , two,three")
           return pieces.Len() == 3 && pieces.At(2) == "three"
-        },
-        BadPattern => { return false },
+        }
+        BadPattern => {
+          return false
+        }
       }
-    },
-    BadPattern => { return false },
+    }
+    BadPattern => {
+      return false
+    }
   }
 }
 
 @Test
 fun RefusesWhatIsNotAPattern() -> bool uses unsafe {
   var refused = 0
-  const broken = ["(unclosed", "[unclosed", "*start", "a\{2,1\}", "a\\"]
+  const broken = ["(unclosed", "[unclosed", "*start", "a\{2,1}", "a\\"]
   var i = 0
   while i < 5 {
     match Compile(broken[i], "") {
-      Ok(_pattern) => refused = refused,
-      BadPattern => refused = refused + 1,
+      Ok(_pattern) => refused = refused
+      BadPattern => refused = refused + 1
     }
     i = i + 1
   }
@@ -1062,7 +1078,9 @@ fun AnswersRatherThanHanging() -> bool uses unsafe {
     Ok(pattern) => {
       const _held = Matches(&pattern, "aaaaaaaaaaaa")
       return true
-    },
-    BadPattern => { return false },
+    }
+    BadPattern => {
+      return false
+    }
   }
 }
