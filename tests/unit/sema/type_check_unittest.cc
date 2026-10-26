@@ -1404,6 +1404,37 @@ struct Holder {
   WOLANG_EXPECT(f.Messages().find("would outlive") != std::string::npos);
 }
 
+WOLANG_TEST(TypeCheck, AnExternClassIsOnlyMethods) {
+  Fixture fine(R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+fun Read(actor_ref: Actor) -> s32 uses unsafe {
+  return actor_ref.Health()
+}
+)");
+  WOLANG_EXPECT_EQ(fine.Codes(), "");
+
+  Fixture made(R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+fun Make() -> Actor {
+  return Actor()
+}
+)");
+  WOLANG_EXPECT(made.HasCode("E0139"));
+
+  Fixture stored(R"(
+extern class Actor {
+  var health: int
+}
+)");
+  WOLANG_EXPECT(stored.HasCode("E0139"));
+}
+
 WOLANG_TEST(TypeCheck, AWeakFieldIsAnOptionalClassInAClass) {
   Fixture fine(R"(
 class Node {

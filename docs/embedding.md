@@ -94,10 +94,66 @@ in both directions — the host's bytes are borrowed for the length of a
 call, and a string the program answered is copied out, because the
 program's own copy may live in an arena that is about to be given back.
 
-Anything richer — a class, a list, an enum with a payload — stays inside
-the language. A function at the boundary takes and answers what C can
-carry, which is a constraint worth designing the script's API around
-rather than working past.
+Objects cross too, in both directions — see below. Anything else richer
+— a list, a struct, an enum with a payload — stays inside the language. A
+function at the boundary takes and answers what C can carry, which is a
+constraint worth designing the script's API around rather than working
+past.
+
+## The host's objects in a script
+
+An engine's actor is the engine's: it makes it, owns it, and frees it.
+A script names the type with `extern class` and gets methods and nothing
+else:
+
+```wolang
+extern class Actor {
+  fun Position() -> Vec3
+  fun Hurt(amount: s32)
+}
+
+offer fun Tick(self_actor: Actor) uses unsafe {
+  self_actor.Hurt(5)
+}
+```
+
+The host binds each method as `Class_Method`, taking the object first,
+and says how its objects are counted:
+
+```c
+wolang_vm_register_class(vm, "Actor", ActorRetain, ActorRelease, ActorAlive, engine);
+wolang_vm_bind(vm, "Actor_Hurt", (void*)&Actor_Hurt);   // void Actor_Hurt(void* actor, int32_t amount)
+
+WolangValue actor = wolang_handle(engine_actor);
+wolang_vm_call(vm, "Tick", &actor, 1, NULL);
+```
+
+A script that keeps an `Actor` in a field calls `retain`, and `release`
+when it lets go — the host decides what that means, a reference count of
+its own or nothing at all. A `weak var` costs nothing and asks `alive`
+when it is read, which is how a script holds an actor the level may
+destroy: it reads `null` afterwards instead of a dangling pointer. An
+object passed into a call is lent for the length of it. A script cannot
+construct an `extern class` or give it fields (`E0139`).
+
+## The program's objects in the host
+
+A function that answers a class instance hands the host a
+`kWolangObject`: `handle` is the object, `text` is its type. The host
+holds a reference, and lets go of it with `wolang_vm_object_release` —
+the last one runs the class's `deinit` and frees it, the same as inside
+the language.
+
+```c
+WolangValue enemy;
+wolang_vm_call(vm, "Spawn", &health, 1, &enemy);
+wolang_vm_object_call(vm, enemy, "Hurt", &amount, 1, &left);
+wolang_vm_object_get(vm, enemy, "health", &left);
+wolang_vm_object_release(vm, enemy);
+```
+
+`wolang_vm_object_retain` takes another reference, for a host that keeps
+the object in two places.
 
 ## What this is not
 

@@ -21,6 +21,7 @@
 #include "wolang/runtime/spawn.h"
 #include "wolang/runtime/system.h"
 #include "wolang/runtime/tls.h"
+#include "wolang/runtime/host.h"
 #include "wolang/runtime/text.h"
 
 #include "wolang/runtime/scheduler.h"
@@ -296,6 +297,9 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_tls_write", reinterpret_cast<void*>(&wolang_tls_write)},
       {"wolang_tls_read", reinterpret_cast<void*>(&wolang_tls_read)},
       {"wolang_tls_close", reinterpret_cast<void*>(&wolang_tls_close)},
+      {"wolang_host_retain", reinterpret_cast<void*>(&wolang_host_retain)},
+      {"wolang_host_release", reinterpret_cast<void*>(&wolang_host_release)},
+      {"wolang_host_upgrade", reinterpret_cast<void*>(&wolang_host_upgrade)},
   };
   for (const BuiltinEntry& entry : kTable) {
     if (entry.name == name) {

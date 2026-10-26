@@ -3,6 +3,8 @@
 
 #include "wolang/ir/lower.h"
 
+#include "wolang/runtime/host.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
@@ -116,6 +118,20 @@ class Lowerer {
 
     // Everything a module-level `var` needs doing before anything runs.
     EmitFileInit();
+
+    // Every class this file declares can be let go of from outside the
+    // language, by a host holding one (D213), so its `$drop` exists whether
+    // or not anything here released one.
+    for (ItemId id : ast().Get(ast().root())) {
+      const Item& item = ast().Get(id);
+      if (item.kind != ItemKind::kClass || HasFlag(item.flags, ItemFlags::kExtern) || !ast().Get(item.generics).empty()) {
+        continue;
+      }
+      const Binding* binding = resolution().Find(item.name);
+      if (binding != nullptr && binding->type.is_valid() && types_->IsHandle(binding->type)) {
+        DropFor(Erase(binding->type));
+      }
+    }
 
     // A generic function has no code of its own; it gets one copy per
     // instantiation. Lowering a specialization can discover more of them --
@@ -1084,6 +1100,15 @@ class Lowerer {
     function.is_primitive_task =
         function.is_task && !item.body.is_valid();
     function.self_type = owner;
+    // A method of an `extern class` is the host's `Actor_Position`, called
+    // with the object first (D213).
+    if (types_->IsForeignClass(owner)) {
+      std::string symbol = types_->Describe(*interner_, owner);
+      symbol.push_back('_');
+      symbol.append(interner_->Text(item.name));
+      function.foreign_symbol = interner_->Intern(symbol);
+      function.type = ForeignSignature(function.type);
+    }
 
     Remember(function.source_file, function.source_item,
              module_->functions.size());
@@ -2309,6 +2334,12 @@ class Lowerer {
       return;
     }
 
+    // The host counts its own objects.
+    if (types_->IsForeignClass(type)) {
+      CallHostRuntime("wolang_host_release", type, value, types_->void_type());
+      return;
+    }
+
     // A class is a handle to a heap object (D61), and several handles
     // may be to the same one. So this is a release: the runtime says
     // whether that was the last reference, and only then does the
@@ -2503,11 +2534,19 @@ class Lowerer {
     return builder_->Call(callee, result, {AsDeclared(callee, 0, handle)});
   }
 
+  // A weak reference to a host object costs the host nothing: whether it
+  // is still there is asked when it is read.
   void WeakRetainValue(InstId value, TypeId optional) {
+    if (types_->IsForeignClass(types_->ElementOf(Erase(optional)))) {
+      return;
+    }
     OnSome(value, optional, [&](InstId inner) { CallObjectRuntime("wolang_object_weak_retain", inner, types_->void_type()); });
   }
 
   void WeakReleaseValue(InstId value, TypeId optional) {
+    if (types_->IsForeignClass(types_->ElementOf(Erase(optional)))) {
+      return;
+    }
     OnSome(value, optional, [&](InstId inner) { CallObjectRuntime("wolang_object_weak_release", inner, types_->void_type()); });
   }
 
@@ -2518,7 +2557,8 @@ class Lowerer {
     const InstId slot = builder_->Add(Opcode::kAlloca, optional);
     builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->ConstNull(optional)});
     OnSome(value, optional, [&](InstId inner) {
-      const InstId alive = CallObjectRuntime("wolang_object_upgrade", inner, s32);
+      const TypeId held = types_->ElementOf(Erase(optional));
+      const InstId alive = types_->IsForeignClass(held) ? CallHostRuntime("wolang_host_upgrade", held, inner, s32) : CallObjectRuntime("wolang_object_upgrade", inner, s32);
       const InstId yes = builder_->Add(Opcode::kNe, types_->bool_type(), {alive, builder_->ConstInt(s32, 0)});
       const BlockId keep = builder_->AddBlock("upgrade.alive");
       const BlockId after = builder_->AddBlock("upgrade.after");
@@ -2888,12 +2928,27 @@ class Lowerer {
     if (!types_->IsHandle(held)) {
       return;
     }
+    if (types_->IsForeignClass(held)) {
+      CallHostRuntime("wolang_host_retain", held, value, types_->void_type());
+      return;
+    }
     const Symbol name = interner_->Intern("wolang_object_retain");
     const uint32_t retain = DeclareExternal(
         name, types_->Function({types_->u64()}, types_->void_type()));
     module_->functions[retain].foreign_symbol = name;
     builder_->Call(retain, types_->void_type(),
                    {AsDeclared(retain, 0, value)});
+  }
+
+  // A call into the host's registry for an `extern class` object: which
+  // class, by the tag both sides compute from its name, and the object
+  // (D213).
+  InstId CallHostRuntime(std::string_view name, TypeId type, InstId object, TypeId result) {
+    const Symbol symbol = interner_->Intern(name);
+    const uint32_t callee = DeclareExternal(symbol, types_->Function({types_->u64(), types_->u64()}, result));
+    module_->functions[callee].foreign_symbol = symbol;
+    const uint64_t tag = runtime::HostTag(types_->Describe(*interner_, types_->StripWrappers(type)));
+    return builder_->Call(callee, result, {builder_->ConstInt(types_->u64(), tag), AsDeclared(callee, 1, object)});
   }
 
   // The destructor of |type| or of something it derives from.
@@ -3520,7 +3575,21 @@ class Lowerer {
     }
   }
 
+  // An operand made only to be compared -- `tracker.seen != null` reads a
+  // weak field into a reference of its own -- is let go once the answer is
+  // in (D213).
   InstId LowerBinary(ExprId id, const Expr& expr, TypeId type) {
+    const size_t mark = m_Temporaries.size();
+    const InstId result = LowerBinaryInner(id, expr, type);
+    while (m_Temporaries.size() > mark) {
+      const std::pair<InstId, TypeId> temporary = m_Temporaries.back();
+      m_Temporaries.pop_back();
+      ReleaseValue(temporary.first, temporary.second);
+    }
+    return result;
+  }
+
+  InstId LowerBinaryInner(ExprId id, const Expr& expr, TypeId type) {
     // `&&` and `||` do not evaluate their right side unless they have to, so
     // they are control flow rather than operations.
     if (expr.op == TokenKind::kAmpAmp || expr.op == TokenKind::kPipePipe) {
@@ -3534,6 +3603,11 @@ class Lowerer {
 
     const InstId left = Value(expr.lhs);
     const InstId right = Value(expr.rhs);
+    for (const InstId operand : {left, right}) {
+      if (IsFreshHandle(operand)) {
+        m_Temporaries.emplace_back(operand, ValueType(operand));
+      }
+    }
     const Opcode opcode = BinaryOpcode(expr.op);
     if (opcode == Opcode::kUndef) {
       return builder_->Undef(type);
@@ -4539,7 +4613,16 @@ class Lowerer {
       return;
     }
 
-    const TypeId stored = ValueType(value);
+    TypeId stored = ValueType(value);
+    // `held = null` lets go of what was there like any other store: the
+    // literal has no type of its own worth counting, the place does.
+    if (!Counts(stored) && module_->functions[current_function_].Contains(value) && module_->functions[current_function_].Get(value).opcode == Opcode::kConstNull) {
+      const TypeId declared = Erase(TypeAt(place));
+      if (types_->KindOf(declared) == TypeKind::kOptional && Counts(declared)) {
+        stored = declared;
+        value = builder_->ConstNull(declared);
+      }
+    }
     const InstId address = AddressOfPlace(place);
     if (!Counts(stored)) {
       builder_->Add(Opcode::kStore, TypeId{}, {address, value});

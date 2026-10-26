@@ -33,6 +33,9 @@ constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadWeak = "E0137";
 constexpr std::string_view kTypeWithoutTarget = "E0138";
+// `extern class` is made, kept and freed by the host: no constructor and
+// no fields, only methods the host binds (D213).
+constexpr std::string_view kForeignClass = "E0139";
 constexpr std::string_view kBadConversion = "E0124";
 // Writing to a field of the receiver, which needs a receiver that is a
 // reference. A method is passed its object by value today, so the write
@@ -1823,6 +1826,13 @@ TypeId Checker::Instantiate(ExprId id, const Expr& expr, TypeId declared) {
 }
 
 void Checker::CheckConstructor(const Expr& expr, TypeId type) {
+  if (types_->IsForeignClass(type)) {
+    std::string message = "`";
+    message.append(Describe(type));
+    message.append("` is an `extern class`: the host makes its objects");
+    Report(kForeignClass, std::move(message), expr.span, "ask the host for one, or take it as a parameter");
+    return;
+  }
   const std::span<const ExprId> args = ast_.Get(expr.args);
 
   // A generic type keeps its members on the declaration, with the
@@ -3052,6 +3062,10 @@ void Checker::CheckBlock(ExprId id, TypeId expected) {
 // sides, and a type whose layout this compiler decides unilaterally -- a
 // slice, a string, an optional -- does not.
 bool Checker::HasForeignRepresentation(TypeId type) const {
+  // An object of the host's crosses as the address it already is.
+  if (types_->IsForeignClass(type) && !types_->IsOptional(type)) {
+    return true;
+  }
   switch (types_->KindOf(type)) {
     case TypeKind::kBool:
     case TypeKind::kChar:
@@ -3094,7 +3108,8 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   PushScope();
 
   const size_t pushed = PushGenerics(item, owner);
-  const bool is_foreign = HasFlag(item.flags, ItemFlags::kExtern);
+  // A method of an `extern class` is the host's, like an `extern` function.
+  const bool is_foreign = HasFlag(item.flags, ItemFlags::kExtern) || (self_type_.is_valid() && types_->IsForeignClass(self_type_));
 
   if (is_foreign && item.body.is_valid()) {
     Report(kForeignWithBody,
@@ -3666,6 +3681,12 @@ void Checker::CheckItem(ItemId id) {
         CheckSized(item, self_type_);
       }
       for (ItemId member : ast_.Get(item.members)) {
+        if (item.kind == ItemKind::kClass && HasFlag(item.flags, ItemFlags::kExtern) && ast_.Contains(member) && ast_.Get(member).kind != ItemKind::kFunction) {
+          std::string message = "an `extern class` has methods and nothing else; `";
+          message.append(interner_->Text(ast_.Get(member).name));
+          message.append("` is something else");
+          Report(kForeignClass, std::move(message), ast_.Get(member).name_span, "keep the data on the host's side and read it through a method");
+        }
         {
           // A member of a type: its type comes from the declaration, and
           // the member table already carries it.

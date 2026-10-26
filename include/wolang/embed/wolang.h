@@ -39,6 +39,13 @@ typedef enum WolangKind {
   // length, and a host that has one of those should not have to add a
   // zero to pass it.
   kWolangText = 4,
+  // An object of the host's, of a type the script declared as
+  // `extern class` (D213).
+  kWolangHandle = 5,
+  // One of the program's own objects: a class instance a function handed
+  // back. `handle` is the object, `text` is its type's name. The host
+  // holds a reference it lets go of with `wolang_vm_object_release` (D213).
+  kWolangObject = 6,
 } WolangKind;
 
 typedef struct WolangValue {
@@ -48,6 +55,7 @@ typedef struct WolangValue {
   int32_t boolean;
   const char* text;
   uint64_t length;
+  void* handle;
 } WolangValue;
 
 // The five constructors, so a caller writes `wolang_int(7)` rather than a
@@ -57,6 +65,7 @@ WolangValue wolang_int(int64_t value);
 WolangValue wolang_float(double value);
 WolangValue wolang_bool(int32_t value);
 WolangValue wolang_text(const char* bytes, uint64_t length);
+WolangValue wolang_handle(void* object);
 
 // ------------------------------------------------------------------- vm ---
 
@@ -128,6 +137,40 @@ const char* wolang_vm_function_name(const WolangVm* vm, int32_t index);
 // Must be called before the program is loaded, or at least before the
 // first call into it: the machine-code tier resolves symbols once.
 int32_t wolang_vm_bind(WolangVm* vm, const char* symbol, void* function);
+
+// The host's side of an `extern class`: what to do when a script takes a
+// reference to one of its objects, lets go of one, and whether an object
+// a `weak var` points at is still there. Any of the three may be null.
+//
+// A script never makes or frees such an object; its methods are bound
+// with `wolang_vm_bind` as `Class_Method`, taking the object first. An
+// object a script hands back holds a reference the host lets go of, and
+// one passed in is lent for the length of the call (D213).
+// A program's object in the host's hands: taken and let go of, read, and
+// asked to do something. A method is called by its name, `Hurt` rather
+// than `Enemy.Hurt`, with the object as `self`.
+int32_t wolang_vm_object_retain(WolangVm* vm, WolangValue object);
+int32_t wolang_vm_object_release(WolangVm* vm, WolangValue object);
+int32_t wolang_vm_object_call(WolangVm* vm,
+                           WolangValue object,
+                           const char* method,
+                           const WolangValue* arguments,
+                           int32_t count,
+                           WolangValue* out);
+int32_t wolang_vm_object_get(WolangVm* vm,
+                          WolangValue object,
+                          const char* field,
+                          WolangValue* out);
+
+typedef void (*WolangHostRetain)(void* object, void* user);
+typedef void (*WolangHostRelease)(void* object, void* user);
+typedef int32_t (*WolangHostAlive)(void* object, void* user);
+int32_t wolang_vm_register_class(WolangVm* vm,
+                                 const char* name,
+                                 WolangHostRetain retain,
+                                 WolangHostRelease release,
+                                 WolangHostAlive alive,
+                                 void* user);
 
 // The arguments the program sees in `std.env.Args`.
 void wolang_vm_set_args(WolangVm* vm, int32_t count, const char* const* args);

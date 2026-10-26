@@ -846,7 +846,8 @@ FileResolution ResolveFile(TypeStore* types,
           // event changes which state it is in, and a method that changes
           // its object has to be given the object rather than a copy.
           /*is_handle=*/entry.kind == ItemKind::kClass ||
-              entry.kind == ItemKind::kMachine);
+              entry.kind == ItemKind::kMachine,
+          /*is_foreign=*/entry.kind == ItemKind::kClass && HasFlag(entry.flags, ItemFlags::kExtern));
     }
   }
 

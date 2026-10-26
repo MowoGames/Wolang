@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <span>
@@ -32,6 +33,8 @@
 #include "wolang/interp/interpreter.h"
 #include "wolang/ir/ir.h"
 #include "wolang/syntax/ast.h"
+#include "wolang/interp/marshal.h"
+#include "wolang/runtime/host.h"
 #include "wolang/runtime/builtins.h"
 #include "wolang/runtime/env.h"
 #include "wolang/runtime/globals.h"
@@ -60,6 +63,9 @@ struct Callable {
   const wolang::ir::Module* module = nullptr;
   const wolang::ir::Function* function = nullptr;
   WolangVm* vm = nullptr;
+  // A method or a `$drop`: found by its name, because a `$drop` has no
+  // declaration of its own to be found by.
+  bool is_member = false;
 };
 
 }  // namespace
@@ -82,6 +88,9 @@ struct WolangVm {
   // wants its script's functions and not the standard library's (D128).
   std::vector<FileId> own;
   std::vector<Callable> callable;
+  // Methods and `$drop`s, which a host reaches through an object rather
+  // than by name (D213).
+  std::vector<Callable> members;
   std::unique_ptr<wolang::codegen::CompiledModule> compiled;
   std::unique_ptr<wolang::interp::ForeignCaller> foreign;
   std::vector<const wolang::ir::Module*> linked;
@@ -100,7 +109,7 @@ struct WolangVm {
   bool initialize = true;
   // Kept alive for as long as the vm is: a text the program answered
   // points into one of these, so the host can read it after the call.
-  std::vector<std::string> answers;
+  std::deque<std::string> answers;
 };
 
 namespace {
@@ -173,6 +182,7 @@ std::string DocumentationFor(WolangVm* vm, FileId file, Symbol name) {
 void Prepare(WolangVm* vm) {
   std::vector<Diagnostic> all;
   vm->callable.clear();
+  vm->members.clear();
   vm->linked.clear();
   std::vector<wolang::codegen::FileCode> code;
 
@@ -199,6 +209,18 @@ void Prepare(WolangVm* vm) {
       }
       if (std::find(vm->own.begin(), vm->own.end(), file) ==
           vm->own.end()) {
+        continue;
+      }
+      const std::string_view spelled = vm->database.interner().Text(function.name);
+      if (spelled.find('.') != std::string_view::npos || spelled.ends_with("$drop")) {
+        Callable member;
+        member.name = std::string(spelled);
+        member.symbol = function.name;
+        member.module = &lowered->module;
+        member.function = &function;
+        member.vm = vm;
+        member.is_member = true;
+        vm->members.push_back(std::move(member));
         continue;
       }
       // Only what the file offered: a helper a script did not export is
@@ -362,6 +384,8 @@ wolang::interp::Value Boxed(const WolangVm* vm,
           value.length, wolang::IntWidth::k64, /*is_signed=*/false));
       return wolang::interp::Value::Aggregate(std::move(pair));
     }
+    case kWolangHandle:
+      return wolang::interp::Value::Int(reinterpret_cast<uint64_t>(value.handle), wolang::IntWidth::k64, /*is_signed=*/false);
     case kWolangVoid:
     default:
       return wolang::interp::Value::Void();
@@ -456,6 +480,21 @@ WolangValue wolang_text(const char* bytes, uint64_t length) {
   value.text = bytes;
   value.length = length;
   return value;
+}
+
+WolangValue wolang_handle(void* object) {
+  WolangValue value = wolang_void();
+  value.kind = kWolangHandle;
+  value.handle = object;
+  return value;
+}
+
+int32_t wolang_vm_register_class(WolangVm* vm, const char* name, WolangHostRetain retain, WolangHostRelease release, WolangHostAlive alive, void* user) {
+  if (vm == nullptr || name == nullptr) {
+    return 1;
+  }
+  wolang::runtime::wolang_host_register(wolang::runtime::HostTag(name), retain, release, alive, user);
+  return 0;
 }
 
 WolangVm* wolang_vm_create(void) {
@@ -618,6 +657,198 @@ void wolang_vm_set_args(WolangVm* vm,
   wolang::runtime::wolang_args_set(count < 0 ? 0 : count, args);
 }
 
+// A host's object or one of the program's, as what a value of |type|
+// answers: the address, and what kind of thing is behind it (D213).
+static WolangValue ObjectOf(WolangVm* vm, uint64_t address, TypeId type) {
+  const wolang::TypeStore& types = vm->database.types();
+  if (types.IsForeignClass(type)) {
+    return wolang_handle(reinterpret_cast<void*>(address));
+  }
+  WolangValue value = wolang_void();
+  if (address == 0) {
+    return value;
+  }
+  value.kind = kWolangObject;
+  value.handle = reinterpret_cast<void*>(address);
+  value.integer = static_cast<int64_t>(types.StripWrappers(type).index);
+  vm->answers.push_back(types.Describe(vm->database.interner(), types.StripWrappers(type)));
+  value.text = vm->answers.back().c_str();
+  value.length = vm->answers.back().size();
+  return value;
+}
+
+// Runs |entry| with |boxed|, in machine code when there is some, and
+// answers what it returned.
+static int32_t Invoke(WolangVm* vm, const Callable* entry, const std::vector<wolang::interp::Value>& boxed, WolangValue* out) {
+  wolang::interp::Outcome outcome;
+  // The compiled form where there is one, the interpreter otherwise:
+  // the same choice `wolang run` makes, and the reason a host gets
+  // machine-code speed without asking. A step limit keeps the call off
+  // the compiled tier, because counting steps is something only the
+  // interpreter does (D137).
+  if (vm->allow_compiled && vm->steps == 0 && vm->compiled != nullptr && entry->is_member && vm->compiled->Contains(entry->symbol)) {
+    outcome = vm->compiled->Run(entry->symbol, boxed, nullptr, /*keep_globals=*/true);
+  }
+  else if (vm->allow_compiled && vm->steps == 0 && vm->compiled != nullptr &&
+      vm->compiled->ContainsSource(entry->function->source_file,
+                                   entry->function->source_item)) {
+    outcome = vm->compiled->RunSource(entry->function->source_file,
+                                      entry->function->source_item, boxed,
+                                      nullptr, /*keep_globals=*/true);
+  }
+  else {
+    static const wolang::FileResolution kNothing;
+    const CheckedFile* checked =
+        vm->database.Checked(FileId{entry->function->source_file});
+    wolang::abi::LayoutStore layouts(
+        vm->database.types(),
+        checked != nullptr ? checked->resolution : kNothing);
+    vm->database.ShareMembers(&layouts);
+    wolang::interp::Limits limits;
+    limits.keep_globals = true;
+    if (vm->steps != 0) {
+      limits.steps = vm->steps;
+    }
+    wolang::interp::Output printed;
+    outcome = wolang::interp::RunNamed(
+        vm->database.interner(), vm->database.types(), *entry->module,
+        entry->symbol, boxed, limits, &printed, vm->foreign.get(),
+        &layouts, vm->linked);
+    if (!printed.text.empty()) {
+      Written(printed.text);
+    }
+  }
+
+  if (!outcome.ok()) {
+    vm->errors = std::string("wolang: ") +
+                 std::string(wolang::interp::TrapKindName(outcome.trap)) +
+                 " at " + outcome.where + "\n";
+    return 1;
+  }
+  if (out != nullptr) {
+    *out = Unboxed(vm, outcome.value);
+    const wolang::TypeStore& types = vm->database.types();
+    const TypeId returned = types.ElementOf(entry->function->type);
+    if (types.IsHandle(returned) && !types.IsOptional(returned) && outcome.value.kind() == wolang::interp::Value::Kind::kInt) {
+      *out = ObjectOf(vm, outcome.value.integer(), returned);
+    }
+  }
+  return 0;
+}
+
+static const Callable* FindMember(const WolangVm* vm, const std::string& name) {
+  for (auto it = vm->members.rbegin(); it != vm->members.rend(); ++it) {
+    if (it->name == name) {
+      return &*it;
+    }
+  }
+  return nullptr;
+}
+
+int32_t wolang_vm_object_retain(WolangVm* vm, WolangValue object) {
+  if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr) {
+    return 1;
+  }
+  wolang::runtime::wolang_object_retain(object.handle);
+  return 0;
+}
+
+int32_t wolang_vm_object_release(WolangVm* vm, WolangValue object) {
+  if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr) {
+    return 1;
+  }
+  if (wolang::runtime::wolang_object_release(object.handle) == 0) {
+    return 0;
+  }
+
+  const std::string type(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length));
+  if (const Callable* drop = FindMember(vm, type + "$drop")) {
+    std::vector<wolang::interp::Value> boxed;
+    boxed.push_back(wolang::interp::Value::Int(reinterpret_cast<uint64_t>(object.handle), wolang::IntWidth::k64, /*is_signed=*/false));
+    return Invoke(vm, drop, boxed, nullptr);
+  }
+  wolang::runtime::wolang_object_free(object.handle);
+  return 0;
+}
+
+int32_t wolang_vm_object_call(WolangVm* vm, WolangValue object, const char* method, const WolangValue* arguments, int32_t count, WolangValue* out) {
+  if (vm == nullptr || !vm->ok || object.kind != kWolangObject || object.handle == nullptr || method == nullptr) {
+    return 1;
+  }
+  const std::string type(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length));
+  const Callable* entry = FindMember(vm, type + "." + method);
+  if (entry == nullptr) {
+    vm->errors = "wolang: `" + type + "` has no method called `" + method + "`\n";
+    return 1;
+  }
+
+  const std::vector<TypeId> params = vm->database.types().ArgumentsOf(entry->function->type);
+  if (params.size() != static_cast<size_t>(count < 0 ? 0 : count) + 1) {
+    vm->errors = "wolang: `" + entry->name + "` takes " + std::to_string(params.size() - 1) + " arguments\n";
+    return 1;
+  }
+  std::vector<wolang::interp::Value> boxed;
+  boxed.push_back(wolang::interp::Value::Int(reinterpret_cast<uint64_t>(object.handle), wolang::IntWidth::k64, /*is_signed=*/false));
+  for (int32_t i = 0; i < count && arguments != nullptr; ++i) {
+    boxed.push_back(Boxed(vm, arguments[i], params[static_cast<size_t>(i) + 1]));
+  }
+  return Invoke(vm, entry, boxed, out);
+}
+
+int32_t wolang_vm_object_get(WolangVm* vm, WolangValue object, const char* field, WolangValue* out) {
+  if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr || field == nullptr || out == nullptr) {
+    return 1;
+  }
+  wolang::TypeStore& types = vm->database.types();
+  const TypeId type{static_cast<uint32_t>(object.integer)};
+  const uint32_t file = types.Get(type).declaring_file;
+  const CheckedFile* checked = vm->database.Checked(FileId{file});
+  if (checked == nullptr) {
+    return 1;
+  }
+  const wolang::FileResolution& resolution = checked->resolution;
+
+  std::vector<TypeId> chain;
+  for (TypeId current = type; current.is_valid(); current = resolution.BaseOf(current)) {
+    chain.push_back(current);
+  }
+  std::reverse(chain.begin(), chain.end());
+  bool header = false;
+  for (TypeId current : chain) {
+    for (const wolang::Member& member : resolution.MembersOf(current)) {
+      header = header || (member.kind == wolang::MemberKind::kMethod && (member.is_virtual || member.is_override));
+    }
+  }
+
+  const wolang::Symbol name = vm->database.interner().Lookup(field);
+  uint32_t index = header ? 1u : 0u;
+  for (TypeId current : chain) {
+    for (const wolang::Member& member : resolution.MembersOf(current)) {
+      if (!wolang::HasStorage(member.kind)) {
+        continue;
+      }
+      if (member.name == name) {
+        wolang::abi::LayoutStore layouts(types, resolution);
+        vm->database.ShareMembers(&layouts);
+        const wolang::abi::Layout& layout = layouts.ObjectOf(type);
+        if (index >= layout.offsets.size()) {
+          return 1;
+        }
+        const auto* bytes = static_cast<const uint8_t*>(object.handle) + layout.offsets[index];
+        const wolang::interp::Value value = wolang::interp::Decode(types, &layouts, bytes, member.type);
+        *out = Unboxed(vm, value);
+        if (types.IsHandle(member.type) && !types.IsOptional(member.type) && value.kind() == wolang::interp::Value::Kind::kInt) {
+          *out = ObjectOf(vm, value.integer(), member.type);
+        }
+        return 0;
+      }
+      ++index;
+    }
+  }
+  vm->errors = std::string("wolang: no field called `") + field + "`\n";
+  return 1;
+}
+
 int32_t wolang_vm_call(WolangVm* vm,
                        const char* name,
                        const WolangValue* arguments,
@@ -651,61 +882,7 @@ int32_t wolang_vm_call(WolangVm* vm,
     return 1;
   }
 
-  // The compiled form where there is one, the interpreter otherwise:
-  // the same choice `wolang run` makes, and the reason a host gets
-  // machine-code speed without asking. A step limit keeps the call off
-  // the compiled tier, because counting steps is something only the
-  // interpreter does (D137).
-  wolang::interp::Outcome outcome;
-  // By the declaration rather than by the name: a program may have two
-  // functions called `Peek`, and a host calling one of them has to reach
-  // the one it looked up (D140).
-  if (vm->allow_compiled && vm->steps == 0 && vm->compiled != nullptr &&
-      vm->compiled->ContainsSource(entry->function->source_file,
-                                   entry->function->source_item)) {
-    outcome = vm->compiled->RunSource(entry->function->source_file,
-                                      entry->function->source_item, boxed,
-                                      nullptr, /*keep_globals=*/true);
-  } else {
-    // The resolution of the file the function came from, with every
-    // other file's member tables shared in: a type crosses files, and a
-    // layout is a question about the type (D125).
-    static const wolang::FileResolution kNothing;
-    const CheckedFile* checked =
-        vm->database.Checked(FileId{entry->function->source_file});
-    wolang::abi::LayoutStore layouts(
-        vm->database.types(),
-        checked != nullptr ? checked->resolution : kNothing);
-    vm->database.ShareMembers(&layouts);
-    wolang::interp::Limits limits;
-    limits.keep_globals = true;
-    if (vm->steps != 0) {
-      limits.steps = vm->steps;
-    }
-    // The interpreter collects what a program printed rather than
-    // writing it: a single file that has not linked `std.io` reaches
-    // `Print` as an intrinsic, and a host should see that output like
-    // any other (D140).
-    wolang::interp::Output printed;
-    outcome = wolang::interp::RunNamed(
-        vm->database.interner(), vm->database.types(), *entry->module,
-        entry->symbol, boxed, limits, &printed, vm->foreign.get(),
-        &layouts, vm->linked);
-    if (!printed.text.empty()) {
-      Written(printed.text);
-    }
-  }
-
-  if (!outcome.ok()) {
-    vm->errors = std::string("wolang: ") +
-                 std::string(wolang::interp::TrapKindName(outcome.trap)) +
-                 " at " + outcome.where + "\n";
-    return 1;
-  }
-  if (out != nullptr) {
-    *out = Unboxed(vm, outcome.value);
-  }
-  return 0;
+  return Invoke(vm, entry, boxed, out);
 }
 
 // ------------------------------------------------------------- handles ---

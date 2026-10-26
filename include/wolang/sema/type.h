@@ -192,6 +192,9 @@ struct Type {
   // agree about it and only one of them has a member table. It is also the
   // honest place: being a handle is what the type *is*.
   bool is_handle = false;
+  // Named types: `extern class`, an object the host owns. A handle like any
+  // class, counted by the host rather than by the runtime (D213).
+  bool is_foreign = false;
 
   // Named types and parameters: the declared name.
   Symbol name;
@@ -302,8 +305,9 @@ class TypeStore {
            effect.index < static_cast<uint32_t>(BuiltinEffect::kCount);
   }
 
+  bool IsForeignClass(TypeId type) const;
   TypeId Named(Symbol name, uint32_t file, uint32_t item,
-               bool is_handle = false);
+               bool is_handle = false, bool is_foreign = false);
   // True when a value of |type| is a handle to a heap object: a `class`,
   // through any number of aliases.
   bool IsHandle(TypeId type) const;

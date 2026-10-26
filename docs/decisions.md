@@ -2696,3 +2696,27 @@ equals, and lowering named its methods `Box<<error>>`. They belong to
 one is a generic recipe like a method declared inside the class.
 
 `type Count` with nothing after it is `E0138` outside an ability.
+
+**D213. Objects cross the embedding boundary, and the host counts its
+own.** An engine's actor is made and freed by the engine; a script
+holding one has to say so without owning it. `extern class Actor { fun
+Hurt(amount: s32) }` is a handle like any class, with three differences:
+retaining and releasing one calls the host through
+`wolang_host_retain`/`_release` instead of the header Wolang's own objects
+carry, a `weak var` of one asks the host's `alive` when it is read rather
+than keeping a weak count, and a method is the host's `Actor_Hurt`, taking
+the object first. The runtime finds the callbacks by a tag both sides
+compute -- the FNV-1a hash of the class's name -- so the compiled tiers
+pass a constant and need no table of their own. Construction and fields
+are `E0139`: the data lives on the host's side, where the engine's own
+code reads it.
+
+The other direction is `kWolangObject`, a Wolang object the host holds a
+reference to. Releasing the last one has to run the class's `$drop`,
+which used to exist only when something in the program released one, so
+every non-generic class a file declares gets one now. Methods and
+`$drop`s are found by name rather than by declaration, because a `$drop`
+has none. Two counting gaps showed up on the way: `held = null` did not
+release what was there, because the literal had no counted type, and an
+operand made only to be compared -- `tracker.seen != null` upgrades a weak
+field into a reference of its own -- was never let go.

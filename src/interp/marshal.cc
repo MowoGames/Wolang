@@ -134,6 +134,11 @@ interp::Value Decode(const TypeStore& types,
       if (types.KindOf(type) == TypeKind::kBool) {
         return interp::Value::Bool((raw & 1) != 0);
       }
+      // An address -- a pointer, a handle to an object -- is a whole word
+      // whatever the type it points at says about widths.
+      if (types.KindOf(type) == TypeKind::kPointer || types.KindOf(type) == TypeKind::kReference || types.IsHandle(type)) {
+        return interp::Value::Int(raw, IntWidth::k64, /*is_signed=*/false);
+      }
       const Type& described = types.Get(type);
       return interp::Value::Int(raw, described.int_width,
                                 described.is_signed);

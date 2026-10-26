@@ -95,6 +95,209 @@ offer fun Size(value: text) -> int => value.len
   wolang_vm_destroy(vm);
 }
 
+struct FakeActor {
+  int32_t Health = 100;
+  int32_t References = 0;
+  bool Alive = true;
+};
+
+static void FakeRetain(void* object, void* user) {
+  static_cast<FakeActor*>(object)->References += 1;
+  *static_cast<int32_t*>(user) += 1;
+}
+
+static void FakeRelease(void* object, void* user) {
+  static_cast<FakeActor*>(object)->References -= 1;
+  *static_cast<int32_t*>(user) += 1;
+}
+
+static int32_t FakeAlive(void* object, void* user) {
+  return static_cast<FakeActor*>(object)->Alive ? 1 : 0;
+}
+
+static int32_t Actor_Health(void* actor) {
+  return static_cast<FakeActor*>(actor)->Health;
+}
+
+static void Actor_Hurt(void* actor, int32_t amount) {
+  static_cast<FakeActor*>(actor)->Health -= amount;
+}
+
+WOLANG_TEST(EmbedTest, ScriptsUseTheHostsObjects) {
+  WolangVm* vm = wolang_vm_create();
+  int32_t calls = 0;
+  WOLANG_EXPECT_EQ(wolang_vm_register_class(vm, "Actor", &FakeRetain, &FakeRelease, &FakeAlive, &calls), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_bind(vm, "Actor_Health", reinterpret_cast<void*>(&Actor_Health)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_bind(vm, "Actor_Hurt", reinterpret_cast<void*>(&Actor_Hurt)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "actors.wo", R"(
+extern class Actor {
+  fun Health() -> s32
+  fun Hurt(amount: s32)
+}
+
+class Tracker {
+  var held: Actor? = null
+  weak var seen: Actor? = null
+}
+
+var tracker: Tracker = Tracker(null, null)
+
+offer fun Tick(pawn: Actor) -> int uses unsafe {
+  pawn.Hurt(5)
+  return pawn.Health() as int
+}
+
+offer fun Keep(pawn: Actor) uses unsafe {
+  tracker.held = pawn
+  tracker.seen = pawn
+}
+
+offer fun Drop() {
+  tracker.held = null
+}
+
+offer fun Sees() -> bool {
+  return tracker.seen != null
+}
+
+offer fun Back() -> Actor? {
+  return tracker.held
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  FakeActor actor;
+  WolangValue argument = wolang_handle(&actor);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Tick", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 95);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Keep", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(actor.References, 1);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Sees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 1);
+
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Drop", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+  actor.Alive = false;
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Sees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 0);
+  WOLANG_EXPECT(calls >= 2);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, HostsHoldTheProgramsObjects) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "enemies.wo", R"(
+var gone: int = 0
+
+offer class Enemy {
+  var health: int
+  var name: text
+
+  fun Hurt(amount: int) -> int {
+    health = health - amount
+    return health
+  }
+
+  deinit {
+    gone = gone + 1
+  }
+}
+
+offer fun Spawn(health: int) -> Enemy {
+  return Enemy(health, "imp")
+}
+
+offer fun Gone() -> int {
+  return gone
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  WolangValue argument = wolang_int(40);
+  WolangValue enemy = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Spawn", &argument, 1, &enemy), 0);
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(enemy.kind), static_cast<int32_t>(kWolangObject));
+  WOLANG_EXPECT_EQ(std::string(enemy.text, static_cast<size_t>(enemy.length)), "Enemy");
+
+  WolangValue amount = wolang_int(15);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_object_call(vm, enemy, "Hurt", &amount, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 25);
+  WOLANG_EXPECT_EQ(wolang_vm_object_get(vm, enemy, "health", &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 25);
+  WOLANG_EXPECT_EQ(wolang_vm_object_get(vm, enemy, "name", &answer), 0);
+  WOLANG_EXPECT_EQ(TextOf(answer), "imp");
+  WOLANG_EXPECT(wolang_vm_object_get(vm, enemy, "armor", &answer) != 0);
+
+  WOLANG_EXPECT_EQ(wolang_vm_object_retain(vm, enemy), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, enemy), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Gone", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, enemy), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Gone", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 1);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, HostsHoldTheProgramsObjectsInterpreted) {
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_compiled(vm, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "enemies.wo", R"(
+var gone: int = 0
+
+offer class Enemy {
+  var health: int
+  var name: text
+
+  fun Hurt(amount: int) -> int {
+    health = health - amount
+    return health
+  }
+
+  deinit {
+    gone = gone + 1
+  }
+}
+
+offer fun Spawn(health: int) -> Enemy {
+  return Enemy(health, "imp")
+}
+
+offer fun Gone() -> int {
+  return gone
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  WolangValue argument = wolang_int(40);
+  WolangValue enemy = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Spawn", &argument, 1, &enemy), 0);
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(enemy.kind), static_cast<int32_t>(kWolangObject));
+  WOLANG_EXPECT_EQ(std::string(enemy.text, static_cast<size_t>(enemy.length)), "Enemy");
+
+  WolangValue amount = wolang_int(15);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_object_call(vm, enemy, "Hurt", &amount, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 25);
+  WOLANG_EXPECT_EQ(wolang_vm_object_get(vm, enemy, "health", &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 25);
+  WOLANG_EXPECT_EQ(wolang_vm_object_get(vm, enemy, "name", &answer), 0);
+  WOLANG_EXPECT_EQ(TextOf(answer), "imp");
+  WOLANG_EXPECT(wolang_vm_object_get(vm, enemy, "armor", &answer) != 0);
+
+  WOLANG_EXPECT_EQ(wolang_vm_object_retain(vm, enemy), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, enemy), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Gone", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, enemy), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Gone", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 1);
+  wolang_vm_destroy(vm);
+}
+
 WOLANG_TEST(EmbedTest, CallsBackIntoTheHost) {
   WolangVm* vm = wolang_vm_create();
   WOLANG_EXPECT_EQ(

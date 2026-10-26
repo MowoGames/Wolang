@@ -201,7 +201,8 @@ bool HasStorage(MemberKind kind) {
 TypeId TypeStore::Named(Symbol name,
                         uint32_t file,
                         uint32_t item,
-                        bool is_handle) {
+                        bool is_handle,
+                        bool is_foreign) {
   Key key;
   std::memset(&key.type, 0, sizeof(key.type));
   key.type.kind = TypeKind::kNamed;
@@ -209,7 +210,13 @@ TypeId TypeStore::Named(Symbol name,
   key.type.declaring_file = file;
   key.type.declaring_item = item;
   key.type.is_handle = is_handle;
+  key.type.is_foreign = is_foreign;
   return Intern(std::move(key));
+}
+
+bool TypeStore::IsForeignClass(TypeId type) const {
+  const TypeId settled = StripWrappers(type);
+  return KindOf(settled) == TypeKind::kNamed && Get(settled).is_foreign;
 }
 
 bool TypeStore::IsHandle(TypeId type) const {
