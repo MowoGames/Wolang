@@ -174,6 +174,14 @@ fun main() uses io, unsafe {
 }
 ```
 
+## std.iter
+
+What being walked means, as two abilities: `Iterator` hands out values
+(`type Item`, `Next`, `Value`) and `Iterable` hands out an iterator
+(`type Walker: Iterator`, `Iterate`). `List`, `Deque`, `Map`, `Split` and
+`Chars` implement both, so generic code over `C: Iterable` walks any of
+them. `Count(items)` and `Collect(items)` are written that way.
+
 ## std.list
 
 ```wolang

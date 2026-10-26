@@ -5,6 +5,7 @@
 // it is a separate module because most programs never need it.
 
 need std.text.{Builder, BuilderNew, Bytes, Length}
+need std.iter.{Iterable, Iterator}
 
 /// How many bytes the code point starting at `first` takes.
 ///
@@ -168,6 +169,14 @@ offer fun AppendTo(builder: &mut Builder, code: int) uses unsafe {
   builder.AppendByte((128 + code / 4096 % 64) as u8)
   builder.AppendByte((128 + code / 64 % 64) as u8)
   builder.AppendByte((128 + code % 64) as u8)
+}
+
+extend Chars as Iterator {
+  type Item = Char
+}
+
+extend Chars as Iterable {
+  type Walker = Chars
 }
 
 // ------------------------------------------------------------- tests ---

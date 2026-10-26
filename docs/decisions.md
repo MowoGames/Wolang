@@ -2672,3 +2672,27 @@ package needs no `[link]` table. Still the system's TLS rather than ours
 Checked on both systems against a real server and against expired,
 self-signed and wrong-name certificates, which all refuse.
 
+**D212. An ability can leave a type to whoever implements it.** `type
+Item` in an ability, `type Item = int` in `extend T as Ability`, and
+`C.Item` in generic code. What it bought straight away: `for` over a `C:
+Iterable`, which is a function that walks any collection -- `std.iter` is
+`Iterator` and `Iterable`, and `List`, `Deque`, `Map`, `Split` and `Chars`
+implement them. D96's three names still work for a type that says nothing
+more.
+
+`C.Walker.Item` is a type of its own kind, a projection: an owner and a
+name. Inside the generic body it stays one, so `walker.Value() + 1` is an
+error when nothing said `Item` is a number. Once the owner is concrete --
+after a call infers `C`, and in every copy monomorphization makes -- it
+is whatever the implementation answered, read off the member table of the
+file that declared the type. Bare `Item` inside the ability is a
+projection of the ability itself, which a use rewrites onto the type it
+is used on.
+
+`extend<T> Box<T>` did not work at all before this: its members were kept
+under `Box<T>` in the extension's own `T`, which no `Box<int>` ever
+equals, and lowering named its methods `Box<<error>>`. They belong to
+`Box` now, rewritten into the declaration's parameters, and a method of
+one is a generic recipe like a method declared inside the class.
+
+`type Count` with nothing after it is `E0138` outside an ability.

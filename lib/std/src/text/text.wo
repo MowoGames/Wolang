@@ -6,6 +6,7 @@
 // bytes and gives them back in `deinit` (D91).
 
 need std.mem.{ArrayNew, BytesFromRaw, Free}
+need std.iter.{Iterable, Iterator}
 
 /// How many bytes a piece of text is. Not how many characters: UTF-8 is
 /// bytes, and the two numbers differ exactly where it matters.
@@ -180,6 +181,14 @@ fun BytesAsText(buffer: []u8, length: int) -> text uses unsafe {
 }
 
 offer fun TextFromRaw(data: *u8, length: int) -> text uses unsafe
+
+extend Split as Iterator {
+  type Item = text
+}
+
+extend Split as Iterable {
+  type Walker = Split
+}
 
 // ------------------------------------------------------------- tests ---
 

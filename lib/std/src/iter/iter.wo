@@ -1,0 +1,57 @@
+// What it means to be walked.
+//
+// `for x in thing` asks `thing.Iterate()` for a walker and then `Next` and
+// `Value` until `Next` says there is no more. These two abilities say the
+// same thing as types, so that generic code can ask for it: a function of
+// `C: Iterable` can walk whatever it is handed, and `C.Walker.Item` is
+// what it gets back (D212).
+
+need std.list.{List, ListNew}
+
+/// Something that hands out values one at a time.
+offer ability Iterator {
+  type Item
+
+  /// Moves to the next value. False when there is none.
+  fun Next() -> bool
+
+  /// The value `Next` moved to.
+  fun Value() -> Item
+}
+
+/// Something that can be walked: it hands out an `Iterator`.
+offer ability Iterable {
+  type Walker: Iterator
+
+  fun Iterate() -> Walker
+}
+
+/// How many values `items` has, by walking them.
+offer fun Count<C: Iterable>(items: C) -> int {
+  var total = 0
+  for _value in items {
+    total = total + 1
+  }
+  return total
+}
+
+/// Every value of `items`, in a list.
+offer fun Collect<C: Iterable>(items: C) -> List<C.Walker.Item> uses unsafe {
+  var all = ListNew<C.Walker.Item>()
+  for value in items {
+    all.Push(value)
+  }
+  return all
+}
+
+// ------------------------------------------------------------- tests ---
+
+@Test
+fun CountsAndCollectsAList() -> bool uses unsafe {
+  var numbers = ListNew<int>()
+  numbers.Push(3)
+  numbers.Push(5)
+  numbers.Push(8)
+  const copied = Collect(numbers)
+  return Count(numbers) == 3 && copied.Len() == 3 && copied.At(2) == 8
+}

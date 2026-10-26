@@ -7,6 +7,7 @@
 // moves everything after it (D146).
 
 need std.mem.{ArrayNew, Free}
+need std.iter.{Iterable, Iterator}
 
 offer class Deque<T> {
   var items: []T
@@ -152,6 +153,14 @@ offer class DequeWalk<T> {
 
 offer fun DequeNew<T>() -> Deque<T> uses unsafe {
   return Deque<T>(ArrayNew<T>(0), 0, 0)
+}
+
+extend<T> DequeWalk<T> as Iterator {
+  type Item = T
+}
+
+extend<T> Deque<T> as Iterable {
+  type Walker = DequeWalk<T>
 }
 
 // ------------------------------------------------------------- tests ---

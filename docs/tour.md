@@ -283,6 +283,54 @@ fun main() uses io {
 }
 ```
 
+An ability can leave a type for each implementation to choose: `type Item`
+is answered with `type Item = int` in the `extend`, and generic code reads
+it as `T.Item`. This is how `for` works over anything — `std.iter` says
+what being walked means:
+
+```wolang
+need std.io.{Print}
+need std.iter.{Iterable, Iterator}
+need std.list.{ListNew}
+
+class Countdown {
+  var from: int = 0
+}
+
+class CountdownWalk {
+  var at: int = 0
+}
+
+extend CountdownWalk as Iterator {
+  type Item = int
+  fun Next() -> bool {
+    at = at - 1
+    return at >= 0
+  }
+  fun Value() -> int => at
+}
+
+extend Countdown as Iterable {
+  type Walker = CountdownWalk
+  fun Iterate() -> CountdownWalk => CountdownWalk(from + 1)
+}
+
+// Works for a `List`, a `Countdown` or anything else that can be walked.
+fun Last<C: Iterable>(items: C) -> C.Walker.Item? {
+  var last: C.Walker.Item? = null
+  for value in items {
+    last = value
+  }
+  return last
+}
+
+fun main() uses io, unsafe {
+  var names = ListNew<text>()
+  names.Push("wolang")
+  Print("{Last(Countdown(3)) ?? -1} {Last(names) ?? "none"}")
+}
+```
+
 ## Generics
 
 ```wolang

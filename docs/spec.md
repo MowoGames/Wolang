@@ -345,7 +345,14 @@ error NotFound, Corrupt
 ```
 
 `extend T` adds inherent members to a type; `extend T as Ability` implements a
-ability for it. The target comes first either way, so the declaration reads as a
+ability for it. `extend<T> Box<T>` extends every `Box`, whatever its argument.
+
+An ability may declare an associated type, `type Item` or `type Walker:
+Iterator` with a bound, and every implementation answers it with `type Item =
+SomeType`; an implementation that does not is `E0402`. Inside the ability the
+bare name is the implementation's choice. Generic code names it through a type
+parameter, `C.Item`, and `C.Walker.Item` follows one associated type into the
+next; once `C` is known it is whatever that implementation said. The target comes first either way, so the declaration reads as a
 sentence. (`impl` is reserved, so the Rust spelling produces a message rather
 than a confusing parse failure.)
 
