@@ -117,6 +117,7 @@ struct Options {
   uint64_t fuzz_seed = 1;
   uint64_t fuzz_count = 100;
   bool show_source = false;
+  std::string test_filter;
   // `ir` only: print the IR as lowering left it rather than after the
   // passes.
   bool unoptimized = false;
@@ -1502,6 +1503,9 @@ int RunTests(const Options& options) {
       continue;
     }
     for (Symbol name : lowered->tests) {
+      if (!options.test_filter.empty() && database.interner().Text(name).find(options.test_filter) == std::string_view::npos) {
+        continue;
+      }
       ++ran;
       // Run through the unoptimized IR: the reference semantics are what a
       // test is testing.
@@ -1559,6 +1563,7 @@ int RunTests(const Options& options) {
                      outcome.where.c_str(), outcome.message.c_str());
       }
     }
+    std::fflush(stdout);
   }
 
   std::fprintf(stdout, "\n%d test%s run, %d failed\n", ran,
@@ -2826,6 +2831,8 @@ int Run(int argc, char** argv) {
       options.unoptimized = true;
     } else if (argument == "--source") {
       options.show_source = true;
+    } else if (argument == "--filter" && i + 1 < argc) {
+      options.test_filter = argv[++i];
     } else if (argument == "--seed" && i + 1 < argc) {
       options.fuzz_seed = std::strtoull(argv[++i], nullptr, 10);
     } else if (argument == "--depth" && i + 1 < argc) {
