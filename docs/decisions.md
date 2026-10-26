@@ -2534,3 +2534,32 @@ backslashes are escapes. The driver looked for `libwolang_platform.so`
 on Windows. Each is fixed, and the Windows job now runs everything the
 Linux one does except the ahead-of-time tier, whose linking is not wired
 there yet.
+
+**D206. A counted class lets go of what it holds.** D193 counted the
+handle and stopped there, and a counter that measures live objects
+(`wolang_objects_live`) showed how far that was from enough: an object
+that died kept every object its fields pointed at, a field written twice
+kept the first value, a `var` assigned twice kept the first object, a
+`Leaf?` was not counted at all, and handing a local to any function
+leaked it -- the use cleared the local's flag as if it were a move, and a
+class with no `deinit` is not one.
+
+The rules now, in every tier, because all of it is lowering:
+
+- A class with a `deinit` moves (D87); one without is counted, and
+  handing it on is another holder. Only what moves has a flag a use can
+  clear.
+- Every class has a `$drop` function: the destructor, a release of every
+  field that holds a class or a `T?` of one, the storage. A function and
+  not inline code, because `class Node { var next: Node? }` would expand
+  forever.
+- A store into an object's field, a module-level `var` or a local slot
+  takes a reference to what goes in and lets go of what was there --
+  after the store, so that `a.x = a.x` does not free what it is keeping.
+- A constructor and a binding take a reference to what they are given;
+  a call borrows, so a reference made only to be passed is released
+  when the call returns, and one made by an expression statement is
+  released on the spot.
+- `T?` of a class is counted through its tag.
+
+Cycles still leak. `weak` is what breaks them, and it is next.

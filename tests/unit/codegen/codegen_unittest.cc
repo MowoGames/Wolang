@@ -2535,6 +2535,95 @@ fun Nested() -> int {
   WOLANG_EXPECT_EQ(f.Run("Nested", {}), "31");
 }
 
+WOLANG_TEST(CodegenTest, ReleasesWhatObjectsHold) {
+  Fixture f(R"(
+extern "C" fun wolang_objects_live() -> s64
+
+class Leaf {
+  var id: int = 0
+}
+
+class Holder {
+  var leaf: Leaf = Leaf(0)
+  var maybe: Leaf? = null
+}
+
+class Node {
+  var next: Node? = null
+}
+
+fun Live() -> int uses unsafe {
+  return wolang_objects_live() as int
+}
+
+fun Keep(leaf: Leaf) -> int {
+  return leaf.id
+}
+
+fun Reassigned() -> int uses unsafe {
+  const before = Live()
+  for i in 0..10 {
+    var leaf = Leaf(i)
+    leaf = Leaf(i + 1)
+  }
+  return Live() - before
+}
+
+fun Overwritten() -> int uses unsafe {
+  const before = Live()
+  for i in 0..10 {
+    var holder = Holder(Leaf(0), null)
+    const leaf = Leaf(i)
+    holder.leaf = leaf
+    holder.leaf = Leaf(i + 1)
+    holder.maybe = Leaf(i)
+    holder.maybe = null
+    holder.maybe = leaf
+  }
+  return Live() - before
+}
+
+fun Passed() -> int uses unsafe {
+  const before = Live()
+  var total = 0
+  for i in 0..10 {
+    const leaf = Leaf(i)
+    total = total + Keep(leaf) + Keep(Leaf(1))
+  }
+  return (Live() - before) * 1000 + total
+}
+
+fun Chained() -> int uses unsafe {
+  const before = Live()
+  var head = Node(null)
+  for _i in 0..10 {
+    head = Node(head)
+  }
+  return Live() - before
+}
+
+fun Survives() -> int {
+  var holder = Holder(Leaf(0), null)
+  const leaf = Leaf(42)
+  holder.leaf = leaf
+  holder.leaf = holder.leaf
+  return holder.leaf.id + leaf.id
+}
+
+fun Chains() -> int uses unsafe {
+  const before = Live()
+  const _kept = Chained()
+  return Live() - before
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Reassigned", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Overwritten", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Passed", {}), "55");
+  WOLANG_EXPECT_EQ(f.Run("Chained", {}), "11");
+  WOLANG_EXPECT_EQ(f.Run("Chains", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Survives", {}), "84");
+}
+
 WOLANG_TEST(CodegenTest, CallsAFunctionWithMoreArgumentsThanRegisters) {
   // A host call to a function whose arguments do not all fit in
   // registers. The body has read the rest off the stack since D154; the

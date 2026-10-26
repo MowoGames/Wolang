@@ -171,6 +171,17 @@ class Interpreter {
       return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
                 "read through a null pointer");
     }
+    if (described.kind == TypeKind::kOptional && layouts_ != nullptr && layouts_->IsSupported(type)) {
+      const abi::Layout& layout = layouts_->Of(type);
+      uint8_t tag = 0;
+      std::memcpy(&tag, address, sizeof(tag));
+      if (tag == 0 || layout.offsets.size() < 2) {
+        return Value::Absent();
+      }
+
+      const Value inside = LoadThroughPointer(function, Value::Int(pointer.integer() + layout.offsets[1], IntWidth::k64, /*is_signed=*/false), types_.ElementOf(type), id, outcome);
+      return outcome->ok() ? Value::Present(inside) : inside;
+    }
     switch (described.kind) {
       case TypeKind::kBool: {
         uint8_t raw = 0;
@@ -330,6 +341,16 @@ class Interpreter {
     if (address == nullptr) {
       return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
                 "wrote through a null pointer");
+    }
+    if (value.kind() == Value::Kind::kOptional && type.is_valid() && types_.KindOf(type) == TypeKind::kOptional && layouts_ != nullptr && layouts_->IsSupported(type)) {
+      const abi::Layout& layout = layouts_->Of(type);
+      const uint8_t tag = value.has_value() ? 1 : 0;
+      std::memcpy(address, &tag, sizeof(tag));
+      if (tag == 0 || layout.offsets.size() < 2) {
+        return Value::Void();
+      }
+
+      return StoreThroughPointer(function, Value::Int(pointer.integer() + layout.offsets[1], IntWidth::k64, /*is_signed=*/false), value.inside(), id, outcome, types_.ElementOf(type));
     }
     // A struct, a slice, a tuple: written field by field at the offsets
     // the layout gives, which is the same answer the compiled tiers get

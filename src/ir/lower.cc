@@ -766,11 +766,15 @@ class Lowerer {
       builder_->Add(Opcode::kStore, TypeId{}, {address, token});
       index = 1;
     }
-    for (InstId value : fields) {
+    for (InstId given : fields) {
       const TypeId field_type = Erase(FieldTypeAt(type, index));
+      const InstId value = Coerce(given, ValueType(given), field_type);
       const InstId address = builder_->FieldAddress(
           types_->Pointer(field_type, /*is_mutable=*/true), object, index);
       builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+      if (!Owns(ValueType(value)) && !IsFreshHandle(value)) {
+        RetainValue(value, ValueType(value));
+      }
       ++index;
     }
     return object;
@@ -1967,7 +1971,9 @@ class Lowerer {
         return;
 
       case StmtKind::kExpr:
-        Value(stmt.expr);
+        if (const InstId discarded = Value(stmt.expr); IsFreshHandle(discarded)) {
+          ReleaseValue(discarded, ValueType(discarded));
+        }
         return;
 
       case StmtKind::kDefer:
@@ -2090,8 +2096,11 @@ class Lowerer {
       // Of the slot's type, for the same reason an assignment is
       // (D153): `var p: *u8 = &xs[0]` makes a pointer that may be
       // written, and the slot holds one that may not.
-      builder_->Add(Opcode::kStore, TypeId{},
-                    {slot, Coerce(value, ValueType(value), Erase(type))});
+      const InstId stored = Coerce(value, ValueType(value), Erase(type));
+      builder_->Add(Opcode::kStore, TypeId{}, {slot, stored});
+      if (!Owns(type) && !IsFreshHandle(stored)) {
+        RetainValue(stored, type);
+      }
     }
     locals_.push_back(Local{pattern->name, slot, InstId{}, Erase(type)});
     // The *unerased* type decides who frees: erasing is what loses the
@@ -2161,7 +2170,11 @@ class Lowerer {
                   {flag, builder_->ConstBool(live)});
     deferred_.push_back(
         Deferred{scope_depth_, ExprId{}, held, type, flag, in_slot});
-    owners_.push_back(Owner{name, flag});
+    // Only what moves has a flag a use can clear: a class with no `deinit`
+    // is counted, so handing it on is another holder rather than a move.
+    if (Owns(type)) {
+      owners_.push_back(Owner{name, flag});
+    }
   }
 
   // Where the flag for |name| is, or an invalid id when the name owns
@@ -2217,6 +2230,11 @@ class Lowerer {
       return;
     }
     const TypeId type = Erase(raw);
+    if (IsOptionalHandle(type)) {
+      const TypeId element = types_->ElementOf(type);
+      OnSome(value, type, [&](InstId inner) { Destroy(inner, element); });
+      return;
+    }
     if (!types_->IsHandle(type)) {
       if (const Member* deinit = FindDestructor(type)) {
         const uint32_t index = MethodIndex(type, *deinit);
@@ -2249,23 +2267,155 @@ class Lowerer {
     const BlockId after = builder_->AddBlock("drop.after");
     builder_->Branch(gone, destroy, after);
     builder_->SetCurrent(destroy);
-    if (const Member* deinit = FindDestructor(type)) {
-      const uint32_t index = MethodIndex(type, *deinit);
-      if (index != 0xFFFFFFFFu) {
-        builder_->Call(index, types_->void_type(), {value});
+    // Through a function per class rather than inline: what an object
+    // holds is released when it goes, and a class that holds one of its
+    // own kind would otherwise be expanded forever.
+    builder_->Call(DropFor(type), types_->void_type(), {value});
+    builder_->Jump(after, {});
+    builder_->SetCurrent(after);
+  }
+
+  // `Leaf$drop`: the destructor, then every reference the object holds,
+  // then the storage.
+  uint32_t DropFor(TypeId type) {
+    std::string spelled = types_->Describe(*interner_, type);
+    spelled.append("$drop");
+    const Symbol name = interner_->Intern(spelled);
+    for (const auto& [existing, index] : specializations_) {
+      if (existing == name) {
+        return index;
       }
     }
+
+    Function drop;
+    drop.name = name;
+    drop.type = types_->Function({type}, types_->void_type());
+    const auto index = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(drop));
+    specializations_.emplace_back(name, index);
+
+    Builder builder(module_, FunctionId{index});
+    Builder* const outer = builder_;
+    const uint32_t outer_function = current_function_;
+    builder_ = &builder;
+    current_function_ = index;
+
+    const BlockId entry = builder.AddBlock("entry");
+    builder.SetCurrent(entry);
+    const InstId self = builder.AddParam(entry, type);
+    if (const Member* deinit = FindDestructor(type)) {
+      const uint32_t method = MethodIndex(type, *deinit);
+      if (method != 0xFFFFFFFFu) {
+        builder.Call(method, types_->void_type(), {self});
+      }
+    }
+
+    for (const auto& [field, held] : StoredFields(type)) {
+      const TypeId erased = Erase(held);
+      if (!Counts(erased)) {
+        continue;
+      }
+      const InstId address = builder.FieldAddress(types_->Pointer(erased, /*is_mutable=*/true), self, field);
+      ReleaseValue(builder.Add(Opcode::kLoad, erased, {address}), erased);
+    }
+
     // The handle is cast to a word first: one declaration of the free
     // serves every class, and a verifier that compares types exactly
     // would otherwise want one per class.
-    const Symbol name = interner_->Intern("wolang_object_free");
-    const uint32_t free = DeclareExternal(
-        name, types_->Function({types_->u64()}, types_->void_type()));
-    module_->functions[free].foreign_symbol = name;
-    builder_->Call(free, types_->void_type(),
-                   {AsDeclared(free, 0, value)});
+    const Symbol freed = interner_->Intern("wolang_object_free");
+    const uint32_t free = DeclareExternal(freed, types_->Function({types_->u64()}, types_->void_type()));
+    module_->functions[free].foreign_symbol = freed;
+    builder.Call(free, types_->void_type(), {AsDeclared(free, 0, self)});
+    builder.ReturnVoid();
+
+    builder_ = outer;
+    current_function_ = outer_function;
+    return index;
+  }
+
+  // Every field an object of |type| stores, with where it is: the root
+  // class first and the descriptor before all of them, which is the order
+  // `FieldIndex` counts in.
+  std::vector<std::pair<uint32_t, TypeId>> StoredFields(TypeId type) {
+    TypeId named = type;
+    TypeStore::Substitution substitution;
+    if (types_->KindOf(named) == TypeKind::kInstance) {
+      named = types_->Get(type).base;
+      const std::span<const TypeId> parameters = resolution().ParametersOf(named);
+      const std::vector<TypeId> arguments = types_->ArgumentsOf(type);
+      for (size_t i = 0; i < parameters.size() && i < arguments.size(); ++i) {
+        substitution.emplace_back(parameters[i], arguments[i]);
+      }
+    }
+
+    std::vector<TypeId> chain;
+    for (TypeId current = named; current.is_valid(); current = resolution().BaseOf(current)) {
+      chain.push_back(current);
+    }
+    std::reverse(chain.begin(), chain.end());
+
+    std::vector<std::pair<uint32_t, TypeId>> fields;
+    uint32_t index = HasClassHeader(named) ? 1u : 0u;
+    for (TypeId current : chain) {
+      for (const Member& member : resolution().MembersOf(current)) {
+        if (!HasStorage(member.kind)) {
+          continue;
+        }
+        const TypeId held = substitution.empty() ? member.type : types_->Substitute(member.type, substitution);
+        fields.emplace_back(index, held);
+        ++index;
+      }
+    }
+    return fields;
+  }
+
+  // A handle itself: a class, or an instance of a generic one.
+  bool IsCountedHandle(TypeId raw) {
+    const TypeId held = Erase(raw);
+    const TypeKind kind = types_->KindOf(held);
+    return (kind == TypeKind::kNamed || kind == TypeKind::kInstance) && types_->IsHandle(held);
+  }
+
+  bool IsOptionalHandle(TypeId raw) {
+    const TypeId held = Erase(raw);
+    return types_->KindOf(held) == TypeKind::kOptional && IsCountedHandle(types_->ElementOf(held));
+  }
+
+  // Whether a value of |raw| carries a reference that is counted.
+  bool Counts(TypeId raw) {
+    return raw.is_valid() && (IsCountedHandle(raw) || IsOptionalHandle(raw));
+  }
+
+  // Runs |then| on the handle inside an optional, when there is one.
+  template <typename Then>
+  void OnSome(InstId value, TypeId optional, Then then) {
+    const InstId present = builder_->Add(Opcode::kOptionalIsPresent, types_->bool_type(), {value});
+    const BlockId some = builder_->AddBlock("some");
+    const BlockId after = builder_->AddBlock("some.after");
+    builder_->Branch(present, some, after);
+    builder_->SetCurrent(some);
+    then(builder_->Add(Opcode::kOptionalValue, types_->ElementOf(optional), {value}));
     builder_->Jump(after, {});
     builder_->SetCurrent(after);
+  }
+
+  void RetainValue(InstId value, TypeId raw) {
+    if (!value.is_valid() || !Counts(raw)) {
+      return;
+    }
+    if (IsOptionalHandle(raw)) {
+      const TypeId optional = Erase(raw);
+      OnSome(value, optional, [&](InstId inner) { Retain(inner, types_->ElementOf(optional)); });
+      return;
+    }
+    Retain(value, raw);
+  }
+
+  void ReleaseValue(InstId value, TypeId raw) {
+    if (!value.is_valid() || !Counts(raw)) {
+      return;
+    }
+    Destroy(value, Erase(raw));
   }
 
   // Whether |value| is a reference nobody holds yet.
@@ -2273,17 +2423,21 @@ class Lowerer {
   // `new` answers with a count of one, and a function retains what it
   // returns: in both cases the value *is* a reference, and whoever puts
   // it somewhere takes it rather than adding to it (D193).
-  bool IsFreshHandle(InstId value) const {
+  bool IsFreshHandle(InstId value) {
     const Function& current = module_->functions[current_function_];
     if (!current.Contains(value)) {
       return false;
     }
-    switch (current.Get(value).opcode) {
+    const Inst& inst = current.Get(value);
+    switch (inst.opcode) {
       case Opcode::kNew:
       case Opcode::kCall:
       case Opcode::kCallIndirect:
       case Opcode::kVirtualCall:
-        return true;
+        return Counts(inst.type);
+      case Opcode::kOptionalWrap:
+      case Opcode::kCast:
+        return inst.operands_count != 0 && IsFreshHandle(current.OperandsOf(inst)[0]);
       default:
         return false;
     }
@@ -2358,13 +2512,7 @@ class Lowerer {
   // "does this binding hold a reference", and `Owns` stays the question
   // "does handing it on give it away" (D193).
   bool Releases(TypeId type) {
-    if (Owns(type)) {
-      return true;
-    }
-    const TypeId held = Erase(type);
-    const TypeKind kind = types_->KindOf(held);
-    return (kind == TypeKind::kNamed || kind == TypeKind::kInstance) &&
-           types_->IsHandle(held);
+    return Owns(type) || Counts(type);
   }
 
   // Drops the entries a scope owned, after its exit has been emitted.
@@ -3552,6 +3700,7 @@ class Lowerer {
     // the field, because where a field of an element sits depends on how
     // many elements there are.
     TypeId soa_record;
+    bool Global = false;
 
     bool readable() const {
       return slot.is_valid() || pointer.is_valid() || value.is_valid();
@@ -3586,6 +3735,7 @@ class Lowerer {
             address.is_valid()) {
           place.pointer = address;
           place.root_type = Erase(TypeOf(id));
+          place.Global = true;
           return place;
         }
         // Inside a method a bare name may be a field of the enclosing
@@ -3931,28 +4081,72 @@ class Lowerer {
     if (!value.is_valid() || !place.addressable()) {
       return;
     }
-    // A place outlives the expression that filled it, so what goes in
-    // gets a reference of its own (D193). The old value is *not*
-    // released here: that would need the place read back first, and a
-    // handle overwritten rather than dropped is a leak rather than a
-    // use-after-free -- which is the right way round for a first
-    // collector.
-    //
-    // By what is being *stored*, not by what the place says it holds: a
-    // field place answers with its owner's type in some shapes, and
-    // retaining a number as if it were an object is a crash rather than
-    // a leak.
-    //
-    // And not when the value arrived already counted: `new` starts at
-    // one and a function retains what it returns, so a place taking one
-    // of those takes that reference rather than adding another. A value
-    // read out of somewhere else is a second holder and does (D193).
-    if (!IsFreshHandle(value)) {
-      Retain(value, ValueType(value));
+
+    const TypeId stored = ValueType(value);
+    const InstId address = AddressOfPlace(place);
+    if (!Counts(stored)) {
+      builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+      InvalidateDerived(place);
+      return;
     }
-    builder_->Add(Opcode::kStore, TypeId{},
-                  {AddressOfPlace(place), value});
+
+    // What goes in is a holder of its own unless it arrived as one: `new`
+    // and a call answer with a reference, and a value that moves hands
+    // over the one its name had (D193).
+    if (!IsFreshHandle(value) && !Owns(stored)) {
+      RetainValue(value, stored);
+    }
+
+    // What was there is let go, once the new one is in: the other order
+    // frees an object that is being stored over itself.
+    const Deferred* binding = BindingOf(place);
+    const bool counted = binding != nullptr || place.Global || HeldByObject(place);
+    if (!counted) {
+      builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+      InvalidateDerived(place);
+      return;
+    }
+
+    const InstId old = builder_->Add(Opcode::kLoad, stored, {address});
+    builder_->Add(Opcode::kStore, TypeId{}, {address, value});
     InvalidateDerived(place);
+    if (binding == nullptr) {
+      ReleaseValue(old, stored);
+      return;
+    }
+
+    const InstId live = builder_->Add(Opcode::kLoad, types_->bool_type(), {binding->flag});
+    const BlockId release = builder_->AddBlock("store.release");
+    const BlockId after = builder_->AddBlock("store.after");
+    builder_->Branch(live, release, after);
+    builder_->SetCurrent(release);
+    ReleaseValue(old, stored);
+    builder_->Jump(after, {});
+    builder_->SetCurrent(after);
+    builder_->Add(Opcode::kStore, TypeId{}, {binding->flag, builder_->ConstBool(true)});
+  }
+
+  // The scope exit that releases what a local slot holds, when |place| is
+  // that slot.
+  const Deferred* BindingOf(const Place& place) const {
+    if (!place.slot.is_valid() || !place.path.empty()) {
+      return nullptr;
+    }
+    for (auto it = deferred_.rbegin(); it != deferred_.rend(); ++it) {
+      if (it->in_slot && it->value == place.slot && it->flag.is_valid()) {
+        return &*it;
+      }
+    }
+    return nullptr;
+  }
+
+  // Whether |place| is a field of an object rather than of a value: an
+  // object's fields are released when it goes, so they hold a reference.
+  bool HeldByObject(const Place& place) {
+    if (place.path.empty() || place.path.back().index.is_valid() || place.soa_record.is_valid()) {
+      return false;
+    }
+    return IsCountedHandle(OwnerOfLastStep(place));
   }
 
   // A write to a field makes every derived field that reads it stale.
@@ -4065,11 +4259,25 @@ class Lowerer {
     return call;
   }
 
+  // A call borrows what it is handed, so a reference made only to be
+  // handed to it is let go once the call is done (D193).
   InstId LowerCall(ExprId id, const Expr& expr, TypeId type) {
+    const size_t mark = m_Temporaries.size();
+    const InstId result = LowerCallInner(id, expr, type, mark);
+    while (m_Temporaries.size() > mark) {
+      const std::pair<InstId, TypeId> temporary = m_Temporaries.back();
+      m_Temporaries.pop_back();
+      ReleaseValue(temporary.first, temporary.second);
+    }
+    return result;
+  }
+
+  InstId LowerCallInner(ExprId id, const Expr& expr, TypeId type, size_t mark) {
     const TypeId callee_type =
         ast().Contains(expr.lhs) ? TypeOf(expr.lhs) : TypeId{};
+    const bool borrows = types_->KindOf(callee_type) == TypeKind::kFunction;
     const std::vector<TypeId> params =
-        types_->KindOf(callee_type) == TypeKind::kFunction
+        borrows
             ? types_->ArgumentsOf(callee_type)
             : std::vector<TypeId>();
 
@@ -4077,16 +4285,18 @@ class Lowerer {
     const std::span<const ExprId> written = ast().Get(expr.args);
     for (size_t i = 0; i < written.size(); ++i) {
       const InstId value = Value(written[i]);
-      arguments.push_back(i < params.size()
-                              ? Coerce(value, TypeOf(written[i]), params[i],
-                                       written[i])
-                              : value);
+      const InstId passed = i < params.size() ? Coerce(value, TypeOf(written[i]), params[i], written[i]) : value;
+      arguments.push_back(passed);
+      if (borrows && IsFreshHandle(passed) && !Owns(i < params.size() ? params[i] : ValueType(passed))) {
+        m_Temporaries.emplace_back(passed, ValueType(passed));
+      }
     }
 
     // `AiState.Chase(target)`: a variant that carries values. The tag
     // says which one and the payload sits beside it (D89).
     if (const InstId built = LowerVariantCall(expr, type, arguments);
         built.is_valid()) {
+      m_Temporaries.resize(mark);
       return built;
     }
 
@@ -6462,6 +6672,7 @@ class Lowerer {
     InstId flag;
   };
   std::vector<Owner> owners_;
+  std::vector<std::pair<InstId, TypeId>> m_Temporaries;
   // How many enclosing reads are through a name rather than of it.
   int borrow_depth_ = 0;
   // The module-level `var`s this file declares.
