@@ -144,7 +144,7 @@ void wolang_object_retain(void* object) {
   if (object == nullptr || wolang_arena_owns(object)) {
     return;
   }
-  ++*CountOf(object);
+  std::atomic_ref<uint64_t>(*CountOf(object)).fetch_add(1, std::memory_order_relaxed);
 }
 
 int32_t wolang_object_release(void* object) {
@@ -155,12 +155,11 @@ int32_t wolang_object_release(void* object) {
   if (object == nullptr || wolang_arena_owns(object)) {
     return 0;
   }
-  uint64_t& count = *CountOf(object);
-  if (count == 0) {
+  std::atomic_ref<uint64_t> count(*CountOf(object));
+  if (count.load(std::memory_order_relaxed) == 0) {
     return 0;
   }
-  --count;
-  return count == 0 ? 1 : 0;
+  return count.fetch_sub(1, std::memory_order_acq_rel) == 1 ? 1 : 0;
 }
 
 void wolang_object_free(void* object) {
