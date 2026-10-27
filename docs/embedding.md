@@ -137,6 +137,37 @@ destroy: it reads `null` afterwards instead of a dangling pointer. An
 object passed into a call is lent for the length of it. A script cannot
 construct an `extern class` or give it fields (`E0139`).
 
+## Bindings from an engine's reflection
+
+An engine with reflection already knows its classes, so nobody should
+write `extern class` declarations by hand. `wolang bind --reflection`
+reads the JSON a header tool writes (MowoEngine's `*.reflection.json`)
+and writes both halves:
+
+```sh
+wolang bind --reflection --effect World     Intermediate/Build/Generated/Debug/MowoEngine.*/Reflection/*.json     -o scripts/mowo/src/mowo.wo --glue Source/Scripting/MowoWolangBindings.cpp
+```
+
+- **`mowo.wo`** — an `offer extern class` per reflected class, with its
+  base, its methods, and a `Get`/`Set` pair per property. A method that
+  takes or answers a `Vec3`, a `Quat` or a string has a raw form the host
+  answers and a method in an `extend` block that scripts call:
+  `actor.GetActorLocation()` answers a `Vec3`.
+- **The glue** — an `extern "C"` function per method and accessor, and
+  `MowoWolang_Bind_mowo(vm)`, which registers every class and binds every
+  function. A null object answers zero rather than crashing. A property
+  is reached by its offset, asked for once from the engine's own
+  reflection through `MowoWolangPropertyOffset(class, key)`.
+
+The engine supplies four functions the glue declares: that offset, and
+`MowoWolangRetain`/`Release`/`Alive` for its objects' lifetimes. With
+`--effect World` every engine call carries `uses World`, so a mod has to
+be granted `World` to touch the world at all.
+
+What is left out is printed, one line each: components (which belong on
+the ECS side), properties of types with no binding, functions answering
+a `std::string`, overloads (D218).
+
 ## The program's objects in the host
 
 A function that answers a class instance hands the host a

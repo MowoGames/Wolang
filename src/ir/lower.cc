@@ -1133,7 +1133,7 @@ class Lowerer {
     function.self_type = owner;
     // A method of an `extern class` is the host's `Actor_Position`, called
     // with the object first (D213).
-    if (types_->IsForeignClass(owner)) {
+    if (types_->IsForeignClass(owner) && !item.body.is_valid()) {
       std::string symbol = types_->Describe(*interner_, owner);
       symbol.push_back('_');
       symbol.append(interner_->Text(item.name));

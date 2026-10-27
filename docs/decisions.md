@@ -2804,3 +2804,29 @@ sandboxed package cannot declare `extern` (`E0705`): calling one would
 need `unsafe`, but an `extern class` method has no body and no effects of
 its own, so `extern class wolang { fun system(...) }` bound
 `wolang_system` without either.
+
+**D218. Engine bindings are generated from the engine's reflection.**
+MowoEngine's header tool already writes everything `MCLASS`, `MFUNCTION`
+and `MPROPERTY` declare as JSON, for the editor and the Visual Script
+palette. `wolang bind --reflection` reads the same files and writes a
+Wolang package and the C++ glue that answers it, so the bindings are as
+complete as the reflection and nobody keeps two lists in step.
+
+The C boundary takes numbers, `bool` and pointers, and the engine's API is
+`Vec3`s and strings. A method that needs either gets a raw form -- `out:
+*mut Vec3`, `name: *u8, nameLength: u64` -- and a method in an `extend`
+block that turns script values into it. That needed one rule changed: a
+method of an `extern class` used to be the host's whatever it was, and
+now it is the host's only when it has no body. Properties are reached by
+the offset the engine's own reflection records, asked for once per
+property, because an `MPROPERTY` is usually private and the glue is not
+a friend. A `std::string` answer is left out until the boundary has a way
+to hand bytes back that the script then owns.
+
+Checked against the engine as it is: 165 classes, 734 functions and 256
+properties, a generated package that checks clean, and glue that compiles
+against the engine's headers with the engine's own flags.
+
+`need mowo.{World}` for a `uses World` clause was reported as unused,
+because only expressions counted as uses. An effect a `uses` clause names
+counts now.

@@ -43,6 +43,7 @@
 #include "wolang/base/shell.h"
 #include "wolang/base/diagnostic.h"
 #include "wolang/bind/bind.h"
+#include "wolang/bind/reflection.h"
 #include "wolang/base/diagnostic_renderer.h"
 #include "wolang/base/source_manager.h"
 #include "wolang/base/string_interner.h"
@@ -91,6 +92,12 @@ struct Options {
   bool from_stdin = false;
   // `bind` only: which declarations to keep, and where the headers are.
   std::string bind_prefix;
+  // `bind --reflection`: the inputs are an engine's reflection JSON, and
+  // the C++ glue goes to |bind_glue| (D218).
+  bool bind_reflection = false;
+  std::string bind_glue;
+  std::string bind_module = "mowo";
+  std::string bind_effect;
   std::vector<std::string> bind_includes;
   // `new` only: a library has no `main` and no `run`.
   bool new_library = false;
@@ -2381,7 +2388,56 @@ int RunNew(const Options& options) {
 // C and C has a preprocessor; what comes out of this is declarations for
 // a person to edit rather than a binding pretending to be complete
 // (D130).
+// Writes |text| to |path|, or says why it could not.
+static bool WriteText(const std::string& path, const std::string& text) {
+  std::ofstream out(path, std::ios::binary);
+  if (!out) {
+    std::fprintf(stderr, "wolang: cannot write %s\n", path.c_str());
+    return false;
+  }
+  out << text;
+  return true;
+}
+
+// `wolang bind --reflection *.reflection.json -o mowo.wo --glue mowo.cpp`:
+// a Wolang package's declarations for an engine's reflected classes, and
+// the C++ the engine compiles to answer them (D218).
+int RunBindReflection(const Options& options) {
+  std::vector<std::string> documents;
+  for (const std::string& input : options.inputs) {
+    std::ifstream file(input, std::ios::binary);
+    if (!file) {
+      std::fprintf(stderr, "wolang: cannot read %s\n", input.c_str());
+      return 2;
+    }
+    documents.emplace_back(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+  }
+
+  bind::ReflectionOptions settings;
+  settings.module = options.bind_module;
+  settings.effect = options.bind_effect;
+  const bind::ReflectionResult result = bind::GenerateFromReflection(documents, settings);
+  if (options.output.empty()) {
+    std::fputs(result.source.c_str(), stdout);
+  }
+  else if (!WriteText(options.output, result.source)) {
+    return 2;
+  }
+  if (!options.bind_glue.empty() && !WriteText(options.bind_glue, result.glue)) {
+    return 2;
+  }
+
+  std::fprintf(stderr, "wolang: %d classes, %d functions, %d properties\n", result.classes, result.functions, result.properties);
+  for (const std::string& skipped : result.skipped) {
+    std::fprintf(stderr, "  skipped %s\n", skipped.c_str());
+  }
+  return 0;
+}
+
 int RunBind(const Options& options) {
+  if (options.bind_reflection) {
+    return RunBindReflection(options);
+  }
   const std::string& path = options.inputs.front();
   bind::Options settings;
   settings.header = path;
@@ -2936,6 +2992,14 @@ int Run(int argc, char** argv) {
     }
     if (argument == "--prefix" && i + 1 < argc) {
       options.bind_prefix = argv[++i];
+    } else if (argument == "--reflection") {
+      options.bind_reflection = true;
+    } else if (argument == "--glue" && i + 1 < argc) {
+      options.bind_glue = argv[++i];
+    } else if (argument == "--module" && i + 1 < argc) {
+      options.bind_module = argv[++i];
+    } else if (argument == "--effect" && i + 1 < argc) {
+      options.bind_effect = argv[++i];
     } else if (argument == "-I" && i + 1 < argc) {
       options.bind_includes.push_back(argv[++i]);
     } else if (argument.rfind("-I", 0) == 0 && argument.size() > 2) {

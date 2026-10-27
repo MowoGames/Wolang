@@ -3108,8 +3108,9 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   PushScope();
 
   const size_t pushed = PushGenerics(item, owner);
-  // A method of an `extern class` is the host's, like an `extern` function.
-  const bool is_foreign = HasFlag(item.flags, ItemFlags::kExtern) || (self_type_.is_valid() && types_->IsForeignClass(self_type_));
+  // A method of an `extern class` with no body is the host's, like an
+  // `extern` function; one an `extend` gives a body is Wolang's.
+  const bool is_foreign = HasFlag(item.flags, ItemFlags::kExtern) || (self_type_.is_valid() && types_->IsForeignClass(self_type_) && !item.body.is_valid());
 
   if (is_foreign && item.body.is_valid()) {
     Report(kForeignWithBody,

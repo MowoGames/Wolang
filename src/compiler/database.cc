@@ -4,6 +4,7 @@
 #include "wolang/compiler/database.h"
 
 #include <algorithm>
+#include <span>
 #include <utility>
 
 #include "wolang/interp/interpreter.h"
@@ -742,13 +743,34 @@ void Database::RegisterQueries() {
         // A `need` nothing refers to is dead weight, and the check belongs
         // here rather than with import resolution: only type checking knows
         // what the file actually named.
-        const auto is_used = [&result](Symbol name) {
+        // An effect a `uses` clause names is a use too: `need
+        // mowo.{World}` is there for `uses World`, which no expression says.
+        std::vector<Symbol> effects_named;
+        std::vector<ItemId> pending(ast.Get(ast.root()).begin(), ast.Get(ast.root()).end());
+        while (!pending.empty()) {
+          const ItemId next = pending.back();
+          pending.pop_back();
+          if (!ast.Contains(next)) {
+            continue;
+          }
+          const Item& declared = ast.Get(next);
+          for (TypeRefId effect : ast.Get(declared.effects)) {
+            const std::span<const Symbol> path = ast.Get(ast.Get(effect).path);
+            if (!path.empty()) {
+              effects_named.push_back(path.front());
+            }
+          }
+          for (ItemId member : ast.Get(declared.members)) {
+            pending.push_back(member);
+          }
+        }
+        const auto is_used = [&result, &effects_named](Symbol name) {
           for (Symbol used : result.body.used_names) {
             if (used == name) {
               return true;
             }
           }
-          return false;
+          return std::find(effects_named.begin(), effects_named.end(), name) != effects_named.end();
         };
         for (ItemId id : ast.Get(ast.root())) {
           const Item& item = ast.Get(id);
