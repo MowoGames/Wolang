@@ -1,590 +1,605 @@
-# Где мы остановились
+# Where we stopped
 
-> Читать первым, если работа прерывается. Что здесь написано — правда на
-> дату ниже; если что-то расходится с кодом, прав код, а этот файл надо
-> чинить.
+> Read this first when work resumes. What it says is true as of the date
+> below; if it disagrees with the code, the code is right and this file
+> needs fixing.
 
-**Дата:** 2026-10-26
-**Волны закрыты до 11-й включительно**; дальше шла работа «полноценный
-язык» без привязки к волнам, и к ней относится всё, что ниже (D119–D200).
+**Date:** 2026-10-27
+**Waves are closed through the 11th**; after that the work was "a complete
+language" without waves, and everything below belongs to it (D119–D220).
 
-## Коротко
+## In short
 
-Язык собирается, считает, печатает, открывает окно, слушает сокет,
-ходит по HTTPS, читает пять форматов конфигов, хранит состояние на диске
-и встраивается в чужую программу. Три тира — интерпретатор, JIT и
-LLVM-AOT — дают один ответ, и дифференциальный фаззер это проверяет.
+The language builds, computes, prints, opens a window, listens on a
+socket, speaks HTTPS, reads five configuration formats, keeps state on
+disk and embeds in someone else's program. Three tiers — the interpreter,
+the JIT and LLVM AOT — give one answer, and a differential fuzzer checks
+that they do.
 
 | | |
 |---|---|
-| Тиры | интерпретатор (эталон), дев-тир arm64/x64 для `run`, LLVM для `build` |
-| Платформы | macOS arm64/x86-64, Linux x86-64/arm64, Windows x86-64 (clang-cl) |
-| Кросс-цели | `--target`: Windows COFF, Linux ELF, WebAssembly, RISC-V |
-| std | 34 модуля (см. [docs/stdlib.md](docs/stdlib.md)) |
-| Пакеты | `http` (сервер и клиент), `db` (хранилище), `gfx` (окно/GPU/звук), `tls`, `game`, `core` |
-| Тесты | 692 юнит-теста + 184 теста библиотек, фаззер трёх тиров, проверка примеров в документации |
-| Сервер | 53 900 запросов/с на одном потоке, 58 900 на восьми |
+| Tiers | interpreter (the reference), arm64/x64 dev tier for `run`, LLVM for `build` |
+| Platforms | macOS arm64/x86-64, Linux x86-64/arm64, Windows x86-64 (clang-cl) |
+| Cross targets | `--target`: Windows COFF, Linux ELF, WebAssembly, RISC-V |
+| std | 34 modules (see [docs/stdlib.md](docs/stdlib.md)) |
+| Packages | `http` (server and client), `db` (storage), `gfx` (window/GPU/sound), `tls`, `game`, `core` |
+| Tests | 692 unit tests + 184 library tests, a three-tier fuzzer, a check of every example in the docs |
+| Server | 53,900 requests/s on one thread, 58,900 on eight |
 
-## Что сделано после 15.10 (D191–D200)
+## Done since 15.10 (D191–D200)
 
-**Память.** `class` считает ссылки (D193): счётчик в слове перед
-объектом, последний отпустивший вызывает `deinit` и освобождает. D206
-закрыл утечки: объект отпускает свои поля (`$drop` на класс), запись в
-поле, глобал или локальную отпускает старое, `T?` считается, передача
-в функцию — заимствование, временные отпускаются. Счётчик живых
-объектов `wolang_objects_live` — для тестов на утечки. Течёт только
-цикл.
+**Memory.** `class` is reference counted (D193): the count lives in the
+word before the object, and whoever lets go last calls `deinit` and
+frees it. D206 closed the leaks: an object releases its fields (`$drop`
+per class), a write to a field, global or local releases the old value,
+`T?` is counted, passing to a function is a borrow, temporaries are
+released. The live-object counter `wolang_objects_live` is for leak
+tests. Only cycles leak.
 
-**LSP.** Первое быстрое исправление и `wolang fix`, который их
-применяет (D191).
+**LSP.** The first quick fix, and `wolang fix`, which applies them
+(D191).
 
-**Windows по-настоящему (D201–D205).** До этого порт только
-компилировался: CLI не собирался, x86-64-тир говорил System V вместо
-соглашения Windows и возвращал 0 из `Add(2, 3)`, ловушка падала в
-раскрутке SEH, `std` звал POSIX напрямую, пояса не знали `Europe/Kyiv`,
-`gfx` искал `.so`. Теперь на Windows зелёное всё: 45 наборов юнит-тестов,
-`std`/`http`/`game`/`core`/`gfx`, фаззер, примеры, документация,
-форматирование и C-хост через DLL. Попутно найдено общее: CI ни разу не
-запускался (репозиторий на GitLab, CI в `.github`), `fmt --check lib`
-не работал нигде, `wolang.h` не компилировался из C, `std.time.Now()`
-на Linux тикал по миллисекундам (грубые часы).
+**Windows for real (D201–D205).** Before this the port only compiled:
+the CLI did not build, the x86-64 tier spoke System V instead of the
+Windows convention and returned 0 from `Add(2, 3)`, a trap crashed in SEH
+unwinding, `std` called POSIX directly, time zones did not know
+`Europe/Kyiv`, and `gfx` looked for a `.so`. Now everything is green on
+Windows: 45 unit-test suites, `std`/`http`/`game`/`core`/`gfx`, the
+fuzzer, the examples, the docs, formatting, and a C host through a DLL.
+Shared problems found along the way: CI had never run (the repository was
+on GitLab and CI was in `.github`), `fmt --check lib` worked nowhere,
+`wolang.h` did not compile as C, and `std.time.Now()` ticked in
+milliseconds on Linux (a coarse clock).
 
-**Кодоген.** Константный делитель-степень двойки — сдвиг (D192). На
-x86-64 закрыто девять ошибок (D194–D200): трамплин со стековыми
-аргументами, REX для байтовых операций, scratch 0 = аккумулятор,
-виртуальный вызов, узкий результат, временные поверх операндов, слот
-обмена под срез. Найдены прогоном x86-64 под Rosetta — до этого падали
-94 теста.
+**Codegen.** A constant power-of-two divisor is a shift (D192). Nine
+x86-64 bugs closed (D194–D200): a trampoline with stack arguments, REX
+for byte operations, scratch 0 = the accumulator, a virtual call, a
+narrow result, temporaries over operands, a swap slot for a slice. Found
+by running x86-64 under Rosetta — 94 tests failed before.
 
-## Что сделано в предыдущей серии (D148–D190)
+## Done in the previous series (D148–D190)
 
-**Платформы.** Порт на Windows: Winsock, `WSAPoll`, `VirtualAlloc`,
-`CreateProcess`, `LoadLibrary`, файлы в бинарном режиме, потоки и
-файловая система через стандартную библиотеку (D158, D159, D184, D189).
-Сокеты вынесены в рантайм — `std.net` и `http` теперь одинаковы везде.
-Кросс-компиляция `--target` на все цели LLVM (D160). Linux arm64 и
-Windows добавлены в CI.
+**Platforms.** The Windows port: Winsock, `WSAPoll`, `VirtualAlloc`,
+`CreateProcess`, `LoadLibrary`, files in binary mode, threads and the
+file system through the standard library (D158, D159, D184, D189).
+Sockets moved into the runtime — `std.net` and `http` are now the same
+everywhere. Cross-compilation with `--target` to every LLVM target
+(D160). Linux arm64 and Windows added to CI.
 
-**Окно, графика, звук.** Свой платформенный слой (`platform/`): Cocoa,
-Win32, X11; пиксели, GL-контекст, очередь звука. Пакет `lib/gfx`,
-пример `examples/window` — 150 кадров в секунду (D155).
+**Window, graphics, sound.** Our own platform layer (`platform/`): Cocoa,
+Win32, X11; pixels, a GL context, a sound queue. The `lib/gfx` package,
+and `examples/window` at 150 frames a second (D155).
 
-**Стандартная библиотека.** Общий документный тип `std.doc`, а на нём —
-JSON, TOML, YAML 1.2, INI, CSV (D162, D165). Регулярные выражения со
-своим движком и бюджетом против экспоненты (D166). Криптография:
-SHA-256/512, HMAC, системная энтропия, UUID v4/v7, base32,
-constant-time сравнение (D170). Сжатие: свой deflate, gzip, CRC-32 —
-совместимы с системным `gzip` в обе стороны (D177). Часовые пояса и
-разбор ISO-времени из системной базы (D176). Процессы с пайпами,
-каталогом и окружением (D153, D179). Остальное в
+**Standard library.** A shared document type `std.doc`, and on it JSON,
+TOML, YAML 1.2, INI and CSV (D162, D165). Regular expressions with their
+own engine and a budget against exponential blow-up (D166). Cryptography:
+SHA-256/512, HMAC, system entropy, UUID v4/v7, base32, constant-time
+comparison (D170). Compression: our own deflate, gzip and CRC-32 —
+compatible with the system `gzip` both ways (D177). Time zones and ISO
+time parsing from the system database (D176). Processes with pipes, a
+working directory and an environment (D153, D179). The rest is in
 [docs/stdlib.md](docs/stdlib.md).
 
-**Хранилище.** `lib/db` — лог с контрольными суммами и отсортированным
-индексом в памяти; переживает обрыв записи, проверено вручную (D181).
+**Storage.** `lib/db` — a log with checksums and a sorted in-memory
+index; survives a torn write, checked by hand (D181).
 
-**Язык.** `ptrnull` (D156), индексирование через ссылку (D167), типы в
-скобках как аргументы обобщений (D169), `[]T!` как «срез, который может
-не получиться» (D178), аргументы сверх регистров на стеке — в обоих
-ассемблерах (D154).
+**Language.** `ptrnull` (D156), indexing through a reference (D167),
+parenthesised types as generic arguments (D169), `[]T!` as "a slice that
+may fail" (D178), arguments beyond the registers on the stack — in both
+assemblers (D154).
 
-**Поставка.** Установщики `install.sh` и `install.ps1` с проверкой
-контрольных сумм (D185), `.msi` через WiX (D188), `.vsix` без npm
-(D175), амальгама — весь компилятор одним файлом для эмбеда (D186),
-логотип и маскот (D174).
+**Shipping.** The `install.sh` and `install.ps1` installers with checksum
+verification (D185), an `.msi` through WiX (D188), a `.vsix` without npm
+(D175), the amalgamation — the whole compiler as one file for embedding
+(D186), the logo and the mascot (D174).
 
-**Найденные и починенные ошибки компилятора.** Их было двадцать с
-лишним; самые дорогие: `u8` писался восемью байтами в интерпретаторе
-(нашёл ASan), массивы внутри структур терялись в памяти, вложенный
-`rows[1][2]` складывал индексы, `List<List<T>>` съедал запятую
-параметров, `<` на строках сравнивал указатели, значение из `-> T!` не
-оборачивалось, метод на типе из транзитивного импорта молча давал
-тип-ошибку (D168, D171, D172, D173, D182, D190).
+**Compiler bugs found and fixed.** Twenty-odd; the most expensive: a `u8`
+was written as eight bytes in the interpreter (found by ASan), arrays
+inside structs were lost in memory, a nested `rows[1][2]` added the
+indices, `List<List<T>>` swallowed the comma between parameters, `<` on
+strings compared pointers, a value from `-> T!` was not wrapped, and a
+method on a type from a transitive import silently gave an error type
+(D168, D171, D172, D173, D182, D190).
 
-## Что уже работает
+## What works
 
 ```sh
-# Собирается clang-ом; подробности и что нужно каждой системе —
+# Builds with clang; details and what each system needs are in
 # docs/building.md (D184).
 cmake --preset debug && cmake --build --preset debug -j
 ctest --preset debug
 
 W=./build/debug/tools/wolang/wolang
-$W modules examples/package      # граф пакетов и модулей
-$W check examples/package        # проверка пакета, с кэшем
-$W fmt examples/turret.wo        # форматирование
-$W ast examples/turret.wo        # дерево разбора
-$W ir examples/package           # IR; жалобы верификатора в stderr, код 70
-$W run examples/hello.wo         # исполнение, с дифференциальной проверкой
-$W test lib/core                 # прогон функций под `@Test`, в двух тирах
-$W asm benchmarks/gameplay.wo    # что скомпилировано, а что нет и почему
-$W bench benchmarks/gameplay.wo  # прогон и замер функций под `@Bench`
-$W run --interpret <path>        # не использовать компилируемый тир
-$W build <path> --target wasm32-unknown-unknown   # код для другой машины
-$W fuzz --count 200              # три тира на сгенерированных программах
-$W lsp                           # то, с чем говорят редакторы
-benchmarks/run.sh                # сравнение с C++ (нужен пресет release)
+$W modules examples/package      # the graph of packages and modules
+$W check examples/package        # check a package, with the cache
+$W fmt examples/turret.wo        # formatting
+$W ast examples/turret.wo        # the syntax tree
+$W ir examples/package           # IR; verifier complaints on stderr, exit 70
+$W run examples/hello.wo         # run, with the differential check
+$W test lib/core                 # run the `@Test` functions, in two tiers
+$W asm benchmarks/gameplay.wo    # what compiled, what did not, and why
+$W bench benchmarks/gameplay.wo  # run and time the `@Bench` functions
+$W run --interpret <path>        # do not use the compiled tier
+$W build <path> --target wasm32-unknown-unknown   # code for another machine
+$W fuzz --count 200              # the three tiers on generated programs
+$W lsp                           # what editors talk to
+benchmarks/run.sh                # comparison with C++ (needs the release preset)
 
-python3 tools/package/check_docs.py        # примеры в документации
-python3 tools/package/check_includes.py    # каждый файл говорит, что ему нужно
-python3 tools/package/make_vsix.py         # расширение для VS Code
-python3 tools/package/make_amalgamation.py # компилятор одним файлом
+python3 tools/package/check_docs.py        # the examples in the docs
+python3 tools/package/check_includes.py    # every file says what it needs
+python3 tools/package/make_vsix.py         # the VS Code extension
+python3 tools/package/make_amalgamation.py # the compiler as one file
 ```
 
-| Слой | Состояние |
+| Layer | State |
 |---|---|
-| Каркас CMake, пресеты, тест-харнесс | готово |
-| `Arena`, `StringInterner`/`Symbol`, `SourceManager`, диагностики | готово |
-| Лексер + 11 диагностик `E0001`–`E0011` | готово |
-| AST + парсер + 19 диагностик `E0020`–`E0043`, восстановление | готово |
-| Принтер AST (s-выражения) | готово |
-| **Движок запросов** (red-green, back-dating, циклы, `Seed`) | готово |
-| **`ItemTree`** — правка тела не меняет сигнатуры | готово |
-| **`Database`** — `Tokens/ParsedFile/ItemTree/ModuleScope/Imports/Diagnostics` | готово |
-| **Манифест `wolang.toml`** + 5 диагностик `E0050`–`E0054` | готово |
-| **Модули и пакеты** + 6 диагностик `E0055`–`E0060` | готово |
-| **Форматтер** (`fmt`, `--check`, `--write`) | готово |
-| **Кэш на диске** (`.wolang-cache/items.wdb`) | готово |
-| CLI `check / fmt / modules / ast / tokens / version` | готово |
-| **Unicode XID + NFC**, вложенные блочные комментарии | готово |
-| **Грамматика волны 4**: `extend`, `error`, `T!`, `[]T`/`[N]T`, `soa`/`aos`, метки циклов, неполные диапазоны | готово |
-| **Типы** — интернирование, `TypeId` = `uint32`, равенство = сравнение id | готово |
-| **Размерности и единицы** — `dimension`, `unit`, производные, `E1001`–`E1002` | готово |
-| **Разрешение имён** — запросы `DeclaredNames` / `Resolution` | готово |
-| **Сигнатуры и члены** — запрос `MemberTables` | готово |
-| **Проверка типов** — двунаправленный вывод, запрос `TypeCheck` | готово |
-| **Обобщения** — вывод параметров из аргументов (унификация) | готово |
-| **Трейты** — соответствие `extend T as Ability`, `E0402` | готово |
-| **Исчерпывающий `match`** — `E0201` с перечислением непокрытого | готово |
-| **Nullability** — `if const`, `?.`, `??`, `x?`, `p != null` | готово |
-| **Наследование** — `override` против базовой цепочки, `E0401` | готово |
-| **Границы трейтов** — проверка в точке вызова, `E0403` | готово |
-| **Ссылки второго класса** — поле не может держать ссылку, `E0120` | готово |
-| **Линты** — `W0101` (неиспользуемое), `W0102` (недостижимое) | готово |
-| **`@allow(code, reason)`** — подавление с обязательной причиной, `E0070` | готово |
-| **Эффекты** — вывод фикспойнтом по модулю, `E0701`, `E0704` | готово |
-| **Контексты** — `comptime`, `@Deterministic`, `@Hot`, `E0702` | готово |
-| **Capabilities** — грант на пакет, `E0703`, `E0801` | готово |
-| **Типизированный SSA IR** — параметры блоков, один id-простор, без перенумерации | готово |
-| **Понижение** из проверенного дерева, единицы стираются, эффекты остаются | готово |
-| **Верификатор IR** — доминирование, арность и типы дуг, достижимость | готово |
-| **Проходы** — свёртка констант, DCE, продвижение слотов, упрощение потока | готово |
-| **Интерпретатор** — эталонная семантика, ловушки с видом и местом | готово |
-| **Дифференциальное исполнение** — IR до и после проходов на каждом запуске | готово |
-| **`comptime`** — вычисление в запросе понижения, `E0901` | готово |
-| **Интринсики и интерполяция** — `Print`, `IntToStr`, … | готово |
-| **`lib/core` на Wolang** — `cmp.wo` с `capabilities = ""` | готово |
-| CLI `run / test / ir` | готово |
-| **Ассемблер arm64** — кодировки сверены с системным ассемблером | готово |
-| **Раскладка типов** — размеры, выравнивания, смещения полей | готово |
-| **Linear scan распределитель регистров** — только callee-saved | готово |
-| **Кодоген arm64** — скаляры в регистрах, агрегаты в кадре | готово |
-| **Ловушки в сгенерированном коде** — вид, место и текст интерпретатора | готово |
-| **Раскрутка и символизация** — кадровая цепочка, трассировка на ловушке | готово |
-| **Мономорфизация** — одна специализация на инстанциацию (долг волны 4) | готово |
-| **Инлайн** малых вызовов (долг волны 6) | готово |
-| **Слияние блоков** и **продвижение слотов с записями на нескольких путях** (долг волны 6) | готово |
-| **Строки эффектов в IR заполняются** выводом по модулю | готово |
-| CLI `asm / bench` | готово |
-| **C ABI FFI** — `extern`, `E0802`/`E0803`, вызов из обоих тиров | готово |
-| **Сырые указатели** — `*T` чтение и запись, `&x`, разыменование несёт `unsafe` | готово |
-| **`defer`** — выполняется на каждом выходе из области | готово |
-| **`E0121`/`E0122`/`E0123`** — убегающая ссылка, использование после перемещения, неинициализированная переменная | готово |
-| **Линковка файлов пакета** в один скомпилированный модуль | готово |
-| **`std.io` на Wolang** через `write`; `wolang run` исполняет скомпилированный код | готово |
-| **`text` в компилируемом тире** — указатель и длина, литералы | готово |
-| Владеющие типы (`Owned`/`Shared`), `arena` как аллокатор, сборщик | перенесено |
-| **Эффект `async`** — `task`/`wait`, `E0301`–`E0305` | готово |
-| **Преобразование задач** — кадр, машина состояний, подкадры вложены | готово |
-| **`spawn` и планировщик** — kind+кадр, один диспетчер на модуль | готово |
-| **`std.tasks`** — `Yield`, `Run`, `Join`, `Done`, `Pending` | готово |
-| **Межфайловые вызовы в интерпретаторе** — линковка по объявлению | готово |
-| **Шов целевой платформы** под эмиттером и переходником | готово |
-| **Методы, классы в куче, функции-значения** | готово |
-| **`for`/`foreach`, запись в поле и элемент, срезы** | готово |
-| **Сигналы** — тип сигнала это тип слушателя; `Connect`/`Emit` | готово |
-| **`derived`** — считается один раз и живёт до изменения входа | готово |
-| **`machine`** — таблица переходов становится методами | готово |
-| **Строки, которые компилируются** — одна модель на все тиры | готово |
-| **`arena { }` как аллокатор** — освобождение на любом выходе | готово |
-| **`wolang-http` и `examples/server`** — 30 тыс. запросов/с | готово |
-| Деструкторы, подсчёт ссылок для `class` (D193) | готово; течёт при перезаписи поля и в циклах |
-| Конкурентные соединения (kqueue/epoll) | волна 13 |
-| **x86-64** — ассемблер, эмиттер, переходник, пресет `x64` | готово |
-| Другие архитектуры (riscv64, wasm) | когда появится необходимость |
-| ECS, AOT, LLVM | не начато |
+| CMake skeleton, presets, test harness | done |
+| `Arena`, `StringInterner`/`Symbol`, `SourceManager`, diagnostics | done |
+| Lexer + 11 diagnostics `E0001`–`E0011` | done |
+| AST + parser + 19 diagnostics `E0020`–`E0043`, recovery | done |
+| AST printer (s-expressions) | done |
+| **Query engine** (red-green, back-dating, cycles, `Seed`) | done |
+| **`ItemTree`** — editing a body does not change signatures | done |
+| **`Database`** — `Tokens/ParsedFile/ItemTree/ModuleScope/Imports/Diagnostics` | done |
+| **`wolang.toml` manifest** + 5 diagnostics `E0050`–`E0054` | done |
+| **Modules and packages** + 6 diagnostics `E0055`–`E0060` | done |
+| **Formatter** (`fmt`, `--check`, `--write`) | done |
+| **On-disk cache** (`.wolang-cache/items.wdb`) | done |
+| CLI `check / fmt / modules / ast / tokens / version` | done |
+| **Unicode XID + NFC**, nested block comments | done |
+| **Wave 4 grammar**: `extend`, `error`, `T!`, `[]T`/`[N]T`, `soa`/`aos`, loop labels, open ranges | done |
+| **Types** — interning, `TypeId` = `uint32`, equality = id comparison | done |
+| **Dimensions and units** — `dimension`, `unit`, derived dimensions, `E1001`–`E1002` | done |
+| **Name resolution** — the `DeclaredNames` / `Resolution` queries | done |
+| **Signatures and members** — the `MemberTables` query | done |
+| **Type checking** — bidirectional inference, the `TypeCheck` query | done |
+| **Generics** — inferring parameters from arguments (unification) | done |
+| **Abilities** — conformance through `extend T as Ability`, `E0402` | done |
+| **Exhaustive `match`** — `E0201` listing what is not covered | done |
+| **Nullability** — `if const`, `?.`, `??`, `x?`, `p != null` | done |
+| **Inheritance** — `override` against the base chain, `E0401` | done |
+| **Ability bounds** — checked at the call site, `E0403` | done |
+| **Second-class references** — a field cannot hold a reference, `E0120` | done |
+| **Lints** — `W0101` (unused), `W0102` (unreachable) | done |
+| **`@allow(code, reason)`** — suppression with a required reason, `E0070` | done |
+| **Effects** — fixpoint inference per module, `E0701`, `E0704` | done |
+| **Contexts** — `comptime`, `@Deterministic`, `@Hot`, `E0702` | done |
+| **Capabilities** — a grant per package, `E0703`, `E0801` | done |
+| **Typed SSA IR** — block parameters, one id space, no renumbering | done |
+| **Lowering** from the checked tree; units are erased, effects stay | done |
+| **IR verifier** — dominance, edge arity and types, reachability | done |
+| **Passes** — constant folding, DCE, slot promotion, flow simplification | done |
+| **Interpreter** — the reference semantics, traps with a kind and a place | done |
+| **Differential execution** — IR before and after the passes on every run | done |
+| **`comptime`** — evaluated in the lowering query, `E0901` | done |
+| **Intrinsics and interpolation** — `Print`, `IntToStr`, … | done |
+| **`lib/core` in Wolang** — `cmp.wo` with `capabilities = ""` | done |
+| CLI `run / test / ir` | done |
+| **arm64 assembler** — encodings checked against the system assembler | done |
+| **Type layout** — sizes, alignments, field offsets | done |
+| **Linear scan register allocator** — callee-saved only | done |
+| **arm64 codegen** — scalars in registers, aggregates in the frame | done |
+| **Traps in generated code** — the interpreter's kind, place and text | done |
+| **Unwinding and symbolication** — the frame chain, a backtrace on a trap | done |
+| **Monomorphisation** — one specialisation per instantiation (wave 4 debt) | done |
+| **Inlining** of small calls (wave 6 debt) | done |
+| **Block merging** and **slot promotion with stores on several paths** (wave 6 debt) | done |
+| **Effect rows in the IR are filled** by the per-module inference | done |
+| CLI `asm / bench` | done |
+| **C ABI FFI** — `extern`, `E0802`/`E0803`, calls from both tiers | done |
+| **Raw pointers** — `*T` reads and writes, `&x`, a dereference carries `unsafe` | done |
+| **`defer`** — runs on every exit from the scope | done |
+| **`E0121`/`E0122`/`E0123`** — an escaping reference, use after move, an uninitialised variable | done |
+| **Linking a package's files** into one compiled module | done |
+| **`std.io` in Wolang** through `write`; `wolang run` runs compiled code | done |
+| **`text` in the compiled tier** — a pointer and a length, literals | done |
+| Owning types (`Owned`/`Shared`), `arena` as an allocator, a collector | deferred |
+| **The `async` effect** — `task`/`wait`, `E0301`–`E0305` | done |
+| **Task transformation** — a frame, a state machine, nested subframes | done |
+| **`spawn` and the scheduler** — kind+frame, one dispatcher per module | done |
+| **`std.tasks`** — `Yield`, `Run`, `Join`, `Done`, `Pending` | done |
+| **Cross-file calls in the interpreter** — linked by declaration | done |
+| **The target platform seam** under the emitter and the thunk | done |
+| **Methods, classes on the heap, function values** | done |
+| **`for`/`foreach`, writes to a field and an element, slices** | done |
+| **Signals** — a signal's type is its listener's type; `Connect`/`Emit` | done |
+| **`derived`** — computed once and kept until an input changes | done |
+| **`machine`** — the transition table becomes methods | done |
+| **Strings that compile** — one model for every tier | done |
+| **`arena { }` as an allocator** — freed on any exit | done |
+| **`wolang-http` and `examples/server`** — 30k requests/s at the time | done |
+| Destructors, reference counting for `class` (D193, D206) | done; only cycles leak |
+| Concurrent connections (kqueue/epoll/`WSAPoll`) | done |
+| **x86-64** — assembler, emitter, thunk, the `x64` preset | done |
+| Other architectures (riscv64, wasm) | through LLVM `--target` |
+| **ECS** (`component`, `system`, a compiler-scheduled frame), **AOT through LLVM** | done |
+| **Window, GPU and sound** — our own backend per system, the `gfx` package | done |
+| **`lib/db` storage** — a log with checksums, survives a torn write | done |
+| **Five formats** — JSON, TOML, YAML 1.2, INI, CSV on one tree | done |
+| **Regular expressions**, **cryptography**, **compression**, **time zones** | done |
+| **Windows** — Winsock, WSAPoll, VirtualAlloc, CreateProcess, clang-cl | done |
+| **Cross-compilation** with `--target` to every LLVM target, WebAssembly included | done |
+| **Installers** — `install.sh`, `install.ps1`, `.msi`, `.vsix`, the amalgamation | done |
+| **Documentation** — the tour, the cookbook, the std reference; examples checked in CI | done |
 
-Отчёты волн: [`wave-01`](docs/waves/wave-01.md),
+Wave reports: [`wave-01`](docs/waves/wave-01.md),
 [`wave-02`](docs/waves/wave-02.md), [`wave-03`](docs/waves/wave-03.md),
 [`wave-04`](docs/waves/wave-04.md), [`wave-05`](docs/waves/wave-05.md), [`wave-06`](docs/waves/wave-06.md), [`wave-07`](docs/waves/wave-07.md),
 [`wave-08`](docs/waves/wave-08.md),
 [`wave-09`](docs/waves/wave-09.md).
-Пакеты и модули: [`docs/packages.md`](docs/packages.md).
+Packages and modules: [`docs/packages.md`](docs/packages.md).
 
----
-| **Окно, GPU и звук** — свой бэкенд на каждую систему, пакет `gfx` | готово |
-| **Хранилище `lib/db`** — лог с контрольными суммами, переживает обрыв | готово |
-| **Пять форматов** — JSON, TOML, YAML 1.2, INI, CSV на одном дереве | готово |
-| **Регулярные выражения**, **криптография**, **сжатие**, **часовые пояса** | готово |
-| **Windows** — Winsock, WSAPoll, VirtualAlloc, CreateProcess, clang-cl | готово |
-| **Кросс-компиляция** `--target` на все цели LLVM, включая WebAssembly | готово |
-| **Установщики** — `install.sh`, `install.ps1`, `.msi`, `.vsix`, амальгама | готово |
-| **Документация** — учебник, cookbook, справочник std; примеры проверяются в CI | готово |
+## Decisions taken (do not revisit without a reason)
 
-## Принятые решения (не пересматривать без причины)
+The full list, with every reason, is [docs/decisions.md](docs/decisions.md).
+These are the ones that shape everything else.
 
-1. **Отдельный проект**, не модуль движка. Движок — один из хостов, адаптер к
-   нему появится в волне 15.
-2. **Память — гибрид:** значения с mutable value semantics, ссылки второго
-   класса, `Owned`/`Shared`, `arena`, `class` + GC как **опциональный**
-   компонент.
-3. **Эффекты и capabilities** — один механизм вместо пяти проверок.
-4. **В ядре четыре подписные фичи:** единицы измерения, AoS/SoA + SPMD
-   `foreach`, автоматы `machine`/`state`, реактивные `derived`.
-5. **Контекстные ключевые слова** (`state`, `unit`, `machine`, `derived`,
+1. **A separate project**, not an engine module. The engine is one of the
+   hosts; its adapter comes in wave 15.
+2. **Hybrid memory:** values with mutable value semantics, second-class
+   references, `Owned`/`Shared`, `arena`, and `class` + GC as an
+   **optional** component.
+3. **Effects and capabilities** — one mechanism instead of five checks.
+4. **Four signature features in the core:** units of measure, AoS/SoA +
+   SPMD `foreach`, `machine`/`state` automata, reactive `derived`.
+5. **Contextual keywords** (`state`, `unit`, `machine`, `derived`,
    `effect`, `dimension`, `enter`, `exit`, `always`, `with`, `without`,
-   `weak`)
-   лексятся как идентификаторы.
-6. **Суффикс единицы в числе — просто символ**; разрешает Sema.
-7. **Стандартная библиотека на Wolang** поверх тонкого C++-слоя платформы;
-   интринсики опускаются прямо в IR. `core` возможен с волны 7.
-8. **Самохостинг компилятора не планируется.** Компилятор — C++20.
-9. **Код-стайл Chromium везде**, без исключений и RTTI; коммиты —
-   Conventional Commits одной строкой без тела и без co-authored.
-10. **arm64 раньше x64** для Dev-кодогена.
-11. **Интерпретатор IR — эталон семантики.**
-12. **Документация `docs/` — на английском**, `STATUS.md` — на русском.
-13. **Управляющие конструкции — выражения.**
-14. **`as` — оператор приведения.**
-15. **Турбофиша нет:** `f<T>(x)` разрешается просмотром токенов вперёд.
-16. **Точка в выражении — всегда доступ к члену.**
-17. **Оператор в начале строки начинает новый оператор-строку**; исключение —
-    `.` и `?.`.
-18. **Модуль = каталог**, а не файл. Имя модуля = имя пакета + путь ниже
-    корня исходников.
-19. **Зависимости запросов обнаруживаются, а не объявляются** — всё, что
-    читает вычисление, оно обязано запросить через движок.
-20. **В кэшируемом значении не может быть позиции в исходнике.** Позиции
-    принадлежат ревизии, в которой взяты; диагностики разрешают их по
-    текущему дереву.
-21. **`ItemTree` не содержит позиций и хэндлов** — иначе правка тела меняла бы
-    его и ломала весь смысл инкрементальности.
-22. **Обнаружение пакетов — не запрос.** Движок отслеживает только то, о чём
-    ему сообщили; файловая система в это не входит.
-23. **Манифест — декларативный TOML.** Внешние инструменты (CI, реестр, боты
-    обновления зависимостей) должны читать имя и версию пакета без
-    интерпретатора Wolang. Build-скрипт `build.wo` может появиться **рядом**
-    с манифестом в волне 7+, как `build.rs` рядом с `Cargo.toml`.
-24. **Кэш — чистая оптимизация.** Устаревший, битый, обрезанный или чужой
-    кэш отбрасывается, а не используется.
-25. **Файл вне пакета не разрешает импорты** и не выдаёт `E0055`–`E0058`:
-    проверять один файл — нормальный сценарий.
-26. **`fun` / `need` / `offer`** вместо `fn` / `import` / `pub`. `need` и
-    `offer` — парные слова: модуль **нуждается** в именах извне и
-    **предлагает** свои. Старые написания зарезервированы, чтобы привычка
-    давала сообщение, а не непонятную ошибку разбора.
-27. **`extend T` / `extend T as Ability`** вместо `impl`; цель идёт первой.
-    `extend` ничего не объявляет — он назван по типу, который расширяет, и
-    добавляет методы в его таблицу членов.
-28. **Производная размерность объявляется, а не пишется по месту:**
-    `dimension Velocity = Length / Time`. Арифметика заперта в объявлении,
-    общий синтаксис типов остаётся без операторов. **Имя размерности — это
-    тип** величины с этой размерностью, поэтому `speed: Velocity`.
-29. **Идентификатор размерности глобальный**, интернируется по объявлению.
-    Файловый индекс делал две несвязанные размерности равными.
-30. **Таблицы членов живут в результате запроса**, а не в хранилище типов.
-    Хранилище — разделяемое изменяемое состояние вне сравниваемого значения:
-    изменение типа поля там оставило бы `Resolution` равным себе, back-dating
-    сработал бы, и все читатели остались бы устаревшими.
-31. **Сигнатуры — отдельный запрос от разрешения имён.** Тип поля может
-    ссылаться на импортированный тип, но объявления файла не должны зависеть
-    от сигнатур другого файла — иначе два файла одного модуля ждали бы друг
-    друга.
-32. **Голое имя, совпадающее с вариантом enum, — это вариант**, а не новая
-    привязка. Иначе любой `match` по enum выглядел исчерпывающим.
-33. **Неявных числовых преобразований нет**, даже расширяющих: `s32` в `s64`
-    пишется через `as`. Литералы произвольной точности снимают
-    утомительность. Отменяет запланированный линт `W0114`.
-34. **Строковый литерал без интерполяции — это `text`**, а не `Text`: это
-    статические данные, а не аллокация. С интерполяцией строка собирается в
-    рантайме — вот это и делает её владеющей.
-35. **Соответствие трейту объявляется, а не выводится структурно.**
-    `extend T as Ability` — это объявление; тип, у которого случайно те же
-    методы, ничего не обещал.
-36. **Вывод эффектов — один запрос на модуль.** Запрос на объявление делает
-    взаимную рекурсию циклом запросов, и ответ зависел бы от порядка
-    вычисления. Порядкозависимость в инкрементальном компиляторе
-    недопустима.
-37. **Функция под `offer` с эффектами обязана их объявить.** Единственная
-    альтернатива — цикл между запросами эффектов разных модулей.
-38. **Пустая строка эффектов — это утверждение, а не незнание.** `comptime`
-    должен иметь возможность сказать «ничего наблюдаемого»; «не указано» —
-    это отсутствие записи, другое состояние.
-39. **Строки эффектов попадают в IR**, а не стираются вместе с единицами.
-    «Этот вызов не делает ничего наблюдаемого» — именно то, что разрешает
-    удалить его как мёртвый. Это ответ на открытый вопрос волны 5.
-40. **Параметры блоков вместо phi-узлов.** Та же информация, но там, где
-    верификатор уже проверяет арность и типы дуг.
-41. **Проход никогда не перенумеровывает.** Идентификатор — это индекс;
-    уплотнение означало бы переписать каждый операнд функции. Мёртвая
-    инструкция становится `undef`, удалённый блок — пустым.
-42. **Пустой блок — это удалённый блок.** Иначе удаление нельзя выразить без
-    перенумерации.
-43. **Верификатор работает на каждом входе, дважды** — после понижения и
-    после проходов. IR — это контракт; баг прохода и баг понижения обязаны
-    различаться.
-44. **Доминирование — итеративными множествами**, а не Lengauer-Tarjan.
-    Медленнее и несравнимо проще быть уверенным — верный обмен для
-    единственного компонента, который не имеет права ошибаться.
-45. **Понижение работает только на файле без ошибок.** Иначе каждое значение
-    несло бы «может быть» во все бэкенды.
-46. **Словарь слоя — во вложенном пространстве имён** (`wolang::ir`). Это не
-    опрятность: второй `wolang::Module` — нарушение ODR, и симптом был в
-    порче памяти в другом тесте.
-47. **Ловушка — определённый исход, а не падение**: у неё есть вид и место.
-    Иначе поздние тиры не с чем сравнивать.
-48. **Переполнение даёт ловушку, а не заворачивается.** Молчаливый заворот
-    превращает арифметическую ошибку в неверный ответ в другом месте.
-49. **Поэтому арифметика не чистая** (решение D15c): удалить неиспользуемое
-    `a + b` значило бы превратить падающую программу в непадающую. Для
-    удаления нужно доказательство отсутствия ловушки — это анализ диапазонов.
-50. **`Text` принимается там, где нужен `text`** (решение D15b) — неявное
-    заимствование, безопасное потому, что ссылки второго класса. Без этого
-    печать интерполированной строки не типизировалась бы.
-51. **Лимит шагов — свойство запуска, а не программы.** `comptime` и запуск
-    программы хотят разных бюджетов.
-52. **`comptime` вычисляется в запросе понижения**, а не при проверке типов:
-    при проверке это был бы цикл запросов.
-53. **Дифференциальное исполнение на каждом запуске.** Miscompile слишком
-    серьёзен, чтобы искать его ночной сборкой — именно так нашлось удаление
-    деления на ноль в DCE.
-54. **`as` — числовое преобразование и ничего больше, а сужающее даёт
-    ловушку** (решение D41). D33 убрало неявное расширение, так что `as` —
-    единственное числовое преобразование; переинтерпретация битов — дело
-    `unsafe`. Преобразование чего-то нечислового — `E0124`.
-55. **Обобщённая функция не понижается вообще** (решение D42). Это рецепт, а
-    не функция: понижение положило бы `T` в IR, на который каждому бэкенду
-    пришлось бы отвечать. Одна специализация на инстанциацию, имя — по
-    аргументам: `Identity<s32>`.
-56. **Ловушка в сгенерированном коде — проверка перед операцией, а не
-    обработчик сигнала** (решение D43). Это ответ на открытый вопрос волны 8.
-    Проверка переносима и предсказуема; обработчик бесплатен на горячем пути,
-    но привязан к платформе и невозможен для WASM. Проверку уберёт анализ
-    диапазонов — тот же, который нужен для удаления мёртвой арифметики.
-57. **Распределитель выдаёт только callee-saved регистры** (решение D44).
-    Девять целочисленных вместо двадцати с лишним — зато вокруг вызова не
-    нужно ничего сохранять: всё, что разместил распределитель, вызываемый
-    обязан восстановить.
-58. **Агрегат живёт в кадре и передаётся по указателю** (решение D45). Одно
-    правило на любой агрегат, откуда бы он ни взялся; разброс полей по
-    регистрам — дело оптимизирующего тира.
-59. **Ловушка сообщается нелокальным выходом** (решение D46). Путь без
-    ловушки не платит ничего. Состояние ловушки обязано жить вне
-    автоматической памяти: объект, изменённый между `setjmp` и `longjmp`,
-    после него неопределён — и оптимизатор свернул вид ловушки в тот ноль,
-    которым её инициализировали. Это нашла только release-сборка.
-60. **Словарь ловушек принадлежит IR, а не интерпретатору** (решение D47).
-    Деление на ноль — свойство операции; оба тира обязаны называть её
-    одинаково, иначе дифференциальная проверка сравнивает два словаря.
-61. **Текст ловушки говорит только то, что знают оба тира** (решение D48).
-    Интерпретатор мог бы напечатать сам индекс; сгенерированный код не может
-    положить рантайм-значение в строку, собранную при компиляции.
-62. **Каждая скомпилированная функция строит кадровую запись, даже
-    листовая** (решение D49). Две инструкции в прологе — и обход стека стоит
-    двух загрузок на кадр и не требует таблиц вообще.
-63. **Тир компилирует что может и говорит, что не смог** (решение D50).
-    Интерпретатор — эталонная семантика и всегда под рукой, так что отказ
-    дёшев, а догадка была бы тем единственным, что никто не отладит.
-64. ~~**`wolang run` остаётся на интерпретаторе до FFI**~~ (решение D51) —
-    **снято волной 9**: FFI пришёл, `std.io.Print` написан на Wolang, и
-    `wolang run` исполняет скомпилированный код, когда может; `--interpret`
-    заставляет использовать интерпретатор.
-65. **Вызов за пределы языка — это эффект `unsafe`.** Одно предложение, и
-    никакой новой машинерии: `offer` обязан его объявить, `@Deterministic` не
-    может до C дотянуться, а пакет с `unsafe = "deny"` не может вызвать C
-    вовсе. FFI добавляет ровно одну свою диагностику — `E0802`.
-66. **Объявленный `uses unsafe` поглощает обязательство, а не
-    переэкспортирует его** (решение D58). `unsafe` — не способность вроде
-    `io` или `net`: те говорят, что коду нужно от внешнего мира, и вызывающий
-    обязан знать. `unsafe` говорит, что кто-то проверил. Без этого
-    безопасной обёртки над небезопасным примитивом не существует:
-    `std.io.Print` сделал бы небезопасной любую печатающую программу.
-67. **Граница C принимает числа, `bool` и указатели** (`E0802`). Всё, что её
-    пересекает, обязано означать одно и то же с двух сторон, а тип, раскладку
-    которого этот компилятор решает единолично — срез, строка, optional —
-    этому не удовлетворяет.
-68. **Оба тира доходят до C одинаково.** Скомпилированный код зовёт адрес от
-    загрузчика; интерпретатор — через переходник, сгенерированный тем же
-    ассемблером. Иначе FFI оказался бы единственной возможностью, которую
-    ничто не проверяет.
-69. **Программа исполняется один раз** (решение D59). Волна 7 запускала её
-    дважды и сравнивала — это стоило того, пока программа умела только
-    наполнять сток, принадлежавший драйверу. Как только программа умеет
-    `write`, два запуска пишут дважды. Сравнение переехало в `wolang test`:
-    тест — единственное место, где известно, что программа завершается.
-70. **Объявление линкуется по своему элементу, а не по имени.** IR знает
-    только неквалифицированные имена; два файла могут объявить свой
-    приватный `Helper`, и только элемент, на который указывает объявление,
-    говорит, который из них этот.
-71. **`defer` выполняется изнутри наружу, после вычисления возвращаемого
-    значения.** `defer` не может изменить ответ — только то, что остаётся
-    после.
-72. **`const`/`var` вместо `let`/`var`** (решение D52): два визуально разных
-    слова вместо слова с модификатором. Изменяемых локальных больше всего, и
-    `var x` не должен стоить дороже неизменяемой формы.
-73. **`task fun` и `wait` вместо `async`/`await`** (решение D53). Короче, и
-    `wait` говорит, что делает машина, а не называет протокол. Альтернатива —
-    сделать приостановку эффектом в строке `uses` и убрать `wait` вовсе —
-    интереснее и может вернуться, когда у системы эффектов будет за спиной
-    волна конкурентности; пока точка приостановки видна на вызове.
-74. **`Owned<T>`/`Shared<T>` и `arena`** (решение D54): говорят по-английски,
-    что за отношение; `arena` — слово, которым геймдев этот аллокатор и
-    называет.
-75. **`s32`, а не `i32`** (решение D55): обе половины таблицы ширин —
-    целые, и только одна знаковая.
-76. **`text`/`Text` вместо `str`/`String`** (решение D56): строчное — вид,
-    PascalCase — тип, владеющий байтами. Это то же правило, которому следует
-    любой объявленный тип.
-77. **`[]T` и `[N]T`** (решение D57): скобки говорят форму раньше, чем
-    элемент, и тип читается слева направо.
+   `weak`) are lexed as identifiers.
+6. **A unit suffix on a number is just a symbol**; Sema resolves it.
+7. **The standard library is in Wolang** over a thin C++ platform layer;
+   intrinsics lower straight into the IR. `core` is possible from wave 7.
+8. **The compiler will not be self-hosted.** The compiler is C++20.
+9. **Chromium code style everywhere**, no exceptions and no RTTI; commits
+   are Conventional Commits, one line, no body and no co-authored trailer.
+10. **arm64 before x64** for the dev codegen.
+11. **The IR interpreter is the reference semantics.**
+12. **`docs/` and `STATUS.md` are in English** (D220, replacing D7).
+13. **Control constructs are expressions.**
+14. **`as` is the cast operator.**
+15. **No turbofish:** `f<T>(x)` is resolved by looking ahead at tokens.
+16. **A dot in an expression is always member access.**
+17. **An operator at the start of a line starts a new statement**; the
+    exceptions are `.` and `?.`.
+18. **A module is a directory**, not a file. The module name is the
+    package name + the path below the source root.
+19. **Query dependencies are discovered, not declared** — everything a
+    computation reads it must request through the engine.
+20. **A cached value cannot contain a source position.** Positions
+    belong to the revision they were taken in; diagnostics resolve them
+    against the current tree.
+21. **`ItemTree` contains no positions and no handles** — otherwise
+    editing a body would change it and defeat the point of incrementality.
+22. **Package discovery is not a query.** The engine tracks only what it
+    is told about; the file system is not part of that.
+23. **The manifest is declarative TOML.** External tools (CI, a registry,
+    dependency-update bots) must read a package's name and version without
+    a Wolang interpreter. A `build.wo` build script may appear **next to**
+    the manifest in wave 7+, like `build.rs` next to `Cargo.toml`.
+24. **The cache is purely an optimisation.** A stale, corrupt, truncated
+    or foreign cache is discarded, not used.
+25. **A file outside a package does not resolve imports** and does not
+    report `E0055`–`E0058`: checking a single file is a normal case.
+26. **`fun` / `need` / `offer`** instead of `fn` / `import` / `pub`. `need`
+    and `offer` are a pair: a module **needs** names from outside and
+    **offers** its own. The old spellings are reserved so that habit gives
+    a message rather than a puzzling parse error.
+27. **`extend T` / `extend T as Ability`** instead of `impl`; the target
+    comes first. `extend` declares nothing — it is named after the type it
+    extends and adds methods to its member table.
+28. **A derived dimension is declared, not written in place:**
+    `dimension Velocity = Length / Time`. The arithmetic is locked in the
+    declaration, and general type syntax stays free of operators. **The
+    dimension's name is the type** of a quantity with that dimension, so
+    `speed: Velocity`.
+29. **A dimension's identifier is global**, interned by declaration. A
+    per-file index made two unrelated dimensions equal.
+30. **Member tables live in a query result**, not in the type store. The
+    store is shared mutable state outside the compared value: changing a
+    field's type there would leave `Resolution` equal to itself,
+    back-dating would fire, and every reader would stay stale.
+31. **Signatures are a separate query from name resolution.** A field's
+    type may refer to an imported type, but a file's declarations must not
+    depend on another file's signatures — otherwise two files of one
+    module would wait on each other.
+32. **A bare name that matches an enum variant is the variant**, not a new
+    binding. Otherwise every `match` on an enum would look exhaustive.
+33. **No implicit numeric conversions**, not even widening: `s32` to `s64`
+    is written with `as`. Arbitrary-precision literals take away the
+    tedium. Cancels the planned lint `W0114`.
+34. **A string literal without interpolation is `text`**, not `Text`: it
+    is static data, not an allocation. With interpolation the string is
+    built at run time — and that is what makes it owning.
+35. **Conformance to an ability is declared, not inferred structurally.**
+    `extend T as Ability` is a declaration; a type that happens to have the
+    same methods promised nothing.
+36. **Effect inference is one query per module.** A query per declaration
+    makes mutual recursion a query cycle, and the answer would depend on
+    evaluation order. Order dependence is unacceptable in an incremental
+    compiler.
+37. **An `offer`ed function with effects must declare them.** The only
+    alternative is a cycle between the effect queries of different modules.
+38. **An empty effect row is a statement, not ignorance.** `comptime`
+    must be able to say "nothing observable"; "not specified" is the
+    absence of a row, a different state.
+39. **Effect rows reach the IR**, rather than being erased with the units.
+    "This call does nothing observable" is exactly what allows removing it
+    as dead. This answers wave 5's open question.
+40. **Block parameters instead of phi nodes.** The same information, but
+    where the verifier already checks edge arity and types.
+41. **A pass never renumbers.** An id is an index; compaction would mean
+    rewriting every operand in the function. A dead instruction becomes
+    `undef`, a removed block becomes empty.
+42. **An empty block is a removed block.** Otherwise removal cannot be
+    expressed without renumbering.
+43. **The verifier runs on every input, twice** — after lowering and
+    after the passes. The IR is a contract; a pass bug and a lowering bug
+    must be told apart.
+44. **Dominance by iterative sets**, not Lengauer-Tarjan. Slower, and far
+    simpler to be sure of — the right trade for the one component that is
+    not allowed to be wrong.
+45. **Lowering runs only on a file without errors.** Otherwise every
+    value would carry a "maybe" into every back end.
+46. **A layer's vocabulary lives in a nested namespace** (`wolang::ir`).
+    This is not tidiness: a second `wolang::Module` is an ODR violation,
+    and the symptom was memory corruption in another test.
+47. **A trap is a defined outcome, not a crash**: it has a kind and a
+    place. Otherwise the later tiers have nothing to be compared with.
+48. **Overflow traps rather than wrapping.** Silent wrapping turns an
+    arithmetic error into a wrong answer somewhere else.
+49. **So arithmetic is not pure** (decision D15c): removing an unused
+    `a + b` would turn a program that traps into one that does not.
+    Removing it needs a proof that it cannot trap — that is range analysis.
+50. **`Text` is accepted where `text` is wanted** (decision D15b) — an
+    implicit borrow, safe because references are second class. Without it,
+    printing an interpolated string would not type-check.
+51. **The step limit is a property of a run, not of a program.**
+    `comptime` and running a program want different budgets.
+52. **`comptime` is evaluated in the lowering query**, not during type
+    checking: during checking it would be a query cycle.
+53. **Differential execution on every run.** A miscompile is too serious
+    to look for in a nightly build — that is how DCE removing a division
+    by zero was found.
+54. **`as` is a numeric conversion and nothing else, and narrowing
+    traps** (decision D41). D33 removed implicit widening, so `as` is the
+    only numeric conversion; reinterpreting bits is a job for `unsafe`.
+    Converting something non-numeric is `E0124`.
+55. **A generic function is not lowered at all** (decision D42). It is a
+    recipe, not a function: lowering it would put `T` into the IR, and
+    every back end would have to answer for it. One specialisation per
+    instantiation, named by its arguments: `Identity<s32>`.
+56. **A trap in generated code is a check before the operation, not a
+    signal handler** (decision D43). This answers wave 8's open question.
+    A check is portable and predictable; a handler is free on the hot path
+    but tied to the platform and impossible on WASM. Range analysis will
+    remove the check — the same analysis that removing dead arithmetic
+    needs.
+57. **The allocator hands out only callee-saved registers** (decision
+    D44). Nine integer registers instead of twenty-odd — but nothing has to
+    be saved around a call: whatever the allocator placed, the callee must
+    restore.
+58. **An aggregate lives in the frame and is passed by pointer**
+    (decision D45). One rule for every aggregate, wherever it came from;
+    scattering fields across registers is the optimising tier's job.
+59. **A trap is reported by a non-local exit** (decision D46). The path
+    without a trap pays nothing. The trap state must live outside automatic
+    storage: an object changed between `setjmp` and `longjmp` is
+    indeterminate afterwards — and the optimiser folded the trap kind into
+    the zero it was initialised with. Only the release build found this.
+60. **The trap vocabulary belongs to the IR, not the interpreter**
+    (decision D47). Division by zero is a property of the operation; both
+    tiers must name it the same way, or the differential check compares two
+    vocabularies.
+61. **A trap's text says only what both tiers know** (decision D48). The
+    interpreter could print the index itself; generated code cannot put a
+    run-time value into a string built at compile time.
+62. **Every compiled function builds a frame record, even a leaf**
+    (decision D49). Two instructions in the prologue — and walking the
+    stack costs two loads per frame and needs no tables at all.
+63. **A tier compiles what it can and says what it could not** (decision
+    D50). The interpreter is the reference semantics and always at hand, so
+    refusing is cheap, and a guess would be the one thing nobody could
+    debug.
+64. ~~**`wolang run` stays on the interpreter until FFI**~~ (decision D51)
+    — **lifted in wave 9**: FFI arrived, `std.io.Print` is written in
+    Wolang, and `wolang run` runs compiled code when it can; `--interpret`
+    forces the interpreter.
+65. **A call outside the language is the `unsafe` effect.** One sentence
+    and no new machinery: an `offer` must declare it, `@Deterministic`
+    cannot reach C, and a package with `unsafe = "deny"` cannot call C at
+    all. FFI adds exactly one diagnostic of its own — `E0802`.
+66. **A declared `uses unsafe` absorbs the obligation rather than
+    re-exporting it** (decision D58). `unsafe` is not a capability like
+    `io` or `net`: those say what the code needs from the outside world,
+    and the caller must know. `unsafe` says that someone checked. Without
+    this, a safe wrapper over an unsafe primitive cannot exist:
+    `std.io.Print` would make every printing program unsafe.
+67. **The C boundary accepts numbers, `bool` and pointers** (`E0802`).
+    Everything that crosses it must mean the same thing on both sides, and
+    a type whose layout this compiler alone decides — a slice, a string, an
+    optional — does not.
+68. **Both tiers reach C the same way.** Compiled code calls the address
+    from the loader; the interpreter calls through a thunk generated by the
+    same assembler. Otherwise FFI would be the one feature nothing checks.
+69. **A program runs once** (decision D59). Wave 7 ran it twice and
+    compared — worth it while a program could only fill a sink owned by the
+    driver. Once a program can `write`, two runs write twice. The
+    comparison moved to `wolang test`: a test is the one place where the
+    program is known to finish.
+70. **A declaration is linked by its item, not by its name.** The IR
+    knows only unqualified names; two files may each declare a private
+    `Helper`, and only the item the declaration points at says which one
+    this is.
+71. **`defer` runs from the inside out, after the return value is
+    computed.** A `defer` cannot change the answer — only what remains
+    afterwards.
+72. **`const`/`var` instead of `let`/`var`** (decision D52): two visually
+    different words instead of a word with a modifier. Mutable locals are
+    the most common, and `var x` must not cost more than the immutable form.
+73. **`task fun` and `wait` instead of `async`/`await`** (decision D53).
+    Shorter, and `wait` says what the machine does rather than naming a
+    protocol. The alternative — making suspension an effect in the `uses`
+    row and dropping `wait` entirely — is more interesting and may return
+    once the effect system has a concurrency wave behind it; for now the
+    suspension point is visible at the call.
+74. **`Owned<T>`/`Shared<T>` and `arena`** (decision D54): they say in
+    English what the relationship is; `arena` is the word gamedev already
+    uses for this allocator.
+75. **`s32`, not `i32`** (decision D55): both halves of the width table
+    are integers, and only one is signed.
+76. **`text`/`Text` instead of `str`/`String`** (decision D56): lower case
+    is a view, PascalCase is a type that owns its bytes. That is the same
+    rule every declared type follows.
+77. **`[]T` and `[N]T`** (decision D57): the brackets give the shape
+    before the element, and the type reads left to right.
 
 ---
 
-## Что ещё не сделано
+## Not done yet
 
-Честный список. Всё остальное, что было в этом разделе раньше,
-сделано — генерики между файлами, конструирование enum, `comptime` с
-аргументами, `for`/`foreach`, `T!`, деструкторы, арена, интерполяция в
-компилируемом тире, потоки, AOT и WASM-цель.
+An honest list. Everything else that used to be in this section is done
+— generics across files, enum construction, `comptime` with arguments,
+`for`/`foreach`, `T!`, destructors, the arena, interpolation in the
+compiled tier, threads, AOT and the WASM target.
 
-**В языке**
+**In the language**
 
-- ~~Ассоциированные типы у `ability`~~ (D212): `type Item`, `C.Walker.Item`,
-  `std.iter.{Iterator, Iterable}`; `extend<T> Box<T>` заработал.
-- **`Owned<T>`/`Shared<T>` в полном виде**: тип есть, «было ли
-  перемещено» в понижении протянуто не везде.
-- **Подсчёт ссылок** (D193, D206, D207, D209): цикл без `weak` течёт;
-  `text` внутри значения `std.doc` — представление байтов, которыми
-  никто не владеет.
+- ~~Associated types on `ability`~~ (D212): `type Item`, `C.Walker.Item`,
+  `std.iter.{Iterator, Iterable}`; `extend<T> Box<T>` works.
+- **`Owned<T>`/`Shared<T>` in full**: the type exists, but "has this been
+  moved" is not threaded through lowering everywhere.
+- **Reference counting** (D193, D206, D207, D209): a cycle without `weak`
+  leaks; a `text` inside a `std.doc` value is a view of bytes nobody owns.
 
-**В оптимизации**
+**In optimisation**
 
-- **Понижение силы для произвольного константного делителя** — степень
-  двойки уже сдвиг (D192), остальные делители ждут опкода «старшая
-  половина произведения».
-- **Векторизация** и **анализ алиасов** — без второго первая не даст
-  почти ничего, и `soa` не покажет больше нескольких процентов.
-- **Расщепление критической дуги** — единственный случай, где
-  продвижение слотов отказывается.
-- Слоты вытеснения не переиспользуются; каждый временный агрегат берёт
-  свою область кадра.
+- **Strength reduction for any constant divisor** — a power of two is
+  already a shift (D192); other divisors wait for a "high half of the
+  product" opcode.
+- **Vectorisation** and **alias analysis** — without the second the first
+  gives almost nothing, and `soa` will not show more than a few percent.
+- **Critical edge splitting** — the one case where slot promotion gives
+  up.
+- Spill slots are not reused; every temporary aggregate takes its own
+  area of the frame.
 
-**В библиотеках**
+**In the libraries**
 
-- HTTP/2 и HTTP/3; cookie-jar и multipart в клиенте.
-- Полноценный разбор дат за пределами ISO (локали, `strftime`-шаблоны).
-- Клипборд на X11 — отдаёт только то, что положила сама программа.
-- Windows arm64 — собирается только под эмуляцией x86-64.
+- HTTP/2 and HTTP/3; a cookie jar and multipart in the client.
+- Full date parsing beyond ISO (locales, `strftime` patterns).
+- The X11 clipboard — returns only what the program itself put there.
+- Windows arm64 — builds only under x86-64 emulation.
 
-**В инструментах**
+**In the tools**
 
-- **Разборщик IR**: принтер стабилен, читать дамп обратно пока нельзя.
-- Покрытие и санитайзеры для программ на Wolang.
-- Зависимости только по точным ревизиям — ни диапазонов, ни разрешения
-  конфликтов.
+- **An IR reader**: the printer is stable, but a dump cannot be read back
+  yet.
+- Coverage and sanitizers for Wolang programs.
+- Dependencies by exact revision only — no ranges and no conflict
+  resolution.
 
-## Путь к 1.0
+## The road to 1.0
 
-1.0 — это язык, на котором в MowoEngine можно написать актёра с `Tick`,
-компонентами и горячей перезагрузкой, без утечек, и отдать его в
-релизную сборку. Язык и хост движка — одна линия, а не два трека:
-пока хоста нет, 1.0 нет. Порядок — по зависимостям.
+1.0 is a language in which you can write an actor in MowoEngine with
+`Tick`, components and hot reload, without leaks, and ship it in a
+release build. The language and the engine host are one line of work, not
+two tracks: until the host exists, there is no 1.0. The order follows the
+dependencies.
 
-**1. Память без утечек**
-- ~~Запись в поле отпускает старое значение~~, ~~объект отпускает поля~~,
-  ~~`T?` считается~~, ~~передача в функцию не утекает~~ — D206.
-- ~~Классы внутри структур, enum, `T?` и `T!`~~ (D209); классы больше
-  не перемещаются, `deinit` — когда уходит последняя ссылка.
-- `std.doc`: строки в документе — владеющие `Text` вместо `text`.
-- ~~Слабые ссылки `weak`~~ (D207), ~~атомарный счётчик~~.
-- `Owned`/`Shared` в полном виде: «было ли перемещено» протянуто везде.
-- Циклы: слабые ссылки плюс документация; сборщик циклов — только если
-  бенчмарки из пункта 9 покажут, что без него нельзя.
+**1. Memory without leaks**
+- ~~A write to a field releases the old value~~, ~~an object releases its
+  fields~~, ~~`T?` is counted~~, ~~passing to a function does not leak~~ —
+  D206.
+- ~~Classes inside structs, enums, `T?` and `T!`~~ (D209); classes no
+  longer move, and `deinit` runs when the last reference goes.
+- `std.doc`: strings in a document are owning `Text` instead of `text`.
+- ~~`weak` references~~ (D207), ~~an atomic counter~~.
+- `Owned`/`Shared` in full: "has this been moved" threaded everywhere.
+- Cycles: weak references plus documentation; a cycle collector only if
+  the benchmarks from item 9 show it cannot be done without.
 
-**2. Язык, который после 1.0 не ломается**
-- ~~Ассоциированные типы у `ability`~~ (D212); `for` над `C: Iterable`.
-- ~~Форматтер и спецификация согласны об атрибутах~~ (атрибут — своя
-  строка в обоих); ~~ключевые слова~~ сверены со спецификацией.
+**2. A language that does not break after 1.0**
+- ~~Associated types on `ability`~~ (D212); `for` over `C: Iterable`.
+- ~~The formatter and the specification agree on attributes~~ (an
+  attribute is its own line in both); ~~the keywords~~ checked against the
+  specification.
 
-**3. Все платформы, каждый коммит**
-- CI, который на самом деле запускается: `.gitlab-ci.yml` с раннерами
-  Windows x64, Linux x64/arm64, macOS arm64/x64 — или зеркало на GitHub.
-- В матрице: Windows x64 (сделано локально, D201–D205), Linux x64 и
-  arm64, macOS arm64 и x86-64 (сейчас в матрице нет), позже Windows
-  arm64 (нужен эмиттер arm64 с соглашением Windows).
-- ~~AOT на Windows~~ (D208): `LLVM-C.dll` 22.1.8, линковка `clang-cl`.
-  LLVM 23 портит `x != 6 % x` в IPSCCP — закреплена 22.
-- ~~TLS на Windows~~ (D211): Schannel на Windows, OpenSSL через `dlopen`
-  в остальных системах; HTTPS и AOT-сборка `http` работают везде.
-- Ошибка, исправленная в одном эмиттере, ищется в другом (D200) —
-  проверка, а не правило на словах.
+**3. Every platform, every commit**
+- CI that actually runs: the repository is now on GitHub, where
+  `.github/workflows/ci.yml` runs on every push; it has to be green on
+  every system in the matrix.
+- In the matrix: Windows x64 (done locally, D201–D205), Linux x64 and
+  arm64, macOS arm64; macOS x86-64 is not in it yet, and Windows arm64
+  comes later (it needs the arm64 emitter with the Windows convention).
+- ~~AOT on Windows~~ (D208): `LLVM-C.dll` 22.1.8, linked with `clang-cl`.
+  LLVM 23 miscompiles `x != 6 % x` in IPSCCP — pinned to 22.
+- ~~TLS on Windows~~ (D211): Schannel on Windows, OpenSSL through `dlopen`
+  on the other systems; HTTPS and the AOT build of `http` work everywhere.
+- A bug fixed in one emitter is looked for in the other (D200) — a check,
+  not a rule on paper.
 
-**4. Граница с хостом**
-- ~~Непрозрачные хэндлы через C ABI~~ (D213): `extern class` — объект
-  хоста, счёт ведёт хост (`wolang_vm_register_class`), `weak var` спрашивает
-  `alive`; `kWolangObject` — объект Wolang у хоста, с вызовом методов,
-  чтением полей и `release`, который запускает `deinit`.
-- Списки и enum с данными через границу — пока нет: класс-обёртка
-  покрывает это для 1.0.
-- ~~Потоки~~ (D214): vm принимает вызовы из любого потока по одному,
-  параллельность — vm на воркера.
+**4. The boundary with the host**
+- ~~Opaque handles through the C ABI~~ (D213): `extern class` is a host
+  object, the host keeps the count (`wolang_vm_register_class`), and a
+  `weak var` asks `alive`; `kWolangObject` is a Wolang object held by the
+  host, with method calls, field reads and a `release` that runs `deinit`.
+- Lists and enums with data across the boundary — not yet: a wrapper class
+  covers this for 1.0.
+- ~~Threads~~ (D214): a vm accepts calls from any thread, one at a time;
+  for parallelism, one vm per worker.
 
-**5. ~~Горячая перезагрузка с состоянием~~** (D215)
-- ~~`wolang_vm_reload` сохраняет module-level `var` и живые объекты~~:
-  перенос по имени при совпадении формы типа.
-- ~~Хэндлы функций стабильны по имени~~.
-- ~~Изменение раскладки класса~~: поля переносятся по имени, остальное —
-  строка в `wolang_vm_notes`.
-- Глобалы теперь свои у каждой vm (D214), раньше были общими на процесс.
+**5. ~~Hot reload with state~~** (D215)
+- ~~`wolang_vm_reload` keeps module-level `var`s and live objects~~:
+  carried over by name when the shape of the type matches.
+- ~~Function handles are stable by name~~.
+- ~~A change to a class's layout~~: fields carry over by name, the rest is
+  a line in `wolang_vm_notes`.
+- Globals now belong to each vm (D214); before, they were shared by the
+  process.
 
-**6. ~~Отладчик~~** (D216)
-- ~~DAP~~: `wolang dap` (launch) и `wolang_vm_debug_listen` (attach к
-  движку); брейкпоинты, шаги, стек, локальные и поля объектов. Отладка
-  идёт на интерпретаторе по неоптимизированному IR — эталонный тир, с
-  которым фаззер сверяет остальные; AOT по-прежнему отлаживается lldb.
+**6. ~~The debugger~~** (D216)
+- ~~DAP~~: `wolang dap` (launch) and `wolang_vm_debug_listen` (attach to
+  the engine); breakpoints, steps, the stack, locals and object fields.
+  Debugging runs on the interpreter over unoptimised IR — the reference
+  tier the fuzzer checks the others against; AOT is still debugged with
+  lldb.
 
-**7. ~~Песочница~~** (D217)
-- ~~`extern` только в доверенных пакетах~~: в песочнице это `E0705`.
-- ~~capabilities проверены до конца~~: возможность записана на `extern`
-  примитива (`uses io/net/time/rand`) и не поглощается обёрткой; ~220
-  сигнатур в `lib` исправлены по подсказкам компилятора.
-- `wolang_vm_load_mod(vm, path, caps)`: грант задаёт хост, манифест мода
-  его только сужает; `unsafe` и `[link]` запрещены.
+**7. ~~The sandbox~~** (D217)
+- ~~`extern` only in trusted packages~~: in the sandbox it is `E0705`.
+- ~~Capabilities checked all the way~~: the capability is written on the
+  primitive's `extern` (`uses io/net/time/rand`) and is not absorbed by a
+  wrapper; ~220 signatures in `lib` fixed by following the compiler's
+  hints.
+- `wolang_vm_load_mod(vm, path, caps)`: the host sets the grant, the mod's
+  manifest can only narrow it; `unsafe` and `[link]` are forbidden.
 
-**8. Хост MowoEngine** (волна 15; делается в репозитории движка, когда
-пункты 1–7 готовы — до тех пор движок не трогаем)
-- ~~Генератор привязок~~ (D218): `wolang bind --reflection` по JSON
-  рефлексии движка → пакет Wolang и C++-глю; 165 классов, 734 функции,
-  256 свойств; глю компилируется заголовками движка. Со стороны движка
-  остаются четыре функции (offset свойства, retain/release/alive) и
-  вызов генератора в сборке.
-- Мост к `MObject` и акторам: хэндлы, корни, слабые ссылки, вызов
-  методов, чтение и запись `MPROPERTY`.
-- Генератор привязок из рефлексии движка (`MCLASS`/`MFUNCTION`/
-  `MPROPERTY` → объявления Wolang), как каталог узлов Visual Scripting.
-- `component`/`system` Wolang ложатся на ECS движка.
-- Редактор: шаблон проекта «Wolang (Preview)», создание классов из
-  Content Browser, ошибки в Message Log, перезагрузка в PIE, отладка
-  через DAP, LSP для VS Code и Rider.
-- `mbt package` компилирует скрипты через AOT; в релизе нет JIT.
+**8. The MowoEngine host** (wave 15; done in the engine's repository once
+items 1–7 are ready — until then the engine is not touched)
+- ~~The bindings generator~~ (D218): `wolang bind --reflection` over the
+  engine's reflection JSON → a Wolang package and C++ glue; 165 classes,
+  734 functions, 256 properties; the glue compiles against the engine's
+  headers. What remains on the engine side is four functions (a
+  property's offset, retain/release/alive) and calling the generator in
+  the build.
+- A bridge to `MObject` and actors: handles, roots, weak references,
+  method calls, reading and writing `MPROPERTY`.
+- Bindings generated from the engine's reflection (`MCLASS`/`MFUNCTION`/
+  `MPROPERTY` → Wolang declarations), like the Visual Scripting node
+  catalogue.
+- Wolang `component`/`system` mapped onto the engine's ECS.
+- The editor: a "Wolang (Preview)" project template, creating classes
+  from the Content Browser, errors in the Message Log, reload in PIE,
+  debugging over DAP, LSP for VS Code and Rider.
+- `mbt package` compiles scripts through AOT; there is no JIT in a
+  release build.
 
-**9. Доказательство**
-- ~~Бенчмарк акторов~~ (D219): 1000 акторов с `Tick` за кадр — AOT 1.7×
-  от C++, JIT 11×, интерпретатор ~1400× (только под отладчиком).
-  `benchmarks/actors`, цель `wolang_actor_bench`. Быстрый путь
-  `wolang_call` и `wolang build --library` для движка.
-- Сравнение с Visual Scripting и вертикальный срез (уровень целиком на
-  Wolang, без утечек под ASan/LSan, с перезагрузкой во время PIE) —
-  в движке, по плану интеграции.
+**9. The proof**
+- ~~The actor benchmark~~ (D219): 1000 actors with `Tick` per frame — AOT
+  1.7× of C++, JIT 11×, the interpreter ~1400× (only under the debugger).
+  `benchmarks/actors`, target `wolang_actor_bench`. The fast path
+  `wolang_call` and `wolang build --library` for the engine.
+- A comparison with Visual Scripting and a vertical slice (a whole level
+  in Wolang, no leaks under ASan/LSan, reloading during PIE) — in the
+  engine, following the integration plan.
 
-После 1.0: SPMD `foreach`, векторизация и анализ алиасов, WASM целиком,
-HTTP/2–3, разборщик IR, диапазоны версий зависимостей, Windows arm64.
+After 1.0: SPMD `foreach`, vectorisation and alias analysis, full WASM,
+HTTP/2–3, an IR reader, dependency version ranges, Windows arm64.

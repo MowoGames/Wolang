@@ -32,7 +32,7 @@ development machine.
 Conventional Commits, one line, no body, no trailers.
 
 **D7. `docs/` is in English, `STATUS.md` is in Russian.** The docs are public
-artifacts of the language; `STATUS.md` is the working log.
+artifacts of the language; `STATUS.md` is the working log. Replaced by D220.
 
 ## Memory
 
@@ -2485,8 +2485,9 @@ a question about the other machine.
 tier spoke System V everywhere, so on Windows every compiled function
 read its arguments out of `rdi` and `rsi` while the host had put them in
 `rcx` and `rdx`: `Add(2, 3)` answered 0, and every test that reached
-machine code failed or crashed. The port was never run -- CI lives in a
-GitHub workflow and the repository is on GitLab.
+machine code failed or crashed. The port was never run -- CI lived in a
+GitHub workflow and the repository was on GitLab. It has since moved to
+GitHub.
 
 One convention per machine, not one inside and another at the edges: the
 runtime calls compiled code directly (a parallel `for`, a system of the
@@ -2849,3 +2850,9 @@ every offered function under `actors_<Name>`, an alias so the module's
 own calls are untouched. Through that, the same `Tick` is 1.7× the C++ --
 which calls virtual methods directly where the script goes through C
 functions that call them.
+
+**D220. `STATUS.md` is in English.** D7 kept the working log in Russian
+because only its author read it. The repository is open now, and
+`STATUS.md` is where a contributor learns what is done and what is
+open -- `README.md` and `CONTRIBUTING.md` both send people there. A
+working log nobody else can read is a closed door in an open project.
