@@ -2830,3 +2830,22 @@ against the engine's headers with the engine's own flags.
 `need mowo.{World}` for a `uses World` clause was reported as unused,
 because only expressions counted as uses. An effect a `uses` clause names
 counts now.
+
+**D219. A frame's calls are words, and a shipped script is a library.**
+The first measurement of a host ticking a thousand actors through a
+script said 61× slower than C++, and the script was not the reason: each
+call looked the function up by name, boxed its arguments into a vector,
+found the compiled body by searching every function, and decoded the
+answer through a layout. A `WolangFunction` now prepares itself once per
+program -- the compiled entry and how each argument goes into a word --
+and a call is the words on the stack and a jump into the stub, the same
+way the scheduler resumes a task. A reload makes the preparation stale by
+giving the program a new generation. That took the dev tier to 11×.
+
+A shipped game does not run the dev tier. `wolang build --library actors`
+compiles a package into an object a host links: no `main`, an
+`actors_start` that registers classes and starts the module's `var`s, and
+every offered function under `actors_<Name>`, an alias so the module's
+own calls are untouched. Through that, the same `Tick` is 1.7× the C++ --
+which calls virtual methods directly where the script goes through C
+functions that call them.

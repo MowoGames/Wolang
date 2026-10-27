@@ -137,6 +137,30 @@ destroy: it reads `null` afterwards instead of a dangling pointer. An
 object passed into a call is lent for the length of it. A script cannot
 construct an `extern class` or give it fields (`E0139`).
 
+## What a call costs
+
+`benchmarks/actors` is a host ticking actors the way an engine does: a
+`Tick(actor, delta)` per actor per frame that reads the actor's position
+and velocity through its bindings, moves it, keeps it in bounds and
+writes it back. The same logic in C++ goes through virtual calls. A
+release build on Windows x64, a thousand actors:
+
+| | a frame | against C++ |
+| --- | --- | --- |
+| C++ | 5.8 µs | 1× |
+| Wolang, compiled ahead of time | 9.6 µs | 1.7× |
+| Wolang, the dev tier | 63 µs | 11× |
+| Wolang, the interpreter | 8.1 ms | 1400× |
+
+Every column ends in the same state as the C++ one. Ahead of time is what
+a shipped game runs: `wolang build --library actors` writes an object with
+no `main`, an `actors_start()` to call once, and `actors_Tick` to call
+like any C function. The dev tier is what an editor runs, with hot
+reloading; a call through a `WolangFunction` handle goes straight into
+compiled code when every argument is a number, a `bool` or an object. The
+interpreter is what runs under a debugger. `wolang_actor_bench` is built
+with everything else, and prints the table (D219).
+
 ## Bindings from an engine's reflection
 
 An engine with reflection already knows its classes, so nobody should

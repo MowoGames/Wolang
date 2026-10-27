@@ -49,6 +49,7 @@ endif()
 
 option(WOLANG_BUILD_TESTS "Build the Wolang test suite" ON)
 option(WOLANG_BUILD_TOOLS "Build the wolang command line driver" ON)
+option(WOLANG_BUILD_BENCHMARKS "Build the embedding benchmarks" ON)
 option(WOLANG_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(WOLANG_ENABLE_SANITIZERS "Enable address/undefined sanitizers in Debug" OFF)
 
@@ -117,6 +118,30 @@ endif()
 if(WOLANG_BUILD_TESTS AND PROJECT_IS_TOP_LEVEL)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# A host ticking actors through a script, against the same logic in C++
+# (D219). Built with everything else so that it keeps compiling; timed
+# from a release build.
+if(WOLANG_BUILD_BENCHMARKS)
+    add_executable(wolang_actor_bench benchmarks/actors/host.cc)
+    target_link_libraries(wolang_actor_bench PRIVATE wolang_embed)
+    wolang_configure_target(wolang_actor_bench)
+    wolang_ship_llvm_c(wolang_actor_bench)
+    # The same script compiled ahead of time and linked in, which is what a
+    # shipped game runs, when this build has the backend to do it.
+    if(WOLANG_BUILD_TOOLS AND (WOLANG_WITH_LLVM OR WOLANG_LLVM_C))
+        set(WOLANG_ACTORS_OBJECT ${CMAKE_CURRENT_BINARY_DIR}/actors${CMAKE_CXX_OUTPUT_EXTENSION})
+        add_custom_command(
+            OUTPUT ${WOLANG_ACTORS_OBJECT}
+            COMMAND wolang_cli build --library actors -O2 --no-debug ${PROJECT_SOURCE_DIR}/benchmarks/actors/actors.wo -o ${WOLANG_ACTORS_OBJECT}
+            DEPENDS wolang_cli ${PROJECT_SOURCE_DIR}/benchmarks/actors/actors.wo
+            COMMENT "Compiling the actor script ahead of time"
+            VERBATIM)
+        target_sources(wolang_actor_bench PRIVATE ${WOLANG_ACTORS_OBJECT})
+        set_source_files_properties(${WOLANG_ACTORS_OBJECT} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+        target_compile_definitions(wolang_actor_bench PRIVATE WOLANG_ACTORS_AOT=1)
+    endif()
 endif()
 
 # What an installed Wolang is: the driver, the libraries it compiles

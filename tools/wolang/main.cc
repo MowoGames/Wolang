@@ -95,6 +95,9 @@ struct Options {
   // `bind --reflection`: the inputs are an engine's reflection JSON, and
   // the C++ glue goes to |bind_glue| (D218).
   bool bind_reflection = false;
+  // `build --library actors`: an object a host links, with no `main` and
+  // the package's offered functions under `actors_<Name>` (D219).
+  std::string library;
   std::string bind_glue;
   std::string bind_module = "mowo";
   std::string bind_effect;
@@ -2528,6 +2531,22 @@ int RunBuild(const Options& options) {
   if (!options.no_debug) {
     settings.sources = &database.sources();
   }
+  // A library for a host to link: the files the inputs named export what
+  // they offer, and their dependencies stay inside (D219).
+  if (!options.library.empty()) {
+    settings.library = options.library;
+    for (FileId file : files) {
+      const std::string where(database.sources().Path(file));
+      for (const std::string& input : options.inputs) {
+        std::error_code failed;
+        const std::string root = std::filesystem::weakly_canonical(input, failed).string();
+        const std::string path = std::filesystem::weakly_canonical(where, failed).string();
+        if (!root.empty() && path.rfind(root, 0) == 0) {
+          settings.exported.push_back(file.index);
+        }
+      }
+    }
+  }
   const codegen::AotResult result = codegen::EmitObject(
       database.interner(), database.types(), code, settings);
   if (!result.error.empty()) {
@@ -2966,6 +2985,11 @@ int Run(int argc, char** argv) {
       continue;
     }
     if (argument == "--emit-object") {
+      options.emit_object = true;
+      continue;
+    }
+    if (argument == "--library" && i + 1 < argc) {
+      options.library = argv[++i];
       options.emit_object = true;
       continue;
     }

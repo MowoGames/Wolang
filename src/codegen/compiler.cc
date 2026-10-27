@@ -763,6 +763,49 @@ bool CompiledModule::ContainsSource(uint32_t file, uint32_t item) const {
   return impl_->ContainsSource(file, item);
 }
 
+uintptr_t CompiledModule::Prepare(uint32_t file, uint32_t item) const {
+  const Impl::Entry* entry = impl_->FindSource(file, item);
+  return entry != nullptr && entry->compiled ? reinterpret_cast<uintptr_t>(entry) : 0;
+}
+
+bool CompiledModule::CallPrepared(uintptr_t prepared, const uint64_t* slots, void* result, interp::Outcome* trapped) const {
+  Impl& impl = *impl_;
+  const auto* entry = reinterpret_cast<const Impl::Entry*>(prepared);
+  if (entry == nullptr || !impl.block_.is_installed()) {
+    trapped->trap = ir::TrapKind::kNoBody;
+    trapped->message = "was not compiled";
+    return false;
+  }
+
+  // The same frame `ResumeTask` sets up: a run may be inside a run, so the
+  // context and the landing pad are saved around this one.
+  const Context outer_context = impl.context_;
+  jmp_buf outer_landing;
+  std::memcpy(&outer_landing, &impl.landing_, sizeof(jmp_buf));
+  const Impl::RestoreOnExit restore{&impl, outer_context, &outer_landing};
+
+  impl.context_ = Context();
+  impl.context_.landing = &impl.landing_;
+  impl.context_.report = &ReportTrap;
+  impl.context_.code_begin = reinterpret_cast<uint64_t>(impl.block_.AddressOf(0));
+  impl.context_.code_end = impl.context_.code_begin + impl.bytes_.size();
+
+  const auto stub = reinterpret_cast<EntryPoint>(const_cast<void*>(impl.block_.AddressOf(entry->stub)));
+  if (_setjmp(impl.landing_) != 0) {
+    trapped->trap = static_cast<ir::TrapKind>(impl.context_.trap_kind);
+    if (impl.context_.trap_site < impl.traps_.size()) {
+      trapped->where = impl.traps_[impl.context_.trap_site].where;
+      trapped->message = impl.traps_[impl.context_.trap_site].message;
+      trapped->span = impl.traps_[impl.context_.trap_site].span;
+    }
+    return false;
+  }
+
+  SkipUnwinding(&impl.landing_);
+  stub(&impl.context_, const_cast<uint64_t*>(slots), result);
+  return true;
+}
+
 bool CompiledModule::ResumeTask(Symbol dispatch,
                                 int32_t kind,
                                 void* frame,

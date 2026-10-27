@@ -50,6 +50,15 @@ class CompiledModule {
   // unique across a program: two files may each have a `Peek`, and a
   // host calling one of them must reach the one it meant (D140).
   bool ContainsSource(uint32_t file, uint32_t item) const;
+
+  // A compiled function a host calls every frame, found once: zero when
+  // |file|/|item| has no compiled body (D219).
+  uintptr_t Prepare(uint32_t file, uint32_t item) const;
+  // Calls what `Prepare` answered with the words its stub takes, one per
+  // parameter in |slots|, and the answer's bytes in |result|. Nothing is
+  // looked up, boxed or allocated. False with |trapped| filled when the
+  // call trapped.
+  bool CallPrepared(uintptr_t prepared, const uint64_t* slots, void* result, interp::Outcome* trapped) const;
   // Why |name| was left to the interpreter, or empty when it was compiled.
   std::string_view SkipReason(Symbol name) const;
 

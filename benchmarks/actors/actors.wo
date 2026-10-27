@@ -1,0 +1,47 @@
+// What a game script does every frame: move an actor, keep it in bounds,
+// and wear its health down -- through the same calls the bindings
+// `wolang bind --reflection` writes for an engine's `AActor`.
+
+offer struct Vec3 {
+  var x: f32
+  var y: f32
+  var z: f32
+}
+
+offer extern class Actor {
+  fun RawGetLocation(out: *mut Vec3)
+  fun RawSetLocation(location: *mut Vec3)
+  fun RawGetVelocity(out: *mut Vec3)
+  fun RawSetVelocity(velocity: *mut Vec3)
+  fun GetHealth() -> f32
+  fun SetHealth(value: f32)
+}
+
+offer fun Tick(target: Actor, delta: f32) -> f32 uses unsafe {
+  var spot = Vec3(0.0, 0.0, 0.0)
+  var speed = Vec3(0.0, 0.0, 0.0)
+  target.RawGetLocation(&mut spot)
+  target.RawGetVelocity(&mut speed)
+
+  spot.x = spot.x + speed.x * delta
+  spot.y = spot.y + speed.y * delta
+  spot.z = spot.z + speed.z * delta
+  if spot.x > 100.0 || spot.x < -100.0 {
+    speed.x = -speed.x
+  }
+  if spot.y > 100.0 || spot.y < -100.0 {
+    speed.y = -speed.y
+  }
+  if spot.z > 100.0 || spot.z < 0.0 {
+    speed.z = -speed.z
+  }
+
+  var health = target.GetHealth() - delta * 0.5
+  if health < 0.0 {
+    health = 100.0
+  }
+  target.SetHealth(health)
+  target.RawSetLocation(&mut spot)
+  target.RawSetVelocity(&mut speed)
+  return health
+}

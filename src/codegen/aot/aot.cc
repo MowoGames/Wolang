@@ -311,6 +311,7 @@ class Translator {
   void Declare();
   bool Translate(Entry* entry);
   void EmitEntryPoint();
+  void EmitExports(const std::vector<uint32_t>& exported);
   std::string Unsupported(const Entry& entry);
 
   // ---------------------------------------------------------- emission ---
@@ -403,6 +404,8 @@ class Translator {
   const TypeStore& types_;
   std::vector<FileCode> files_;
   std::vector<std::unique_ptr<abi::LayoutStore>> layouts_;
+  // What a library is called, or empty for a program.
+  std::string library_;
   std::vector<Entry> entries_;
   // Which global entry each file's local function index is.
   std::vector<std::vector<uint32_t>> global_;
@@ -1913,7 +1916,11 @@ AotResult Translator::Run(const AotOptions& options) {
   for (Entry& entry : entries_) {
     Translate(&entry);
   }
+  library_ = options.library;
   EmitEntryPoint();
+  if (!library_.empty()) {
+    EmitExports(options.exported);
+  }
 
   if (debug_ != nullptr) {
     // Before the verifier: unfinished metadata is what it would complain
@@ -1992,10 +1999,34 @@ AotResult Translator::Run(const AotOptions& options) {
 // starts a program: tell the runtime which body implements which method
 // of which class, give the module-level `var`s their first values, and
 // only then call `main` (D98).
+// Every function the |exported| files offer, under a name a host can
+// declare in C: `actors_Tick` for `Tick` in a library called `actors`. An
+// alias, so the function itself keeps the name the rest of the module
+// calls it by.
+void Translator::EmitExports(const std::vector<uint32_t>& exported) {
+  for (const Entry& entry : entries_) {
+    const ir::Function& function = FunctionOf(entry);
+    if (entry.function == nullptr || function.is_declaration() || std::find(exported.begin(), exported.end(), function.source_file) == exported.end()) {
+      continue;
+    }
+    const std::string_view name = interner_.Text(function.name);
+    if (name.find_first_of(".$<") != std::string_view::npos) {
+      continue;
+    }
+    const Binding* binding = files_[entry.file].resolution->Find(function.name);
+    if (binding == nullptr || !binding->is_public) {
+      continue;
+    }
+    const std::string exported_name = library_ + "_" + std::string(name);
+    LLVMAddAlias2(mod_, LLVMGlobalGetValueType(entry.function), 0, entry.function, exported_name.c_str());
+  }
+}
+
 void Translator::EmitEntryPoint() {
   LLVMTypeRef i32 = I(32);
+  const std::string start_name = library_.empty() ? std::string("wo$start") : library_ + "_start";
   LLVMValueRef start = LLVMAddFunction(
-      mod_, "wo$start",
+      mod_, start_name.c_str(),
       LLVMFunctionType(LLVMVoidTypeInContext(ctx_), nullptr, 0, 0));
   LLVMBasicBlockRef body =
       LLVMAppendBasicBlockInContext(ctx_, start, "entry");
@@ -2049,11 +2080,15 @@ void Translator::EmitEntryPoint() {
       break;
     }
   }
-  if (program != nullptr) {
+  if (program != nullptr && library_.empty()) {
     LLVMBuildCall2(b_, LLVMGlobalGetValueType(program->function),
                    program->function, nullptr, 0, "");
   }
   LLVMBuildRetVoid(b_);
+  // A library's host has a `main` of its own.
+  if (!library_.empty()) {
+    return;
+  }
 
   // The C entry point, which is what the linker is looking for.
   LLVMTypeRef parameters[2] = {i32, Ptr()};

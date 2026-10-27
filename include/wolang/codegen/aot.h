@@ -4,6 +4,7 @@
 #ifndef WOLANG_CODEGEN_AOT_H_
 #define WOLANG_CODEGEN_AOT_H_
 
+#include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
@@ -45,6 +46,12 @@ struct AotOptions {
   // the binary has no debug information, which is a fine thing for a
   // release build to ask for (D118).
   const SourceManager* sources = nullptr;
+  // Not empty for a library a host links rather than a program: no
+  // `main`, a `<library>_start` the host calls once before anything else,
+  // and every function the |exported| files offer under the C name
+  // `<library>_<Name>` (D219).
+  std::string library;
+  std::vector<uint32_t> exported;
 };
 
 struct AotResult {

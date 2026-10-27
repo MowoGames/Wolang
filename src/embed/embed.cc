@@ -120,9 +120,27 @@ struct DebugLink {
 
 // What `wolang_vm_function` hands out: a name, so that it means the same
 // function after a reload as before (D215).
+// How one word of a prepared call is read or written: a parameter in a
+// stub's slot, or the answer in its result.
+enum class WordKind : uint8_t { kVoid, kInt, kFloat32, kFloat64, kBool, kHandle };
+
+struct Word {
+  WordKind kind = WordKind::kVoid;
+  uint8_t bytes = 8;
+  bool is_signed = true;
+  TypeId type;
+};
+
 struct FunctionHandle {
   WolangVm* vm = nullptr;
   std::string name;
+  // What a call needs to skip the lookup and the boxing, worked out for
+  // the program as it was at |generation| and again after a reload. Zero
+  // |prepared| when some parameter is not one word (D219).
+  uint64_t generation = 0;
+  uintptr_t prepared = 0;
+  std::vector<Word> words;
+  Word result;
 };
 
 struct WolangVm {
@@ -180,6 +198,9 @@ struct WolangVm {
   std::shared_ptr<DebugLink> debug;
   // What the last reload could not carry over, one line each.
   std::string notes;
+  // Which program this is: a new number every time one is compiled, which
+  // is how a function handle knows what it prepared is stale.
+  uint64_t generation = 0;
   // The packages loaded as mods, and what each was granted (D217).
   std::vector<std::pair<std::string, std::vector<std::string>>> sandboxes;
 };
@@ -334,6 +355,8 @@ void Prepare(WolangVm* vm) {
   }
   vm->compiled = wolang::codegen::Compile(vm->database.interner(),
                                           vm->database.types(), code);
+  static std::atomic<uint64_t> sm_Generations{0};
+  vm->generation = ++sm_Generations;
 
   // A module-level `var` starts as what its initializer says, and
   // something has to run those: the driver does it before `main`, and a
@@ -1082,43 +1105,6 @@ int32_t wolang_vm_call(WolangVm* vm,
 
 // ------------------------------------------------------------- handles ---
 
-WolangFunction* wolang_vm_function(WolangVm* vm, const char* name) {
-  const VmTurn turn(vm);
-  if (Find(vm, name) == nullptr) {
-    return nullptr;
-  }
-  for (FunctionHandle& handle : *vm->handles) {
-    if (handle.name == name) {
-      return reinterpret_cast<WolangFunction*>(&handle);
-    }
-  }
-  vm->handles->push_back(FunctionHandle{vm, name});
-  return reinterpret_cast<WolangFunction*>(&vm->handles->back());
-}
-
-static const FunctionHandle* HandleOf(const WolangFunction* function) {
-  return reinterpret_cast<const FunctionHandle*>(function);
-}
-
-// The function a handle names in the program as it is now.
-static const Callable* Resolved(const WolangFunction* function) {
-  if (function == nullptr || HandleOf(function)->vm == nullptr) {
-    return nullptr;
-  }
-  const Callable* entry = Find(HandleOf(function)->vm, HandleOf(function)->name.c_str());
-  return entry != nullptr && entry->function != nullptr ? entry : nullptr;
-}
-
-int32_t wolang_call(WolangFunction* function,
-                    const WolangValue* arguments,
-                    int32_t count,
-                    WolangValue* out) {
-  if (function == nullptr || HandleOf(function)->vm == nullptr) {
-    return 1;
-  }
-  return wolang_vm_call(HandleOf(function)->vm, HandleOf(function)->name.c_str(), arguments, count, out);
-}
-
 namespace {
 
 // How many bytes an integer of this width takes.
@@ -1158,6 +1144,192 @@ WolangKind KindOf(const wolang::TypeStore& types, TypeId type) {
 }
 
 }  // namespace
+
+WolangFunction* wolang_vm_function(WolangVm* vm, const char* name) {
+  const VmTurn turn(vm);
+  if (Find(vm, name) == nullptr) {
+    return nullptr;
+  }
+  for (FunctionHandle& handle : *vm->handles) {
+    if (handle.name == name) {
+      return reinterpret_cast<WolangFunction*>(&handle);
+    }
+  }
+  FunctionHandle handle;
+  handle.vm = vm;
+  handle.name = name;
+  vm->handles->push_back(std::move(handle));
+  return reinterpret_cast<WolangFunction*>(&vm->handles->back());
+}
+
+static const FunctionHandle* HandleOf(const WolangFunction* function) {
+  return reinterpret_cast<const FunctionHandle*>(function);
+}
+
+// The function a handle names in the program as it is now.
+static const Callable* Resolved(const WolangFunction* function) {
+  if (function == nullptr || HandleOf(function)->vm == nullptr) {
+    return nullptr;
+  }
+  const Callable* entry = Find(HandleOf(function)->vm, HandleOf(function)->name.c_str());
+  return entry != nullptr && entry->function != nullptr ? entry : nullptr;
+}
+
+// One word of a prepared call, for a value of |type|; `kVoid` when it is
+// not one word.
+static Word WordOf(const wolang::TypeStore& types, TypeId type) {
+  Word word;
+  word.type = type;
+  if (!type.is_valid()) {
+    return word;
+  }
+  switch (types.KindOf(type)) {
+    case TypeKind::kBool:
+      word.kind = WordKind::kBool;
+      return word;
+    case TypeKind::kInt:
+      word.kind = WordKind::kInt;
+      word.bytes = static_cast<uint8_t>(BytesOfWidth(types.Get(type).int_width));
+      word.is_signed = types.Get(type).is_signed;
+      return word;
+    case TypeKind::kFloat:
+      word.kind = types.Get(type).float_width == wolang::FloatWidth::k32 ? WordKind::kFloat32 : WordKind::kFloat64;
+      return word;
+    default:
+      break;
+  }
+  if (types.IsHandle(type) && !types.IsOptional(type)) {
+    word.kind = WordKind::kHandle;
+  }
+  return word;
+}
+
+static void PrepareHandle(WolangVm* vm, FunctionHandle* handle) {
+  handle->generation = vm->generation;
+  handle->prepared = 0;
+  handle->words.clear();
+  const Callable* entry = Find(vm, handle->name.c_str());
+  if (entry == nullptr || entry->function == nullptr || vm->compiled == nullptr) {
+    return;
+  }
+
+  const wolang::TypeStore& types = vm->database.types();
+  for (TypeId param : types.ArgumentsOf(entry->function->type)) {
+    const Word word = WordOf(types, param);
+    if (word.kind == WordKind::kVoid || handle->words.size() == 16) {
+      handle->words.clear();
+      return;
+    }
+    handle->words.push_back(word);
+  }
+  const TypeId returned = types.ElementOf(entry->function->type);
+  handle->result = WordOf(types, returned);
+  if (handle->result.kind == WordKind::kVoid && returned.is_valid() && types.KindOf(returned) != TypeKind::kVoid) {
+    handle->words.clear();
+    return;
+  }
+  handle->prepared = vm->compiled->Prepare(entry->function->source_file, entry->function->source_item);
+}
+
+// A host's value as the word a stub takes.
+static uint64_t SlotOf(const Word& word, const WolangValue& value) {
+  uint64_t slot = 0;
+  switch (word.kind) {
+    case WordKind::kInt:
+      slot = static_cast<uint64_t>(value.kind == kWolangFloat ? static_cast<int64_t>(value.number) : value.integer);
+      return slot;
+    case WordKind::kFloat32: {
+      const auto number = static_cast<float>(value.kind == kWolangInt ? static_cast<double>(value.integer) : value.number);
+      std::memcpy(&slot, &number, sizeof(number));
+      return slot;
+    }
+    case WordKind::kFloat64: {
+      const double number = value.kind == kWolangInt ? static_cast<double>(value.integer) : value.number;
+      std::memcpy(&slot, &number, sizeof(number));
+      return slot;
+    }
+    case WordKind::kBool:
+      return (value.kind == kWolangInt ? value.integer != 0 : value.boolean != 0) ? 1 : 0;
+    case WordKind::kHandle:
+      return reinterpret_cast<uint64_t>(value.handle);
+    default:
+      return 0;
+  }
+}
+
+// A stub's answer as the host's value.
+static WolangValue AnswerOf(WolangVm* vm, const Word& word, const uint8_t* bytes) {
+  switch (word.kind) {
+    case WordKind::kInt: {
+      uint64_t raw = 0;
+      std::memcpy(&raw, bytes, word.bytes);
+      if (word.is_signed && word.bytes < 8) {
+        const uint64_t sign = uint64_t{1} << (word.bytes * 8 - 1);
+        raw = (raw ^ sign) - sign;
+      }
+      return wolang_int(static_cast<int64_t>(raw));
+    }
+    case WordKind::kFloat32: {
+      float number = 0.0f;
+      std::memcpy(&number, bytes, sizeof(number));
+      return wolang_float(number);
+    }
+    case WordKind::kFloat64: {
+      double number = 0.0;
+      std::memcpy(&number, bytes, sizeof(number));
+      return wolang_float(number);
+    }
+    case WordKind::kBool:
+      return wolang_bool((bytes[0] & 1) != 0);
+    case WordKind::kHandle: {
+      uint64_t address = 0;
+      std::memcpy(&address, bytes, sizeof(address));
+      return ObjectOf(vm, address, word.type);
+    }
+    default:
+      return wolang_void();
+  }
+}
+
+int32_t wolang_call(WolangFunction* function,
+                    const WolangValue* arguments,
+                    int32_t count,
+                    WolangValue* out) {
+  if (function == nullptr || HandleOf(function)->vm == nullptr) {
+    return 1;
+  }
+  auto* handle = reinterpret_cast<FunctionHandle*>(function);
+  WolangVm* vm = handle->vm;
+  const VmTurn turn(vm);
+
+  // A frame's call into a script: the words straight into the compiled
+  // stub. Anything that needs more -- a string, a step limit, an editor
+  // attached -- goes the long way (D219).
+  if (vm->ok && vm->allow_compiled && vm->steps == 0 && vm->compiled != nullptr && Attached(vm) == nullptr) {
+    if (handle->generation != vm->generation) {
+      PrepareHandle(vm, handle);
+    }
+    if (handle->prepared != 0 && count == static_cast<int32_t>(handle->words.size()) && (count == 0 || arguments != nullptr)) {
+      uint64_t slots[16] = {};
+      for (int32_t i = 0; i < count; ++i) {
+        slots[i] = SlotOf(handle->words[static_cast<size_t>(i)], arguments[i]);
+      }
+      alignas(16) uint8_t result[16] = {};
+
+      wolang::interp::Outcome trapped;
+      if (!vm->compiled->CallPrepared(handle->prepared, slots, result, &trapped)) {
+        vm->errors = std::string("wolang: ") + std::string(wolang::interp::TrapKindName(trapped.trap)) + " at " + trapped.where + "\n";
+        return 1;
+      }
+      if (out != nullptr) {
+        *out = AnswerOf(vm, handle->result, result);
+      }
+      return 0;
+    }
+  }
+  return wolang_vm_call(vm, handle->name.c_str(), arguments, count, out);
+}
+
 
 int32_t wolang_function_arity(const WolangFunction* function) {
   const VmTurn turn(function != nullptr ? HandleOf(function)->vm : nullptr);
