@@ -1,6 +1,16 @@
-<img src="assets/logo-128.png" width="96" align="right" alt="">
+<p align="center">
+  <img src="assets/logo-256.png" width="128" alt="Wolang logo">
+</p>
 
-# Wolang
+<h1 align="center">Wolang</h1>
+
+<p align="center">
+  <a href="LICENSE">Apache-2.0</a> ·
+  <a href="docs/tour.md">Tour</a> ·
+  <a href="docs/spec.md">Specification</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="https://github.com/MowoGames/Wolang/discussions">Discussions</a>
+</p>
 
 A statically typed, compiled, general purpose language with gamedev-grade
 ergonomics. Wolang is its own project: the compiler, runtime and libraries have
@@ -208,6 +218,15 @@ docs/             specification, architecture, decisions, diagnostics, style
 - [docs/debugging.md](docs/debugging.md) — debuggers, profiles, replays
 - [editors/README.md](editors/README.md) — editor support, all over `wolang lsp`
 - [assets/](assets/) — the logo, the wordmark and the mascot, and the script that draws them
+
+## Contributing
+
+Wolang is open source and takes contributions: bug reports, tests,
+library modules, editor support, documentation and compiler work.
+[CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test and send a
+change, and has a list of places to start. Questions go to
+[Discussions](https://github.com/MowoGames/Wolang/discussions); see
+[SUPPORT.md](SUPPORT.md) for where everything else goes.
 
 ## Licence
 

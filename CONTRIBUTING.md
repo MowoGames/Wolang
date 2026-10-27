@@ -103,6 +103,37 @@ Start with [docs/architecture.md](docs/architecture.md) for how a program
 becomes a binary, and [STATUS.md](STATUS.md) for what is done and what is
 not.
 
+## Where to start
+
+Issues labelled
+[`good first issue`](https://github.com/MowoGames/Wolang/labels/good%20first%20issue)
+are small and self-contained; issues labelled
+[`help wanted`](https://github.com/MowoGames/Wolang/labels/help%20wanted)
+are larger and nobody is on them. If you want to take one, say so on the
+issue so two people do not do the same work.
+
+Beyond the issue list, these are open and are good ways in. Each one is
+in [STATUS.md](STATUS.md) with the context around it.
+
+| Size | Area | What is missing |
+|---|---|---|
+| small | docs | A program from the tour or the cookbook that you wished existed. Every example is compiled by CI, so a wrong one fails. |
+| small | `std` | `strftime`-style patterns for formatting and parsing dates; today only ISO 8601 is understood. |
+| small | `http` | A cookie jar and `multipart/form-data` in the client. |
+| small | `editors` | A grammar or an LSP setup for an editor that is not in [editors/](editors/). |
+| medium | `codegen` | Strength reduction for any constant divisor, not only powers of two. |
+| medium | `codegen` | Spill slots that are reused instead of one frame area per temporary. |
+| medium | tools | Reading an IR dump back in; the printer is stable, the reader does not exist. |
+| medium | tools | Version ranges for dependencies; today a dependency is an exact revision. |
+| deep | `ir` | Alias analysis, and the vectorisation that needs it. |
+| deep | `codegen` | Windows on arm64: the arm64 emitter with the Windows calling convention. |
+
+Something larger, or a change to the language itself, starts as a
+[discussion](https://github.com/MowoGames/Wolang/discussions) or a
+feature issue rather than as a pull request. The language has a
+specification and about two hundred numbered decisions behind it, and a
+short conversation first saves a long review later.
+
 ## Reporting a bug
 
 Open an issue with the smallest program that shows it, what you expected,
