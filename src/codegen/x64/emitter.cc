@@ -2567,6 +2567,13 @@ class FunctionEmitter {
         } else {
           assembler_.Sub(IWidth::k32, kAccumulator, right);
         }
+        // The 32-bit operation zero-extended its result, and a negative
+        // one that fits is the sign-extended form: widen it the way the
+        // canonical form is before comparing, or `3s16 - 5s16` traps
+        // (D231). A multiply is already a full 64-bit product.
+        if (is_signed) {
+          assembler_.Movsx(IWidth::k32, kAccumulator, kAccumulator);
+        }
         const Register reg = DestInt(id, 0);
         CheckFits(id, kAccumulator, operand_type, reg, inst.opcode);
         FinishInt(id, reg);
@@ -2677,6 +2684,9 @@ class FunctionEmitter {
           return;
         }
         assembler_.Neg(IWidth::k32, kAccumulator);
+        if (is_signed) {
+          assembler_.Movsx(IWidth::k32, kAccumulator, kAccumulator);
+        }
         CheckFits(id, kAccumulator, operand_type, reg, inst.opcode);
         FinishInt(id, reg);
         return;
@@ -2793,12 +2803,6 @@ class FunctionEmitter {
                  Register destination,
                  ir::Opcode opcode) {
     const Register narrowed = Scratch(2);
-    // The 32-bit operation zero-extended its result, and a negative one
-    // that fits is a sign-extended value: widen it the way the canonical
-    // form is before comparing, or `3s16 - 5s16` traps (D231).
-    if (layouts_.IsSignedInteger(type)) {
-      assembler_.Movsx(IWidth::k32, raw, raw);
-    }
     Canonicalize(raw, type, narrowed);
     assembler_.Cmp(IWidth::k64, narrowed, raw);
     const Label trap = TrapLabel(

@@ -2657,6 +2657,12 @@ class FunctionEmitter {
         } else {
           assembler_.Sub(IWidth::k32, raw, left, right);
         }
+        // As on x64: a negative result that fits comes out of the 32-bit
+        // operation zero-extended; widen it as the canonical form is
+        // before comparing (D231). A multiply is already a 64-bit product.
+        if (is_signed) {
+          assembler_.Sxtw(raw, raw);
+        }
         CheckFits(id, raw, operand_type, reg, inst.opcode);
         FinishInt(id, reg);
         return;
@@ -2760,6 +2766,9 @@ class FunctionEmitter {
         }
         const Register raw = Scratch(3);
         assembler_.Sub(IWidth::k32, raw, Register::kZr, left);
+        if (is_signed) {
+          assembler_.Sxtw(raw, raw);
+        }
         CheckFits(id, raw, operand_type, reg, inst.opcode);
         FinishInt(id, reg);
         return;
@@ -2871,12 +2880,6 @@ class FunctionEmitter {
                  Register destination,
                  ir::Opcode opcode) {
     const Register narrowed = Scratch(2);
-    // As on x64: the 32-bit operation zero-extended a negative result
-    // that fits, so widen it as the canonical form is before comparing
-    // (D231).
-    if (layouts_.IsSignedInteger(type)) {
-      assembler_.Sxtw(raw, raw);
-    }
     Canonicalize(raw, type, narrowed);
     assembler_.Cmp(IWidth::k64, narrowed, raw);
     const Label trap = TrapLabel(

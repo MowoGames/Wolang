@@ -2715,6 +2715,23 @@ fun Wraps() -> int {
                    "trap: overflow at @Wraps:%5: add overflowed");
 }
 
+WOLANG_TEST(CodegenTest, ASignedThirtyTwoBitProductStillTrapsOnOverflow) {
+  // The sign-extension that narrow `-` needs must not be applied to a
+  // multiply's 64-bit product (D231).
+  Fixture f(R"(
+fun Product() -> int {
+  var buf: [2]int
+  buf[0] = 0 - 2147483647
+  const x = buf[0]
+  const y = (~x) * x
+  buf[1] = y
+  return buf[1]
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Product", {}),
+                   "trap: overflow at @Product:%13: mul overflowed");
+}
+
 WOLANG_TEST(CodegenTest, ReleasesWhatObjectsHold) {
   Fixture f(R"(
 extern "C" fun wolang_objects_live() -> s64
