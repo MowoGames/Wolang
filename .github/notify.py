@@ -80,11 +80,23 @@ def excerpt(log, limit=900):
 
 
 def previous_failed(run):
-    """Whether the run before this one, of the same workflow on the same branch, failed."""
+    """Whether the last result before this one, of the same workflow on the same branch, was a
+    failure. «Re-run failed jobs» keeps the run and adds an attempt, so a re-run that passed
+    looks at its own previous attempt. A cancelled run is no result — a newer push cancels one
+    still waiting — so it is looked past, or a red, cancelled, green sequence would say nothing."""
+    attempt = run.get("run_attempt") or 1
+    if attempt > 1:
+        prev = api(f"/repos/{REPO}/actions/runs/{run['id']}/attempts/{attempt - 1}") or {}
+        if prev.get("conclusion") == "failure":
+            return True
     runs = api(f"/repos/{REPO}/actions/workflows/{run['workflow_id']}/runs?branch={run['head_branch']}"
-               f"&status=completed&per_page=10") or {}
-    before = [r for r in runs.get("workflow_runs", []) if r["id"] != run["id"] and r["created_at"] <= run["created_at"]]
-    return bool(before) and before[0].get("conclusion") == "failure"
+               f"&status=completed&per_page=30") or {}
+    before = [r for r in runs.get("workflow_runs", [])
+              if r["id"] != run["id"] and r["created_at"] <= run["created_at"]
+              and r.get("conclusion") not in ("cancelled", "skipped", None)]
+    if before:
+        print(f"notify: the run before this one ({before[0]['html_url']}) concluded {before[0]['conclusion']}")
+    return bool(before) and before[0]["conclusion"] == "failure"
 
 
 def gather():
@@ -134,6 +146,7 @@ def send(url, payload, what):
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "User-Agent": "mowo-notify"})
         try:
             urllib.request.urlopen(req, timeout=15).close()
+            print(f"notify: sent to {what}")
             return
         except urllib.error.HTTPError as err:
             raw = err.read()
@@ -165,7 +178,14 @@ def main():
     tok, chat, thread = E("TELEGRAM_BOT_TOKEN", ""), E("TELEGRAM_CHAT_ID", ""), E("TELEGRAM_THREAD_ID", "")
     dry = E("NOTIFY_DRY_RUN") == "1"
     if not (hooks or (tok and chat) or dry):
+        print("notify: no Discord webhook and no Telegram bot configured; nothing sent")
         return
+    # One of the two set and the other not is a missing secret, not a choice: say so in the run
+    if hooks and not (tok and chat):
+        print("::warning::notify: Telegram is not sent: "
+              + ("the secret TELEGRAM_BOT_TOKEN is not set for this repository" if not tok else "TELEGRAM_CHAT_ID is empty"))
+    if (tok and chat) and not hooks:
+        print("::warning::notify: Discord is not sent: the secret DISCORD_WEBHOOK_URL is not set for this repository")
 
     info, run = gather()
     if E("NOTIFY_ONLY_IF_FIXED") == "1" and not (run and previous_failed(run)):
