@@ -3,6 +3,7 @@
 
 #include "wolang/sema/flow.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -15,6 +16,8 @@ namespace {
 
 constexpr std::string_view kEscapesRegion = "E0121";
 constexpr std::string_view kUsedAfterMove = "E0122";
+// A value built inside `arena { }` that is kept past the block (D228).
+constexpr std::string_view kArenaEscape = "E0142";
 constexpr std::string_view kUsedBeforeWritten = "E0123";
 // A function that declares a result and has a path that reaches its end
 // without returning one.
@@ -50,6 +53,9 @@ struct Local {
   // Reported once: a variable used three times after being moved is one
   // mistake, not three.
   bool reported = false;
+  // The arena nesting this local's value was built in, or zero when it is
+  // not known to come from one (D228).
+  uint32_t arena = 0;
 };
 
 class FlowChecker {
@@ -335,6 +341,82 @@ class FlowChecker {
               "never kept somewhere that outlives it");
   }
 
+  // Whether a value of |type| can hold an object made in an arena: a class
+  // handle, or an aggregate that may contain one.
+  bool MayHoldObject(TypeId type) const {
+    if (types_.IsHandle(type)) {
+      return true;
+    }
+    switch (types_.KindOf(types_.StripWrappers(type))) {
+      case TypeKind::kNamed:
+      case TypeKind::kInstance:
+      case TypeKind::kTuple:
+      case TypeKind::kArray:
+      case TypeKind::kSlice:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // The arena nesting |id| was built in when it is, or is derived from, an
+  // object made inside an `arena { }`; zero otherwise. A call or
+  // construction that yields a class is assumed to allocate in the arena
+  // it runs in, since the arena is not named at the call (D228).
+  uint32_t ArenaOf(ExprId id) const {
+    if (!ast_.Contains(id)) {
+      return 0;
+    }
+    const Expr& expr = ast_.Get(id);
+    const TypeId type = typed_.TypeOf(id);
+    uint32_t level = 0;
+    switch (expr.kind) {
+      case ExprKind::kPath: {
+        const Local* local = Find(expr.name);
+        return local != nullptr ? local->arena : 0;
+      }
+      case ExprKind::kCall:
+      case ExprKind::kStructLiteral:
+        if (depth_ > 0 && types_.IsHandle(type)) {
+          level = depth_;
+        }
+        [[fallthrough]];
+      case ExprKind::kArrayLiteral:
+      case ExprKind::kTupleLiteral:
+        if (MayHoldObject(type)) {
+          for (ExprId argument : ast_.Get(expr.args)) {
+            level = std::max(level, ArenaOf(argument));
+          }
+        }
+        return level;
+      case ExprKind::kField:
+      case ExprKind::kOptionalField:
+      case ExprKind::kIndex:
+        return MayHoldObject(type) ? ArenaOf(expr.lhs) : 0;
+      case ExprKind::kUnary:
+      case ExprKind::kTry:
+      case ExprKind::kUnsafe:
+        return expr.op == TokenKind::kAmp || MayHoldObject(type)
+                   ? ArenaOf(expr.lhs)
+                   : 0;
+      case ExprKind::kBinary:
+        return MayHoldObject(type)
+                   ? std::max(ArenaOf(expr.lhs), ArenaOf(expr.rhs))
+                   : 0;
+      default:
+        return 0;
+    }
+  }
+
+  void ArenaEscape(SourceSpan span, const char* where) {
+    std::string message = "an object made inside `arena` would outlive it, ";
+    message.append(where);
+    diagnostics_->Error(kArenaEscape, std::move(message))
+        .Primary(span, "escapes here")
+        .Note("everything an arena took is gone when its block ends; keep "
+              "it inside the block, or build it outside");
+  }
+
   // Whether the use at |id| was accepted as a borrow rather than taken by
   // value. Only the checker knows, because only it knows which conversion
   // rule it applied.
@@ -420,11 +502,12 @@ class FlowChecker {
         const bool zero_filled =
             !stmt.expr.is_valid() && ast_.Contains(stmt.type) &&
             ast_.Get(stmt.type).kind == TypeRefKind::kArray;
+        const uint32_t arena = stmt.expr.is_valid() ? ArenaOf(stmt.expr) : 0;
         locals_.push_back(
             Local{pattern.name, depth_,
                   stmt.expr.is_valid() || zero_filled ? Liveness::kLive
                                                       : Liveness::kUnwritten,
-                  false});
+                  false, arena});
         return Flow::kFalls;
       }
 
@@ -435,6 +518,9 @@ class FlowChecker {
           // to a local cannot be returned at all.
           CheckEscape(stmt.expr, -1, ast_.Get(stmt.expr).span,
                       returns_slice_);
+          if (ArenaOf(stmt.expr) > 0) {
+            ArenaEscape(ast_.Get(stmt.expr).span, "returned from the function");
+          }
         }
         return Flow::kDiverges;
 
@@ -442,6 +528,11 @@ class FlowChecker {
       case StmtKind::kContinue:
         if (stmt.expr.is_valid()) {
           Expression(stmt.expr);
+          // A loop outside the arena takes the value past the block.
+          if (!loop_depths_.empty() &&
+              ArenaOf(stmt.expr) > loop_depths_.back()) {
+            ArenaEscape(ast_.Get(stmt.expr).span, "broken out of the block");
+          }
         }
         return Flow::kDiverges;
 
@@ -525,7 +616,15 @@ class FlowChecker {
           // A compound assignment reads the target as well.
           Report(name, expr.span);
         }
+        const uint32_t arena = ArenaOf(expr.rhs);
+        if (arena > 0) {
+          const Local* target = Find(name);
+          if (target == nullptr || target->depth < arena) {
+            ArenaEscape(expr.span, "stored where the block does not reach");
+          }
+        }
         if (Local* local = Find(name)) {
+          local->arena = std::max(local->arena, arena);
           CheckEscape(expr.rhs, static_cast<int>(local->depth), expr.span,
                       types_.KindOf(typed_.TypeOf(expr.lhs)) ==
                           TypeKind::kSlice);
@@ -646,9 +745,15 @@ class FlowChecker {
           flow = Statements(ast_.Get(expr.lhs).stmts);
           CheckEscape(ValueOf(expr.lhs), static_cast<int>(depth_) - 1,
                       expr.span);
+          if (ArenaOf(ValueOf(expr.lhs)) >= depth_) {
+            ArenaEscape(expr.span, "given out as the block's value");
+          }
         } else {
           flow = Expression(expr.lhs);
           CheckEscape(expr.lhs, static_cast<int>(depth_) - 1, expr.span);
+          if (ArenaOf(expr.lhs) >= depth_) {
+            ArenaEscape(expr.span, "given out as the block's value");
+          }
         }
         locals_.resize(base);
         --depth_;
@@ -734,6 +839,12 @@ class FlowChecker {
   // The body may also not run at all, so nothing it wrote is known
   // afterwards -- while anything it moved is gone.
   void Body(ExprId body) {
+    loop_depths_.push_back(depth_);
+    BodyWalk(body);
+    loop_depths_.pop_back();
+  }
+
+  void BodyWalk(ExprId body) {
     const std::vector<Liveness> before = Written();
     const size_t depth = locals_.size();
     Expression(body);
@@ -813,6 +924,8 @@ class FlowChecker {
   uint32_t depth_ = 0;
   // The function being walked declares a slice result.
   bool returns_slice_ = false;
+  // The arena nesting at each enclosing loop, for `break` with a value.
+  std::vector<uint32_t> loop_depths_;
 };
 
 }  // namespace

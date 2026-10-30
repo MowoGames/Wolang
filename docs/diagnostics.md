@@ -222,6 +222,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0140` | a generic instantiates itself with ever bigger types | `fun F<T>(x: T) { F([x]) }` (D225) |
 | `E0121` | a reference would outlive what it points into | `return &local` |
 | `E0121` | a reference would outlive what it points into (also through fields, indices, calls and a local array as a slice, D228) | `return &local.n` |
+| `E0142` | an object made inside `arena { }` is stored outside, returned or given out as the block's value (D228) | `kept = Leaf(1)` inside the block, `kept` declared outside |
 | `E0122` | a value that was moved out of is used again | `const b = a` then `Take(a)` where `a: Text` |
 | `E0123` | a variable is used before anything is written to it | `var x: int` then `return x` |
 | `E0124` | the conversion is not between numbers | `s as int` where `s: text` |

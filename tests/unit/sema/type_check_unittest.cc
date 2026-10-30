@@ -2169,6 +2169,80 @@ fun Local() -> int {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheckTest, RejectsAnArenaObjectThatLeavesTheBlock) {
+  // An object made in an arena is gone when the block ends (D228): it may
+  // not be stored outside, returned, or given out as the block's value.
+  Fixture f(R"(
+class Leaf {
+  var id: int = 0
+}
+class Box {
+  var leaf: Leaf = Leaf(0)
+}
+
+var kept: Leaf? = null
+
+fun ToGlobal() {
+  arena {
+    kept = Leaf(1)
+  }
+}
+
+fun ToOuterLocal() {
+  var outer: Leaf? = null
+  arena {
+    const inner = Leaf(2)
+    outer = inner
+  }
+}
+
+fun ToOuterField(b: Box) {
+  arena {
+    b.leaf = Leaf(3)
+  }
+}
+
+fun Returned() -> Leaf {
+  arena {
+    const l = Leaf(4)
+    return l
+  }
+}
+
+fun AsValue() -> Leaf {
+  return arena {
+    Leaf(5)
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0142,E0142,E0142,E0142,E0142");
+}
+
+WOLANG_TEST(TypeCheckTest, AnArenaObjectInsideItsBlockIsFine) {
+  // Non-firing twin: using it, and keeping an object made outside.
+  Fixture f(R"(
+class Leaf {
+  var id: int = 0
+}
+class Box {
+  var leaf: Leaf = Leaf(0)
+}
+
+fun Inside() -> int {
+  const outside = Leaf(9)
+  var total = 0
+  arena {
+    const a = Leaf(1)
+    const b = Box(a)
+    b.leaf = Leaf(2)
+    total = a.id + b.leaf.id + outside.id
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 WOLANG_TEST(TypeCheckTest, OnlyATaskMaySuspend) {
   // `wait` is where a function suspends, and `task` is the signature's way
   // of saying it can. Keeping the word at the call site is what makes a
