@@ -2772,7 +2772,7 @@ class FunctionEmitter {
           return;
         }
         const Register raw = Scratch(3);
-        assembler_.Sub(IWidth::k32, raw, Register::kZr, left);
+        assembler_.Neg(IWidth::k32, raw, left);
         if (is_signed) {
           assembler_.Sxtw(raw, raw);
         }
