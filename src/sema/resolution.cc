@@ -337,7 +337,7 @@ namespace {
 // one fired. The states themselves are members too, so that a diagnostic
 // can name them and so that nothing else has to parse the machine again.
 void MachineMembers(const Ast& ast,
-                    const ItemTree& tree,
+                    const ItemTree& /*tree*/,
                     StringInterner* interner,
                     TypeStore* types,
                     uint32_t machine,

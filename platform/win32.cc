@@ -279,9 +279,13 @@ LRESULT CALLBACK Procedure(HWND handle, UINT message, WPARAM w,
       if (LOWORD(l) != HTCLIENT) {
         break;
       }
-      static const LPCWSTR kShapes[] = {IDC_ARROW,  IDC_HAND,   IDC_IBEAM,
-                                        IDC_CROSS,  IDC_SIZEWE, IDC_SIZENS,
-                                        IDC_SIZEALL};
+      // The wide forms by number: the `IDC_*` macros follow `UNICODE`,
+      // which this file does not define, and would be narrow (D247).
+      static const LPCWSTR kShapes[] = {
+          MAKEINTRESOURCEW(32512), MAKEINTRESOURCEW(32649),  // arrow, hand
+          MAKEINTRESOURCEW(32513), MAKEINTRESOURCEW(32515),  // ibeam, cross
+          MAKEINTRESOURCEW(32644), MAKEINTRESOURCEW(32645),  // size we, ns
+          MAKEINTRESOURCEW(32646)};                          // size all
       SetCursor(owner->cursor_visible && !owner->locked
                     ? LoadCursorW(nullptr, kShapes[owner->shape])
                     : nullptr);
@@ -1036,7 +1040,7 @@ const char* PickFile(const char* title, const char* start_name, bool save) {
   wchar_t buffer[MAX_PATH * 4] = {};
   if (start_name != nullptr) {
     const std::wstring name = Wide(start_name);
-    wcsncpy(buffer, name.c_str(), MAX_PATH * 4 - 1);
+    wcsncpy_s(buffer, name.c_str(), _TRUNCATE);
   }
   const std::wstring heading = Wide(title != nullptr ? title : "");
   OPENFILENAMEW request = {};
