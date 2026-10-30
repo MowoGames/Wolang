@@ -1765,6 +1765,10 @@ class Lowerer {
 
     if (HasFlag(item.flags, ItemFlags::kExpressionBody)) {
       const InstId value = Value(item.body);
+      // `=> r.id` leaves the function like a `return` does: a by-value
+      // parameter that owns something is destroyed here, or it leaked
+      // whenever the callee was written as an expression (D229).
+      RunDeferred(0);
       if (types_->KindOf(return_type_) == TypeKind::kVoid) {
         builder.ReturnVoid();
       } else {
@@ -2458,6 +2462,24 @@ class Lowerer {
       const uint32_t method = MethodIndex(type, *deinit);
       if (method != 0xFFFFFFFFu) {
         builder.Call(method, types_->void_type(), {self});
+        // A `deinit` that stored `self` raised the count from zero; freeing
+        // now would leave that reference dangling, so trap (D229).
+        const TypeId i32 = types_->Int(IntWidth::k32, /*is_signed=*/true);
+        const Symbol escaped = interner_->Intern("wolang_object_escaped");
+        const uint32_t check = DeclareExternal(
+            escaped, types_->Function({types_->u64()}, i32));
+        module_->functions[check].foreign_symbol = escaped;
+        const InstId raised =
+            builder.Call(check, i32, {AsDeclared(check, 0, self)});
+        const InstId zero = builder.ConstInt(i32, 0);
+        const InstId bad =
+            builder.Add(Opcode::kNe, types_->bool_type(), {raised, zero});
+        const BlockId trap = builder.AddBlock("deinit.escaped");
+        const BlockId go = builder.AddBlock("deinit.done");
+        builder.Branch(bad, trap, go);
+        builder.SetCurrent(trap);
+        builder.Unreachable();
+        builder.SetCurrent(go);
       }
     }
 

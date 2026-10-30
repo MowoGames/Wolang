@@ -186,6 +186,21 @@ int32_t wolang_object_release(void* object) {
   return before == 1 ? 1 : 0;
 }
 
+int32_t wolang_object_escaped(void* object) {
+  // Called after a `deinit` returns, when the count is zero. Anything
+  // else means the body stored `self` somewhere that outlives the
+  // object, and freeing it would leave that reference dangling (D229).
+  if (object == nullptr || wolang_arena_owns(object)) {
+    return 0;
+  }
+  if (std::atomic_ref<uint64_t>(*CountOf(object)).load(std::memory_order_relaxed) == 0) {
+    return 0;
+  }
+  std::fprintf(stderr, "wolang: deinit let `self` escape\n");
+  std::fflush(stderr);
+  return 1;
+}
+
 void wolang_object_free(void* object) {
   // Storage an open `arena` block handed out is reclaimed by the block,
   // not by this: a destructor that runs inside one would otherwise free a

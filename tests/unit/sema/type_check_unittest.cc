@@ -2338,5 +2338,89 @@ fun Use() {
   WOLANG_EXPECT_EQ(f.Codes(), "E0105");
 }
 
+WOLANG_TEST(TypeCheckTest, DeinitCannotStoreSelf) {
+  Fixture fires(R"(
+var stash: Zombie? = null
+
+class Zombie {
+  var id: int = 0
+  deinit {
+    stash = self
+  }
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0145"));
+
+  Fixture fine(R"(
+var seen: int = 0
+
+class Zombie {
+  var id: int = 0
+  deinit {
+    seen = self.id
+  }
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0145"));
+}
+
+WOLANG_TEST(TypeCheckTest, MovingAPayloadOutOfAMatchMovesTheEnum) {
+  Fixture fires(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+enum Wrap {
+  Empty
+  Has(r: Res)
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun Twice() -> int {
+  const w = Wrap.Has(Res(1))
+  const a = match w {
+    Wrap.Has(r) => Take(r),
+    Wrap.Empty => 0,
+  }
+  const b = match w {
+    Wrap.Has(r) => Take(r),
+    Wrap.Empty => 0,
+  }
+  return a + b
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0122"));
+
+  Fixture fine(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+enum Wrap {
+  Empty
+  Has(r: Res)
+}
+
+fun Twice() -> int {
+  const w = Wrap.Has(Res(1))
+  const a = match w {
+    Wrap.Has(r) => r.id,
+    Wrap.Empty => 0,
+  }
+  const b = match w {
+    Wrap.Has(r) => r.id,
+    Wrap.Empty => 0,
+  }
+  return a + b
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0122"));
+}
+
 }  // namespace
 }  // namespace wolang

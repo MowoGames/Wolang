@@ -3026,6 +3026,68 @@ WOLANG_TEST(CodegenTest, LayoutSurvivesARecursiveEnum) {
   WOLANG_EXPECT(!layouts.IsSupported(binding->type));
 }
 
+WOLANG_TEST(CodegenTest, ADeinitThatKeepsSelfStopsEveryTier) {
+  // Storing `self` from inside its own `deinit` leaves a freed object
+  // referenced, so every tier stops at the same place (D229). Sema only
+  // sees the direct assignment; a call that stores it is the runtime's.
+  Fixture f(R"(
+var stash: Zombie? = null
+
+fun Keep(z: Zombie) {
+  stash = z
+}
+
+class Zombie {
+  var id: int = 0
+  deinit {
+    Keep(self)
+  }
+}
+
+fun Make() -> int {
+  const z = Zombie(1)
+  return z.id
+}
+
+class Fine {
+  var id: int = 0
+}
+
+fun MakeFine() -> int {
+  const z = Fine(2)
+  return z.id
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("MakeFine", {}), "2");
+  const std::string trapped = f.Run("Make", {});
+  WOLANG_EXPECT(trapped.starts_with("trap: unreachable at"));
+}
+
+WOLANG_TEST(CodegenTest, AnExpressionBodyDropsItsOwningParameter) {
+  // `=> r.id` left the function without the destroy a `return` runs, so a
+  // value handed in by move was never dropped (D229).
+  Fixture f(R"(
+var drops: int = 0
+
+struct Res {
+  var id: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun Once() -> int {
+  drops = 0
+  const r = Res(1)
+  const _x = Take(r)
+  return drops
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Once", {}), "1");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

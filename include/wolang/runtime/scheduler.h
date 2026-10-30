@@ -56,6 +56,9 @@ extern "C" void wolang_object_free(void* object);
 void wolang_object_retain(void* object);
 int32_t wolang_object_release(void* object);
 
+// 1 when a `deinit` left the object referenced (D229); the caller traps.
+int32_t wolang_object_escaped(void* object);
+
 int64_t wolang_objects_live();
 
 void wolang_object_weak_retain(void* object);

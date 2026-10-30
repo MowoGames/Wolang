@@ -452,6 +452,20 @@ class FlowChecker {
     return Expression(id);
   }
 
+  // The names a pattern binds are locals of the arm.
+  void BindPattern(PatternId id) {
+    if (!ast_.Contains(id)) {
+      return;
+    }
+    const Pattern& pattern = ast_.Get(id);
+    if (pattern.kind == PatternKind::kBinding && pattern.name.is_valid()) {
+      locals_.push_back(Local{pattern.name, depth_, Liveness::kLive, false});
+    }
+    for (PatternId element : ast_.Get(pattern.elements)) {
+      BindPattern(element);
+    }
+  }
+
   void MaybeMove(Symbol name, ExprId id) {
     Local* local = Find(name);
     if (local == nullptr || local->state != Liveness::kLive) {
@@ -688,14 +702,30 @@ class FlowChecker {
         const std::vector<Liveness> before = Written();
         std::vector<Liveness> common;
         bool any_falls = false;
+        // A payload bound by an arm is the scrutinee's own storage; moving
+        // it out empties the scrutinee for whatever matches it next, or
+        // both would run the `deinit` (D229).
+        Symbol scrutinee;
+        if (ast_.Contains(expr.lhs) &&
+            ast_.Get(expr.lhs).kind == ExprKind::kPath) {
+          scrutinee = ast_.Get(expr.lhs).name;
+        }
+        bool payload_moved = false;
         for (MatchArmId arm_id : ast_.Get(expr.arms)) {
           const MatchArm& arm = ast_.Get(arm_id);
           Restore(before);
+          const size_t depth = locals_.size();
+          for (PatternId pattern : ast_.Get(arm.patterns)) {
+            BindPattern(pattern);
+          }
           if (arm.guard.is_valid()) {
             Expression(arm.guard);
           }
-          const size_t depth = locals_.size();
           const Flow flow = Expression(arm.body);
+          for (size_t i = depth; i < locals_.size(); ++i) {
+            payload_moved =
+                payload_moved || locals_[i].state == Liveness::kMoved;
+          }
           locals_.resize(depth);
           if (flow == Flow::kDiverges) {
             continue;
@@ -704,6 +734,13 @@ class FlowChecker {
           any_falls = true;
         }
         Restore(any_falls ? common : before);
+        if (payload_moved && scrutinee.is_valid()) {
+          if (Local* local = Find(scrutinee)) {
+            if (local->state == Liveness::kLive) {
+              local->state = Liveness::kMoved;
+            }
+          }
+        }
         return any_falls ? Flow::kFalls : Flow::kDiverges;
       }
 

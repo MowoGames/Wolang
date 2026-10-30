@@ -33,6 +33,7 @@ constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadWeak = "E0137";
 constexpr std::string_view kTypeWithoutTarget = "E0138";
+constexpr std::string_view kSelfEscapesDeinit = "E0145";
 // `extern class` is made, kept and freed by the host: no constructor and
 // no fields, only methods the host binds (D213).
 constexpr std::string_view kForeignClass = "E0139";
@@ -508,6 +509,7 @@ class Checker {
   // is currently the operand of a `wait` or a `spawn`. Both are about where
   // suspension is allowed to happen.
   bool in_task_ = false;
+  bool in_deinit_ = false;
   ExprId started_;
   // The path being called, which RecordCallEffects has already charged.
   const Expr* callee_path_ = nullptr;
@@ -1536,6 +1538,16 @@ TypeId Checker::CheckAssign(const Expr& expr) {
     const bool is_local =
         place.kind == ExprKind::kPath && IsLocalName(place.name);
     if (!is_local) {
+      // Storing `self` from its own `deinit` resurrects an object that is
+      // being freed; the runtime traps on it too, this is the early word
+      // for the plain case (D229).
+      if (in_deinit_ && ast_.Contains(expr.rhs) &&
+          ast_.Get(expr.rhs).kind == ExprKind::kSelf) {
+        Report(kSelfEscapesDeinit,
+               "`self` cannot be stored from its own `deinit`",
+               expr.span,
+               "the object is being freed; copy the fields you need");
+      }
       RefuseEscape(expr.rhs, "stored");
     }
   }
@@ -3234,6 +3246,8 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   const TypeId previous_return = return_type_;
   const bool previous_task = in_task_;
   in_task_ = HasFlag(item.flags, ItemFlags::kAsync);
+  const bool previous_deinit = in_deinit_;
+  in_deinit_ = item.kind == ItemKind::kDeinit;
   return_type_ = item.type.is_valid() ? resolver_.Resolve(ast_, item.type)
                                       : types_->void_type();
 
@@ -3300,6 +3314,7 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
 
   return_type_ = previous_return;
   in_task_ = previous_task;
+  in_deinit_ = previous_deinit;
   resolver_.PopTypeParameters(pushed);
   PopScope();
 }

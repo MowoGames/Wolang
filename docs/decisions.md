@@ -2951,3 +2951,24 @@ object, nor leave through `return`, `break` or the block's value, because
 the arena is reset at the block's end and the object is uncounted (forged
 pointers otherwise, even in sandboxed code). Using it inside the block is
 fine.
+**D229. A `deinit` cannot keep `self`, and a move out of a match is a move.**
+A `deinit` that stored `self` somewhere that outlives it raised the count
+of an object that was about to be freed: the storage went and the reference
+stayed, a segfault in machine code and stale reads in the interpreter. The
+rule is Swift's: when a destructor returns and the count is not zero the
+object escaped, and that is a trap in every tier (`deinit let self escape`).
+The check is `wolang_object_escaped`, called from the generated `$drop`
+right after the `deinit`, so all tiers share it. Assigning `self` to a
+field or global directly inside a `deinit` is `E0145` before it gets that
+far; a call that stores it is only caught by the trap.
+
+Moves are tracked across `match`: a payload bound by an arm is the
+scrutinee's own storage, so moving it out (handing it on by value) moves
+the scrutinee, and matching it again is `E0122`. A function written as
+`=> expr` left without the destroy a `return` runs, so a by-value
+parameter that owns something (a `deinit` value) was never dropped; it
+runs the deferred drops now.
+
+Still open: a `deinit` value captured by a closure is never dropped, a
+payload that no arm moves is not dropped with the enum, and a parameter
+is not a flow local, so moving a parameter twice is not diagnosed.

@@ -24,6 +24,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0127`–`E0129` | systems and the access graph | all wave 11 |
 | `E0130` | a module-level declaration with no type written | wave 12 |
 | `E0137` | `weak` fields | D207 |
+| `E0145` | `self` stored from its own `deinit` | D229 |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E0301`–`E0305` | suspension and tasks | implemented (wave 10) |
 | `E0401`–`E0403` | inheritance, abilities, bounds | implemented (waves 4–5) |
@@ -219,6 +220,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0137` | `weak` on something that is not a `C?` field of a class | `weak var count: int` |
 | `E0138` | a `type` outside an ability with nothing after it | `type Count` |
 | `E0139` | an `extern class` constructed, or given something other than methods | `Actor()` |
+| `E0145` | `self` stored into a field or global from its own `deinit` | `deinit { stash = self }` |
 | `E0140` | a generic instantiates itself with ever bigger types | `fun F<T>(x: T) { F([x]) }` (D225) |
 | `E0121` | a reference would outlive what it points into (also through fields, indices, calls and a local array as a slice, D228) | `return &local.n` |
 | `E0142` | an object made inside `arena { }` is stored outside, returned or given out as the block's value (D228) | `kept = Leaf(1)` inside the block, `kept` declared outside |

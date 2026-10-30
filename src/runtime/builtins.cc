@@ -110,6 +110,8 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_objects_live", reinterpret_cast<void*>(&wolang_objects_live)},
       {"wolang_object_retain",
        reinterpret_cast<void*>(&wolang_object_retain)},
+      {"wolang_object_escaped",
+       reinterpret_cast<void*>(&wolang_object_escaped)},
       {"wolang_object_release",
        reinterpret_cast<void*>(&wolang_object_release)},
       {"wolang_object_weak_retain", reinterpret_cast<void*>(&wolang_object_weak_retain)},
