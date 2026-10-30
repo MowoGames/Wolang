@@ -778,6 +778,51 @@ fun main() uses io, unsafe {
 
 ---
 
+## The `image` package
+
+PNG, QOI and BMP, read and written in Wolang (D245). Everything decodes to an
+`Image`: `width`, `height` and RGBA8 `pixels`, which it frees when it goes
+out of scope. `Get(x, y)` answers `0xAARRGGBB`, the format a `gfx` canvas
+holds, so putting an image on screen is a loop over `canvas.pixels` and this
+package does not depend on `gfx`.
+
+```wolang
+need image.{Image, ImageNew, PngDecode, PngEncode, QoiEncode}
+need std.io.{Print}
+
+fun main() uses io, unsafe {
+  match ImageNew(2, 2) {
+    Ok(picture) => {
+      picture.Set(0, 0, 0xffff0000)
+      const file = PngEncode(&picture)
+      match PngDecode(file) {
+        Ok(back) => { Print("{back.width}x{back.height} {back.Get(0, 0)}") },
+        _ => { Print("unreadable") },
+      }
+      Print("{QoiEncode(&picture).len} bytes of QOI")
+    },
+    _ => { Print("too large") },
+  }
+}
+```
+
+| Function | What |
+|---|---|
+| `PngDecode(bytes)` | every colour type, depths 1 to 16 (16 is cut to 8), all filters, Adam7, `PLTE`, `tRNS`; checks CRCs, zlib header and Adler-32 |
+| `PngEncode(&image)` | RGBA8, best of the five filters per row, std deflate |
+| `QoiDecode` / `QoiEncode` | the whole format |
+| `BmpDecode` | 24 and 32 bit, uncompressed, bottom-up or top-down |
+| `BmpEncode` | 32 bit, bottom-up |
+| `ImageNew(w, h)` | a transparent picture |
+
+Decoders answer `Malformed` (bad signature, checksum, length, or data that
+stops early), `Unsupported` (a real feature not done: compressed or palette
+BMP, an unknown critical PNG chunk) or `TooLarge` (over `kMaxSide` = 16384
+on a side or `kMaxPixels` = 64 Mi pixels); sizes are checked before any
+allocation and the PNG inflater is limited to what the header implies
+(D227), so a hostile file cannot trap or balloon. Encoders return storage
+the caller owns.
+
 ## How this compares
 
 Go's standard library is bigger — net/http with HTTP/2, crypto/tls,

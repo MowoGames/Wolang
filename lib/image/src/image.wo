@@ -1,0 +1,1666 @@
+// Pictures from files: PNG, QOI and BMP, into one in-memory shape.
+//
+// Written here rather than bound to libpng, for the reason deflate is
+// (D177): these are published byte layouts over arithmetic, and the
+// code that reads them is the code a hostile file reaches first. Every
+// length in a file is checked against what is left of the file, every
+// size against a cap before anything is allocated, and the way out of a
+// bad file is an error, never a trap (D245).
+//
+// The shape everything decodes to is `Image`: width, height, and four
+// bytes per pixel, red, green, blue, alpha, rows top to bottom. `Get`
+// hands a pixel back as `0xAARRGGBB`, which is what `gfx` canvases hold,
+// so an image goes into a canvas with a loop and this package does not
+// depend on `gfx`.
+
+need std.compress.{Crc32, Deflate, InflateLimited}
+need std.list.{List, ListNew}
+need std.encoding.{FromHex}
+need std.mem.{ArrayNew, Free, Prefix, Suffix}
+need std.text.{Bytes}
+
+/// The file is not what it says it is: bad signature, bad checksum, a
+/// length that runs past the end, or data that stops early.
+offer error Malformed
+
+/// A real format feature this reader does not do (compressed BMP,
+/// a PNG with an unknown critical chunk, ...).
+offer error Unsupported
+
+/// The picture is bigger than `kMaxSide` on a side or `kMaxPixels` in all.
+offer error TooLarge
+
+/// The longest side a picture may have.
+offer const kMaxSide: int = 16384
+
+/// The most pixels a picture may have (64 Mi, so 256 MiB of RGBA): a
+/// header can claim any size, and the check happens before the buffer.
+offer const kMaxPixels: int = 67108864
+
+/// A picture: `width * height` pixels of RGBA, four bytes each.
+///
+/// Owns its storage and gives it back when it goes out of scope.
+offer class Image {
+  var pixels: []u8
+  var width: int = 0
+  var height: int = 0
+
+  deinit  {
+    Free(pixels)
+  }
+
+  /// Whether (x, y) is inside the picture.
+  fun Contains(x: int, y: int) -> bool {
+    return x >= 0 && y >= 0 && x < width && y < height
+  }
+
+  /// The pixel as `0xAARRGGBB`, or 0 outside the picture.
+  fun Get(x: int, y: int) -> u32 {
+    if !Contains(x, y) {
+      return 0
+    }
+    const at = (y * width + x) * 4
+    return pixels[at + 3] as u32 << 24 | pixels[at] as u32 << 16 | pixels[at + 1] as u32 << 8 | pixels[at + 2] as u32
+  }
+
+  /// Sets a pixel from `0xAARRGGBB`; outside the picture does nothing.
+  fun Set(x: int, y: int, argb: u32) {
+    if !Contains(x, y) {
+      return
+    }
+    const at = (y * width + x) * 4
+    pixels[at] = ((argb >> 16) % 256) as u8
+    pixels[at + 1] = ((argb >> 8) % 256) as u8
+    pixels[at + 2] = (argb % 256) as u8
+    pixels[at + 3] = ((argb >> 24) % 256) as u8
+  }
+}
+
+/// A transparent black picture of the given size, or `TooLarge`, or
+/// `Malformed` when a side is not positive.
+offer fun ImageNew(width: int, height: int) -> Image! uses unsafe {
+  if width < 1 || height < 1 {
+    return Malformed
+  }
+  if !SizeOk(width, height) {
+    return TooLarge
+  }
+  var pixels = ArrayNew<u8>(width * height * 4)
+  var i = 0
+  while i < pixels.len {
+    pixels[i] = 0
+    i = i + 1
+  }
+  return Image(pixels, width, height)
+}
+
+fun SizeOk(width: int, height: int) -> bool {
+  if width > kMaxSide || height > kMaxSide {
+    return false
+  }
+  return width * height <= kMaxPixels
+}
+
+// ------------------------------------------------------------- helpers ---
+
+fun Has(data: []u8, at: int, count: int) -> bool {
+  return at >= 0 && count >= 0 && at <= data.len && count <= data.len - at
+}
+
+/// A big-endian 32-bit field. `int` is 32 bits here, so anything at or
+/// above 2^31 answers 2^31 - 1: every length and size check refuses it
+/// the same way, and no multiply can overflow on the way (D245).
+fun Be32(data: []u8, at: int) -> int {
+  if data[at] >= 128 {
+    return 2147483647
+  }
+  return data[at] as int * 16777216 + data[at + 1] as int * 65536 + data[at + 2] as int * 256 + data[at + 3] as int
+}
+
+/// The same field, exact, for checksums.
+fun Be32u(data: []u8, at: int) -> u32 {
+  return data[at] as u32 * 16777216 + data[at + 1] as u32 * 65536 + data[at + 2] as u32 * 256 + data[at + 3] as u32
+}
+
+/// A little-endian 32-bit field, clamped like `Be32`.
+fun Le32(data: []u8, at: int) -> int {
+  if data[at + 3] >= 128 {
+    return 2147483647
+  }
+  return data[at + 3] as int * 16777216 + data[at + 2] as int * 65536 + data[at + 1] as int * 256 + data[at] as int
+}
+
+/// A little-endian signed 32-bit field.
+fun Le32s(data: []u8, at: int) -> int {
+  if data[at + 3] >= 128 {
+    return (data[at + 3] as int - 256) * 16777216 + data[at + 2] as int * 65536 + data[at + 1] as int * 256 + data[at] as int
+  }
+  return Le32(data, at)
+}
+
+fun Le16(data: []u8, at: int) -> int {
+  return data[at + 1] as int * 256 + data[at] as int
+}
+
+fun PutByte(out: &mut List<u8>, value: int) uses unsafe {
+  out.Push(value as u8)
+}
+
+fun PutBe32(out: &mut List<u8>, value: int) uses unsafe {
+  PutByte(out, value / 16777216 % 256)
+  PutByte(out, value / 65536 % 256)
+  PutByte(out, value / 256 % 256)
+  PutByte(out, value % 256)
+}
+
+fun PutBe32u(out: &mut List<u8>, value: u32) uses unsafe {
+  PutByte(out, (value / 16777216 % 256) as int)
+  PutByte(out, (value / 65536 % 256) as int)
+  PutByte(out, (value / 256 % 256) as int)
+  PutByte(out, (value % 256) as int)
+}
+
+fun PutLe32(out: &mut List<u8>, value: int) uses unsafe {
+  PutByte(out, value % 256)
+  PutByte(out, value / 256 % 256)
+  PutByte(out, value / 65536 % 256)
+  PutByte(out, value / 16777216 % 256)
+}
+
+fun PutLe16(out: &mut List<u8>, value: int) uses unsafe {
+  PutByte(out, value % 256)
+  PutByte(out, value / 256 % 256)
+}
+
+/// A list's bytes as storage the caller owns.
+fun Release(out: List<u8>) -> []u8 uses unsafe {
+  var held = ArrayNew<u8>(out.Len())
+  var i = 0
+  while i < out.Len() {
+    held[i] = out.At(i)
+    i = i + 1
+  }
+  return held
+}
+
+fun Abs(x: int) -> int {
+  if x < 0 {
+    return 0 - x
+  }
+  return x
+}
+
+/// x modulo 256, for any int.
+fun Wrap(x: int) -> int {
+  return (x % 256 + 256) % 256
+}
+
+fun Adler32(data: []u8) -> u32 {
+  var s1: u32 = 1
+  var s2: u32 = 0
+  var i = 0
+  while i < data.len {
+    s1 = (s1 + data[i] as u32) % 65521
+    s2 = (s2 + s1) % 65521
+    i = i + 1
+  }
+  return s2 * 65536 + s1
+}
+
+// ----------------------------------------------------------------- PNG ---
+
+const kPngMagic: [8]int = [137, 80, 78, 71, 13, 10, 26, 10]
+const kIhdr: int = 1229472850
+const kPlte: int = 1347179589
+const kIdat: int = 1229209940
+const kIend: int = 1229278788
+const kTrns: int = 1951551059
+
+// Adam7: where each of the seven passes starts and steps.
+const kPassX: [7]int = [0, 4, 0, 2, 0, 1, 0]
+const kPassY: [7]int = [0, 0, 4, 0, 2, 0, 1]
+const kPassDx: [7]int = [8, 8, 4, 4, 2, 2, 1]
+const kPassDy: [7]int = [8, 8, 8, 4, 4, 2, 2]
+
+/// What the header and the optional chunks said.
+class PngInfo {
+  var width: int = 0
+  var height: int = 0
+  var depth: int = 0
+  var kind: int = 0
+  var interlace: int = 0
+  var palette: []u8
+  var palette_count: int = 0
+  /// Alpha per palette entry; 255 where a tRNS chunk did not say.
+  var alpha: []u8
+  var has_key: bool = false
+  /// The colour tRNS marks as transparent, as full 16-bit samples.
+  var key_r: int = 0
+  var key_g: int = 0
+  var key_b: int = 0
+  var raw: []u8
+
+  deinit  {
+    Free(palette)
+    Free(alpha)
+    Free(raw)
+  }
+
+  fun Channels() -> int {
+    if kind == 2 {
+      return 3
+    }
+    if kind == 4 {
+      return 2
+    }
+    if kind == 6 {
+      return 4
+    }
+    return 1
+  }
+}
+
+fun PngDepthOk(kind: int, depth: int) -> bool {
+  if kind == 0 {
+    return depth == 1 || depth == 2 || depth == 4 || depth == 8 || depth == 16
+  }
+  if kind == 3 {
+    return depth == 1 || depth == 2 || depth == 4 || depth == 8
+  }
+  if kind == 2 || kind == 4 || kind == 6 {
+    return depth == 8 || depth == 16
+  }
+  return false
+}
+
+/// How many bytes the inflated data of every pass must come to: a filter
+/// byte and the packed row, for each row of each pass. Also the limit the
+/// inflater is held to (D227).
+fun PngRawSize(width: int, height: int, bits: int, interlace: int) -> int {
+  var passes = 1
+  if interlace == 1 {
+    passes = 7
+  }
+  var total = 0
+  var pass = 0
+  while pass < passes {
+    var x0 = 0
+    var y0 = 0
+    var dx = 1
+    var dy = 1
+    if interlace == 1 {
+      x0 = kPassX[pass]
+      y0 = kPassY[pass]
+      dx = kPassDx[pass]
+      dy = kPassDy[pass]
+    }
+    const pw = (width - x0 + dx - 1) / dx
+    const ph = (height - y0 + dy - 1) / dy
+    if pw > 0 && ph > 0 {
+      total = total + ((pw * bits + 7) / 8 + 1) * ph
+    }
+    pass = pass + 1
+  }
+  return total
+}
+
+/// What filter `kind` predicts for byte `x` of the row at `cur`; `prev`
+/// is where the row above starts, or -1 for the first row. The filtering
+/// and the unfiltering share it, so they cannot drift apart.
+fun Predict(data: []u8, cur: int, prev: int, x: int, bpp: int, kind: int) -> int {
+  var a = 0
+  var b = 0
+  var c = 0
+  if x >= bpp {
+    a = data[cur + x - bpp] as int
+  }
+  if prev >= 0 {
+    b = data[prev + x] as int
+    if x >= bpp {
+      c = data[prev + x - bpp] as int
+    }
+  }
+  if kind == 1 {
+    return a
+  }
+  if kind == 2 {
+    return b
+  }
+  if kind == 3 {
+    return (a + b) / 2
+  }
+  if kind == 4 {
+    const p = a + b - c
+    const pa = Abs(p - a)
+    const pb = Abs(p - b)
+    const pc = Abs(p - c)
+    if pa <= pb && pa <= pc {
+      return a
+    }
+    if pb <= pc {
+      return b
+    }
+    return c
+  }
+  return 0
+}
+
+/// Undoes the filters of one pass in place. False for a filter type
+/// that is not 0 to 4.
+fun Unfilter(raw: []u8, start: int, rowbytes: int, rows: int, bpp: int) -> bool {
+  var y = 0
+  while y < rows {
+    const row = start + y * (rowbytes + 1)
+    const kind = raw[row] as int
+    if kind > 4 {
+      return false
+    }
+    const cur = row + 1
+    var prev = -1
+    if y > 0 {
+      prev = cur - (rowbytes + 1)
+    }
+    var x = 0
+    while x < rowbytes {
+      raw[cur + x] = ((raw[cur + x] as int + Predict(
+          raw,
+          cur,
+          prev,
+          x,
+          bpp,
+          kind)) % 256) as u8
+      x = x + 1
+    }
+    y = y + 1
+  }
+  return true
+}
+
+/// Sample number `index` of a row, at the file's bit depth, as the full
+/// value (16-bit samples are two bytes).
+fun Sample(raw: []u8, row: int, index: int, depth: int) -> int {
+  if depth == 8 {
+    return raw[row + index] as int
+  }
+  if depth == 16 {
+    return raw[row + index * 2] as int * 256 + raw[row + index * 2 + 1] as int
+  }
+  const bit = index * depth
+  const shift = 8 - depth - bit % 8
+  var byte = raw[row + bit / 8] as int
+  var s = 0
+  while s < shift {
+    byte = byte / 2
+    s = s + 1
+  }
+  return byte % (1 << depth as int)
+}
+
+/// A sample scaled to 0..255.
+fun Scale(value: int, depth: int) -> int {
+  if depth == 8 {
+    return value
+  }
+  if depth == 16 {
+    return value / 256
+  }
+  return value * 255 / ((1 << depth as int) - 1)
+}
+
+/// Writes pixel `x` of the row at `row` as RGBA at `at`. False when a
+/// palette index points past the palette.
+fun PngPixel(raw: []u8, row: int, x: int, info: &PngInfo, dest: []u8, at: int) -> bool {
+  const depth = info.depth
+  var r = 0
+  var g = 0
+  var b = 0
+  var a = 255
+  if info.kind == 3 {
+    const index = Sample(raw, row, x, depth)
+    if index >= info.palette_count {
+      return false
+    }
+    r = info.palette[index * 3] as int
+    g = info.palette[index * 3 + 1] as int
+    b = info.palette[index * 3 + 2] as int
+    a = info.alpha[index] as int
+  } else if info.kind == 0 {
+    const v = Sample(raw, row, x, depth)
+    r = Scale(v, depth)
+    g = r
+    b = r
+    if info.has_key && v == info.key_g {
+      a = 0
+    }
+  } else if info.kind == 2 {
+    const vr = Sample(raw, row, x * 3, depth)
+    const vg = Sample(raw, row, x * 3 + 1, depth)
+    const vb = Sample(raw, row, x * 3 + 2, depth)
+    r = Scale(vr, depth)
+    g = Scale(vg, depth)
+    b = Scale(vb, depth)
+    if info.has_key && vr == info.key_r && vg == info.key_g && vb == info.key_b {
+      a = 0
+    }
+  } else if info.kind == 4 {
+    r = Scale(Sample(raw, row, x * 2, depth), depth)
+    g = r
+    b = r
+    a = Scale(Sample(raw, row, x * 2 + 1, depth), depth)
+  } else {
+    r = Scale(Sample(raw, row, x * 4, depth), depth)
+    g = Scale(Sample(raw, row, x * 4 + 1, depth), depth)
+    b = Scale(Sample(raw, row, x * 4 + 2, depth), depth)
+    a = Scale(Sample(raw, row, x * 4 + 3, depth), depth)
+  }
+  dest[at] = r as u8
+  dest[at + 1] = g as u8
+  dest[at + 2] = b as u8
+  dest[at + 3] = a as u8
+  return true
+}
+
+/// Reads a PNG: every colour type, bit depths 1 to 16 (16 is cut to 8),
+/// all five filters, Adam7, `PLTE` and `tRNS`. Chunk checksums, the zlib
+/// header and its Adler-32 are checked, and the inflater is held to the
+/// size the header implies, so a small file cannot inflate into a large
+/// one (D227, D245).
+offer fun PngDecode(data: []u8) -> Image! uses unsafe {
+  if !Has(data, 0, 8) {
+    return Malformed
+  }
+  var i = 0
+  while i < 8 {
+    if data[i] as int != kPngMagic[i] {
+      return Malformed
+    }
+    i = i + 1
+  }
+  var info = PngInfo(
+      0,
+      0,
+      0,
+      0,
+      0,
+      ArrayNew<u8>(768),
+      0,
+      ArrayNew<u8>(256),
+      false,
+      0,
+      0,
+      0,
+      ArrayNew<u8>(0))
+  i = 0
+  while i < 256 {
+    info.alpha[i] = 255
+    i = i + 1
+  }
+  var idat = ListNew<u8>()
+  var at = 8
+  var seen_header = false
+  var seen_data = false
+  var seen_end = false
+  while !seen_end {
+    if !Has(data, at, 12) {
+      return Malformed
+    }
+    const length = Be32(data, at)
+    if !Has(data, at, 12 + length) {
+      return Malformed
+    }
+    const kind = Be32(data, at + 4)
+    const body = at + 8
+    const stored = Be32u(data, body + length)
+    const sum = Crc32(Prefix<u8>(Suffix<u8>(data, at + 4), length + 4))
+    if sum != stored {
+      return Malformed
+    }
+    if !seen_header && kind != kIhdr {
+      return Malformed
+    }
+    if kind == kIhdr {
+      if seen_header || length != 13 {
+        return Malformed
+      }
+      seen_header = true
+      info.width = Be32(data, body)
+      info.height = Be32(data, body + 4)
+      info.depth = data[body + 8] as int
+      info.kind = data[body + 9] as int
+      info.interlace = data[body + 12] as int
+      if info.width < 1 || info.height < 1 {
+        return Malformed
+      }
+      if data[body + 10] != 0 || data[body + 11] != 0 || info.interlace > 1 {
+        return Malformed
+      }
+      if !PngDepthOk(info.kind, info.depth) {
+        return Malformed
+      }
+      if !SizeOk(info.width, info.height) {
+        return TooLarge
+      }
+    } else if kind == kPlte {
+      if seen_data || length % 3 != 0 || length > 768 || length == 0 {
+        return Malformed
+      }
+      i = 0
+      while i < length {
+        info.palette[i] = data[body + i]
+        i = i + 1
+      }
+      info.palette_count = length / 3
+    } else if kind == kTrns {
+      if info.kind == 3 {
+        if length > 256 {
+          return Malformed
+        }
+        i = 0
+        while i < length {
+          info.alpha[i] = data[body + i]
+          i = i + 1
+        }
+      } else if info.kind == 0 {
+        if length != 2 {
+          return Malformed
+        }
+        info.has_key = true
+        info.key_g = data[body] as int * 256 + data[body + 1] as int
+      } else if info.kind == 2 {
+        if length != 6 {
+          return Malformed
+        }
+        info.has_key = true
+        info.key_r = data[body] as int * 256 + data[body + 1] as int
+        info.key_g = data[body + 2] as int * 256 + data[body + 3] as int
+        info.key_b = data[body + 4] as int * 256 + data[body + 5] as int
+      }
+    } else if kind == kIdat {
+      seen_data = true
+      i = 0
+      while i < length {
+        idat.Push(data[body + i])
+        i = i + 1
+      }
+    } else if kind == kIend {
+      seen_end = true
+    } else if kind / 536870912 % 2 == 0 {
+      // The top byte's fifth bit says "ancillary"; a critical chunk we
+      // do not know is a file we cannot honestly read.
+      return Unsupported
+    }
+    at = at + 12 + length
+  }
+  if !seen_data || idat.Len() < 7 {
+    return Malformed
+  }
+  if info.kind == 3 && info.palette_count == 0 {
+    return Malformed
+  }
+
+  const bits = info.depth * info.Channels()
+  const total = PngRawSize(info.width, info.height, bits, info.interlace)
+  const zlib = idat.Items()
+  // CMF: deflate with a window up to 32K; FLG: header checksum and no
+  // preset dictionary.
+  if zlib[0] as int % 16 != 8 || zlib[0] as int / 16 > 7 {
+    return Malformed
+  }
+  if (zlib[0] as int * 256 + zlib[1] as int) % 31 != 0 || zlib[1] as int / 32 % 2 != 0 {
+    return Malformed
+  }
+  match InflateLimited(Prefix<u8>(Suffix<u8>(zlib, 2), zlib.len - 6), total) {
+    Ok(inflated) => {
+      Free(info.raw)
+      info.raw = inflated
+    }
+    _ => {
+      return Malformed
+    }
+  }
+  if info.raw.len != total {
+    return Malformed
+  }
+  if Adler32(info.raw) != Be32u(zlib, zlib.len - 4) {
+    return Malformed
+  }
+
+  var image = ImageNew(info.width, info.height)?
+  var bpp = bits / 8
+  if bpp < 1 {
+    bpp = 1
+  }
+  var passes = 1
+  if info.interlace == 1 {
+    passes = 7
+  }
+  var offset = 0
+  var pass = 0
+  while pass < passes {
+    var x0 = 0
+    var y0 = 0
+    var dx = 1
+    var dy = 1
+    if info.interlace == 1 {
+      x0 = kPassX[pass]
+      y0 = kPassY[pass]
+      dx = kPassDx[pass]
+      dy = kPassDy[pass]
+    }
+    const pw = (info.width - x0 + dx - 1) / dx
+    const ph = (info.height - y0 + dy - 1) / dy
+    if pw > 0 && ph > 0 {
+      const rowbytes = (pw * bits + 7) / 8
+      if !Unfilter(info.raw, offset, rowbytes, ph, bpp) {
+        return Malformed
+      }
+      var y = 0
+      while y < ph {
+        const row = offset + y * (rowbytes + 1) + 1
+        var x = 0
+        while x < pw {
+          const at_pixel = ((y0 + y * dy) * info.width + x0 + x * dx) * 4
+          if !PngPixel(info.raw, row, x, &info, image.pixels, at_pixel) {
+            return Malformed
+          }
+          x = x + 1
+        }
+        y = y + 1
+      }
+      offset = offset + (rowbytes + 1) * ph
+    }
+    pass = pass + 1
+  }
+  return image
+}
+
+fun PngChunk(out: &mut List<u8>, kind: int, body: []u8) uses unsafe {
+  PutBe32(out, body.len)
+  var covered = ListNew<u8>()
+  PutBe32(&mut covered, kind)
+  var i = 0
+  while i < body.len {
+    covered.Push(body[i])
+    i = i + 1
+  }
+  i = 0
+  while i < covered.Len() {
+    out.Push(covered.At(i))
+    i = i + 1
+  }
+  PutBe32u(out, Crc32(covered.Items()))
+}
+
+/// Writes an RGBA8 PNG, choosing for each row whichever of the five
+/// filters leaves the smallest sum of magnitudes (the usual heuristic),
+/// then deflating. The caller owns the result.
+offer fun PngEncode(image: &Image) -> []u8 uses unsafe {
+  const rowbytes = image.width * 4
+  var filtered = ListNew<u8>()
+  var trial = ArrayNew<u8>(rowbytes)
+  var best = ArrayNew<u8>(rowbytes)
+  var y = 0
+  while y < image.height {
+    const cur = y * rowbytes
+    var prev = -1
+    if y > 0 {
+      prev = cur - rowbytes
+    }
+    var best_kind = 0
+    var best_cost = -1
+    var kind = 0
+    while kind < 5 {
+      var cost = 0
+      var x = 0
+      while x < rowbytes {
+        const v = Wrap(
+            image.pixels[cur + x] as int - Predict(
+                image.pixels,
+                cur,
+                prev,
+                x,
+                4,
+                kind))
+        trial[x] = v as u8
+        if v < 128 {
+          cost = cost + v
+        } else {
+          cost = cost + 256 - v
+        }
+        x = x + 1
+      }
+      if best_cost < 0 || cost < best_cost {
+        best_cost = cost
+        best_kind = kind
+        x = 0
+        while x < rowbytes {
+          best[x] = trial[x]
+          x = x + 1
+        }
+      }
+      kind = kind + 1
+    }
+    PutByte(&mut filtered, best_kind)
+    var x = 0
+    while x < rowbytes {
+      filtered.Push(best[x])
+      x = x + 1
+    }
+    y = y + 1
+  }
+  Free(trial)
+  Free(best)
+
+  const scanlines = filtered.Items()
+  const packed = Deflate(scanlines)
+  var z = ListNew<u8>()
+  PutByte(&mut z, 120)
+  PutByte(&mut z, 1)
+  var i = 0
+  while i < packed.len {
+    z.Push(packed[i])
+    i = i + 1
+  }
+  PutBe32u(&mut z, Adler32(scanlines))
+  Free(packed)
+
+  var head = ListNew<u8>()
+  PutBe32(&mut head, image.width)
+  PutBe32(&mut head, image.height)
+  PutByte(&mut head, 8)
+  PutByte(&mut head, 6)
+  PutByte(&mut head, 0)
+  PutByte(&mut head, 0)
+  PutByte(&mut head, 0)
+
+  var out = ListNew<u8>()
+  i = 0
+  while i < 8 {
+    PutByte(&mut out, kPngMagic[i])
+    i = i + 1
+  }
+  PngChunk(&mut out, kIhdr, head.Items())
+  PngChunk(&mut out, kIdat, z.Items())
+  PngChunk(&mut out, kIend, ArrayNew<u8>(0))
+  return Release(out)
+}
+
+// ----------------------------------------------------------------- QOI ---
+
+const kQoiRgb: int = 254
+const kQoiRgba: int = 255
+
+fun QoiHash(r: int, g: int, b: int, a: int) -> int {
+  return (r * 3 + g * 5 + b * 7 + a * 11) % 64
+}
+
+/// The signed difference `a - b` as a wrapped byte: -128 to 127.
+fun Delta(a: int, b: int) -> int {
+  return Wrap(a - b + 128) - 128
+}
+
+/// Reads a QOI file, all six operations. Anything after the last pixel
+/// is ignored; running out of bytes before the last pixel is `Malformed`.
+offer fun QoiDecode(data: []u8) -> Image! uses unsafe {
+  if !Has(data, 0, 14) {
+    return Malformed
+  }
+  if data[0] != 113 || data[1] != 111 || data[2] != 105 || data[3] != 102 {
+    return Malformed
+  }
+  const width = Be32(data, 4)
+  const height = Be32(data, 8)
+  if width < 1 || height < 1 {
+    return Malformed
+  }
+  if data[12] != 3 && data[12] != 4 {
+    return Malformed
+  }
+  var image = ImageNew(width, height)?
+  var index = ArrayNew<int>(256)
+  var i = 0
+  while i < 256 {
+    index[i] = 0
+    i = i + 1
+  }
+  var r = 0
+  var g = 0
+  var b = 0
+  var a = 255
+  var run = 0
+  var at = 14
+  var pixel = 0
+  const count = width * height
+  var ok = true
+  while pixel < count && ok {
+    if run > 0 {
+      run = run - 1
+    } else if !Has(data, at, 1) {
+      ok = false
+    } else {
+      const tag = data[at] as int
+      at = at + 1
+      if tag == kQoiRgb {
+        if Has(data, at, 3) {
+          r = data[at] as int
+          g = data[at + 1] as int
+          b = data[at + 2] as int
+          at = at + 3
+        } else {
+          ok = false
+        }
+      } else if tag == kQoiRgba {
+        if Has(data, at, 4) {
+          r = data[at] as int
+          g = data[at + 1] as int
+          b = data[at + 2] as int
+          a = data[at + 3] as int
+          at = at + 4
+        } else {
+          ok = false
+        }
+      } else if tag / 64 == 0 {
+        const slot = tag * 4
+        r = index[slot]
+        g = index[slot + 1]
+        b = index[slot + 2]
+        a = index[slot + 3]
+      } else if tag / 64 == 1 {
+        r = Wrap(r + tag / 16 % 4 - 2)
+        g = Wrap(g + tag / 4 % 4 - 2)
+        b = Wrap(b + tag % 4 - 2)
+      } else if tag / 64 == 2 {
+        if Has(data, at, 1) {
+          const second = data[at] as int
+          at = at + 1
+          const dg = tag % 64 - 32
+          r = Wrap(r + dg + second / 16 - 8)
+          g = Wrap(g + dg)
+          b = Wrap(b + dg + second % 16 - 8)
+        } else {
+          ok = false
+        }
+      } else {
+        run = tag % 64
+      }
+      if ok {
+        const slot = QoiHash(r, g, b, a) * 4
+        index[slot] = r
+        index[slot + 1] = g
+        index[slot + 2] = b
+        index[slot + 3] = a
+      }
+    }
+    if ok {
+      image.pixels[pixel * 4] = r as u8
+      image.pixels[pixel * 4 + 1] = g as u8
+      image.pixels[pixel * 4 + 2] = b as u8
+      image.pixels[pixel * 4 + 3] = a as u8
+      pixel = pixel + 1
+    }
+  }
+  Free(index)
+  if !ok {
+    return Malformed
+  }
+  return image
+}
+
+fun QoiFlush(out: &mut List<u8>, run: int) uses unsafe {
+  if run > 0 {
+    PutByte(out, 192 + run - 1)
+  }
+}
+
+/// Writes a QOI file (four channels, sRGB) with the run, index, diff,
+/// luma and literal operations. The caller owns the result.
+offer fun QoiEncode(image: &Image) -> []u8 uses unsafe {
+  var out = ListNew<u8>()
+  PutByte(&mut out, 113)
+  PutByte(&mut out, 111)
+  PutByte(&mut out, 105)
+  PutByte(&mut out, 102)
+  PutBe32(&mut out, image.width)
+  PutBe32(&mut out, image.height)
+  PutByte(&mut out, 4)
+  PutByte(&mut out, 0)
+  var index = ArrayNew<int>(256)
+  var i = 0
+  while i < 256 {
+    index[i] = 0
+    i = i + 1
+  }
+  var pr = 0
+  var pg = 0
+  var pb = 0
+  var pa = 255
+  var run = 0
+  const count = image.width * image.height
+  var pixel = 0
+  while pixel < count {
+    const r = image.pixels[pixel * 4] as int
+    const g = image.pixels[pixel * 4 + 1] as int
+    const b = image.pixels[pixel * 4 + 2] as int
+    const a = image.pixels[pixel * 4 + 3] as int
+    if r == pr && g == pg && b == pb && a == pa {
+      run = run + 1
+      if run == 62 {
+        QoiFlush(&mut out, run)
+        run = 0
+      }
+    } else {
+      QoiFlush(&mut out, run)
+      run = 0
+      const slot = QoiHash(r, g, b, a) * 4
+      if index[slot] == r && index[slot + 1] == g && index[slot + 2] == b && index[slot + 3] == a {
+        PutByte(&mut out, slot / 4)
+      } else {
+        index[slot] = r
+        index[slot + 1] = g
+        index[slot + 2] = b
+        index[slot + 3] = a
+        if a == pa {
+          const dr = Delta(r, pr)
+          const dg = Delta(g, pg)
+          const db = Delta(b, pb)
+          const drg = dr - dg
+          const dbg = db - dg
+          if dr >= -2 && dr <= 1 && dg >= -2 && dg <= 1 && db >= -2 && db <= 1 {
+            PutByte(&mut out, 64 + (dr + 2) * 16 + (dg + 2) * 4 + db + 2)
+          } else if dg >= -32 && dg <= 31 && drg >= -8 && drg <= 7 && dbg >= -8 && dbg <= 7 {
+            PutByte(&mut out, 128 + dg + 32)
+            PutByte(&mut out, (drg + 8) * 16 + dbg + 8)
+          } else {
+            PutByte(&mut out, kQoiRgb)
+            PutByte(&mut out, r)
+            PutByte(&mut out, g)
+            PutByte(&mut out, b)
+          }
+        } else {
+          PutByte(&mut out, kQoiRgba)
+          PutByte(&mut out, r)
+          PutByte(&mut out, g)
+          PutByte(&mut out, b)
+          PutByte(&mut out, a)
+        }
+      }
+    }
+    pr = r
+    pg = g
+    pb = b
+    pa = a
+    pixel = pixel + 1
+  }
+  QoiFlush(&mut out, run)
+  i = 0
+  while i < 7 {
+    PutByte(&mut out, 0)
+    i = i + 1
+  }
+  PutByte(&mut out, 1)
+  Free(index)
+  return Release(out)
+}
+
+// ----------------------------------------------------------------- BMP ---
+
+/// Reads a BMP: 24 or 32 bits, uncompressed, bottom-up or top-down, with
+/// a 40-byte or larger header. A 32-bit file's fourth byte is taken as
+/// alpha. Palettes, RLE and bit fields are `Unsupported`.
+offer fun BmpDecode(data: []u8) -> Image! uses unsafe {
+  if !Has(data, 0, 26) {
+    return Malformed
+  }
+  if data[0] != 66 || data[1] != 77 {
+    return Malformed
+  }
+  const start = Le32(data, 10)
+  const header = Le32(data, 14)
+  if header < 40 || !Has(data, 14, header) {
+    if header == 12 {
+      return Unsupported
+    }
+    return Malformed
+  }
+  const width = Le32(data, 18)
+  var height = Le32s(data, 22)
+  var top_down = false
+  if height < 0 {
+    // -2^31 has no positive twin, so the size check comes first.
+    if height < 0 - kMaxSide {
+      return TooLarge
+    }
+    height = 0 - height
+    top_down = true
+  }
+  if width < 1 || height < 1 {
+    return Malformed
+  }
+  if !SizeOk(width, height) {
+    return TooLarge
+  }
+  if Le16(data, 26) != 1 {
+    return Malformed
+  }
+  const bits = Le16(data, 28)
+  if bits != 24 && bits != 32 {
+    return Unsupported
+  }
+  if Le32(data, 30) != 0 {
+    return Unsupported
+  }
+  const stride = (width * bits + 31) / 32 * 4
+  if !Has(data, start, stride * height) {
+    return Malformed
+  }
+  var image = ImageNew(width, height)?
+  const step = bits / 8
+  var row = 0
+  while row < height {
+    var y = row
+    if !top_down {
+      y = height - 1 - row
+    }
+    const base = start + row * stride
+    var x = 0
+    while x < width {
+      const from = base + x * step
+      const to = (y * width + x) * 4
+      image.pixels[to] = data[from + 2]
+      image.pixels[to + 1] = data[from + 1]
+      image.pixels[to + 2] = data[from]
+      if step == 4 {
+        image.pixels[to + 3] = data[from + 3]
+      } else {
+        image.pixels[to + 3] = 255
+      }
+      x = x + 1
+    }
+    row = row + 1
+  }
+  return image
+}
+
+/// Writes a 32-bit uncompressed bottom-up BMP, alpha in the fourth byte.
+/// The caller owns the result.
+offer fun BmpEncode(image: &Image) -> []u8 uses unsafe {
+  const size = image.width * image.height * 4
+  var out = ListNew<u8>()
+  PutByte(&mut out, 66)
+  PutByte(&mut out, 77)
+  PutLe32(&mut out, 54 + size)
+  PutLe32(&mut out, 0)
+  PutLe32(&mut out, 54)
+  PutLe32(&mut out, 40)
+  PutLe32(&mut out, image.width)
+  PutLe32(&mut out, image.height)
+  PutLe16(&mut out, 1)
+  PutLe16(&mut out, 32)
+  PutLe32(&mut out, 0)
+  PutLe32(&mut out, size)
+  PutLe32(&mut out, 2835)
+  PutLe32(&mut out, 2835)
+  PutLe32(&mut out, 0)
+  PutLe32(&mut out, 0)
+  var y = image.height - 1
+  while y >= 0 {
+    var x = 0
+    while x < image.width {
+      const at = (y * image.width + x) * 4
+      out.Push(image.pixels[at + 2])
+      out.Push(image.pixels[at + 1])
+      out.Push(image.pixels[at])
+      out.Push(image.pixels[at + 3])
+      x = x + 1
+    }
+    y = y - 1
+  }
+  return Release(out)
+}
+
+// ----------------------------------------------------------- the tests ---
+//
+// The PNG vectors were written by an independent encoder (a script using
+// Python's zlib, with every filter type and Adam7 spelled out), and
+// cross-read with Pillow; each is followed by the RGBA it must decode to.
+
+fun Hex(value: text) -> []u8 uses unsafe {
+  return Bytes(FromHex(value) ?? "")
+}
+
+fun SameBytes(a: []u8, b: []u8) -> bool {
+  if a.len != b.len {
+    return false
+  }
+  var i = 0
+  while i < a.len {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+fun PngIs(file: text, rgba: text) -> bool uses unsafe {
+  match PngDecode(Hex(file)) {
+    Ok(image) => {
+      return SameBytes(image.pixels, Hex(rgba))
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+@Test
+fun DecodesPngGray1() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d4948445200000009000000030100000000697118db0000000849444154789c6358c4c06878a4ecc5a400000009494441549ee97e03000b9403057367ff0c0000000049454e44ae426082",
+      "ffffffff000000ffffffffff000000ff000000ff000000ffffffffff000000ff000000ff000000ff000000ffffffffffffffffff000000ff000000ff000000ffffffffff000000ff000000ff000000ff000000ffffffffff000000ff000000ff000000ff000000ffffffffff")
+}
+
+@Test
+fun DecodesPngGray2() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d494844520000000500000003020000000034ed82850000000849444154789c63b8e4c028f14817d9c400000009494441548289bd01000d0b029d6dae40e90000000049454e44ae426082",
+      "ffffffff555555ff000000ffaaaaaaff555555ff000000ff555555ffaaaaaaff000000ff000000ff000000ff555555ffffffffffffffffffaaaaaaff")
+}
+
+@Test
+fun DecodesPngGray4() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d4948445200000005000000030400000000bbad77250000000a49444154789c6378b7b38031fcd22091e7fc0000000a4944415471a6f04c070022c7050bbb4f3bf00000000049454e44ae426082",
+      "eeeeeeffeeeeeeffbbbbbbff999999ff777777ff555555ff777777ff222222ff999999ffffffffffaaaaaaffeeeeeeff999999ff222222ff333333ff")
+}
+
+@Test
+fun DecodesPngGray8() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d49484452000000050000000308000000007e5d9a240000000d49444154789c63b816b2def717e3755be1edd2f76c0000000e494441544a3ea63baf0e353702004afe085e0ff0efec0000000049454e44ae426082",
+      "d6d6d6ff545454ffafafafff4d4d4dfffafafaffd7d7d7ff141414ff272727ffa0a0a0ffaeaeaeffb3b3b3fffefefeffe9e9e9ff232323ff2f2f2fff")
+}
+
+@Test
+fun DecodesPngGray16() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d49484452000000050000000310000000002ecd46670000001549444154789c63e832fdb457d15d5e605e0be313edb5dd2617994085e60000001549444154dea8443d66e2b050f19cd8d2e5f9d10200e0d90d81db14ff760000000049454e44ae426082",
+      "8a8a8afff2f2f2ff212121ff1f1f1fff9e9e9effe4e4e4ff919191ffc5c5c5ffb1b1b1ff0b0b0bffecececffb5b5b5ff565656ff3b3b3bfffcfcfcff")
+}
+
+@Test
+fun DecodesPngGrayKey() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d4948445200000004000000030800000000919ff11a0000000274524e5300007693cd380000000b49444154789c6390cb9fecc458d77474ae499e0000000c49444154c28c6975a8ec79002512055013c94f080000000049454e44ae426082",
+      "1e1e1eff6f6f6fff939393ff424242ff7e7e7eff00000000c8c8c8fffefefeff292929ff555555ffe5e5e5ffcdcdcdff")
+}
+
+@Test
+fun DecodesPngGrayAlpha8() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d4948445200000005000000030804000000f13f0d730000001549444154789c63e873bbd37765fba1325f2dc6285f19ad098d9d78b98e0000001549444154e17dc6354c1f3add75ac947b9cac4f0100ea4a0d2af86ff73a0000000049454e44ae426082",
+      "8e8e8e46dcdcdc8ed4d4d4b7c2c2c2764d4d4d2a5a5a5a4d76767677060606f85d5d5d86909090024a4a4ad6bdbdbda34040401be9e9e9c8cbcbcbcc")
+}
+
+@Test
+fun DecodesPngGrayAlpha16() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d494844520000000300000002100400000067ed72d20000001149444154789c633879ca94e95bd75936f97b89d31941de2b2c000000124944415495aab31eef977b6916be3e9a09009c8f0b5dd1f6474e0000000049454e44ae426082",
+      "c9c9c935f6f6f6cd1f1f1f612222226ae1e1e153383838ae")
+}
+
+@Test
+fun DecodesPngRgb8() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d4948445200000005000000030802000000d45452af0000001d49444154789c013000cfff001a34004d33ba0d246ac04c81b1baf2013e3bf9b0ba26b8c53b0000001e49444154feb1365295843ec1a384022b7e521fa337e6900c82c3217d116fdb0a143ca94e1ff80000000049454e44ae426082",
+      "1a3400ff4d33baff0d246affc04c81ffb1baf2ff3e3bf9ffeef5f7ff9f2b49ff34af87fff5520bff69b94bff0d982eff85bb55ffb672a8ff72637aff")
+}
+
+@Test
+fun DecodesPngRgb16() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d494844520000000300000003100200000089dafeab0000002249444154789c013900c6ff00cd267417665bfc4db60c0ed60e4d8f0ff1c90184b26325b045608c8a37590000002249444154494fcf0a6c4541beec7a9c02f0738d89b471c8f0b6af3d6dd7be859d7cd4c6e61b87e5e2ce980000000049454e44ae426082",
+      "cd7466fffcb60eff0e8ff1ff8463b0ffe4b2baff297034ff74f064ffac68f7ff00f5b0ff")
+}
+
+@Test
+fun DecodesPngRgbKey() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d4948445200000003000000030802000000d94a22e80000000674524e53000100020003c94babf50000001349444154789c63d0b63d96f625fade2a1dc6536fcf9a8b82439ab100000014494441549a39f07831a9c4aa6ef27538f9f33900be870cc531ba4e580000000049454e44ae426082",
+      "2b3dc6ff66f45bffdeaa2cffcaedcdff01020300410e4dffee4af2ffb34f43ff0a0734ff")
+}
+
+@Test
+fun DecodesPngRgba8() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d49484452000000050000000308060000005b36c5f80000002549444154789c013f00c0ff0047de636c0e806c957ba684d6431fb5ead7424d0901e15d024c77ebf0f17c5cd7cd0000002549444154c75e05f9fed96a57f8b38681023f85a41a359f024165c1ee10b8bf67558cf394cdc6f91f7ef16e6b470000000049454e44ae426082",
+      "47de636c0e806c957ba684d6431fb5ead7424d09e15d024c5848f23d1fa6f7361d7f618d1532e70e20e2a6668de7f47e8467e546d53ec8e2a1257bdb")
+}
+
+@Test
+fun DecodesPngRgba16() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d4948445200000003000000021006000000cde4ba590000001d49444154789c63502dc8793a9bd56e89bff0ee1a4f93c6e96e6eefab0b720d0c19964d6fbe0000001e494441544fbff859151c59d4d57ef8715975bab5582b5b87c78b6bdf4a011b4216f42462989a0000000049454e44ae426082",
+      "256c9b3e4fbb498146ef7030cbf9537252dcceadd764b6a3")
+}
+
+@Test
+fun DecodesPngPalette1() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d49484452000000090000000301030000007bc4b73500000006504c54450a141ec8643277a0b39c0000000849444154789c63886d606caecfde03f7000000094944415465bad500000d34033b4227bc430000000049454e44ae426082",
+      "0a141effc86432ff0a141effc86432ffc86432ffc86432ff0a141effc86432ffc86432ffc86432ff0a141eff0a141eff0a141eff0a141eff0a141effc86432ffc86432ff0a141eff0a141effc86432ff0a141effc86432ffc86432ffc86432ff0a141effc86432ffc86432ff")
+}
+
+@Test
+fun DecodesPngPalette2() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d494844520000000500000003020300000026582d6b0000000c504c5445010203040506070809fafbfcc0a657dd0000000274524e5300809b2b4e180000000849444154789c63503cc0a890b2650d290000000949444154c0f4a901000ae102d796a592b50000000049454e44ae426082",
+      "01020300070809ff0102030004050680fafbfcff01020300070809ff0102030001020300070809ff010203000405068001020300070809ff01020300")
+}
+
+@Test
+fun DecodesPngPalette4() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d4948445200000005000000030403000000a918d8cb00000030504c544500ff0010ef0120df0230cf0340bf0450af05609f06708f07807f08906f09a05f0ab04f0bc03f0cd02f0de01f0ef00f0ffb7aebfe0000000a49444154789c6378b0b681d1d1e8020c6cac0000000a494441542e93c36307001f0804c42f3361220000000049454e44ae426082",
+      "e01f0eff00ff00ffa05f0affd02f0dff807f08ff40bf04ff10ef01ff708f07ff30cf03ff50af05ff807f08ff10ef01ff50af05ff609f06ff906f09ff")
+}
+
+@Test
+fun DecodesPngPalette8() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d49484452000000050000000308030000006ce835ca00000078504c544500000001020302040603060904080c050a0f060c12070e1508101809121b0a141e0b16210c18240d1a270e1c2a0f1e2d10203011223312243613263914283c152a3f162c42172e4518304819324b1a344e1b36511c38541d3a571e3c5a1f3e5d20406021426322446623466924486c254a6f264c72274e75e3ec51020000000d49444154789c631056e41592615478cdc6f05b797f0000000d49444154fa9ae9c3f7f7afe501254f0654306b272e0000000049454e44ae426082",
+      "132639ff214263ff0d1a27ff122436ff1c3854ff204060ff0b1621ff112233ff162c42ff010203ff102030ff020406ff000000ff010203ff204060ff")
+}
+
+@Test
+fun DecodesPngRgb8Adam7() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d494844520000000900000009080200000118f4a1d10000008849444154789c010601f9fe0061f37d2bc39001d4af90a87fc9016547cf02f00b5702f593171ff889669f2b03fdc99d89c03404acb9fe8d6e6b00cf7a9ae7aae604022e87139b841686bc66fb4fe4e1f900e6cf9ac0a13dadcb3d81be21b8db8c00e436dd6e75afb11b42dc531c012d49cc6c52ab0d62d5354abc0238de7fab6b7f8c72ae13a7340316c28b63a882a81a000000894944415493d3f7cfc4204dbf0450add54ec9b8c1353311493b017c96176fc8399e86b1fdd6a71fc369f9f2a5bf91f5662a48cb3c8c0299aea14a629790257c74cd5944a61e8383cbc987cda64cf86e5da803e8e63857c32908aebaaa80f89e628a0fd39d86eba6675318573be2042687a00203b865c293363b5470880d8d1be018bd489a120df056f627907fbdc9cf95d40000000049454e44ae426082",
+      "61f37dffe436ddfffdc99dff6e75afff6547cfffb11b42ff072482ffdc531cff2bc390ff7c9617ffeb5e50ff89e401ff86baa8ffa57d11ff9e6fb6ff5d00abffc32af3ff8e667fff022e87ff2d49ccff15c90bff999b77ff2b4fc7ffa6fd4cff914a16ffdb4708ff752b0fff1544b8ff35c0e7ff19097dfffa8701ffe9232fff21f281ff268778ff6976ebfffcc327fff59317ff65274bffa9829bff4406f6ff1ff889ff326ffaff9492edffeeee3cff669f2bfff20894ffea27e6ff89c66bff6b262eff4886b8ff438f39ffba76fefff8c90cff5101fbffe6cf9aff48d5b0ffc0a13dffa900a6ffadcb3dff640694ff81be21ffc9c727ffb8db8cff188f34ff1a924cff7f88dfffa161bfffdb0eccff682919ffd2e646ff92f819ff4157f1ffd4af90ff988285ffcf7a9afff7c93dff555226ff6afe70ffe7aae6ffda4762ff7c2e59ff")
+}
+
+@Test
+fun DecodesPngRgba8Adam7() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d4948445200000007000000050806000001fe9dc64e0000005149444154789c01970068ff00af2ea37a01ff8eb8400272f8d51ca039285403d3c4d36b5b6a7ba804398401af0457dd5404df39322493c7d376817879747087591b00bc84670ac08aad1f6e2f8a7f019962c685522c80cda2cb0000005149444154dbf7e70f7b8f02b16755e833d0286ad6c442e4019f0b41103ae7b9f04cd6f5e55a6f836ace0078dcc7c9564cff9b010902e46998ad9b0a17adb2f1db80845eb01ab02fb53862ee3110849cbcdf45594735bbb552300000000049454e44ae426082",
+      "af2ea37abc84670ad3c4d36bc08aad1fff8eb8406e2f8a7fc4cce4dd9f0b4110d9f2fa0025c8efe57f37724f4d37ea2b14004077139b4180df3932249962c6857200059aeb8ea17cf3787e0ed29d1c0b63ffd7298374d9bd74fc11add7b9ca6503952269fd669f6376ee71879737fd5f72f8d51c4ac91b6d0c48d41a1e5ec9e6a0392854a8615eef109fc1bf")
+}
+
+@Test
+fun DecodesPngGray2Adam7() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d494844520000000a000000060200000001e22c782d0000001549444154789c6358c0c8c0b4803981c58165c60a86030718df23e6db5800000016494441545f649aedc02837498149343280f9d75b6700ac750b0b04927b2a0000000049454e44ae426082",
+      "aaaaaaffffffffff555555ff000000ff000000ff000000ffaaaaaaff000000ffaaaaaaffffffffff000000ff555555ffffffffffaaaaaaffaaaaaaffffffffff000000ff000000ffffffffff555555ffaaaaaaffffffffff555555ffaaaaaaffaaaaaaffffffffff000000ffffffffff555555ffffffffff000000ffffffffff000000ffffffffff000000ff000000ffaaaaaaff555555ff000000ffaaaaaaffaaaaaaffaaaaaaffaaaaaaff000000ffaaaaaaffaaaaaaffaaaaaaffaaaaaaff000000ff000000ff000000ff555555ff000000ffffffffffffffffffffffffffaaaaaaffffffffffffffffff555555ff")
+}
+
+@Test
+fun DecodesPngPalette4Adam7() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d4948445200000003000000030403000001d301981a00000030504c544500ff0010ef0120df0230cf0340bf0450af05609f06708f07807f08906f09a05f0ab04f0bc03f0cd02f0de01f0ef00f0ffb7aebfe0000000a49444154789c63f8c0ccc0b28e2184f8025f0000000b49444154807101e3943b00176e0408886db2c10000000049454e44ae426082",
+      "f00f0fff50af05ff00ff00ff906f09ff40bf04ff708f07ffa05f0affa05f0affe01f0eff")
+}
+
+@Test
+fun DecodesPngRgb16Adam7() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d4948445200000005000000041002000001eec68ec20000004549444154789c0180007fff00b9452874650601da6535df24f203d0c52124115604966a8f0d890bcf9251ebf5a4e984b015e2b300c88a51e37e9ff6a0a6c9524601bef68213854aa12244ef7cef0000004649444154fb8af34901879f2b0c6aabaabfac89958db37a811778b060377dc07416343a699dab7f022076f622601e4f7aa658773f4fa295da9b0cf0552de00816fe0ba77e29efd8e43b4608df2b270000000049454e44ae426082",
+      "b92865ffc8517effd02111fff6a652ffda3524ff872b6aff31d7ffffe45877ff44d5ebff783e96ff968f89ffbe8285ff65e07eff5f7d78ff4e9060ffa721caff807d76ff33ed12ff3402f3ff76e5bfff")
+}
+
+fun PngFails(file: text) -> bool uses unsafe {
+  match PngDecode(Hex(file)) {
+    Ok(_image) => {
+      return false
+    }
+    _ => {
+      return true
+    }
+  }
+}
+
+@Test
+fun DecodesTheSmallestPng() -> bool uses unsafe {
+  return PngIs(
+      "89504e470d0a1a0a0000000d49484452000000010000000108000000003a7e9b550000000a49444154789c636800000082008177cd72b60000000049454e44ae426082",
+      "808080ff")
+}
+
+@Test
+fun RefusesBrokenPngs() -> bool uses unsafe {
+  return PngFails(
+      "89504e470d0a1a0a0000000d49484452000000010100000108000000003a7e9b550000000a49444154789c636800000082008177cd72b60000000049454e44ae426082") && PngFails(
+      "89504e470d0a1a0a773594004948445200000000000000000000000000") && PngFails(
+      "89504e470d0a1a0a0000000d49484452000000010000000108000000003a7e9b550000000a49444154789ce36c00000094008a5fc0d5350000000049454e44ae426082") && PngFails(
+      "89504e470d0a1a0a0000000d494844520000000100000001080300000028cb34bb00000003504c54450102030d8764d50000000a49444154789c636005000007000680cd628a0000000049454e44ae426082") && PngFails(
+      "89504e470d0a1a0a0000000d494844520000000200000002080000000057dd52f80000000b49444154789c636868000001830101183522150000000049454e44ae426082") && PngFails(
+      "89504e470d0a1a0a0000000d49484452000000010000000108000000003a7e9b550000000a49444154789d636800000082008160b666f50000000049454e44ae426082") && PngFails(
+      "89504e470d0a1a0a0000000d49484452000000010000000108000000003a7e9b550000000a49444154789c636800000082008000ca42200000000049454e44ae426082") && PngFails(
+      "89504e470d0a1a0a0000000d49484452000000010000000108000000003a7e9b550000000049454e44ae426082") && PngFails(
+      "89504e470d0a1a0a0000000d4948445200000000000000010800000000d5bcf06b0000000049454e44ae426082") && PngFails(
+      "89504e470d0a1a0a0000000d49484452000000010000000103000000004daeaa440000000049454e44ae426082") && PngFails(
+      "") && PngFails("89504e47")
+}
+
+@Test
+fun PngSaysWhyItRefused() -> bool uses unsafe {
+  var seen = 0
+  match PngDecode(
+      Hex("89504e470d0a1a0a0000000d49484452000186a0000186a00806000000a8520bc8")) {
+    Ok(_image) => seen = seen
+    TooLarge => seen = seen + 1
+    _ => seen = seen
+  }
+  match PngDecode(
+      Hex("89504e470d0a1a0a0000000d4948445200004000000040000806000000a9c81084")) {
+    Ok(_image) => seen = seen
+    TooLarge => seen = seen + 1
+    _ => seen = seen
+  }
+  match PngDecode(
+      Hex(
+          "89504e470d0a1a0a0000000d49484452000000010000000108000000003a7e9b550000000241424344787810ffab7c0000000a49444154789c636800000082008177cd72b60000000049454e44ae426082")) {
+    Ok(_image) => seen = seen
+    Unsupported => seen = seen + 1
+    _ => seen = seen
+  }
+  match PngDecode(
+      Hex(
+          "89504e470d0a1a0a0000000d49484452000000010000000108000000003a7e9b550000000a49444154789c636800000082008177cd72b60000000049454e44ae426082")) {
+    Ok(_image) => seen = seen + 1
+    _ => seen = seen
+  }
+  return seen == 4
+}
+
+@Test
+fun PngInflatesNoMoreThanItsHeaderSays() -> bool uses unsafe {
+  // 200,000 zero bytes in a 1x1 picture: the limit is two bytes.
+  return PngFails(
+      "89504e470d0a1a0a0000000d49484452000000010000000108000000003a7e9b55000000d949444154789cedc13101000000c2a0f54f6d067fa00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080d7000d6d00017020cac10000000049454e44ae426082")
+}
+
+@Test
+fun EveryTruncationOfAPngIsAnError() -> bool uses unsafe {
+  const whole = Hex(
+      "89504e470d0a1a0a0000000d4948445200000007000000050806000001fe9dc64e0000005149444154789c01970068ff00af2ea37a01ff8eb8400272f8d51ca039285403d3c4d36b5b6a7ba804398401af0457dd5404df39322493c7d376817879747087591b00bc84670ac08aad1f6e2f8a7f019962c685522c80cda2cb0000005149444154dbf7e70f7b8f02b16755e833d0286ad6c442e4019f0b41103ae7b9f04cd6f5e55a6f836ace0078dcc7c9564cff9b010902e46998ad9b0a17adb2f1db80845eb01ab02fb53862ee3110849cbcdf45594735bbb552300000000049454e44ae426082")
+  var cut = 0
+  while cut < whole.len {
+    match PngDecode(Prefix<u8>(whole, cut)) {
+      Ok(_image) => {
+        return false
+      }
+      _ => cut = cut + 1
+    }
+  }
+  return true
+}
+
+fun BmpIs(file: text, rgba: text) -> bool uses unsafe {
+  match BmpDecode(Hex(file)) {
+    Ok(image) => {
+      return SameBytes(image.pixels, Hex(rgba))
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+// Written by Pillow: 24-bit with row padding, and 32-bit.
+@Test
+fun DecodesBmp() -> bool uses unsafe {
+  return BmpIs(
+      "424d4e0000000000000036000000280000000300000002000000010018000000000018000000c40e0000c40e000000000000000000001748012b48293f48510000000302011702292b0251000000",
+      "010203ff290217ff51022bff014817ff29482bff51483fff") && BmpIs(
+      "424d460000000000000036000000280000000200000002000000010020000000000010000000c40e0000c40e00000000000000000000174801642b48296e030201641702296e",
+      "010203642902176e0148176429482b6e")
+}
+
+@Test
+fun DecodesTopDownBmp() -> bool uses unsafe {
+  return BmpIs(
+      "424d4e00000000000000360000002800000003000000feffffff010018000000000018000000c40e0000c40e000000000000000000000302011702292b02510000001748012b48293f4851000000",
+      "010203ff290217ff51022bff014817ff29482bff51483fff")
+}
+
+@Test
+fun RefusesBrokenBmps() -> bool uses unsafe {
+  var refused = 0
+  match BmpDecode(
+      Hex(
+          "424d4e0000000000000036000000280000000300000002000000010018000100000018000000c40e0000c40e000000000000000000001748012b48293f48510000000302011702292b0251000000")) {
+    Ok(_image) => refused = refused
+    Unsupported => refused = refused + 1
+    _ => refused = refused
+  }
+  match BmpDecode(
+      Hex(
+          "424d4e000000000000003600000028000000a0860100a0860100010018000000000018000000c40e0000c40e000000000000000000001748012b48293f48510000000302011702292b0251000000")) {
+    Ok(_image) => refused = refused
+    TooLarge => refused = refused + 1
+    _ => refused = refused
+  }
+  match BmpDecode(
+      Hex(
+          "424d4e0000000000000036000000280000000300000002000000010018000000000018000000c40e0000c40e000000000000000000001748012b48")) {
+    Ok(_image) => refused = refused
+    Malformed => refused = refused + 1
+    _ => refused = refused
+  }
+  match BmpDecode(Hex("424d")) {
+    Ok(_image) => refused = refused
+    Malformed => refused = refused + 1
+    _ => refused = refused
+  }
+  return refused == 4
+}
+
+@Test
+fun EveryTruncationOfABmpIsAnError() -> bool uses unsafe {
+  const whole = Hex(
+      "424d460000000000000036000000280000000200000002000000010020000000000010000000c40e0000c40e00000000000000000000174801642b48296e030201641702296e")
+  var cut = 0
+  while cut < whole.len {
+    match BmpDecode(Prefix<u8>(whole, cut)) {
+      Ok(_image) => {
+        return false
+      }
+      _ => cut = cut + 1
+    }
+  }
+  return true
+}
+
+// One of every operation, worked out by hand from the specification.
+@Test
+fun DecodesEveryQoiOperation() -> bool uses unsafe {
+  match QoiDecode(
+      Hex(
+          "716f696600000007000000010400fe0a141e79aaa5c109ff010203040000000000000001")) {
+    Ok(image) => {
+      return SameBytes(
+          image.pixels,
+          Hex("0a141eff0b141dff171e24ff171e24ff171e24ff0a141eff01020304"))
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+@Test
+fun RefusesBrokenQoi() -> bool uses unsafe {
+  var refused = 0
+  match QoiDecode(Hex("716f6966000186a0000186a004000000000000000000")) {
+    Ok(_image) => refused = refused
+    TooLarge => refused = refused + 1
+    _ => refused = refused
+  }
+  match QoiDecode(Hex("71696f66")) {
+    Ok(_image) => refused = refused
+    Malformed => refused = refused + 1
+    _ => refused = refused
+  }
+  match QoiDecode(Hex("00000000000000000000000000000000")) {
+    Ok(_image) => refused = refused
+    Malformed => refused = refused + 1
+    _ => refused = refused
+  }
+  return refused == 3
+}
+
+@Test
+fun EveryTruncationOfQoiIsAnError() -> bool uses unsafe {
+  const whole = Hex("716f696600000007000000010400fe0a141e79aaa5c109ff01020304")
+  var cut = 0
+  while cut < whole.len {
+    match QoiDecode(Prefix<u8>(whole, cut)) {
+      Ok(_image) => {
+        return false
+      }
+      _ => cut = cut + 1
+    }
+  }
+  return true
+}
+
+// A picture with flat runs, gradients and noise, so every encoder
+// operation (runs, index hits, diffs, lumas, literals, all five PNG
+// filters) is exercised.
+fun Sample37() -> Image uses unsafe {
+  var image = Blank(37, 23)
+  var seed = 12345
+  var y = 0
+  while y < 23 {
+    var x = 0
+    while x < 37 {
+      seed = (seed * 75 + 74) % 65537
+      var r = x * 6
+      var g = y * 10
+      var b = (x + y) * 3
+      var a = 255
+      if y < 5 {
+        r = 200
+        g = 100
+        b = 50
+      } else if y < 10 {
+        r = seed % 256
+        g = seed / 256
+        b = seed * 7 % 256
+        a = 255 - seed % 7
+      } else if y > 18 && x % 2 == 0 {
+        a = 0
+      }
+      image.Set(
+          x,
+          y,
+          a as u32 << 24 | r as u32 << 16 | g as u32 << 8 | b as u32)
+      x = x + 1
+    }
+    y = y + 1
+  }
+  return image
+}
+
+/// For tests, where the size is known to be fine.
+fun Blank(width: int, height: int) -> Image uses unsafe {
+  match ImageNew(width, height) {
+    Ok(image) => {
+      return image
+    }
+    _ => {
+      return Image(ArrayNew<u8>(0), 0, 0)
+    }
+  }
+}
+
+fun SameImage(a: &Image, b: &Image) -> bool {
+  return a.width == b.width && a.height == b.height && SameBytes(
+      a.pixels,
+      b.pixels)
+}
+
+@Test
+fun PngRoundTrips() -> bool uses unsafe {
+  const image = Sample37()
+  const file = PngEncode(&image)
+  match PngDecode(file) {
+    Ok(back) => {
+      return SameImage(&image, &back)
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+@Test
+fun QoiRoundTrips() -> bool uses unsafe {
+  const image = Sample37()
+  const file = QoiEncode(&image)
+  match QoiDecode(file) {
+    Ok(back) => {
+      return SameImage(&image, &back) && file.len < 37 * 23 * 5
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+@Test
+fun BmpRoundTrips() -> bool uses unsafe {
+  const image = Sample37()
+  const file = BmpEncode(&image)
+  match BmpDecode(file) {
+    Ok(back) => {
+      return SameImage(&image, &back) && file.len == 54 + 37 * 23 * 4
+    }
+    _ => {
+      return false
+    }
+  }
+}
+
+@Test
+fun AFlatPictureCompresses() -> bool uses unsafe {
+  var image = Blank(16, 16)
+  const png = PngEncode(&image)
+  const qoi = QoiEncode(&image)
+  return png.len < 150 && qoi.len < 60
+}
+
+@Test
+fun ImageReadsAndWritesPixels() -> bool uses unsafe {
+  var image = Blank(3, 2)
+  image.Set(2, 1, 2148540464)
+  image.Set(9, 9, 4294967295)
+  return image.Get(2, 1) == 2148540464 && image.Get(0, 0) == 0 && image.Get(
+      9,
+      9) == 0 && image.pixels[(1 * 3 + 2) * 4] == 16 && image.pixels[(1 * 3 + 2) * 4 + 3] == 128
+}
+
+@Test
+fun ImageNewRefusesWhatIsTooBig() -> bool uses unsafe {
+  var seen = 0
+  match ImageNew(kMaxSide + 1, 1) {
+    Ok(_image) => seen = seen
+    TooLarge => seen = seen + 1
+    _ => seen = seen
+  }
+  match ImageNew(16384, 16384) {
+    Ok(_image) => seen = seen
+    TooLarge => seen = seen + 1
+    _ => seen = seen
+  }
+  match ImageNew(0, 5) {
+    Ok(_image) => seen = seen
+    Malformed => seen = seen + 1
+    _ => seen = seen
+  }
+  match ImageNew(4, 4) {
+    Ok(_image) => seen = seen + 1
+    _ => seen = seen
+  }
+  return seen == 4
+}

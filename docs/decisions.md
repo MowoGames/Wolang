@@ -3032,3 +3032,20 @@ other manifest means by it. It is an error until there is a registry,
 rather than a path as before. The inline-table reader no longer splits on a
 comma inside quotes. Pre-release ordering and ranges across a registry are
 deferred. The lock file records the version found for each fetched package.
+**D245. `lib/image`: PNG, QOI and BMP in Wolang.** Pictures are read
+and written by a package of their own, written here for the reason deflate
+was (D177): published byte layouts over arithmetic, and the first code a
+hostile file reaches. It depends on `std` only; `gfx` does not know it, and
+`Image.Get` answers `0xAARRGGBB`, the canvas format, so the bridge is a
+loop. An `Image` owns RGBA8 bytes. Every size in a file is checked before
+an allocation: at most 16384 on a side and 64 Mi pixels (`TooLarge`), the
+PNG inflater is held to the size the header implies with `InflateLimited`
+(D227), chunk CRCs, the zlib header and Adler-32 are verified, and bad or
+truncated input is `Malformed` (or `Unsupported` for real features not
+done: compressed or palette BMP, unknown critical PNG chunks), never a
+trap. `int` is 32 bits, so 32-bit file fields are read with a clamp to
+2^31-1 and checksums as `u32`. PNG decodes every colour type, depth 1 to 16
+(16 is cut to 8) and Adam7; the encoder writes RGBA8 with the per-row
+minimum-sum filter and the std deflate. QOI is complete; BMP reads 24 and
+32 bit and writes 32 bit. PNG vectors in the tests come from an independent
+encoder (Python zlib) cross-read with Pillow.
