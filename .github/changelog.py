@@ -340,6 +340,7 @@ def _send(url, payload, what):
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "User-Agent": "mowo-changelog"})
         try:
             urllib.request.urlopen(req, timeout=30).close()
+            print(f"sent to {what}")
             return True
         except urllib.error.HTTPError as err:
             raw = err.read()
@@ -381,6 +382,11 @@ def post(cards, dry, globally=False):
         size += n
     messages.append(batch)
 
+    if hooks and not (tok and chat):
+        print("::warning::changelog: Telegram is not sent: "
+              + ("the secret TELEGRAM_BOT_TOKEN is not set for this repository" if not tok else "TELEGRAM_CHAT_ID is empty"))
+    if (tok and chat) and not hooks:
+        print("::warning::changelog: Discord is not sent: the secret CHANGELOG_WEBHOOK_URL is not set for this repository")
     if dry or not (hooks or (tok and chat)):
         for m in messages:
             print("── Discord ──\n" + json.dumps({"embeds": m}, ensure_ascii=False, indent=2))
