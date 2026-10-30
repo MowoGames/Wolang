@@ -112,12 +112,21 @@ struct Pen {
   var at: int
   var ok: bool
   var groups: int
+  // Groups open right now: each is a few frames of compiler recursion.
+  var depth: int = 0
 }
+
+// Hostile patterns, bounded at compile time so `Compile` answers
+// `BadPattern` instead of exhausting memory or the stack (D227): nesting,
+// a repeat count, and the size of the finished program.
+const kMaxNesting: int = 32
+const kMaxCount: int = 1000
+const kMaxSteps: int = 20000
 
 /// Compiles `pattern`. `flags` holds `i` and `s`.
 offer fun Compile(pattern: text, flags: text) -> Regex! uses unsafe {
   var steps = ListNew<Step>()
-  var pen = Pen(Bytes(pattern), 0, true, 0)
+  var pen = Pen(Bytes(pattern), 0, true, 0, 0)
   const fold = Contains(flags, 105)
   const dot_all = Contains(flags, 115)
 
@@ -252,7 +261,13 @@ fun CompilePiece(steps: &mut List<Step>, pen: &mut Pen, fold: bool) uses unsafe 
       }
       steps.Push(Save(slot * 2))
     }
+    if pen.depth >= kMaxNesting {
+      pen.ok = false
+      return
+    }
+    pen.depth = pen.depth + 1
     CompileAlternation(steps, pen, fold)
+    pen.depth = pen.depth - 1
     if !pen.ok {
       return
     }
@@ -557,6 +572,18 @@ fun CompileRepeat(steps: &mut List<Step>, pen: &mut Pen, before: int) uses unsaf
     reluctant = true
     pen.at = pen.at + 1
   }
+  // `(a{1000}){1000}` is a million steps; refuse before copying them.
+  var copies = most
+  if most < 0 {
+    copies = least + 1
+  }
+  if copies < 1 {
+    copies = 1
+  }
+  if (steps.Len() - before + 1) * copies > kMaxSteps {
+    pen.ok = false
+    return
+  }
   Repeat(steps, before, least, most, reluctant)
 }
 
@@ -571,6 +598,11 @@ fun ReadCount(pen: &mut Pen) -> Count uses unsafe {
   var digits = 0
   while pen.at < pen.bytes.len && pen.bytes[pen.at] >= 48 && pen.bytes[pen.at] <= 57 {
     least = least * 10 + (pen.bytes[pen.at] - 48) as int
+    if least > kMaxCount {
+      // Also keeps the next multiplication from overflowing and trapping.
+      pen.ok = false
+      return Count(0, -1)
+    }
     digits = digits + 1
     pen.at = pen.at + 1
   }
@@ -586,6 +618,10 @@ fun ReadCount(pen: &mut Pen) -> Count uses unsafe {
     var seen = 0
     while pen.at < pen.bytes.len && pen.bytes[pen.at] >= 48 && pen.bytes[pen.at] <= 57 {
       upper = upper * 10 + (pen.bytes[pen.at] - 48) as int
+      if upper > kMaxCount {
+        pen.ok = false
+        return Count(0, -1)
+      }
       seen = seen + 1
       pen.at = pen.at + 1
     }
@@ -1083,4 +1119,23 @@ fun AnswersRatherThanHanging() -> bool uses unsafe {
       return false
     }
   }
+}
+
+@Test
+fun RefusesPatternsThatWouldBlowUp() -> bool uses unsafe {
+  var refused = 0
+  const hostile = ["a\{99999999999999999999}", "a\{100000}", "a\{1,100000}", "(?:a\{1000})\{1000}", "(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:a)))))))))))))))))))))))))))))))))"]
+  var i = 0
+  while i < 5 {
+    match Compile(hostile[i], "") {
+      Ok(_pattern) => refused = refused
+      BadPattern => refused = refused + 1
+    }
+    i = i + 1
+  }
+  match Compile("(?:(?:(?:a\{2,5})\{3}))b\{1000}", "") {
+    Ok(_pattern) => refused = refused + 1
+    BadPattern => refused = refused
+  }
+  return refused == 6
 }

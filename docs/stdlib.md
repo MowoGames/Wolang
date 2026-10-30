@@ -130,7 +130,9 @@ fun main() uses io, unsafe {
 ## std.regex
 
 A backtracking matcher with a budget: the famous exponential patterns
-answer "no" rather than never answering.
+answer "no" rather than never answering. `Compile` answers `BadPattern` for
+what would blow up: groups nested more than 32 deep, a repeat count over
+1000, or a program over 20000 steps (D227).
 
 ```wolang
 need std.io.{Print}
