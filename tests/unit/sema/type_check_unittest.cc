@@ -463,6 +463,27 @@ WOLANG_TEST(TypeCheck, NullCoalescingRemovesOneLayer) {
 
 // ---------------------------------------------------------------- units -----
 
+WOLANG_TEST(TypeCheck, CompoundAssignmentIsHeldToTheOperatorsOperands) {
+  // `a op= b` is `a = a op b`, so it asks the same of its operands (D246).
+  Fixture ok(
+      "fun f(o: int?) {\n"
+      "  var n = 1\n"
+      "  n += 2\n"
+      "  n <<= 1\n"
+      "  var m = o\n"
+      "  m ?\?= 3\n"
+      "  var x = 1.5\n"
+      "  x *= 2.0\n"
+      "}\n");
+  WOLANG_EXPECT(ok.Codes().empty());
+
+  WOLANG_EXPECT(Fixture("fun f() { var b = true\n b += 1 }").HasCode("E0108"));
+  WOLANG_EXPECT(Fixture("fun f() { var x = 1.5\n x &= 1 }").HasCode("E0108"));
+  WOLANG_EXPECT(Fixture("fun f() { var n = 1\n n ?\?= 2 }").HasCode("E0108"));
+  WOLANG_EXPECT(Fixture("fun f(o: int?) { var m = o\n m ?\?= true }")
+                    .HasCode("E0101"));
+}
+
 WOLANG_TEST(TypeCheck, UnitLiteralsCarryTheirDimension) {
   Fixture fixture(
       "dimension Length\n"

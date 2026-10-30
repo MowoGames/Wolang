@@ -1692,8 +1692,51 @@ TypeId Checker::CheckAssign(const Expr& expr) {
     }
   }
 
-  const TypeId value = Check(expr.rhs, target);
-  if (!Accepts(target, value)) {
+  // `a op= b` is `a = a op b` with `a` evaluated once, so its operands are
+  // held to what the operator asks of them (D246).
+  const bool compound = expr.op != TokenKind::kEq;
+  const bool coalesce = expr.op == TokenKind::kQuestionQuestionEq;
+  const TypeId wanted =
+      coalesce && types_->IsOptional(target) ? types_->ElementOf(target)
+                                             : target;
+  const TypeId value = Check(expr.rhs, wanted);
+  if (compound) {
+    const bool shift = expr.op == TokenKind::kShlEq ||
+                       expr.op == TokenKind::kShrEq;
+    const bool bits = shift || expr.op == TokenKind::kAmpEq ||
+                      expr.op == TokenKind::kPipeEq ||
+                      expr.op == TokenKind::kCaretEq;
+    if (types_->IsError(target) || types_->IsError(value)) {
+      // Already reported.
+    } else if (coalesce) {
+      if (!types_->IsOptional(target)) {
+        std::string message = "`?\?=` needs an optional on its left, found `";
+        message.append(Describe(target));
+        message.append("`");
+        Report(kBadOperand, std::move(message), expr.span);
+      } else if (!Accepts(wanted, value)) {
+        ReportMismatch(wanted, value, expr.span);
+      }
+    } else if (expr.op == TokenKind::kPlusEq && IsTextLike(target) &&
+               IsTextLike(value)) {
+      // Joined the way `a + b` is, and stored where `a = a + b` would.
+    } else if (!types_->IsNumeric(target) || !types_->IsNumeric(value) ||
+               (bits && (types_->IsFloatingPoint(target) ||
+                         types_->IsFloatingPoint(value)))) {
+      std::string message = "`";
+      message.append(TokenKindSpelling(expr.op));
+      message.append("` needs ");
+      message.append(bits ? "integers" : "numbers");
+      message.append(", found `");
+      message.append(Describe(target));
+      message.append("` and `");
+      message.append(Describe(value));
+      message.append("`");
+      Report(kBadOperand, std::move(message), expr.span);
+    } else if (!shift && !Accepts(target, value)) {
+      ReportMismatch(target, value, expr.span);
+    }
+  } else if (!Accepts(target, value)) {
     ReportMismatch(target, value, expr.span);
   }
   // A field, a global or an element outlives the call that assigned it;

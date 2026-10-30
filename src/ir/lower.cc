@@ -4972,7 +4972,93 @@ class Lowerer {
     return 0xFFFFFFFFu;
   }
 
+  // `a op= b` is `a = a op b` with the place worked out once: the index
+  // and the address are computed a single time and the same place is read
+  // and then written, so `xs[next()] += 1` calls `next` once. The operation
+  // is the binary operator's own instruction, so it traps the same way
+  // (D246).
+  InstId LowerCompoundAssign(const Expr& expr) {
+    const Place place = PlaceOf(expr.lhs);
+    const TypeId held = TypeAt(place);
+    if (!place.addressable() || !held.is_valid()) {
+      return InstId{};
+    }
+    const InstId old = ReadPlace(place);
+    if (expr.op == TokenKind::kQuestionQuestionEq) {
+      // The right side is evaluated only when the target is absent.
+      const InstId present = builder_->Add(
+          Opcode::kOptionalIsPresent, types_->bool_type(), {old});
+      const BlockId set = builder_->AddBlock("coalesce.set");
+      const BlockId after = builder_->AddBlock("coalesce.after");
+      builder_->Branch(present, after, set);
+      builder_->SetCurrent(set);
+      const InstId value = Value(expr.rhs);
+      WritePlace(place, Coerce(value, ValueType(value), held, expr.rhs));
+      builder_->Jump(after, {});
+      builder_->SetCurrent(after);
+      return InstId{};
+    }
+    const InstId right = Value(expr.rhs);
+    Opcode opcode = Opcode::kUndef;
+    switch (expr.op) {
+      case TokenKind::kPlusEq:
+        opcode = Opcode::kAdd;
+        break;
+      case TokenKind::kMinusEq:
+        opcode = Opcode::kSub;
+        break;
+      case TokenKind::kStarEq:
+        opcode = Opcode::kMul;
+        break;
+      case TokenKind::kSlashEq:
+        opcode = Opcode::kDiv;
+        break;
+      case TokenKind::kPercentEq:
+        opcode = Opcode::kRem;
+        break;
+      case TokenKind::kAmpEq:
+        opcode = Opcode::kBitAnd;
+        break;
+      case TokenKind::kPipeEq:
+        opcode = Opcode::kBitOr;
+        break;
+      case TokenKind::kCaretEq:
+        opcode = Opcode::kBitXor;
+        break;
+      case TokenKind::kShlEq:
+        opcode = Opcode::kShl;
+        break;
+      case TokenKind::kShrEq:
+        opcode = Opcode::kShr;
+        break;
+      default:
+        return InstId{};
+    }
+    InstId answer;
+    if (opcode == Opcode::kAdd && IsView(TypeOf(expr.lhs)) &&
+        IsView(TypeOf(expr.rhs))) {
+      answer = ConcatText(old, right);
+    } else if (opcode == Opcode::kRem &&
+               types_->KindOf(held) == TypeKind::kFloat) {
+      const TypeId wide = types_->Float(FloatWidth::k64);
+      answer = Coerce(
+          Widen(RuntimeCall("wolang_fmod", wide,
+                            {Widen(AsType(old, held), wide),
+                             Widen(AsType(right, held), wide)}),
+                held),
+          held, held);
+    } else {
+      answer = builder_->Add(opcode, held,
+                             {AsType(old, held), AsType(right, held)});
+    }
+    WritePlace(place, answer);
+    return InstId{};
+  }
+
   InstId LowerAssign(const Expr& expr) {
+    if (expr.op != TokenKind::kEq) {
+      return LowerCompoundAssign(expr);
+    }
     const InstId value = Value(expr.rhs);
     const Place place = PlaceOf(expr.lhs);
     // What goes into a place is of the place's type: `p = &xs[0]` makes

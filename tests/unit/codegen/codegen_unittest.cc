@@ -3276,6 +3276,160 @@ fun Check() -> int {
   WOLANG_EXPECT_EQ(f.Run("Check", {}), "210");
 }
 
+WOLANG_TEST(CodegenTest, CompoundAssignmentOperatesOnItsTarget) {
+  // `i += 1` lowered as `i = 1`, so a loop on it never ended (D246).
+  Fixture f(R"(
+offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
+
+var total: int = 10
+
+struct Pair {
+  var a: int = 1
+  var b: int = 2
+}
+
+class Box {
+  var n: int = 5
+}
+
+struct Particle {
+  var x: float = 0.0
+  var life: int = 0
+}
+
+var calls: int = 0
+
+fun Next() -> int {
+  calls += 1
+  return 1
+}
+
+fun Bump(p: &mut int) {
+  *p += 4
+}
+
+fun Loop() -> int {
+  var i = 0
+  while i < 5 {
+    i += 1
+  }
+  return i
+}
+
+fun Locals() -> int {
+  var a = 10
+  a += 5
+  a -= 3
+  a *= 4
+  a /= 3
+  a %= 7
+  var b = 12
+  b &= 10
+  b |= 1
+  b ^= 3
+  b <<= 2
+  b >>= 1
+  return a * 1000 + b
+}
+
+fun Globals() -> int {
+  total += 5
+  total *= 2
+  return total
+}
+
+fun Fields() -> int {
+  var p = Pair(1, 2)
+  p.a += 10
+  p.b *= 7
+  const box = Box(5)
+  box.n -= 2
+  return p.a * 100 + p.b + box.n * 10000
+}
+
+fun Elements() -> int uses unsafe {
+  const xs = ArrayNew<int>(3)
+  xs[0] = 1
+  xs[1] = 2
+  xs[2] = 3
+  xs[Next()] += 40
+  xs[2] <<= 2
+  return xs[0] + xs[1] * 10 + xs[2] * 1000 + calls * 100000
+}
+
+fun ThroughReference() -> int {
+  var x = 3
+  Bump(&mut x)
+  return x
+}
+
+fun SoaFields() -> int uses unsafe {
+  const ps = SoaNew<Particle>(2)
+  ps[1].life += 7
+  ps[1].life += 7
+  ps[1].x += 1.5
+  return ps[1].life + (ps[1].x * 2.0) as int
+}
+
+fun Floats() -> float {
+  var f = 1.5
+  f += 2.0
+  f *= 2.0
+  f -= 1.0
+  f /= 2.0
+  return f
+}
+
+fun Joined() -> int {
+  var s = "ab"
+  s += "cd"
+  return s.length as int
+}
+
+fun Coalesced() -> int {
+  var empty: int? = null
+  empty ??= 9
+  var full: int? = 4
+  full ??= Next() + 50
+  return (empty ?? 0) * 10 + (full ?? 0) + calls * 1000
+}
+
+fun Overflow() -> int {
+  var a = 2147483647
+  a += 1
+  return a
+}
+
+fun DivideByZero(z: int) -> int {
+  var a = 4
+  a /= z
+  return a
+}
+
+fun ShiftTooFar(n: int) -> int {
+  var a = 1
+  a <<= n
+  return a
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Loop", {}), "5");
+  WOLANG_EXPECT_EQ(f.Run("Locals", {}), "2020");
+  WOLANG_EXPECT_EQ(f.Run("Globals", {}), "30");
+  WOLANG_EXPECT_EQ(f.Run("Fields", {}), "31114");
+  WOLANG_EXPECT_EQ(f.Run("Elements", {}), "112421");
+  WOLANG_EXPECT_EQ(f.Run("ThroughReference", {}), "7");
+  WOLANG_EXPECT_EQ(f.Run("SoaFields", {}), "17");
+  WOLANG_EXPECT_EQ(f.Run("Floats", {}), "3");
+  WOLANG_EXPECT_EQ(f.Run("Joined", {}), "4");
+  WOLANG_EXPECT_EQ(f.Run("Coalesced", {}), "94");
+  WOLANG_EXPECT(f.Run("Overflow", {}).find("trap:") == size_t{0});
+  WOLANG_EXPECT(f.Run("DivideByZero", {Fixture::Wide(0)}).find("trap:") ==
+                size_t{0});
+  WOLANG_EXPECT(f.Run("ShiftTooFar", {Fixture::Wide(70)}).find("trap:") ==
+                size_t{0});
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang
