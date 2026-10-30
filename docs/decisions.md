@@ -2891,16 +2891,6 @@ integers interpolate through their own runtime call, because widening a
 `u64` past 2^63 to `s64` changed its value. Float `%` is C's `fmod` in
 every tier, called through the runtime, so there is one answer to give.
 
-**D226. Tiers agree on integer-cast traps, trap text and float text.** A
-cast between `s64` and `u64` (or a signed value to `u64`) traps when the
-value is negative as a signed number, in the JIT and AOT as in the
-interpreter. Trap messages are one table in effect: the interpreter says
-"index is outside the length" where the length is a runtime value, because
-compiled code cannot print it, and the codegen test harness now compares
-trap text, not only the kind. Floats print as the shortest digits that read
-back as the same number (a `float`/f32 gets its own shortest f32 digits),
-and every NaN prints `nan` whatever its sign bit, from one function used by
-the runtime and the interpreter.
 **D225. Every depth is bounded where it is made.** Sema, lowering, the
 printer and the formatter walk the tree recursively, and a 3000-term
 `1+1+...` or `----1` overflowed the native stack in each of them. The
@@ -2924,3 +2914,14 @@ s64` reads the literal at the cast's type. The interpreter also measures the
 native stack, not only `Limits::depth`: a debug build's frames are large
 enough that a runaway `comptime` recursion crashed the compiler before 1024
 calls, and it now stops with the same depth trap.
+
+**D226. Tiers agree on integer-cast traps, trap text and float text.** A
+cast between `s64` and `u64` (or a signed value to `u64`) traps when the
+value is negative as a signed number, in the JIT and AOT as in the
+interpreter. Trap messages are one table in effect: the interpreter says
+"index is outside the length" where the length is a runtime value, because
+compiled code cannot print it, and the codegen test harness now compares
+trap text, not only the kind. Floats print as the shortest digits that read
+back as the same number (a `float`/f32 gets its own shortest f32 digits),
+and every NaN prints `nan` whatever its sign bit, from one function used by
+the runtime and the interpreter.
