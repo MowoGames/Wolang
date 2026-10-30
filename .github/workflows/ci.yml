@@ -262,12 +262,13 @@ jobs:
           /tmp/hostproj/build/host
 
   # Discord #wolang-ci and the Telegram topic Wolang CI: ci failed on main or alpha.
-  # Green runs say nothing — that is noise.
+  # The first green run after a red one says so; other green runs say nothing — that is noise.
+  # A failure card names the failed step and quotes its log (notify.py, with actions: read).
   # Secrets DISCORD_WEBHOOK_URL and TELEGRAM_BOT_TOKEN; without them nothing is sent, and a
   # message that cannot be sent never fails the job (.github/notify.sh).
-  failed:
+  notify:
     needs: [build, windows, embed]
-    if: failure() && github.event_name != 'pull_request'
+    if: always() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # actions: read lets notify.sh list the run's jobs with their results and links
     permissions:
@@ -284,8 +285,13 @@ jobs:
           TELEGRAM_THREAD_ID: "15"
           GITHUB_TOKEN: ${{ github.token }}
           COMMIT_TITLE: ${{ github.event.head_commit.message }}
+          RESULT: ${{ contains(needs.*.result, 'failure') && 'failure' || contains(needs.*.result, 'cancelled') && 'cancelled' || 'success' }}
         run: |
           . .github/notify.sh
-          notify "$NOTIFY_RED" "❌ CI failed on $GITHUB_REF_NAME" "A build or a test did not pass on one of the machines — the run shows which.
+          if [ "$RESULT" = failure ]; then
+            notify "$NOTIFY_RED" "❌ CI failed on $GITHUB_REF_NAME" "A build or a test did not pass on one of the machines — the run shows which.
 
           > ${COMMIT_TITLE%%$'\n'*}"
+          elif [ "$RESULT" = success ]; then
+            notify_fixed "✅ CI is green again on $GITHUB_REF_NAME" "The run before this one failed; this one passed on every machine."
+          fi

@@ -213,7 +213,7 @@ jobs:
         run: |
           . .github/notify.sh
           if [ "$PUBLISHED" = success ]; then
-            notify "$NOTIFY_LIME" "📦 Wolang $GITHUB_REF_NAME is published" "The binaries, the installer and the editor extension are on the **GitHub release**: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME"
+            notify "$NOTIFY_GREEN" "📦 Wolang $GITHUB_REF_NAME is published" "The binaries, the installer and the editor extension are on the **GitHub release**: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME"
           else
             notify "$NOTIFY_RED" "❌ Release $GITHUB_REF_NAME was not published" "A platform build, the installer or the extension did not pass, so nothing was released — the run shows which."
           fi
