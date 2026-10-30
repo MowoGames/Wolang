@@ -553,6 +553,11 @@ fun main() uses io, unsafe {
 
 What it writes, the system's `gzip` reads, and the other way round.
 
+`Inflate` and `Gunzip` put no cap on the output, so a hostile stream can
+expand about a thousandfold. For anything that arrived from outside use
+`InflateLimited(bytes, most)` / `GunzipLimited(bytes, most)`: they answer
+`Malformed` once the output would pass `most` bytes (D227).
+
 ## std.encoding
 
 `ToBase64`, `FromBase64`, `ToHex`, `FromHex`, `ToUrl`, `FromUrl`.
