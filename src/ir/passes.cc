@@ -251,10 +251,17 @@ bool FoldConstants(TypeStore* types, Function* function) {
                   types->KindOf(operand_type) == TypeKind::kInt
               ? WidthInBits(types->Get(operand_type).int_width)
               : 64;
+      // Sign-extended for a signed type and zero-extended for an unsigned
+      // one: an unsigned 4294967294 read as -2 made `x + 4294967294`
+      // "fit" a u32 and fold away its overflow trap (D231).
       const auto signed_of = [&](uint64_t raw) {
-        return bits >= 64 ? static_cast<int64_t>(raw)
-                          : static_cast<int64_t>(raw << (64 - bits)) >>
-                                (64 - bits);
+        if (bits >= 64) {
+          return static_cast<int64_t>(raw);
+        }
+        if (!is_signed) {
+          return static_cast<int64_t>(raw & ((uint64_t{1} << bits) - 1));
+        }
+        return static_cast<int64_t>(raw << (64 - bits)) >> (64 - bits);
       };
       const int64_t sa = signed_of(a);
       const int64_t sb = signed_of(b);

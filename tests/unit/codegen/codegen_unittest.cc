@@ -2701,6 +2701,20 @@ fun Arms() -> int {
   WOLANG_EXPECT_EQ(f.Run("Arms", {}), "45");
 }
 
+WOLANG_TEST(CodegenTest, FoldingAnUnsignedSumKeepsItsOverflowTrap) {
+  // Found by the generator (D231): the folder read the u32 4294967294 as
+  // -2, so the sum "fit" and the trap was folded away.
+  Fixture f(R"(
+fun Wraps() -> int {
+  var x: u32 = 2147483647
+  const y = (x + 4294967294) / 2
+  return (y & 3) as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Wraps", {}),
+                   "trap: overflow at @Wraps:%5: add overflowed");
+}
+
 WOLANG_TEST(CodegenTest, ReleasesWhatObjectsHold) {
   Fixture f(R"(
 extern "C" fun wolang_objects_live() -> s64
