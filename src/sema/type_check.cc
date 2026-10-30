@@ -554,6 +554,10 @@ class Checker {
   // The effects of reaching `binding`, whether by calling it or by naming it
   // as a value (D221, D222).
   void ChargeBinding(const Binding* binding, bool drop_async);
+  // The same for a method, reached through `obj.Method` or `Type.Method`
+  // (D222): methods are not file-scope names, so the member names the
+  // declaration instead of a binding.
+  void ChargeMember(const Member* member, bool drop_async);
 
   // The member of the enclosing type named |name|, or null when there is no
   // enclosing type or it has no such member.
@@ -620,6 +624,9 @@ class Checker {
   ExprId started_;
   // The path being called, which RecordCallEffects has already charged.
   const Expr* callee_path_ = nullptr;
+  // The method a callee resolved to, left by CheckField for CheckCall to
+  // charge once it knows whether the call is a `spawn` (D222).
+  const Member* callee_method_ = nullptr;
   bool spawned_ = false;
   // Whether a `wait` may appear at the expression about to be checked, and
   // whether the block being entered stands somewhere one may.
@@ -1690,8 +1697,13 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
 
   const Expr* previous_callee = callee_path_;
   callee_path_ = ast_.Contains(expr.lhs) ? &ast_.Get(expr.lhs) : nullptr;
+  callee_method_ = nullptr;
   const TypeId callee = Check(expr.lhs, TypeId{});
   callee_path_ = previous_callee;
+  if (callee_method_ != nullptr) {
+    ChargeMember(callee_method_, spawned_ && id == started_);
+    callee_method_ = nullptr;
+  }
   const std::span<const ExprId> args = ast_.Get(expr.args);
 
   if (types_->KindOf(callee) != TypeKind::kFunction) {
@@ -1951,6 +1963,22 @@ void Checker::ChargeBinding(const Binding* binding, bool drop_async) {
     // which is one more reason an `offer`ed task states its effects.
     result_.spawned_callees.emplace_back(binding->file, binding->item);
   }
+}
+
+void Checker::ChargeMember(const Member* member, bool drop_async) {
+  if (member->file == Member::kNoSource || member->item == Member::kNoSource) {
+    return;
+  }
+  // Only what a method declares or the module-wide rows know: a method of
+  // an `extern` class is a C call, which the binding path charges as
+  // `unsafe`, and a bodiless ability method has nothing to charge.
+  Binding binding;
+  binding.name = member->name;
+  binding.kind = BindingKind::kFunction;
+  binding.item = member->item;
+  binding.file = member->file;
+  binding.has_body = true;
+  ChargeBinding(&binding, drop_async);
 }
 
 // `Vec3(x, y, z)` fills the type's fields in declaration order. A type with
@@ -2296,6 +2324,17 @@ TypeId Checker::CheckField(const Expr& expr) {
     // A type whose members are not known is declared in a file this one
     // cannot see. That is already reported as an unresolved import.
     return types_->error();
+  }
+
+  // A method named as a value reaches it as surely as calling it does; the
+  // callee of a call is charged by CheckCall, which knows about `spawn`
+  // (D222).
+  if (member->kind == MemberKind::kMethod) {
+    if (&expr == callee_path_) {
+      callee_method_ = member;
+    } else {
+      ChargeMember(member, false);
+    }
   }
 
   TypeId type = types_->Substitute(member->type, substitution);

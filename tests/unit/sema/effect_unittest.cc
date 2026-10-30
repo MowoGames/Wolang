@@ -438,6 +438,64 @@ fun Launch(body: fun()) {
 fun Go() {
   const n = 5
   Launch(|| { const _m = n })
+WOLANG_TEST(EffectRowTest, ANamedMethodChargesItsEffects) {
+  // A method called or named as a value reaches its effects as surely as a
+  // function does; neither was charged before (D222).
+  WOLANG_EXPECT_EQ(CodesOf("method-call-fires", R"(
+struct Box {
+  var n: int
+
+  fun Out() uses io {
+  }
+}
+
+offer fun Sneaky(b: Box) {
+  b.Out()
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("method-value-fires", R"(
+struct Box {
+  var n: int
+
+  fun Out() uses io {
+  }
+}
+
+offer fun Sneaky(b: Box) {
+  const _w = b.Out
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("method-type-value-fires", R"(
+struct Box {
+  var n: int
+
+  fun Out() uses io {
+  }
+}
+
+offer fun Sneaky() {
+  const _w = Box.Out
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("method-twin", R"(
+struct Box {
+  var n: int
+
+  fun Out() uses io {
+  }
+
+  fun Quiet() {
+  }
+}
+
+offer fun Declared(b: Box) uses io {
+  const _w = b.Out
+  b.Out()
+}
+
+offer fun Pure(b: Box) {
+  b.Quiet()
+  const _w = b.Quiet
 }
 )"), "");
 }

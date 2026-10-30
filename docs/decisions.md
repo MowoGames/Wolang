@@ -2869,6 +2869,8 @@ item that is not the callee of a call now charges its full row to the
 enclosing function, as if called, so capabilities and `@Deterministic` or
 `comptime` contexts see it. Registering a layer is therefore charged
 where it is named, which is conservative.
+A method is charged the same way, called or named (`b.Out`,
+`Type.Out`); methods were not charged at all before.
 
 **D223. The HTTP server answers only requests it can frame.** A request is
 parsed from the bytes that arrived and no more -- the pool buffer is
