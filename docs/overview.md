@@ -52,7 +52,7 @@ fun main() uses io {
 - **Three tiers that agree.** An interpreter is the reference; `wolang
   run` compiles to machine code on the fly for x86-64 and arm64; `wolang
   build` produces a native binary through LLVM. A differential fuzzer
-  runs the same generated programs through all of them on every commit.
+  runs the same generated programs through all of them in CI on every push.
 - **C in both directions.** Call C with `extern "C"`, and embed Wolang in
   a C or C++ program through one header.
 

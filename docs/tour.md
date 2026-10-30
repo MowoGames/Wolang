@@ -502,7 +502,7 @@ fun main() uses io {
 }
 ```
 
-Unreachable states are a compile error.
+An unreachable state is warning `W0109`.
 
 ## Memory
 
