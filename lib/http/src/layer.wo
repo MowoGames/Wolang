@@ -112,7 +112,7 @@ offer fun Logged(request: &Request, answer: Response) -> Response uses io, time,
 }
 
 /// Writes one line per request, with how long it took.
-offer fun Logger(layers: &mut Layers) uses unsafe {
+offer fun Logger(layers: &mut Layers) uses io, time, unsafe {
   layers.Use(Timing)
   layers.Then(Logged)
 }

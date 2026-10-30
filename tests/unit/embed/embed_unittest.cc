@@ -679,6 +679,21 @@ offer fun Poke(address: u64) -> u8 uses unsafe {
   for (const std::filesystem::path& root : {reader, greedy, door, raw}) {
     std::filesystem::remove_all(root);
   }
+
+  // A bodiless `uses unsafe` primitive hands its obligation to the caller,
+  // so a mod cannot reach it by leaving `unsafe` out (D221).
+  const std::filesystem::path prim = WritePackage("modprim", "", R"(
+need std.mem.{ArrayNew}
+
+offer fun Grab() -> int {
+  const room = ArrayNew<u8>(8)
+  return room.len
+}
+)");
+  WolangVm* grabbing = wolang_vm_create();
+  WOLANG_EXPECT(wolang_vm_load_mod(grabbing, prim.string().c_str(), "io") != 0);
+  wolang_vm_destroy(grabbing);
+  std::filesystem::remove_all(prim);
 }
 
 WOLANG_TEST(EmbedTest, CallsBackIntoTheHost) {

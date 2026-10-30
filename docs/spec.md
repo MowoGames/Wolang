@@ -670,6 +670,11 @@ sandboxed package may not declare `extern` (`E0705`), and an `extern`
 declaration states the capability its primitive needs — `uses io`, `uses
 net` — which, unlike `unsafe`, a wrapper that declares it does not absorb.
 
+A wrapper with a body that declares `uses unsafe` absorbs it, but a primitive
+with no body (or an `extern`) re-exports `unsafe` to every caller (D221).
+Naming a function as a value, not only calling it, charges its whole row to
+the enclosing function, comptime included (D222).
+
 ## 6. Units and dimensions — normative
 
 ```wolang

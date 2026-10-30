@@ -441,6 +441,9 @@ class Checker {
   // Notes what calling |callee| does: its declared row if it has one, and
   // otherwise who to ask once the module-wide rows are known.
   void RecordCallEffects(ExprId callee, ExprId call);
+  // The effects of reaching `binding`, whether by calling it or by naming it
+  // as a value (D221, D222).
+  void ChargeBinding(const Binding* binding, bool drop_async);
 
   // The member of the enclosing type named |name|, or null when there is no
   // enclosing type or it has no such member.
@@ -504,6 +507,8 @@ class Checker {
   // suspension is allowed to happen.
   bool in_task_ = false;
   ExprId started_;
+  // The path being called, which RecordCallEffects has already charged.
+  const Expr* callee_path_ = nullptr;
   bool spawned_ = false;
   // Whether a `wait` may appear at the expression about to be checked, and
   // whether the block being entered stands somewhere one may.
@@ -948,6 +953,13 @@ TypeId Checker::CheckPath(const Expr& expr) {
   if (binding->kind == BindingKind::kErrorTag) {
     // An error tag is a value of the error set it belongs to.
     return types_->ErrorSet({binding->name});
+  }
+  // Naming a function as a value reaches it as surely as calling it does,
+  // so it costs the same effects; the callee of a call is charged by
+  // RecordCallEffects instead (D222).
+  if (binding->kind == BindingKind::kFunction &&
+      binding->item != Binding::kNoItem && &expr != callee_path_) {
+    ChargeBinding(binding, false);
   }
   return binding->type.is_valid() ? binding->type : types_->error();
 }
@@ -1496,7 +1508,10 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
 
   RecordCallEffects(expr.lhs, id);
 
+  const Expr* previous_callee = callee_path_;
+  callee_path_ = ast_.Contains(expr.lhs) ? &ast_.Get(expr.lhs) : nullptr;
   const TypeId callee = Check(expr.lhs, TypeId{});
+  callee_path_ = previous_callee;
   const std::span<const ExprId> args = ast_.Get(expr.args);
 
   if (types_->KindOf(callee) != TypeKind::kFunction) {
@@ -1713,24 +1728,30 @@ void Checker::RecordCallEffects(ExprId callee, ExprId call) {
   // why every other effect carries over. A sandboxed package cannot spawn
   // its way to the network.
   const bool drop_async = spawned_ && call == started_;
+  ChargeBinding(binding, drop_async);
+}
 
+void Checker::ChargeBinding(const Binding* binding, bool drop_async) {
   if (const EffectRow* declared =
           resolution_->DeclaredRow(binding->file, binding->item);
       declared != nullptr) {
-    // A declared `uses unsafe` absorbs the obligation rather than
+    // A declared `uses unsafe` on a function WITH A BODY absorbs the
+    // obligation rather than
     // re-exporting it. That is the difference between `unsafe` and every
     // other effect: `io` and `net` are capabilities -- what the code needs
     // the outside world for, which a caller has to know about -- while
     // `unsafe` is an audit, and the declaration that states it is the one
     // taking responsibility. Without this a safe wrapper over an unsafe
     // primitive would be impossible, and `std.io.Print` would make every
-    // program that prints an unsafe one.
+    // program that prints an unsafe one. A bodiless primitive has nothing
+    // vouching for it -- its `uses unsafe` is the promise the caller must
+    // make, exactly like `extern` (D221).
     const EffectId unsafe_effect =
         types_->BuiltinEffectId(BuiltinEffect::kUnsafe);
     const EffectId async_effect =
         types_->BuiltinEffectId(BuiltinEffect::kAsync);
     for (EffectId effect : declared->effects()) {
-      if (effect == unsafe_effect) {
+      if (effect == unsafe_effect && binding->has_body) {
         continue;
       }
       if (drop_async && effect == async_effect) {

@@ -2856,3 +2856,19 @@ because only its author read it. The repository is open now, and
 `STATUS.md` is where a contributor learns what is done and what is
 open -- `README.md` and `CONTRIBUTING.md` both send people there. A
 working log nobody else can read is a closed door in an open project.
+
+**D221. A bodiless primitive does not absorb `unsafe`.** A declared
+`uses unsafe` absorbs the obligation because the author of a body takes
+responsibility for it. A primitive with no body (`Free`, `ArrayNew`,
+`ViewFromRaw` in `std.mem`) has nobody vouching, so its `unsafe` passes to
+the caller, exactly as an `extern` call does. Without this a sandboxed mod
+could reach raw memory through `std.mem` with no `uses unsafe` of its own.
+
+**D222. Naming a function as a value costs its effects.** Binding
+`const w = WriteAll` and calling `w` through a local escaped the effect
+check, because only direct calls were charged. Any reference to a function
+item that is not the callee of a call now charges its full row to the
+enclosing function, as if called, so capabilities and `@Deterministic` or
+`comptime` contexts see it. Registering a layer is therefore charged
+where it is named, which is conservative.
+

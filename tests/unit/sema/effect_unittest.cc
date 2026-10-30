@@ -205,5 +205,98 @@ task fun Nothing() {}
   WOLANG_EXPECT_EQ(PackageCodes(&db), "");
 }
 
+// Writes a one-file package and returns the codes it reports (D221, D222).
+std::string CodesOf(const char* name, const char* source) {
+  testing::TempTree tree(name);
+  tree.Write("wolang.toml", "[package]\nname = \"t\"\nversion = \"1\"\n");
+  tree.Write("src/main.wo", source);
+  Database db;
+  DiagnosticEngine diagnostics;
+  if (!LoadPackage(&db, tree.path(), &diagnostics)) {
+    return "load failed";
+  }
+  return PackageCodes(&db);
+}
+
+WOLANG_TEST(EffectRowTest, BodilessUnsafePrimitiveReExportsUnsafe) {
+  // A primitive has no body vouching for it, so its `uses unsafe` is the
+  // caller's to state, like `extern` (D221).
+  WOLANG_EXPECT_EQ(CodesOf("prim-fires", R"(
+fun Free(items: []u8) uses unsafe
+
+offer fun Drop(items: []u8) {
+  Free(items)
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("prim-twin", R"(
+fun Free(items: []u8) uses unsafe
+
+offer fun Drop(items: []u8) uses unsafe {
+  Free(items)
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, WrapperWithABodyStillAbsorbsUnsafe) {
+  WOLANG_EXPECT_EQ(CodesOf("wrap-absorbs", R"(
+fun Free(items: []u8) uses unsafe
+
+fun Release(items: []u8) uses unsafe {
+  Free(items)
+}
+
+fun Safe(items: []u8) {
+  Release(items)
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, NamingAFunctionAsAValueChargesItsEffects) {
+  // Binding a function to a local and calling that must cost what calling
+  // it directly does (D222).
+  WOLANG_EXPECT_EQ(CodesOf("value-fires", R"(
+fun Out() uses io
+
+offer fun Sneaky() {
+  const w: fun() = Out
+  w()
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("value-twin", R"(
+fun Out() uses io
+
+offer fun Sneaky() uses io {
+  const w: fun() = Out
+  w()
+}
+)"), "");
+  WOLANG_EXPECT_EQ(CodesOf("value-unsafe", R"(
+fun Free(items: []u8) uses unsafe
+
+offer fun Sneaky() {
+  const _w: fun([]u8) = Free
+}
+)"), "E0704");
+}
+
+WOLANG_TEST(EffectRowTest, ComptimeCannotNameAnIoFunctionAsAValue) {
+  WOLANG_EXPECT_EQ(CodesOf("value-comptime", R"(
+fun Out() uses io
+
+comptime fun Pick() -> int {
+  const _w: fun() = Out
+  return 1
+}
+)"), "E0702");
+  WOLANG_EXPECT_EQ(CodesOf("value-comptime-twin", R"(
+fun Pure() {}
+
+comptime fun Pick() -> int {
+  const _w: fun() = Pure
+  return 1
+}
+)"), "");
+}
+
 }  // namespace
 }  // namespace wolang
