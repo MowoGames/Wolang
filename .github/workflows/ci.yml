@@ -261,14 +261,18 @@ jobs:
           cmake --build /tmp/hostproj/build -j
           /tmp/hostproj/build/host
 
-  # Discord #wolang-ci and the Telegram topic Wolang CI: ci failed on main or alpha. Green runs say nothing —
-  # that is noise.
+  # Discord #wolang-ci and the Telegram topic Wolang CI: ci failed on main or alpha.
+  # Green runs say nothing — that is noise.
   # Secrets DISCORD_WEBHOOK_URL and TELEGRAM_BOT_TOKEN; without them nothing is sent, and a
   # message that cannot be sent never fails the job (.github/notify.sh).
   failed:
     needs: [build, windows, embed]
     if: failure() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # actions: read lets notify.sh list the run's jobs with their results and links
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -278,6 +282,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: "-1004491648622"
           TELEGRAM_THREAD_ID: "15"
+          GITHUB_TOKEN: ${{ github.token }}
           COMMIT_TITLE: ${{ github.event.head_commit.message }}
         run: |
           . .github/notify.sh

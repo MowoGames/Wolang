@@ -143,7 +143,8 @@ def all_deployments(p):
 
 
 def changes(p, frm, to):
-    """Commit titles between two commits, oldest first, without merges and bot noise."""
+    """Commits between two commits as (title, sha), oldest first, without merges and bot noise;
+    a collapsed line has no sha. Second value: whether any line is more than a collapsed one."""
     if not to or frm == to:
         return [], False
     if frm:
@@ -164,12 +165,12 @@ def changes(p, frm, to):
             continue
         line = next((v for k, v in p.get("collapse", {}).items() if title.startswith(k)), None)
         if line:
-            if line not in collapsed:
-                collapsed.append(line)
+            if (line, None) not in collapsed:
+                collapsed.append((line, None))
             continue
         if title not in seen:
             seen.add(title)
-            lines.append(title)
+            lines.append((title, c["sha"]))
     return lines + collapsed, bool(lines)
 
 
@@ -194,22 +195,36 @@ def version(p, dep):
 
 
 # ── Cards ─────────────────────────────────────────────────────────────────────────────────────
-# A card is {title, url, color, intro, heading, lines, more_text, footer, timestamp}: plain text,
-# escaped for each place it goes. `intro` may carry **bold**, the one markup both understand.
+# A card is {title, url, color, intro, heading, lines, more, empty, links, footer, timestamp}:
+# plain text, escaped for each place it goes. `intro` may carry **bold**, the one markup both
+# understand. A line is (title, sha) and links to its commit; `links` is the row under the lines
+# — the repository, what changed, the run that posted it.
 
 def short(t, n=150):
     return t if len(t) <= n else t[: n - 1].rstrip() + "…"
 
 
-def card(p, title, intro="", lines=(), limit=MAX_LINES, heading="", empty="", footer="", at=None):
+def repo_url(p):
+    return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{p['path']}"
+
+
+def card(p, title, intro="", lines=(), limit=MAX_LINES, heading="", empty="", footer="", at=None, links=()):
     lines = list(lines)
+    row = [("Repository", repo_url(p)), *links]
+    if os.environ.get("GITHUB_RUN_ID"):
+        row.append(("Run", f"{repo_url(p)}/actions/runs/{os.environ['GITHUB_RUN_ID']}"))
     return {"title": title, "url": p["site"], "color": p["color"], "intro": intro, "heading": heading if lines else "",
-            "lines": [short(t) for t in lines[:limit]], "more": max(0, len(lines) - limit),
-            "empty": "" if lines else empty, "footer": footer, "timestamp": at}
+            "lines": [(short(t), sha and f"{repo_url(p)}/commit/{sha}") for t, sha in lines[:limit]],
+            "more": max(0, len(lines) - limit), "empty": "" if lines else empty, "links": row,
+            "footer": footer, "timestamp": at}
+
+
+def compare_link(p, frm, to):
+    return [("Changes", f"{repo_url(p)}/compare/{frm}...{to}")] if frm and to and frm != to else []
 
 
 def discord_md(s):
-    for ch in "\\*_~`|>":
+    for ch in "\\*_~`|>[]":
         s = s.replace(ch, "\\" + ch)
     return s
 
@@ -222,12 +237,20 @@ def bold_parts(s):
 
 def to_discord(c):
     intro = "".join(f"**{discord_md(t)}**" if b else discord_md(t) for t, b in bold_parts(c["intro"]))
-    body = [f"• {discord_md(t)}" for t in c["lines"]]
-    if c["more"]:
-        body.append(f"…and {c['more']} more")
+    links = " · ".join(f"[{label}]({url})" for label, url in c["links"])
+    body, size, more = [], len(intro) + len(links), c["more"]
+    for i, (t, url) in enumerate(c["lines"]):
+        line = f"• {discord_md(t)}" + (f" · [`{url.rsplit('/', 1)[1][:7]}`]({url})" if url else "")
+        # an embed's description holds 4096 characters; a line is never cut through its link
+        if size + len(line) > 3600:
+            more += len(c["lines"]) - i
+            break
+        body.append(line)
+        size += len(line) + 1
+    if more:
+        body.append(f"…and {more} more")
     text = "\n".join(body)
-    text = text[:3500] + ("…" if len(text) > 3500 else "")
-    desc = "\n\n".join(x for x in [intro, (f"**{c['heading']}**\n" if c["heading"] else "") + text, c["empty"]] if x)
+    desc = "\n\n".join(x for x in [intro, (f"**{c['heading']}**\n" if c["heading"] else "") + text, c["empty"], links] if x)
     em = {"title": c["title"][:256], "url": c["url"], "description": desc or "—", "color": c["color"]}
     if c["footer"]:
         em["footer"] = {"text": c["footer"][:2048]}
@@ -244,8 +267,8 @@ def to_telegram(c):
     if c["heading"]:
         out.append(f"\n<b>{e(c['heading'])}</b>")
     body, size = [], sum(len(x) for x in out)
-    for t in c["lines"]:
-        line = f"• {e(t)}"
+    for t, url in c["lines"]:
+        line = f"• {e(t)}" + (f' · <a href="{html.escape(url)}">{url.rsplit("/", 1)[1][:7]}</a>' if url else "")
         if size + len(line) > 3500:
             c = {**c, "more": c["more"] + len(c["lines"]) - len(body)}
             break
@@ -258,8 +281,9 @@ def to_telegram(c):
         out.append(f"…and {c['more']} more")
     if c["empty"]:
         out.append(f"\n{e(c['empty'])}")
+    out.append("\n" + " · ".join(f'<a href="{html.escape(url)}">{e(label)}</a>' for label, url in c["links"]))
     if c["footer"]:
-        out.append(f"\n<i>{e(c['footer'])}</i>")
+        out.append(f"<i>{e(c['footer'])}</i>")
     return "\n".join(out)
 
 
@@ -343,7 +367,7 @@ def collect(p, dep, prev):
     elif p.get("releases") and ref.startswith("release/") and ref != prev_ref:
         kind = "release"
     lines, news = ([], False) if kind == "rollback" or not prev_sha else changes(p, prev_sha, dep["sha"])
-    return {"kind": kind, "sha": dep["sha"], "version": version(p, dep),
+    return {"kind": kind, "sha": dep["sha"], "prev_sha": prev_sha, "version": version(p, dep),
             "prev_version": version(p, prev) if prev else None,
             "release": ref.removeprefix("release/") if ref.startswith("release/") else None,
             "user": dep.get("user", "—"), "at": dep["at"], "changes": lines, "news": news}
@@ -354,7 +378,7 @@ def release_card(p, e):
     return card(p, f"🎉 {p['name']} {e['release']} is live", f"Version **{e['version']}** · {when(parse(e['at']))}",
                 lines, 25, "What's new", "No new commits.",
                 f"deployed by {e['user']} · changes: {len(lines)}" + (f" · was {e['prev_version']}" if e["prev_version"] else ""),
-                e["at"])
+                e["at"], compare_link(p, e["prev_sha"], e["sha"]))
 
 
 def digest_card(p, es, day):
@@ -363,8 +387,8 @@ def digest_card(p, es, day):
         if e["kind"] == "rollback":
             notes.append(f"↩️ Rolled back to {e['version']} ({when(parse(e['at']))}, {e['user']})")
         for t in e["changes"]:
-            if t not in seen:
-                seen.add(t)
+            if t[0] not in seen:
+                seen.add(t[0])
                 lines.append(t)
     first, last = es[0], es[-1]
     title = f"{p['emoji']} {p['name']}"
@@ -374,7 +398,8 @@ def digest_card(p, es, day):
         title += f" · {last['version']}"
     users = sorted({e["user"] for e in es})
     return card(p, title, "\n".join(notes), lines, empty="" if notes else "Redeployed with no new commits.",
-                footer=f"{day.day} {MONTHS[day.month - 1]} · last 24 hours · deployments: {len(es)} · {', '.join(users)}")
+                footer=f"{day.day} {MONTHS[day.month - 1]} · last 24 hours · deployments: {len(es)} · {', '.join(users)}",
+                links=compare_link(p, first["prev_sha"], last["sha"]))
 
 
 def main():
@@ -403,7 +428,8 @@ def main():
         branch = os.environ.get("GITHUB_REF_NAME", "")
         n = len(lines)
         post([card(p, f"{p['emoji']} {p['name']} · {branch}", f"{n} change{'s' if n != 1 else ''} · pushed by **{args.actor}**",
-                   lines, footer=f"{branch} · {(before or '—')[:8]} → {args.after[:8]}", at=now.isoformat())], args.dry_run)
+                   lines, footer=f"{branch} · {(before or '—')[:8]} → {args.after[:8]}", at=now.isoformat(),
+                   links=compare_link(p, before, args.after))], args.dry_run)
         return
 
     if args.mode == "tag":
@@ -412,7 +438,9 @@ def main():
         lines, _ = changes(p, args.frm, sha) if args.frm else ([], False)
         post([card(p, f"🎉 {p['name']} {tag} released", f"Tagged by **{args.actor}** · {when(now)}", lines, 25,
                    f"Since {args.frm}" if args.frm else "", "First release." if not args.frm else "No new commits.",
-                   f"changes: {len(lines)}", now.isoformat())], args.dry_run, globally=True)
+                   f"changes: {len(lines)}", now.isoformat(),
+                   [("Release", f"{repo_url(p)}/releases/tag/{tag}"), *compare_link(p, args.frm, tag)])],
+             args.dry_run, globally=True)
         return
 
     deps = all_deployments(p)
@@ -423,11 +451,12 @@ def main():
         dep, prev = deps[-1], (deps[-2] if len(deps) > 1 else None)
         e = collect(p, dep, prev)
         if p.get("quiet") and not e["news"]:
-            print(f"{e['version']}: {', '.join(e['changes']) or 'no new commits'}; not posted")
+            print(f"{e['version']}: {', '.join(t for t, _ in e['changes']) or 'no new commits'}; not posted")
             return
         post([card(p, f"{p['emoji']} {p['name']} is live", f"**{e['version']}** · deployed {when(parse(e['at']))}",
                    e["changes"], 25, "What's new", "Redeployed with no new commits.",
-                   f"deployed by {e['user']}" + (f" · was {e['prev_version']}" if e["prev_version"] else ""), e["at"])],
+                   f"deployed by {e['user']}" + (f" · was {e['prev_version']}" if e["prev_version"] else ""), e["at"],
+                   compare_link(p, e["prev_sha"], e["sha"]))],
              args.dry_run)
         return
 
