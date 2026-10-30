@@ -288,7 +288,10 @@ jobs:
           echo "CXX=clang++" >> $GITHUB_ENV
       - name: Configure and build
         run: |
-          cmake --preset debug
+          # Without the AOT back end: an embedding host does not compile
+          # ahead of time, and the LLVM this runner happens to carry would
+          # otherwise be named in the installed package's link interface.
+          cmake --preset debug -DWOLANG_WITH_LLVM=OFF
           cmake --build --preset debug -j
       # A host that links the library and calls a script: the thing an
       # embedding API has to actually do (D128).
