@@ -5,11 +5,13 @@
 
 #include "wolang/runtime/arena.h"
 
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <system_error>
 
 namespace wolang {
 namespace runtime {
@@ -37,6 +39,32 @@ Text* Allocate(const char* bytes, size_t length) {
 
 }  // namespace
 
+size_t FormatFloat(double value, char* buffer, size_t capacity) {
+  // The sign of a NaN is whatever the hardware left: 0/0 is negative on
+  // x64 and positive elsewhere, and a program cannot tell them apart, so
+  // the text must not either (D226).
+  if (std::isnan(value)) {
+    std::memcpy(buffer, "nan", 3);
+    return 3;
+  }
+  // Shortest round-trip digits rather than six significant ones, so what
+  // is printed is the number that was computed (D226).
+  const std::to_chars_result result =
+      std::to_chars(buffer, buffer + capacity, value);
+  return result.ec == std::errc() ? static_cast<size_t>(result.ptr - buffer)
+                                  : 0;
+}
+
+size_t FormatFloat32(double value, char* buffer, size_t capacity) {
+  if (std::isnan(value)) {
+    return FormatFloat(value, buffer, capacity);
+  }
+  const std::to_chars_result result =
+      std::to_chars(buffer, buffer + capacity, static_cast<float>(value));
+  return result.ec == std::errc() ? static_cast<size_t>(result.ptr - buffer)
+                                  : 0;
+}
+
 Text* wolang_text_from_int(int64_t value) {
   char buffer[24] = {};
   const int written = std::snprintf(buffer, sizeof(buffer), "%lld",
@@ -58,14 +86,15 @@ double wolang_fmod(double left, double right) {
 }
 
 Text* wolang_text_from_float(double value) {
-  // The shortest form that reads back as the same number, which is what a
-  // printed float has to be for a test to be able to expect it.
   char buffer[32] = {};
-  int written = std::snprintf(buffer, sizeof(buffer), "%g", value);
-  if (written <= 0) {
-    return Allocate("0", 1);
-  }
-  return Allocate(buffer, static_cast<size_t>(written));
+  const size_t written = FormatFloat(value, buffer, sizeof(buffer));
+  return Allocate(buffer, written);
+}
+
+Text* wolang_text_from_float32(double value) {
+  char buffer[32] = {};
+  const size_t written = FormatFloat32(value, buffer, sizeof(buffer));
+  return Allocate(buffer, written);
 }
 
 Text* wolang_text_from_bool(bool value) {

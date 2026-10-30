@@ -409,11 +409,12 @@ fun Third() -> float {
 }
 
 fun Wide() -> f64 {
-  return 1.0 / 3.0
+  const one: f64 = 1.0
+  return one / 3.0
 }
 )");
-  WOLANG_EXPECT_EQ(f.Run("Third"), "0.333333");
-  WOLANG_EXPECT_EQ(f.Run("Wide"), "0.333333");
+  WOLANG_EXPECT_EQ(f.Run("Third"), "0.33333334");
+  WOLANG_EXPECT_EQ(f.Run("Wide"), "0.3333333333333333");
   // The two differ in their bits even though both print rounded, which is
   // what the width is for; the check that matters is that neither traps.
 }

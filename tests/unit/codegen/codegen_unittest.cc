@@ -375,7 +375,7 @@ fun Compare(a: float, b: float) -> bool => a < b
                    "4.5");
   WOLANG_EXPECT_EQ(f.Run("Wide", {Fixture::Double(1.0),
                                   Fixture::Double(3.0)}),
-                   "0.333333");
+                   "0.3333333333333333");
   WOLANG_EXPECT_EQ(f.Run("Compare", {Fixture::Float(1.0),
                                      Fixture::Float(2.0)}),
                    "true");

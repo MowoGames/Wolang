@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstdio>
 
+#include "wolang/runtime/text.h"
+
 namespace wolang {
 namespace interp {
 namespace {
@@ -167,8 +169,12 @@ std::string Value::Describe() const {
                         : std::to_string(integer_);
     case Kind::kFloat: {
       char buffer[32];
-      std::snprintf(buffer, sizeof(buffer), "%g", floating_);
-      return buffer;
+      return std::string(
+          buffer, float_width_ == FloatWidth::k32
+                      ? runtime::FormatFloat32(floating_, buffer,
+                                               sizeof(buffer))
+                      : runtime::FormatFloat(floating_, buffer,
+                                             sizeof(buffer)));
     }
     case Kind::kBool:
       return boolean_ ? "true" : "false";

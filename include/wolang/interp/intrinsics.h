@@ -35,6 +35,7 @@ enum class Intrinsic : uint8_t {
   kTextFromUint,
   kFmod,
   kTextFromFloat,
+  kTextFromFloat32,
   kTextFromBool,
   kTextConcat,
   kTextEqual,

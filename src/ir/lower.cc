@@ -3470,7 +3470,11 @@ class Lowerer {
                                {Widen(value, types_->Int(IntWidth::k64,
                                                          true))});
       case TypeKind::kFloat:
-        return TextFromRuntime("wolang_text_from_float",
+        // A 32-bit float prints its own shortest digits (D226).
+        return TextFromRuntime(types_->Get(Erase(type)).float_width ==
+                                       FloatWidth::k32
+                                   ? "wolang_text_from_float32"
+                                   : "wolang_text_from_float",
                                {Widen(value,
                                       types_->Float(FloatWidth::k64))});
       case TypeKind::kBool:

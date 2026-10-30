@@ -32,6 +32,7 @@ constexpr Entry kIntrinsics[] = {
     {"wolang_text_from_uint", Intrinsic::kTextFromUint},
     {"wolang_fmod", Intrinsic::kFmod},
     {"wolang_text_from_float", Intrinsic::kTextFromFloat},
+    {"wolang_text_from_float32", Intrinsic::kTextFromFloat32},
     {"wolang_text_from_bool", Intrinsic::kTextFromBool},
     {"wolang_text_concat", Intrinsic::kTextConcat},
     {"wolang_text_equal", Intrinsic::kTextEqual},
@@ -108,6 +109,9 @@ Value CallIntrinsic(Intrinsic intrinsic,
           runtime::wolang_fmod(arguments[0].floating(),
                                arguments[1].floating()),
           FloatWidth::k64);
+    case Intrinsic::kTextFromFloat32:
+      return Handle(runtime::wolang_text_from_float32(
+          arguments.empty() ? 0.0 : arguments[0].floating()));
 
     case Intrinsic::kTextFromFloat:
       return Handle(runtime::wolang_text_from_float(
