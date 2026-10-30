@@ -19,7 +19,7 @@
 
 need std.doc.{Array, AsBool, AsInt, AsNumber, AsText, Field, Get, Null, Object, OfBool, OfText, Push, Value}
 need std.list.{List, ListNew}
-need std.text.{Builder, Bytes, BuilderNew, Length, Substring, Trim}
+need std.text.{Builder, Bytes, BuilderNew, Length, Repeat, Substring, Trim}
 
 /// What a document that is not one answers with.
 offer error Malformed
@@ -102,6 +102,8 @@ class Reader {
   var at: int = 0
   // `&name` anchors, so that `*name` can repeat them.
   var anchors: List<Field>
+  // How many block nodes deep the parser is; see kMaxDepth (D227).
+  var depth: int = 0
 
   fun AtEnd() -> bool {
     return at >= lines.Len()
@@ -148,7 +150,7 @@ offer fun Parse(input: text) -> Value! uses unsafe {
 
 /// Every document in a stream, which is what `---` separates.
 offer fun ParseAll(input: text) -> List<Value>! uses unsafe {
-  var reader = Reader(SplitLines(input), 0, ListNew<Field>())
+  var reader = Reader(SplitLines(input), 0, ListNew<Field>(), 0)
   var documents = ListNew<Value>()
   loop {
     reader.SkipBlank()
@@ -205,8 +207,23 @@ fun Bad() -> Step {
 
 // ------------------------------------------------------------- blocks ---
 
+// Nesting past this fails as Malformed instead of exhausting the stack; the
+// interpreter tier recurses on the host stack and dies not far past 200
+// frames-of-three, so the cap is low (D227).
+const kMaxDepth: int = 64
+
 // One node at `indent`: a block mapping, a block sequence, or a scalar.
 fun ReadNode(reader: &mut Reader, indent: int) -> Step uses unsafe {
+  if reader.depth >= kMaxDepth {
+    return Bad()
+  }
+  reader.depth = reader.depth + 1
+  const step = ReadNodeInner(reader, indent)
+  reader.depth = reader.depth - 1
+  return step
+}
+
+fun ReadNodeInner(reader: &mut Reader, indent: int) -> Step uses unsafe {
   reader.SkipBlank()
   if reader.AtEnd() {
     return Step(Value.Null, true)
@@ -636,16 +653,21 @@ fun ReadLiteralBlock(
 
 /// What a scalar on one line is, with the core schema applied.
 offer fun ReadScalar(value: text) -> Step uses unsafe {
+  return ReadScalarAt(value, 0)
+}
+
+// `depth` counts the flow collections around the value (D227).
+fun ReadScalarAt(value: text, depth: int) -> Step uses unsafe {
   const held = Trim(StripComment(value))
   if Length(held) == 0 {
     return Step(Value.Null, true)
   }
   const first = FirstByte(held)
   if first == 91 {
-    return ReadFlowSequence(held)
+    return ReadFlowSequence(held, depth + 1)
   }
   if first == 123 {
-    return ReadFlowMapping(held)
+    return ReadFlowMapping(held, depth + 1)
   }
   if first == 34 || first == 39 {
     return ReadQuoted(held)
@@ -943,7 +965,10 @@ offer fun NumberOf(spelled: text) -> float? uses unsafe {
 
 // --------------------------------------------------------------- flow ---
 
-fun ReadFlowSequence(value: text) -> Step uses unsafe {
+fun ReadFlowSequence(value: text, depth: int) -> Step uses unsafe {
+  if depth > kMaxDepth {
+    return Bad()
+  }
   var items = Array()
   const inner = Trim(Inside(value))
   if Length(inner) == 0 {
@@ -952,7 +977,7 @@ fun ReadFlowSequence(value: text) -> Step uses unsafe {
   const pieces = SplitTop(inner)
   var i = 0
   while i < pieces.Len() {
-    const step = ReadScalar(pieces.At(i))
+    const step = ReadScalarAt(pieces.At(i), depth)
     if !step.ok {
       return Bad()
     }
@@ -962,7 +987,10 @@ fun ReadFlowSequence(value: text) -> Step uses unsafe {
   return Step(items, true)
 }
 
-fun ReadFlowMapping(value: text) -> Step uses unsafe {
+fun ReadFlowMapping(value: text, depth: int) -> Step uses unsafe {
+  if depth > kMaxDepth {
+    return Bad()
+  }
   var table = Object()
   const inner = Trim(Inside(value))
   if Length(inner) == 0 {
@@ -986,7 +1014,7 @@ fun ReadFlowMapping(value: text) -> Step uses unsafe {
         name = AsTextValue(held.value)
       }
     }
-    const step = ReadScalar(Trim(Substring(piece, split + 1, Length(piece))))
+    const step = ReadScalarAt(Trim(Substring(piece, split + 1, Length(piece))), depth)
     if !step.ok {
       return Bad()
     }
@@ -1554,4 +1582,49 @@ fun WritesWhatItRead() -> bool uses unsafe {
       return false
     }
   }
+}
+
+fun NestedMappings(levels: int) -> text uses unsafe {
+  var builder = BuilderNew()
+  var i = 0
+  while i < levels {
+    builder.Append(Repeat(" ", i))
+    builder.Append("k:\n")
+    i = i + 1
+  }
+  builder.Append(Repeat(" ", levels))
+  builder.Append("v: 1\n")
+  return builder.Release()
+}
+
+@Test
+fun RefusesDeepNesting() -> bool uses unsafe {
+  var refused = 0
+  match Parse(NestedMappings(150)) {
+    Ok(_v) => refused = refused
+    Malformed => refused = refused + 1
+  }
+  match Parse("a: " + Repeat("[", 300)) {
+    Ok(_v) => refused = refused
+    Malformed => refused = refused + 1
+  }
+  match Parse("a: " + Repeat("\{c: ", 80) + "1" + Repeat("}", 80)) {
+    Ok(_v) => refused = refused
+    Malformed => refused = refused + 1
+  }
+  return refused == 3
+}
+
+@Test
+fun ReadsModerateNesting() -> bool uses unsafe {
+  var read = 0
+  match Parse(NestedMappings(20)) {
+    Ok(_v) => read = read + 1
+    Malformed => read = read
+  }
+  match Parse("a: " + Repeat("[", 20) + Repeat("]", 20)) {
+    Ok(_v) => read = read + 1
+    Malformed => read = read
+  }
+  return read == 2
 }

@@ -340,7 +340,8 @@ fun main() uses io, unsafe {
 
 YAML 1.2: block and flow collections, every scalar style, block scalars
 with chomping, anchors and aliases, merge keys, the standard tags, and
-documents in a stream (`ParseAll`).
+documents in a stream (`ParseAll`). Block or flow nesting deeper than 64
+answers `Malformed` instead of exhausting the stack (D227).
 
 ```wolang
 need std.doc.{AsInt, Get, Null}
