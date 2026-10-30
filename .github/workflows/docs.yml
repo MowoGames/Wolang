@@ -116,3 +116,27 @@ jobs:
             git fetch -q --depth 20 origin dev && git rebase -q origin/dev
           done
           exit 1
+
+  # Discord #wolang-ci and the Telegram topic Wolang CI: the docs workflow failed on alpha. Green runs say nothing —
+  # that is noise.
+  # Secrets DISCORD_WEBHOOK_URL and TELEGRAM_BOT_TOKEN; without them nothing is sent, and a
+  # message that cannot be sent never fails the job (.github/notify.sh).
+  failed:
+    needs: [docs-check, docs-publish]
+    if: failure() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
+      - env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: "-1004491648622"
+          TELEGRAM_THREAD_ID: "15"
+          COMMIT_TITLE: ${{ github.event.head_commit.message }}
+        run: |
+          . .github/notify.sh
+          notify "$NOTIFY_RED" "❌ Docs failed on $GITHUB_REF_NAME" "The documentation did not build or did not reach engine-docs and mowoengine.com — the run shows which.
+
+          > ${COMMIT_TITLE%%$'\n'*}"

@@ -1,0 +1,30 @@
+# The changelog: every push to alpha, as a card of its commit titles (merges and bot commits dropped)
+# in Discord #wolang-changelog and the Telegram topic Wolang Changelog of the group «Mowo Changelog».
+# Secrets CHANGELOG_WEBHOOK_URL and TELEGRAM_BOT_TOKEN; without them nothing is posted, and a
+# post that fails is a warning, never a red run. The chat and topic ids are not secret.
+# Script: .github/changelog.py (the same file in every studio repository that posts).
+name: changelog
+
+on:
+  push:
+    branches: [alpha]
+
+permissions:
+  contents: read
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/changelog.py
+          sparse-checkout-cone-mode: false
+      - run: python3 .github/changelog.py push --before "$BEFORE" --after "$GITHUB_SHA"
+        env:
+          BEFORE: ${{ github.event.before }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CHANGELOG_WEBHOOK_URL: ${{ secrets.CHANGELOG_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: "-1004491648622"
+          TELEGRAM_THREAD_ID: "17"

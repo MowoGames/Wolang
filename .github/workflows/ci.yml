@@ -260,3 +260,27 @@ jobs:
                 -DCMAKE_PREFIX_PATH=/tmp/wolang
           cmake --build /tmp/hostproj/build -j
           /tmp/hostproj/build/host
+
+  # Discord #wolang-ci and the Telegram topic Wolang CI: ci failed on main or alpha. Green runs say nothing —
+  # that is noise.
+  # Secrets DISCORD_WEBHOOK_URL and TELEGRAM_BOT_TOKEN; without them nothing is sent, and a
+  # message that cannot be sent never fails the job (.github/notify.sh).
+  failed:
+    needs: [build, windows, embed]
+    if: failure() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
+      - env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: "-1004491648622"
+          TELEGRAM_THREAD_ID: "15"
+          COMMIT_TITLE: ${{ github.event.head_commit.message }}
+        run: |
+          . .github/notify.sh
+          notify "$NOTIFY_RED" "❌ CI failed on $GITHUB_REF_NAME" "A build or a test did not pass on one of the machines — the run shows which.
+
+          > ${COMMIT_TITLE%%$'\n'*}"
