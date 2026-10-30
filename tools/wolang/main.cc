@@ -224,7 +224,6 @@ void PrintUsage() {
       "  --spans         annotate `ast` output with positions\n"
       "  --check         `fmt` only: fail if a file is not formatted\n"
       "  --write         `fmt` and `fix`: change the files in place\n"
-      "  --write         `fmt` only: rewrite the file in place\n"
       "  --no-cache      ignore and do not write the on-disk cache\n"
       "  --interpret     `run` only: do not use the compiled tier\n"
       "  --stdin         `fmt` only: read the file from standard input\n"
@@ -239,12 +238,18 @@ void PrintUsage() {
       std::string(kVersion).c_str());
 }
 
+// fputs stops at the first NUL; text that carries user bytes goes out by
+// length instead (D230).
+void WriteAll(const std::string& text, std::FILE* stream) {
+  std::fwrite(text.data(), 1, text.size(), stream);
+}
+
 int Report(const SourceManager& sources,
            const std::vector<Diagnostic>& diagnostics,
            const RenderOptions& options) {
   if (!diagnostics.empty()) {
     const std::string text = RenderDiagnostics(sources, diagnostics, options);
-    std::fputs(text.c_str(), stderr);
+    WriteAll(text, stderr);
   }
 
   size_t errors = 0;
@@ -472,7 +477,7 @@ int RunSyntaxCommand(const Options& options) {
         const std::string text = PrintAst(&database.sources(),
                                           database.interner(), parsed->ast,
                                           print);
-        std::fputs(text.c_str(), stdout);
+        WriteAll(text, stdout);
       }
     }
 
@@ -692,7 +697,7 @@ int RunFormat(const Options& options) {
       continue;
     }
 
-    std::fputs(formatted.c_str(), stdout);
+    WriteAll(formatted, stdout);
   }
   return exit_code;
 }
@@ -1142,7 +1147,7 @@ int RunRepl(const Options& options) {
         if (vm->LoadSource(file, again)) {
           ran = vm->Call(name).has_value();
           if (ran) {
-            std::fputs(repl_output.c_str(), stdout);
+            WriteAll(repl_output, stdout);
           } else {
             std::fputs(vm->errors().c_str(), stderr);
           }
@@ -1539,7 +1544,7 @@ int RunProgram(const Options& options) {
     profile::Report(compiled.get());
   }
   runtime::JournalClose();
-  std::fputs(output.text.c_str(), stdout);
+  WriteAll(output.text, stdout);
   if (!outcome.ok()) {
     std::fprintf(stderr, "wolang: %s at %s: %s\n",
                  std::string(interp::TrapKindName(outcome.trap)).c_str(),
@@ -2013,6 +2018,13 @@ std::string BuildAndRun(const std::string& source, uint64_t seed) {
 }
 
 int RunFuzz(const Options& options) {
+  if (options.fuzz_aot && !codegen::HasAotBackend()) {
+    // A silent skip would report success for a comparison never made.
+    std::fprintf(stderr,
+                 "wolang: --aot needs an ahead-of-time backend and this "
+                 "build has none; configure with LLVM to get one\n");
+    return 2;
+  }
   const uint64_t first = options.fuzz_seed;
   const uint64_t count = options.fuzz_count;
   uint64_t checked = 0;
@@ -2421,7 +2433,7 @@ int RunBindReflection(const Options& options) {
   settings.effect = options.bind_effect;
   const bind::ReflectionResult result = bind::GenerateFromReflection(documents, settings);
   if (options.output.empty()) {
-    std::fputs(result.source.c_str(), stdout);
+    WriteAll(result.source, stdout);
   }
   else if (!WriteText(options.output, result.source)) {
     return 2;
@@ -2468,7 +2480,7 @@ int RunBind(const Options& options) {
     }
     out << result.source;
   } else {
-    std::fputs(result.source.c_str(), stdout);
+    WriteAll(result.source, stdout);
   }
 
   std::fprintf(stderr,
