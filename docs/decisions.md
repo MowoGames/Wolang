@@ -3073,3 +3073,14 @@ check for this (their params shadow captures); nothing they do changes
 the flow after the closure.
 
 A by-value parameter is a flow local, so moving it twice is `E0122`.
+
+`std.text.Bytes` returned a writable `[]u8` over text that may be a
+literal: `Bytes("Hello")[0] = 74` made every "Hello" in the program
+"Jello", and in AOT a literal is in read-only memory. The language has no
+read-only slice, and a copy would leak because nothing frees it, so the
+least disruptive sound choice is to make the caller answer for it: an
+`@Exposes` attribute on a function means its `uses unsafe` is not
+absorbed by the body (the usual rule of D221), so calling `Bytes` is
+`unsafe` in the caller. The library already declared `uses unsafe` where
+it called `Bytes`. A real read-only slice type is the proper fix and is
+left for later.

@@ -71,6 +71,10 @@ struct Binding {
   // thread. 1 = no captures either, 2 = `@Thread(captures)`, where the
   // runtime copies the environment per thread (D232).
   uint8_t thread_args = 0;
+  // Whether the declaration is marked `@Exposes`: its `unsafe` is not
+  // absorbed by the body, because what it returns lets the caller write
+  // memory the caller does not own (D233).
+  bool exposes = false;
 
   friend bool operator==(const Binding& lhs, const Binding& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
@@ -80,7 +84,8 @@ struct Binding {
            lhs.is_public == rhs.is_public &&
            lhs.is_foreign == rhs.is_foreign &&
            lhs.is_task == rhs.is_task && lhs.has_body == rhs.has_body &&
-           lhs.thread_args == rhs.thread_args;
+           lhs.thread_args == rhs.thread_args &&
+           lhs.exposes == rhs.exposes;
   }
 };
 

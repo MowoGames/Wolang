@@ -928,6 +928,10 @@ FileResolution ResolveFile(TypeStore* types,
     if (item != nullptr && entry.kind == ItemKind::kFunction) {
       for (AttributeId attribute_id : ast.Get(item->attributes)) {
         const Attribute& attribute = ast.Get(attribute_id);
+        if (interner->Text(attribute.name) == "Exposes") {
+          binding.exposes = true;
+          continue;
+        }
         if (interner->Text(attribute.name) != "Thread") {
           continue;
         }

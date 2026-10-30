@@ -5,8 +5,10 @@ calls. This is what each one is for, what it gives you, and what it does
 not. Every example here compiles.
 
 How to read a signature: `uses unsafe` on a standard library function
-means *it* takes the responsibility, not you — `std.text.Bytes` looks at
-a string's bytes, and a caller does not have to declare anything.
+means *it* takes the responsibility, not you — `std.math.Sqrt`-style
+wrappers over a C call. The one exception is `std.text.Bytes`: it hands
+out a writable view of text that may be a literal, so a caller declares
+`uses unsafe` and answers for never writing through it (D233).
 
 | Module | What it is for |
 |---|---|
@@ -88,7 +90,7 @@ form: use it for any string that outlives the builder (D227).
 `TextFromRaw`.
 
 A `text` is bytes and a length. There is no copy on a substring and no
-terminator; `Bytes` hands you the bytes and `TextFromRaw` takes them
+terminator; `Bytes` (`uses unsafe`, a view you must not write) hands you the bytes and `TextFromRaw` takes them
 back.
 
 ## std.fmt

@@ -1991,7 +1991,8 @@ void Checker::ChargeBinding(const Binding* binding, bool drop_async) {
     const EffectId async_effect =
         types_->BuiltinEffectId(BuiltinEffect::kAsync);
     for (EffectId effect : declared->effects()) {
-      if (effect == unsafe_effect && binding->has_body) {
+      if (effect == unsafe_effect && binding->has_body &&
+          !binding->exposes) {
         continue;
       }
       if (drop_async && effect == async_effect) {

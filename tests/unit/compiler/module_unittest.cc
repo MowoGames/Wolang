@@ -378,6 +378,27 @@ WOLANG_TEST(ModuleScopeTest, EffectsPropagateThroughMutualRecursion) {
                 std::string::npos);
 }
 
+WOLANG_TEST(ModuleScopeTest, AnExposesFunctionPassesItsUnsafeToTheCaller) {
+  // `Bytes` hands out a writable view of text that may be a literal; the
+  // caller is the one who answers for writing through it (D233).
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId exposed = fixture.AddFile(
+      game, "a.wo",
+      "@Exposes\n"
+      "fun View() uses unsafe { }\n"
+      "fun Quiet() uses io { View() }\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(exposed), "E0701");
+
+  Fixture absorbed_fixture;
+  const ModuleId other = absorbed_fixture.AddModule("game");
+  const FileId absorbed = absorbed_fixture.AddFile(
+      other, "a.wo",
+      "fun View() uses unsafe { }\n"
+      "fun Quiet() uses io { View() }\n");
+  WOLANG_EXPECT_EQ(absorbed_fixture.Codes(absorbed), "");
+}
+
 WOLANG_TEST(ModuleScopeTest, AnUnsafeBlockIsTheUnsafeEffect) {
   Fixture fixture;
   const ModuleId game = fixture.AddModule("game");

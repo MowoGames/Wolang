@@ -18,7 +18,10 @@ offer fun IsEmpty(value: text) -> bool {
   return value.length == 0
 }
 
-/// The bytes of `value`, as a view. Nothing is copied.
+/// The bytes of `value`, as a view. Nothing is copied. The view is of text
+/// that may be a literal, so it must only be read: the caller declares
+/// `uses unsafe` for it (D233).
+@Exposes
 offer fun Bytes(value: text) -> []u8 uses unsafe {
   return BytesFromRaw(value.data, value.length as int)
 }
