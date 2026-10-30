@@ -311,6 +311,9 @@ fun main() uses io, unsafe {
 }
 ```
 
+Arrays and objects nested more than 128 deep answer `Malformed` rather than
+exhausting the stack (D227).
+
 ## std.toml
 
 TOML 1.0 as it is used: strings in four styles, numbers in four bases,

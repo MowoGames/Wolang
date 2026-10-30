@@ -10,7 +10,7 @@
 
 need std.doc.{Array, AsBool, AsInt, AsText, At, Field, IsNull, Len, Member, Null, Object, OfBool, OfInt, OfText, Push, Put, Value}
 need std.list.{List, ListNew}
-need std.text.{Bytes, BuilderNew, Builder}
+need std.text.{Bytes, BuilderNew, Builder, Repeat}
 /// What a document that is not one answers with.
 offer error Malformed
 
@@ -60,7 +60,7 @@ fun Fail(cursor: Cursor) -> Step {
 /// Reads one value from `input`.
 offer fun Parse(input: text) -> Value! uses unsafe {
   const start = Cursor(Bytes(input), 0)
-  const step = ParseValue(SkipSpace(start))
+  const step = ParseValue(SkipSpace(start), 0)
   if !step.ok {
     return Malformed
   }
@@ -72,17 +72,25 @@ offer fun Parse(input: text) -> Value! uses unsafe {
   return step.value
 }
 
-fun ParseValue(cursor: Cursor) -> Step uses unsafe {
+// Nesting past this fails as Malformed instead of exhausting the stack on
+// `[[[[...` from a hostile peer (D227). 128, not more: the interpreter tier
+// recurses on the host stack and dies a little past 200 levels.
+const kMaxDepth: int = 128
+
+fun ParseValue(cursor: Cursor, depth: int) -> Step uses unsafe {
+  if depth > kMaxDepth {
+    return Fail(cursor)
+  }
   if AtEnd(cursor) {
     return Fail(cursor)
   }
   const byte = Peek(cursor)
   // `{`, `[`, `"`, `t`, `f`, `n`, or a number.
   if byte == 123 {
-    return ParseObject(cursor)
+    return ParseObject(cursor, depth)
   }
   if byte == 91 {
-    return ParseArray(cursor)
+    return ParseArray(cursor, depth)
   }
   if byte == 34 {
     const read = ParseText(cursor)
@@ -301,7 +309,7 @@ fun ParseNumber(cursor: Cursor) -> Step {
   return Step(Value.Number(sign * whole), walk, true)
 }
 
-fun ParseArray(cursor: Cursor) -> Step uses unsafe {
+fun ParseArray(cursor: Cursor, depth: int) -> Step uses unsafe {
   var walk = cursor
   walk.at = walk.at + 1
   var items = ListNew<Value>()
@@ -311,7 +319,7 @@ fun ParseArray(cursor: Cursor) -> Step uses unsafe {
     return Step(Value.Array(items), walk, true)
   }
   loop {
-    const step = ParseValue(SkipSpace(walk))
+    const step = ParseValue(SkipSpace(walk), depth + 1)
     if !step.ok {
       return Fail(cursor)
     }
@@ -330,7 +338,7 @@ fun ParseArray(cursor: Cursor) -> Step uses unsafe {
   }
 }
 
-fun ParseObject(cursor: Cursor) -> Step uses unsafe {
+fun ParseObject(cursor: Cursor, depth: int) -> Step uses unsafe {
   var walk = cursor
   walk.at = walk.at + 1
   var fields = ListNew<Field>()
@@ -350,7 +358,7 @@ fun ParseObject(cursor: Cursor) -> Step uses unsafe {
       return Fail(cursor)
     }
     walk.at = walk.at + 1
-    const step = ParseValue(SkipSpace(walk))
+    const step = ParseValue(SkipSpace(walk), depth + 1)
     if !step.ok {
       return Fail(cursor)
     }
@@ -495,6 +503,20 @@ fun ReadsADocument() -> bool uses unsafe {
       return false
     }
   }
+}
+
+@Test
+fun RefusesDeepNesting() -> bool uses unsafe {
+  var refused = 0
+  match Parse(Repeat("[", 100000)) {
+    Ok(_value) => refused = refused
+    Malformed => refused = refused + 1
+  }
+  match Parse(Repeat("[", 100) + Repeat("]", 100)) {
+    Ok(_value) => refused = refused + 1
+    Malformed => refused = refused
+  }
+  return refused == 2
 }
 
 @Test
