@@ -79,6 +79,9 @@ class FlowChecker {
       return;
     }
     const size_t depth = locals_.size();
+    returns_slice_ = declaration.type.is_valid() &&
+                     ast_.Contains(declaration.type) &&
+                     ast_.Get(declaration.type).kind == TypeRefKind::kSlice;
     const Flow flow = Expression(declaration.body);
     locals_.resize(depth);
 
@@ -109,6 +112,15 @@ class FlowChecker {
   }
 
  private:
+  const Local* Find(Symbol name) const {
+    for (auto it = locals_.rbegin(); it != locals_.rend(); ++it) {
+      if (it->name == name) {
+        return &*it;
+      }
+    }
+    return nullptr;
+  }
+
   Local* Find(Symbol name) {
     for (auto it = locals_.rbegin(); it != locals_.rend(); ++it) {
       if (it->name == name) {
@@ -237,28 +249,76 @@ class FlowChecker {
     }
   }
 
-  // The local a `&x` refers to, or an invalid symbol when the expression is
-  // not a reference to a name.
-  Symbol Referent(ExprId id) const {
+  // The local a place expression lives in: `c`, `c.n`, `arr[i]` and
+  // `o.inner.items[2]` all live in `c`, `c`, `arr` and `o`. The walk stops at
+  // a slice, reference or pointer, because what is behind one of those
+  // lives somewhere else (D228).
+  Symbol PlaceRoot(ExprId id) const {
+    ExprId current = id;
+    while (ast_.Contains(current)) {
+      const Expr& expr = ast_.Get(current);
+      if (expr.kind == ExprKind::kPath) {
+        return expr.name;
+      }
+      if (expr.kind != ExprKind::kField &&
+          expr.kind != ExprKind::kOptionalField &&
+          expr.kind != ExprKind::kIndex) {
+        return Symbol();
+      }
+      const TypeKind base = types_.KindOf(typed_.TypeOf(expr.lhs));
+      if (base == TypeKind::kSlice || base == TypeKind::kReference ||
+          base == TypeKind::kPointer) {
+        return Symbol();
+      }
+      current = expr.lhs;
+    }
+    return Symbol();
+  }
+
+  // The local whose storage the reference or slice that |id| evaluates to
+  // may point into, or an invalid symbol when none is known (D228). Four
+  // shapes: `&place`; a local array used as a slice (|as_slice|); and a call
+  // that returns a reference or a slice, which is assumed to be derived
+  // from every reference or slice argument -- the deepest local wins.
+  Symbol RootOf(ExprId id, bool as_slice) const {
     if (!ast_.Contains(id)) {
       return Symbol();
     }
     const Expr& expr = ast_.Get(id);
-    if (expr.kind != ExprKind::kUnary || expr.op != TokenKind::kAmp) {
-      return Symbol();
+    if (expr.kind == ExprKind::kUnary && expr.op == TokenKind::kAmp) {
+      return PlaceRoot(expr.lhs);
     }
-    if (!ast_.Contains(expr.lhs) ||
-        ast_.Get(expr.lhs).kind != ExprKind::kPath) {
-      return Symbol();
+    if (as_slice && types_.KindOf(typed_.TypeOf(id)) == TypeKind::kArray) {
+      return PlaceRoot(id);
     }
-    return ast_.Get(expr.lhs).name;
+    if (expr.kind == ExprKind::kCall) {
+      const TypeKind result = types_.KindOf(typed_.TypeOf(id));
+      if (result != TypeKind::kReference && result != TypeKind::kSlice) {
+        return Symbol();
+      }
+      Symbol best;
+      uint32_t best_depth = 0;
+      for (ExprId argument : ast_.Get(expr.args)) {
+        const Symbol root = RootOf(argument, true);
+        const Local* local = root.is_valid() ? Find(root) : nullptr;
+        if (local != nullptr &&
+            (!best.is_valid() || local->depth > best_depth)) {
+          best = root;
+          best_depth = local->depth;
+        }
+      }
+      return best;
+    }
+    return Symbol();
   }
 
   // Reports a reference that would outlive what it points into. |depth| is
   // where the reference is going: a shallower depth outlives a deeper one,
-  // and -1 is outside the call altogether.
-  void CheckEscape(ExprId value, int depth, SourceSpan span) {
-    const Symbol referent = Referent(value);
+  // and -1 is outside the call altogether. |as_slice| says the value ends
+  // up as a slice, which makes a local array's storage the referent.
+  void CheckEscape(ExprId value, int depth, SourceSpan span,
+                   bool as_slice = false) {
+    const Symbol referent = RootOf(value, as_slice);
     if (!referent.is_valid()) {
       return;
     }
@@ -373,7 +433,8 @@ class FlowChecker {
           Expression(stmt.expr);
           // Nothing inside this function outlives the call, so a reference
           // to a local cannot be returned at all.
-          CheckEscape(stmt.expr, -1, ast_.Get(stmt.expr).span);
+          CheckEscape(stmt.expr, -1, ast_.Get(stmt.expr).span,
+                      returns_slice_);
         }
         return Flow::kDiverges;
 
@@ -465,8 +526,9 @@ class FlowChecker {
           Report(name, expr.span);
         }
         if (Local* local = Find(name)) {
-          CheckEscape(expr.rhs, static_cast<int>(local->depth),
-                      expr.span);
+          CheckEscape(expr.rhs, static_cast<int>(local->depth), expr.span,
+                      types_.KindOf(typed_.TypeOf(expr.lhs)) ==
+                          TypeKind::kSlice);
           // Assigning to a name that was moved out of gives it a value
           // again, which is the whole of what makes `var` and moves get
           // along.
@@ -749,6 +811,8 @@ class FlowChecker {
   DiagnosticEngine* diagnostics_;
   std::vector<Local> locals_;
   uint32_t depth_ = 0;
+  // The function being walked declares a slice result.
+  bool returns_slice_ = false;
 };
 
 }  // namespace

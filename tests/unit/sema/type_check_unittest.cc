@@ -2118,6 +2118,57 @@ fun Local() -> int {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheckTest, RejectsEscapesThroughPathsCallsAndArrays) {
+  // The root of a reference is found through fields, indices, calls that
+  // return a reference or slice, and a local array used as a slice (D228).
+  Fixture f(R"(
+class C {
+  var n: int = 0
+}
+fun Ret(a: &int) -> &int => a
+
+fun ViaField() -> &int {
+  const c = C(2)
+  return &c.n
+}
+
+fun ViaIndex() -> &int {
+  var a: [4]int
+  return &a[1]
+}
+
+fun ViaCall() -> &int {
+  var x = 1
+  return Ret(&x)
+}
+
+fun ViaArray() -> []int {
+  var a: [4]int
+  return a
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0121,E0121,E0121,E0121");
+}
+
+WOLANG_TEST(TypeCheckTest, ReferencesToOutsideStorageMayBeReturned) {
+  // Non-firing twin: a reference derived from a parameter, or a slice that
+  // is passed through, points at the caller's storage.
+  Fixture f(R"(
+fun Ret(a: &int) -> &int => a
+fun Through(a: &int) -> &int {
+  return Ret(a)
+}
+fun Same(s: []int) -> []int {
+  return s
+}
+fun Local() -> int {
+  var x = 1
+  return *Ret(&x)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 WOLANG_TEST(TypeCheckTest, OnlyATaskMaySuspend) {
   // `wait` is where a function suspends, and `task` is the signature's way
   // of saying it can. Keeping the word at the call site is what makes a
