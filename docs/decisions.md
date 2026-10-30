@@ -574,7 +574,6 @@ apart -- and a call that cannot tell two methods apart calls whichever came
 first, which is what happened. Members and IR functions carry a `slot`
 beside the item now, and the linker matches on all three.
 
-
 **D73. `soa []T` is a layout, not a type.** The same record, the same
 fields and the same code reading them; what changes is where the storage
 puts them. A pass that touches one field of a wide record reads every
@@ -2565,7 +2564,6 @@ The rules now, in every tier, because all of it is lowering:
 
 Cycles still leak. `weak` is what breaks them, and it is next.
 
-
 **D207. `weak var` breaks a cycle.** A parent that holds its child and a
 child that holds its parent is the shape of every scene graph, and
 counting alone never frees it. A field marked `weak` holds a `C?` of a
@@ -2925,6 +2923,20 @@ trap text, not only the kind. Floats print as the shortest digits that read
 back as the same number (a `float`/f32 gets its own shortest f32 digits),
 and every NaN prints `nan` whatever its sign bit, from one function used by
 the runtime and the interpreter.
-**D223. The HTTP server answers only requests it can frame.** A request is parsed from the bytes that arrived and no more -- the pool buffer is reused, so what lies past `received` is another client's. `Content-Length` must be digits (nine or fewer are read, more are "too large" and get 413), a second one must agree, and `Transfer-Encoding` is refused with 501 (with a `Content-Length` too, 400): the server does not implement chunked requests, and ignoring the header lets a proxy and this server disagree on where a request ends. Idle connections are closed by deadline, not held forever.
 
-**D228. Reference roots and arena escapes are found by a conservative walk.** `E0121` no longer recognises only a bare `&name`: the root of a reference is the local reached through fields and indices (stopping at a slice, reference or pointer, whose referent lives elsewhere), a local `[N]T` used where a slice is expected (a `return`, or an assignment to a slice), and, for a call whose result is a reference or slice, the deepest local among the roots of its arguments -- the result is assumed derived from every one. Receivers are not walked. Values held in other locals are not tracked. `E0142` (arena escape) uses the same spirit: a value built inside `arena { }` -- a class construction, or a call returning one, or a name bound to such a value inside the block -- may not be stored in a variable declared outside the block, a global, or a field of an outer object, nor leave through `return`, `break` or the block's value, because the arena is reset at the block's end and the object is uncounted (forged pointers otherwise, even in sandboxed code). Using it inside the block is fine.
+**D228. Reference roots and arena escapes are found by a conservative
+walk.** `E0121` no longer recognises only a bare `&name`: the root of a
+reference is the local reached through fields and indices (stopping at a
+slice, reference or pointer, whose referent lives elsewhere), a local
+`[N]T` used where a slice is expected (a `return`, or an assignment to a
+slice), and, for a call whose result is a reference or slice, the deepest
+local among the roots of its arguments -- the result is assumed derived
+from every one. Receivers are not walked. Values held in other locals are
+not tracked. `E0142` (arena escape) uses the same spirit: a value built
+inside `arena { }` -- a class construction, or a call returning one, or a
+name bound to such a value inside the block -- may not be stored in a
+variable declared outside the block, a global, or a field of an outer
+object, nor leave through `return`, `break` or the block's value, because
+the arena is reset at the block's end and the object is uncounted (forged
+pointers otherwise, even in sandboxed code). Using it inside the block is
+fine.
