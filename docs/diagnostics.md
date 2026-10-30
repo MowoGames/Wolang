@@ -133,11 +133,17 @@ P0101 = "error"
 |---|---|---|
 | `W0101` | a name is never used | an unused local, parameter or `need` |
 | `W0102` | this code is never reached | a statement after `return` |
+| `W0109` | a state nothing leads to | `state Stuck` with no transition to it |
 
 A name starting with `_` is never reported, which is how an unused parameter
 is marked deliberate. A declaration with no body — an ability method, an
 `extern` — has nowhere to use its parameters, so it is exempt. `W0102` is
 reported once per block rather than once per statement after the jump.
+
+A machine is a table, so it is checked as one: `E0206` for a transition to
+a state that is not there, and `W0109` for a state nothing leads to. Both
+are mistakes somebody makes while editing a table, which is why the spec
+asks for them.
 
 An unused `need` is checked by the type checker rather than by import
 resolution, because only type checking knows what a file actually named. A
@@ -348,8 +354,8 @@ in use appear in the implemented tables above, not here.
 
 | Code | Catches |
 |---|---|
-| `E0501` | two systems write the same component without an ordering |
-| `E0502` | cycle in system ordering |
+| `E0501` | reserved, unused: implemented as `E0127` |
+| `E0502` | reserved, unused: ordering errors are `E0127` and `E0128` |
 | `E0601` | server-only function called from a client context |
 | `E0602` | RPC parameter type is not serializable |
 | `E0901` | `comptime` assertion failed |
@@ -363,20 +369,14 @@ in use appear in the implemented tables above, not here.
 | `W0104` | ignored result of a `@MustUse` function |
 | `W0105` | floats compared with `==` |
 | `W0106` | overflow or division by zero in a constant expression |
-| `W0109` | a state nothing leads to | `state Stuck` with no transition to it |
-
-A machine is a table, so it is checked as one: `E0206` for a transition to
-a state that is not there, and `W0109` for a state nothing leads to. Both
-are mistakes somebody makes while editing a table, which is why the spec
-asks for them.
 | `W0107` | reference held across an `wait` |
 | `W0108` | `loop` in a `task` function with a path that never waits |
-| `W0109` | signal subscription that outlives the subscriber |
+| `W0109` | (code taken by the unreachable-state warning above; needs a new code) signal subscription that outlives the subscriber |
 | `W0110` | replicated field written on a client |
 | `W0111` | `self` used after `Destroy()` |
 | `W0112` | recursion with no base case |
 | `W0113` | weak reference dereferenced without a liveness check |
-| `W0115` | unreachable state in a `machine` |
+| `W0115` | reserved; the unreachable-state check is implemented as `W0109` |
 
 ### Performance
 
