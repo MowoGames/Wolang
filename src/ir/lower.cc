@@ -7135,7 +7135,7 @@ class Lowerer {
 
     // `continue` goes to the step rather than to the header, or the index
     // would never advance and the loop would not end.
-    loops_.push_back(LoopTarget{expr.name, exit, step, scope_depth_ + 1});
+    loops_.push_back(LoopTarget{expr.label, exit, step, scope_depth_ + 1});
     builder_->SetCurrent(body);
     const size_t depth = locals_.size();
     ++scope_depth_;
@@ -7241,7 +7241,7 @@ class Lowerer {
       builder_->Jump(body);
     }
 
-    loops_.push_back(LoopTarget{expr.name, exit, header,
+    loops_.push_back(LoopTarget{expr.label, exit, header,
                                 scope_depth_ + 1});
     builder_->SetCurrent(body);
     // Both forms keep the body in `rhs`; a `while` also has its condition

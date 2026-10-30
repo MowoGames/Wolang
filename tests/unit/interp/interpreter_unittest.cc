@@ -109,6 +109,63 @@ fun Sum(n: int) -> int {
   WOLANG_EXPECT_EQ(f.Run("Sum", {Fixture::Int(0)}), "0");
 }
 
+WOLANG_TEST(InterpreterTest, LabelledBreakAndContinueReachRangeForAndWhile) {
+  // The label used to be read from the wrong field, so a labelled jump out of
+  // a range-for or while never found its loop and hit `unreachable`.
+  Fixture f(R"(
+fun BreakFor() -> int {
+  var n = 0
+  outer: for i in 0..5 {
+    for j in 0..5 {
+      if j == 2 { break outer }
+      n = n + 1
+    }
+  }
+  return n
+}
+fun ContinueFor() -> int {
+  var n = 0
+  outer: for i in 0..3 {
+    for j in 0..5 {
+      if j == 2 { continue outer }
+      n = n + 1
+    }
+  }
+  return n
+}
+fun BreakWhile() -> int {
+  var n = 0
+  var i = 0
+  outer: while i < 5 {
+    i = i + 1
+    for j in 0..5 {
+      if j == 1 { break outer }
+      n = n + 1
+    }
+  }
+  return n
+}
+fun ContinueWhile() -> int {
+  var n = 0
+  var i = 0
+  outer: while i < 3 {
+    i = i + 1
+    var j = 0
+    while j < 5 {
+      j = j + 1
+      if j == 2 { continue outer }
+      n = n + 1
+    }
+  }
+  return n
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("BreakFor"), "2");
+  WOLANG_EXPECT_EQ(f.Run("ContinueFor"), "6");
+  WOLANG_EXPECT_EQ(f.Run("BreakWhile"), "1");
+  WOLANG_EXPECT_EQ(f.Run("ContinueWhile"), "3");
+}
+
 WOLANG_TEST(InterpreterTest, RunsRecursion) {
   Fixture f(R"(
 fun Fib(n: int) -> int {
