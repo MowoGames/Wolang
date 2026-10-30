@@ -525,6 +525,7 @@ class Checker {
   TypeId CheckUnary(const Expr& expr, TypeId expected);
   TypeId CheckBinary(const Expr& expr, TypeId expected);
   bool IsLiteralTree(ExprId id) const;
+  bool IsFloatLiteralTree(ExprId id, bool* has_float) const;
   TypeId CheckAssign(const Expr& expr);
   void CheckMachine(const Item& item);
   ExprId RootOfPlace(ExprId id) const;
@@ -1201,13 +1202,49 @@ bool Checker::IsLiteralTree(ExprId id) const {
   }
 }
 
+// The same for arithmetic on literals of either family with at least one
+// float among them: `1.0 / 3.0` is not a number until the context says
+// which float (D225).
+bool Checker::IsFloatLiteralTree(ExprId id, bool* has_float) const {
+  if (!ast_.Contains(id)) {
+    return false;
+  }
+  const Expr& expr = ast_.Get(id);
+  switch (expr.kind) {
+    case ExprKind::kIntLiteral:
+      return true;
+    case ExprKind::kFloatLiteral:
+      *has_float = true;
+      return true;
+    case ExprKind::kUnary:
+      return expr.op == TokenKind::kMinus &&
+             IsFloatLiteralTree(expr.lhs, has_float);
+    case ExprKind::kBinary:
+      return IsFloatLiteralTree(expr.lhs, has_float) &&
+             IsFloatLiteralTree(expr.rhs, has_float);
+    default:
+      return false;
+  }
+}
+
 TypeId Checker::CheckBinary(const Expr& expr, TypeId expected) {
   // `-9223372036854775807 - 1` where an `s64` is wanted: the literals are
   // read at that type from the start. Left open they were folded as `int`
   // and cut to 32 bits (D225).
+  //
+  // A float is the same: `1.0 / 3.0` where an `f64` is wanted was divided
+  // as the default float and widened, which printed
+  // 0.3333333432674408. A tree of integers only stays an integer tree
+  // (`1 / 3` is 0), so a float must be written somewhere in it.
+  bool has_float = false;
+  const bool float_context =
+      expected.is_valid() && types_->IsFloatingPoint(expected) &&
+      IsFloatLiteralTree(expr.lhs, &has_float) &&
+      IsFloatLiteralTree(expr.rhs, &has_float) && has_float;
   const bool takes_context =
-      expected.is_valid() && types_->KindOf(expected) == TypeKind::kInt &&
-      IsLiteralTree(expr.lhs) && IsLiteralTree(expr.rhs);
+      float_context ||
+      (expected.is_valid() && types_->KindOf(expected) == TypeKind::kInt &&
+       IsLiteralTree(expr.lhs) && IsLiteralTree(expr.rhs));
   const TypeId left = Check(expr.lhs, takes_context ? expected : TypeId{},
                             /*keep_open=*/true);
 

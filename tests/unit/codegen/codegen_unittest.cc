@@ -3127,6 +3127,24 @@ fun Check() -> int => Order("a", "b") * 100 + Order("b", "a") + Order("a", "ab")
   WOLANG_EXPECT_EQ(f.Run("Check", {}), "111");
 }
 
+WOLANG_TEST(CodegenTest, FloatLiteralArithmeticIsDoneAtTheTypeWanted) {
+  // `1.0 / 3.0` where an f64 is wanted was divided as the default float and
+  // widened (D225). A tree of integers alone stays integer arithmetic.
+  Fixture f(R"(
+fun Third() -> f64 {
+  return 1.0 / 3.0
+}
+
+fun Mixed() -> f64 => 2.0 / 3.0 + 1.0
+
+fun Whole() -> f64 => 7 / 2 as f64
+
+fun Single() -> f32 => 1.0 / 3.0
+)");
+  WOLANG_EXPECT_EQ(f.Run("Third", {}), "0.3333333333333333");
+  WOLANG_EXPECT_EQ(f.Run("Mixed", {}), "1.6666666666666665");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang
