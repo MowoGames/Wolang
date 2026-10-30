@@ -418,7 +418,11 @@ class FunctionEmitter {
       }
       offset = abi::AlignUp(offset, std::max(layout.align, 1u));
       values_[i].area = offset;
-      if (function_.instructions[i].opcode == ir::Opcode::kAlloca) {
+      // An integer constant of an aggregate type is that type's zero (an
+      // error's payload, D249): its area is zeroed with the slots and
+      // never written.
+      if (function_.instructions[i].opcode == ir::Opcode::kAlloca ||
+          function_.instructions[i].opcode == ir::Opcode::kConstInt) {
         slots_.push_back(std::pair<uint32_t, uint32_t>(offset, layout.size));
       }
       offset += layout.size;
@@ -437,6 +441,9 @@ class FunctionEmitter {
   // ------------------------------------------------------------ the frame --
 
   uint32_t SpillOffset(const Allocation& allocation) const {
+    // A value with no slot has nowhere to go: `kNowhere * 8` wraps to just
+    // below the spill area, which is a saved register (D249).
+    WOLANG_CHECK(allocation.is_spilled());
     return spill_base_ + allocation.slot * 8;
   }
 
@@ -1350,6 +1357,9 @@ class FunctionEmitter {
         return;
 
       case ir::Opcode::kConstInt: {
+        if (Info(id).holding == Holding::kArea) {
+          return;  // Zeroed in the prologue (D249).
+        }
         const Register reg = DestInt(id, 0);
         assembler_.MovImmediate(IntWidthOf(inst.type), reg,
                                 CanonicalBits(inst.payload.integer,
