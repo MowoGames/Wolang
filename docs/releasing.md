@@ -72,18 +72,18 @@ Settings the repository needs, once:
    ```
 
    Or open the Actions tab. About 20 to 40 minutes, most of it LLVM
-   being installed and the five builds.
+   being installed and the three builds.
 
 ## What the workflow does
 
 | Job | What |
 |---|---|
 | `check` | Fails in seconds if the tag is not `v` plus the version in `CMakeLists.txt`, if the editor manifests disagree, or if `CHANGELOG.md` has no section for it. Everything else waits for it. |
-| `artifacts` (5) | Builds Linux x86-64 and arm64, macOS arm64 and x86-64, and Windows x86-64, each against the pinned LLVM 22 so that `wolang build` works. Runs `wolang --version`, the std tests, and `wolang build examples/hello.wo` and runs the result. Then `cmake --install`, an archive, its checksum, and the embedding-only package. |
+| `artifacts` (3) | Builds Linux x86-64 and arm64 and Windows x86-64 (macOS is out until the account has macOS runners; the rows to restore are in the workflow), each against the pinned LLVM 22 so that `wolang build` works. Runs `wolang --version`, the std tests, and `wolang build examples/hello.wo` and runs the result. Then `cmake --install`, an archive, its checksum, and the embedding-only package. |
 | `msi` | The Windows installer, with the PATH entry and the Add/Remove Programs record. |
 | `extension` | The VS Code extension as a `.vsix`. |
 | `publish` | Collects the checksums into one `SHA256SUMS` and creates the GitHub release with every file. The notes are the `CHANGELOG.md` section for the version, then the pull requests GitHub generates. This is the only job with write access. |
-| `smoke` (3) | On Ubuntu, macOS and Windows: runs `install.sh` or `install.ps1` from the tagged checkout with `--version 1.1.0`, checks `wolang --version` prints `wolang 1.1.0`, and runs `examples/hello.wo`. It tests the published files, the checksums and the scripts together. |
+| `smoke` (2) | On Ubuntu and Windows: runs `install.sh` or `install.ps1` from the tagged checkout with `--version 1.1.0`, checks `wolang --version` prints `wolang 1.1.0`, and runs `examples/hello.wo`. It tests the published files, the checksums and the scripts together. |
 | `notify` | Tells the chat channels that the release did or did not happen. |
 | `changelog` | Posts the commits since the previous tag to the changelog channels. Never fails the release. |
 
@@ -107,8 +107,8 @@ wolang-linux-x86_64/bin/wolang --version
 ```
 
 On macOS use `shasum -a 256 -c SHA256SUMS --ignore-missing`. The release
-page should list, for 1.1.0: five `wolang-<system>-<arch>` archives (a
-`.zip` on Windows), five `wolang-embed-...` archives, the `.msi`, the
+page should list, for 1.1.0: three `wolang-<system>-<arch>` archives (a
+`.zip` on Windows), three `wolang-embed-...` archives, the `.msi`, the
 `.vsix` and `SHA256SUMS`. Then install it the user's way
 ([install.md](install.md)):
 

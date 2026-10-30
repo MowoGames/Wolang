@@ -44,10 +44,10 @@ jobs:
             os: ubuntu-24.04
           - name: wolang-linux-arm64
             os: ubuntu-24.04-arm
-          - name: wolang-macos-arm64
-            os: macos-14
-          - name: wolang-macos-x86_64
-            os: macos-13
+          # No macOS archives while the account has no macOS runners; on a
+          # Mac, `install.sh --from-source` builds one. The rows to put
+          # back: wolang-macos-arm64 on macos-14 and wolang-macos-x86_64 on
+          # macos-15-intel.
           - name: wolang-windows-x86_64
             os: windows-latest
 
@@ -134,7 +134,17 @@ jobs:
           W="build/$WOLANG_BUILD/tools/wolang/wolang"
           [ "$RUNNER_OS" = "Windows" ] && W="$W.exe"
           "$W" --version
-          "$W" test lib/std
+          # The unit tests first: a crash there names the suite, where
+          # `wolang test` would only say that it died.
+          ctest --test-dir "build/$WOLANG_BUILD" --output-on-failure
+          if ! "$W" test lib/std; then
+            # A crash in a release build and nowhere else: say where.
+            if [ "$RUNNER_OS" = "Linux" ]; then
+              sudo apt-get install -y -q gdb > /dev/null
+              gdb -q -batch -ex run -ex bt --args "$W" test lib/std
+            fi
+            exit 1
+          fi
           # Built without the back end this would say so, and a release
           # that cannot `build` is not the release that was promised.
           exe=hello
@@ -214,8 +224,10 @@ jobs:
       - name: Install what it takes
         run: |
           choco install ninja llvm --no-progress -y
-          dotnet tool install --global wix
-          wix extension add -g WixToolset.UI.wixext
+          # WiX 7 will not run until a maintainer accepts its fee EULA;
+          # 6 is the line the installer is written for (D188).
+          dotnet tool install --global wix --version 6.0.2
+          wix extension add -g WixToolset.UI.wixext/6.0.2
       - name: Fetch the LLVM SDK
         if: steps.llvm-sdk.outputs.cache-hit != 'true'
         run: python tools/package/fetch_llvm.py --version 22.1.8
@@ -311,7 +323,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - name: install.sh

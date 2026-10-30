@@ -47,13 +47,10 @@ jobs:
             os: ubuntu-24.04-arm
             preset: debug
             aot: true
-          - name: macos-arm64
-            os: macos-14
-            preset: debug
-            aot: true
-          - name: macos-arm64-asan
-            os: macos-14
-            preset: asan
+          # macOS is out of the matrix while the account has no macOS
+          # runners: those jobs were cancelled before they started. The
+          # rows to put back are a debug job with `aot: true` and an
+          # `asan` one, both on macos-14.
 
     steps:
       - uses: actions/checkout@v4
@@ -117,7 +114,12 @@ jobs:
       - name: Library tests
         run: |
           W=build/${{ matrix.preset }}/tools/wolang/wolang
-          $W test lib/std
+          # A crash names where it happened, not only that it did.
+          if ! $W test lib/std && [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get install -y -q gdb > /dev/null
+            gdb -q -batch -ex run -ex bt --args $W test lib/std
+            exit 1
+          fi
           $W test lib/http
           $W test lib/game
           $W test lib/core
@@ -279,8 +281,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Install ninja
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Install ninja and clang
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build clang lld
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
       - name: Configure and build
         run: |
           cmake --preset debug
