@@ -5,8 +5,9 @@
 # MDX under Wolang/ in MowoGames/engine-docs, beside the engine's bundle;
 # moving mowoengine.com's engine-docs submodule deploys the site. Both
 # repositories are written with deploy keys kept as secrets here:
-# ENGINE_DOCS_DEPLOY_KEY and MOWOENGINE_COM_DEPLOY_KEY -- the same keys the
-# engine's docs workflow uses.
+# ENGINE_DOCS_DEPLOY_KEY and MOWOENGINE_COM_DEPLOY_KEY. They have to be deploy
+# keys (write access on), not a person's key: the organization enforces SAML
+# SSO, which refuses a personal key, and a deploy key is exempt.
 
 name: docs
 
@@ -83,6 +84,15 @@ jobs:
               "${r#*:}" "$HOME/.ssh/${r%%:*}" "$HOME/.ssh/known_hosts"
           done > ~/.ssh/config
           echo "GIT_SSH_COMMAND=ssh -F $HOME/.ssh/config" >> "$GITHUB_ENV"
+          # A deploy key answers as its repository; a person's key answers as the person, and the
+          # organization's SAML SSO refuses that one at the first push (after three tries)
+          for r in engine-docs:engine-docs mowoengine-com:mowoengine.com; do
+            hi=$(ssh -F "$HOME/.ssh/config" -T "${r%%:*}" 2>&1 || true)
+            case "$hi" in
+              "Hi ${GITHUB_REPOSITORY_OWNER}/${r#*:}!"*) ;;
+              *) echo "::error::The key for ${r#*:} is not a deploy key of ${GITHUB_REPOSITORY_OWNER}/${r#*:} (GitHub says: ${hi%%!*}). Add a write-enabled deploy key there and put its private half in this repository's secret."; exit 1 ;;
+            esac
+          done
       - name: Publish
         run: |
           git config --global user.name "mowo-ci"
@@ -117,8 +127,8 @@ jobs:
           done
           exit 1
 
-  # Discord #wolang-ci and the Telegram topic Wolang CI: the docs workflow failed on alpha. Green runs say nothing —
-  # that is noise.
+  # Discord #wolang-ci and the Telegram topic Wolang CI: the docs workflow failed on alpha. Green
+  # runs say nothing — that is noise.
   # Secrets DISCORD_WEBHOOK_URL and TELEGRAM_BOT_TOKEN; without them nothing is sent, and a
   # message that cannot be sent never fails the job (.github/notify.sh).
   failed:
