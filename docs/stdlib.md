@@ -430,6 +430,8 @@ Also `Open`/`Create` for a kept-open file, `KindOf`, `SizeOf`,
 
 `Join`, `Parent`, `Name`, `Stem`, `Extension`, `WithExtension`,
 `IsAbsolute`, `Normalize`, `IsInside` — string work, no filesystem.
+`Normalize` answers `""` for a path with more than 64 parts left after
+`.` and `..` are worked out; `IsInside` is false for such a path.
 
 ## std.net
 
