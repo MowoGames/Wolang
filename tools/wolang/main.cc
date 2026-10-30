@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -212,6 +213,7 @@ void PrintUsage() {
       "  --seed <n>      the first seed `fuzz` generates from\n"
       "  --count <n>     how many programs `fuzz` generates\n"
       "  --source        print the programs `fuzz` generated\n"
+      "                  (`fuzz <file>` compares that program instead)\n"
       "  --aot           `fuzz`: build and run each program as a binary "
       "too\n"
       "  --unoptimized   `ir`: print what lowering produced, before passes\n"
@@ -2026,7 +2028,7 @@ int RunFuzz(const Options& options) {
     return 2;
   }
   const uint64_t first = options.fuzz_seed;
-  const uint64_t count = options.fuzz_count;
+  const uint64_t count = options.inputs.empty() ? options.fuzz_count : 1;
   uint64_t checked = 0;
   uint64_t failed = 0;
 
@@ -2036,7 +2038,15 @@ int RunFuzz(const Options& options) {
     generated.depth = options.fuzz_depth;
     generated.statements = options.fuzz_statements;
     generated.functions = options.fuzz_statements <= 2 ? 1 : 3;
-    const std::string source = fuzz::Generate(generated);
+    std::string source = fuzz::Generate(generated);
+    if (!options.inputs.empty()) {
+      // A program to compare instead of a generated one: what a
+      // disagreement is cut down to by hand or by script (D231).
+      std::ifstream in(options.inputs.front(), std::ios::binary);
+      std::ostringstream text;
+      text << in.rdbuf();
+      source = text.str();
+    }
     if (options.show_source) {
       std::fprintf(stdout, "// seed %llu\n%s\n",
                    static_cast<unsigned long long>(seed), source.c_str());
@@ -2097,9 +2107,12 @@ int RunFuzz(const Options& options) {
     ++checked;
 
     const auto describe = [](const interp::Outcome& outcome) {
+      // The kind and the words: two tiers that stop for the same reason
+      // with different messages disagree about what happened (D231).
       return outcome.ok() ? outcome.value.Describe()
                           : "trap: " + std::string(
-                                           ir::TrapKindName(outcome.trap));
+                                           ir::TrapKindName(outcome.trap)) +
+                                " (" + outcome.message + ")";
     };
     if (describe(reference) != describe(optimized)) {
       std::fprintf(stdout,
@@ -2140,7 +2153,13 @@ int RunFuzz(const Options& options) {
         ++failed;
         continue;
       }
-      if (said != describe(reference)) {
+      // The binary prints its trap in its own words (and cannot say the
+      // length an index missed), so only the kind is compared here.
+      std::string expected = describe(reference);
+      if (const size_t cut = expected.find(" ("); cut != std::string::npos) {
+        expected.resize(cut);
+      }
+      if (said != expected) {
         std::fprintf(stdout,
                      "[ failed ] seed %llu: the binary disagrees: "
                      "interpreter said %s, the binary said %s\n",
