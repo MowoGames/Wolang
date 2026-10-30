@@ -47,6 +47,32 @@ extern "C" fun wolang_audio_close(audio: *mut u8)
 extern "C" fun wolang_audio_queue(audio: *mut u8, samples: *f32, frames: s32) -> s32
 extern "C" fun wolang_audio_queued(audio: *mut u8) -> s32
 extern "C" fun wolang_audio_room(audio: *mut u8) -> s32
+extern "C" fun wolang_window_cursor_visible(window: *mut u8, visible: s32)
+extern "C" fun wolang_window_cursor_shape(window: *mut u8, shape: s32)
+extern "C" fun wolang_window_cursor_lock(window: *mut u8, locked: s32) -> s32
+extern "C" fun wolang_window_set_fullscreen(window: *mut u8, fullscreen: s32)
+extern "C" fun wolang_window_is_fullscreen(window: *mut u8) -> s32
+extern "C" fun wolang_window_set_size(window: *mut u8, width: s32, height: s32)
+extern "C" fun wolang_window_set_min_size(
+    window: *mut u8,
+    width: s32,
+    height: s32)
+extern "C" fun wolang_window_set_position(window: *mut u8, x: s32, y: s32)
+extern "C" fun wolang_window_position(window: *mut u8, x: *mut s32, y: *mut s32)
+extern "C" fun wolang_window_drop_path(window: *mut u8, index: s32) -> *u8
+extern "C" fun wolang_gamepad_poll(out: *mut Event) -> s32
+extern "C" fun wolang_gamepad_connected(index: s32) -> s32
+extern "C" fun wolang_gamepad_name(index: s32) -> *u8
+extern "C" fun wolang_gamepad_button(index: s32, button: s32) -> s32
+extern "C" fun wolang_gamepad_axis(index: s32, axis: s32) -> f64
+extern "C" fun wolang_dialog_available() -> s32
+extern "C" fun wolang_dialog_message(
+    title: *u8,
+    text: *u8,
+    level: s32,
+    buttons: s32) -> s32
+extern "C" fun wolang_dialog_open_file(title: *u8) -> *u8
+extern "C" fun wolang_dialog_save_file(title: *u8, start_name: *u8) -> *u8
 
 /// Whether this build can open a window at all.
 offer fun Available() -> bool uses unsafe {
@@ -103,6 +129,15 @@ offer const kScrolled: s32 = 8
 offer const kText: s32 = 9
 offer const kFocus: s32 = 10
 offer const kBlur: s32 = 11
+/// Files were dropped on the window: `key` is how many, and
+/// `Window.DropPath` answers each one.
+offer const kDropped: s32 = 12
+/// The pixel scale changed (another display, a new setting): `scroll_x`
+/// is the new scale.
+offer const kScaleChanged: s32 = 13
+/// A pad appeared or went away: `key` is its slot, 0 to 3.
+offer const kGamepadConnected: s32 = 14
+offer const kGamepadDisconnected: s32 = 15
 
 offer const kMouseLeft: s32 = 1
 offer const kMouseRight: s32 = 2
@@ -210,10 +245,113 @@ offer class Window {
     if handle == ptrnull {
       return event
     }
-    if wolang_window_poll(handle, &mut event) == 0 {
-      return Event(0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0)
+    if wolang_window_poll(handle, &mut event) != 0 {
+      return event
     }
-    return event
+    // Pads are not the window's, but a program reads one queue: they
+    // come after what the window has to say.
+    var pad = Event(0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0)
+    if wolang_gamepad_poll(&mut pad) != 0 {
+      return pad
+    }
+    return Event(0, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0)
+  }
+
+  /// Shows or hides the pointer over this window.
+  fun ShowCursor(visible: bool) uses unsafe {
+    if handle == ptrnull {
+      return
+    }
+    var flag: s32 = 0
+    if visible {
+      flag = 1
+    }
+    wolang_window_cursor_visible(handle, flag)
+  }
+
+  /// One of the `kCursor*` shapes.
+  fun SetCursor(shape: s32) uses unsafe {
+    if handle != ptrnull {
+      wolang_window_cursor_shape(handle, shape)
+    }
+  }
+
+  /// Pins the pointer and reports only how far it moved, for mouse-look:
+  /// `kMouseMoved` events then carry the movement in `scroll_x` and
+  /// `scroll_y`. Says whether the system allowed it.
+  fun LockCursor(locked: bool) -> bool uses unsafe {
+    if handle == ptrnull {
+      return false
+    }
+    var flag: s32 = 0
+    if locked {
+      flag = 1
+    }
+    return wolang_window_cursor_lock(handle, flag) != 0
+  }
+
+  /// Full screen on and off.
+  fun SetFullscreen(on: bool) uses unsafe {
+    if handle == ptrnull {
+      return
+    }
+    var flag: s32 = 0
+    if on {
+      flag = 1
+    }
+    wolang_window_set_fullscreen(handle, flag)
+  }
+
+  fun IsFullscreen() -> bool uses unsafe {
+    return handle != ptrnull && wolang_window_is_fullscreen(handle) != 0
+  }
+
+  /// Resizes the content, in pixels.
+  fun SetSize(width: int, height: int) uses unsafe {
+    if handle != ptrnull {
+      wolang_window_set_size(handle, width as s32, height as s32)
+    }
+  }
+
+  /// The smallest content size a person can drag the window to; zero
+  /// for none.
+  fun SetMinSize(width: int, height: int) uses unsafe {
+    if handle != ptrnull {
+      wolang_window_set_min_size(handle, width as s32, height as s32)
+    }
+  }
+
+  fun SetPosition(x: int, y: int) uses unsafe {
+    if handle != ptrnull {
+      wolang_window_set_position(handle, x as s32, y as s32)
+    }
+  }
+
+  fun X() -> int uses unsafe {
+    var x: s32 = 0
+    var y: s32 = 0
+    if handle != ptrnull {
+      wolang_window_position(handle, &mut x, &mut y)
+    }
+    return x as int
+  }
+
+  fun Y() -> int uses unsafe {
+    var x: s32 = 0
+    var y: s32 = 0
+    if handle != ptrnull {
+      wolang_window_position(handle, &mut x, &mut y)
+    }
+    return y as int
+  }
+
+  /// A path from the last `kDropped` event, or an empty text past the
+  /// end.
+  fun DropPath(index: int) -> text uses unsafe {
+    if handle == ptrnull {
+      return ""
+    }
+    return TextFromC(wolang_window_drop_path(handle, index as s32))
   }
 
   /// The content size in pixels, which on a dense display is not the
@@ -556,6 +694,155 @@ offer fun OpenAudio(rate: int, channels: int) -> Audio uses unsafe {
   return Audio(wolang_audio_open(rate as s32, channels as s32), rate, channels)
 }
 
+// -------------------------------------------------------------- cursor ---
+
+offer const kCursorArrow: s32 = 0
+offer const kCursorHand: s32 = 1
+offer const kCursorText: s32 = 2
+offer const kCursorCrosshair: s32 = 3
+offer const kCursorResizeH: s32 = 4
+offer const kCursorResizeV: s32 = 5
+offer const kCursorResizeAll: s32 = 6
+
+// ------------------------------------------------------------- gamepads ---
+//
+// Up to four pads in one layout whatever the system calls them. Sticks
+// run -1 to 1 with up and left negative, as on a screen; triggers run 0
+// to 1. Nothing is filtered: `Deadzone` is the program's call.
+
+offer const kMaxGamepads: int = 4
+
+offer const kPadA: s32 = 0
+offer const kPadB: s32 = 1
+offer const kPadX: s32 = 2
+offer const kPadY: s32 = 3
+offer const kPadLeftBumper: s32 = 4
+offer const kPadRightBumper: s32 = 5
+offer const kPadBack: s32 = 6
+offer const kPadStart: s32 = 7
+offer const kPadGuide: s32 = 8
+offer const kPadLeftStick: s32 = 9
+offer const kPadRightStick: s32 = 10
+offer const kPadDpadUp: s32 = 11
+offer const kPadDpadDown: s32 = 12
+offer const kPadDpadLeft: s32 = 13
+offer const kPadDpadRight: s32 = 14
+
+offer const kAxisLeftX: s32 = 0
+offer const kAxisLeftY: s32 = 1
+offer const kAxisRightX: s32 = 2
+offer const kAxisRightY: s32 = 3
+offer const kAxisLeftTrigger: s32 = 4
+offer const kAxisRightTrigger: s32 = 5
+
+/// Whether pad `index` (0 to 3) is plugged in. Events from `Poll` say
+/// when that changes.
+offer fun GamepadConnected(index: int) -> bool uses unsafe {
+  return wolang_gamepad_connected(index as s32) != 0
+}
+
+offer fun GamepadName(index: int) -> text uses unsafe {
+  return TextFromC(wolang_gamepad_name(index as s32))
+}
+
+offer fun GamepadButton(index: int, button: s32) -> bool uses unsafe {
+  return wolang_gamepad_button(index as s32, button) != 0
+}
+
+offer fun GamepadAxis(index: int, axis: s32) -> f64 uses unsafe {
+  return wolang_gamepad_axis(index as s32, axis)
+}
+
+/// Scales a raw reading from `[low, high]` to `[-1, 1]`, clamped; zero
+/// when the range is empty. The same arithmetic every backend does.
+offer fun AxisNormalize(raw: int, low: int, high: int) -> f64 {
+  if high <= low {
+    return 0.0
+  }
+  var clamped = raw
+  if clamped < low {
+    clamped = low
+  }
+  if clamped > high {
+    clamped = high
+  }
+  return (clamped - low) as f64 / (high - low) as f64 * 2.0 - 1.0
+}
+
+/// Ignores a stick resting near the middle: anything inside `dead` is
+/// zero, and the rest is stretched so the output still reaches 1 and
+/// does not jump at the edge of the zone.
+offer fun Deadzone(value: f64, dead: f64) -> f64 {
+  var size = value
+  var sign: f64 = 1.0
+  if value < 0.0 {
+    size = 0.0 - value
+    sign = -1.0
+  }
+  if size <= dead || dead >= 1.0 {
+    return 0.0
+  }
+  return sign * (size - dead) / (1.0 - dead)
+}
+
+/// Whether an event kind belongs to a pad.
+offer fun IsGamepadEvent(kind: s32) -> bool {
+  return kind == kGamepadConnected || kind == kGamepadDisconnected
+}
+
+// -------------------------------------------------------------- dialogs ---
+//
+// The system's own, blocking until answered. On Linux they need `zenity`
+// or `kdialog`; `DialogsAvailable` says whether there is one, and
+// without it every call answers `kAnswerUnavailable` or null.
+
+offer const kDialogInfo: s32 = 0
+offer const kDialogWarning: s32 = 1
+offer const kDialogError: s32 = 2
+
+offer const kButtonsOk: s32 = 0
+offer const kButtonsOkCancel: s32 = 1
+offer const kButtonsYesNo: s32 = 2
+
+offer const kAnswerUnavailable: s32 = 0
+offer const kAnswerOk: s32 = 1
+offer const kAnswerCancel: s32 = 2
+offer const kAnswerYes: s32 = 3
+offer const kAnswerNo: s32 = 4
+
+offer fun DialogsAvailable() -> bool uses unsafe {
+  return wolang_dialog_available() != 0
+}
+
+/// Shows a message and answers one of the `kAnswer*` constants.
+offer fun MessageBox(title: text, body: text, level: s32, buttons: s32) -> s32 uses unsafe {
+  const t = Bytes(title + "\0")
+  const b = Bytes(body + "\0")
+  return wolang_dialog_message(&t[0], &b[0], level, buttons)
+}
+
+/// Asks for a file to open. Null when cancelled or unavailable.
+offer fun OpenFileDialog(title: text) -> text? uses unsafe {
+  const t = Bytes(title + "\0")
+  const chosen = wolang_dialog_open_file(&t[0])
+  if chosen == 0 as *u8 {
+    return null
+  }
+  return TextFromC(chosen)
+}
+
+/// Asks where to save, starting from `name`. Null when cancelled or
+/// unavailable.
+offer fun SaveFileDialog(title: text, name: text) -> text? uses unsafe {
+  const t = Bytes(title + "\0")
+  const n = Bytes(name + "\0")
+  const chosen = wolang_dialog_save_file(&t[0], &n[0])
+  if chosen == 0 as *u8 {
+    return null
+  }
+  return TextFromC(chosen)
+}
+
 // ----------------------------------------------------------------- bits ---
 
 /// A C string as text. The bytes belong to the library that answered,
@@ -643,4 +930,73 @@ fun SaysWhatBackendThisIs() -> bool uses unsafe {
   // false, and both are the right answer rather than a failure.
   const name = Backend()
   return name == "cocoa" || name == "win32" || name == "x11" || name == "none"
+}
+
+@Test
+fun NormalizesAxes() -> bool {
+  return AxisNormalize(0, 0, 255) == -1.0 && AxisNormalize(255, 0, 255) == 1.0 && AxisNormalize(
+      5,
+      3,
+      3) == 0.0 && AxisNormalize(900, 0, 255) == 1.0 && AxisNormalize(
+      -900,
+      0,
+      255) == -1.0
+}
+
+@Test
+fun AppliesADeadzone() -> bool {
+  // Inside is zero, the edge is one, and it is continuous across the
+  // boundary rather than jumping.
+  if Deadzone(0.1, 0.2) != 0.0 || Deadzone(-0.2, 0.2) != 0.0 {
+    return false
+  }
+  if Deadzone(1.0, 0.2) != 1.0 || Deadzone(-1.0, 0.2) != -1.0 {
+    return false
+  }
+  const just_past = Deadzone(0.21, 0.2)
+  return just_past > 0.0 && just_past < 0.02
+}
+
+@Test
+fun DecodesPadEvents() -> bool {
+  return IsGamepadEvent(kGamepadConnected) && IsGamepadEvent(
+      kGamepadDisconnected) && !IsGamepadEvent(kDropped) && !IsGamepadEvent(
+      kMouseMoved) && kScaleChanged == 13
+}
+
+@Test
+fun ClosedWindowAndNoPadsAreQuiet() -> bool uses unsafe {
+  // A closed window answers every new call with a neutral value, which
+  // is what a headless run gets.
+  var window = Window(ptrnull)
+  window.ShowCursor(false)
+  window.SetCursor(kCursorHand)
+  window.SetFullscreen(true)
+  window.SetSize(10, 10)
+  window.SetMinSize(5, 5)
+  window.SetPosition(1, 2)
+  if window.LockCursor(true) || window.IsFullscreen() {
+    return false
+  }
+  if window.DropPath(0) != "" || window.X() != 0 || window.Y() != 0 {
+    return false
+  }
+  return window.Poll().kind == kNone && !GamepadConnected(7) && !GamepadButton(
+      9,
+      kPadA) && GamepadAxis(-1, kAxisLeftX) == 0.0
+}
+
+@Test
+fun DialogsSayUnavailableCleanly() -> bool uses unsafe {
+  // Only the unavailable case is exercised: a real dialog would block
+  // a test run waiting for a person.
+  if DialogsAvailable() {
+    return true
+  }
+  if MessageBox("t", "b", kDialogInfo, kButtonsOk) != kAnswerUnavailable {
+    return false
+  }
+  const opened = OpenFileDialog("open")
+  const saved = SaveFileDialog("save", "a.txt")
+  return opened == null && saved == null
 }

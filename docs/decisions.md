@@ -3134,3 +3134,29 @@ The installers refuse a download with no checksum line unless told
 rate limited, and read the archive's top directory instead of assuming
 it. `WOLANG_DOWNLOAD_BASE` points them at a local server, for
 `tools/package/test_install.sh` only.
+**D247. The platform layer grows a cursor, window control, pads and
+dialogs.** What a game or a tool needs next to a window (D155) goes in
+`platform/` and `lib/gfx`, one C function each and one backend per system,
+with `none.cc` answering no. Cursor: visibility, seven shapes and a lock
+for mouse-look; a locked pointer reports movement in `scroll_x`/`scroll_y`
+of `kMouseMoved` (X11 grabs and warps to the centre rather than loading
+XInput2, Win32 clips and reads raw input, Cocoa disassociates the cursor).
+Window: fullscreen (Cocoa uses the system Space, since a hand-made
+borderless window cannot become key), size, minimum size, position, file
+drops (`kDropped`, XDND `text/uri-list` on X11, `WM_DROPFILES`, the
+dragging destination) and `kScaleChanged` (`Xft.dpi` on X11, which is the
+only scale X offers).
+
+Gamepads are four slots in one Xbox-shaped layout, no deadzone (the
+program's call; `gfx.Deadzone` is the helper), up and left negative like
+a screen. Linux reads evdev directly, non-blocking, rescanning once a
+second, with no libudev; Windows loads XInput at run time; macOS uses
+GameController.framework, the smaller of it and IOKit HID because it
+already knows the pads. Connect and disconnect come through `Window.Poll`
+behind the window's own events. The evdev and URI-list decoding is
+header-only and system-free, so it is unit-tested from byte buffers.
+
+Dialogs block. Windows and macOS use their own; Linux runs `zenity` or
+`kdialog` with fork and exec (never a shell) and otherwise answers
+unavailable, which `DialogsAvailable()` reports first. Not done: XInput2
+raw motion on X11, pad rumble, multiple-file open, file-type filters.

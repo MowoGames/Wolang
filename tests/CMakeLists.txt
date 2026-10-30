@@ -16,6 +16,9 @@ target_include_directories(wolang_abi_c_check PRIVATE
 target_sources(wolang_tests PRIVATE $<TARGET_OBJECTS:wolang_abi_c_check>)
 
 target_include_directories(wolang_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# `platform/*.h` decoders are header-only so they can be tested here (D247).
+target_include_directories(wolang_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+                           ${PROJECT_SOURCE_DIR})
 # Lets the whole-file tests find the bundled examples.
 target_compile_definitions(wolang_tests PRIVATE
     WOLANG_PROJECT_DIR="${PROJECT_SOURCE_DIR}")

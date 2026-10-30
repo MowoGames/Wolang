@@ -14,11 +14,13 @@
 #include <AudioToolbox/AudioToolbox.h>
 #include <AudioUnit/AudioUnit.h>
 #include <CoreGraphics/CoreGraphics.h>
+#include <GameController/GameController.h>
 #include <dlfcn.h>
 
 #include <string>
 
 #include "platform/common.h"
+#include "platform/gamepad_decode.h"
 
 using wolang::platform::Blank;
 using wolang::platform::Events;
@@ -136,6 +138,13 @@ struct WolangWindow {
   int32_t pixel_width = 0;
   int32_t pixel_height = 0;
   bool closed = false;
+  // (D247)
+  int32_t shape = 0;
+  bool cursor_visible = true;
+  bool locked = false;
+  // Whether `[NSCursor hide]` is currently owed an unhide.
+  bool cursor_hidden = false;
+  std::vector<std::string> drops;
 };
 
 // The view: it draws the pixels and it is what the window makes first
@@ -156,6 +165,55 @@ struct WolangWindow {
 
 - (BOOL)wantsUpdateLayer {
   return NO;
+}
+
+// (D247) The shape is a cursor rect over the whole view, which is how
+// AppKit keeps it right as the pointer comes and goes.
+- (void)resetCursorRects {
+  WolangWindow* owner = self.owner;
+  NSCursor* cursor = [NSCursor arrowCursor];
+  if (owner != nullptr) {
+    switch (owner->shape) {
+      case kWolangCursorHand: cursor = [NSCursor pointingHandCursor]; break;
+      case kWolangCursorText: cursor = [NSCursor IBeamCursor]; break;
+      case kWolangCursorCrosshair: cursor = [NSCursor crosshairCursor]; break;
+      case kWolangCursorResizeH:
+        cursor = [NSCursor resizeLeftRightCursor];
+        break;
+      case kWolangCursorResizeV:
+        cursor = [NSCursor resizeUpDownCursor];
+        break;
+      case kWolangCursorResizeAll: cursor = [NSCursor openHandCursor]; break;
+      default: break;
+    }
+  }
+  [self addCursorRect:self.bounds cursor:cursor];
+}
+
+// Files dragged onto the window.
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+  (void)sender;
+  return NSDragOperationCopy;
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+  WolangWindow* owner = self.owner;
+  if (owner == nullptr) {
+    return NO;
+  }
+  NSArray* urls = [[sender draggingPasteboard]
+      readObjectsForClasses:@[ [NSURL class] ]
+                    options:@{
+                      NSPasteboardURLReadingFileURLsOnlyKey : @YES
+                    }];
+  owner->drops.clear();
+  for (NSURL* url in urls) {
+    owner->drops.push_back([[url path] UTF8String]);
+  }
+  WolangEvent made = Blank(kWolangEventDropped);
+  made.key = static_cast<int32_t>(owner->drops.size());
+  owner->events.Push(made);
+  return YES;
 }
 
 - (void)drawRect:(NSRect)dirty {
@@ -224,6 +282,16 @@ struct WolangWindow {
   if (self.owner->gl != nil) {
     [self.owner->gl update];
   }
+}
+
+- (void)windowDidChangeBackingProperties:(NSNotification*)note {
+  (void)note;
+  if (self.owner == nullptr) {
+    return;
+  }
+  WolangEvent event = Blank(kWolangEventScaleChanged);
+  event.scroll_x = [self.owner->window backingScaleFactor];
+  self.owner->events.Push(event);
 }
 
 - (void)windowDidBecomeKey:(NSNotification*)note {
@@ -307,6 +375,7 @@ extern "C" WolangWindow* wolang_window_open(const char* title,
     held->view = view;
     [held->window setContentView:view];
     [held->window makeFirstResponder:view];
+    [view registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
 
     WolangDelegate* delegate = [[WolangDelegate alloc] init];
     delegate.owner = held;
@@ -348,6 +417,12 @@ extern "C" void wolang_window_close(WolangWindow* window) {
     return;
   }
   @autoreleasepool {
+    if (window->locked) {
+      CGAssociateMouseAndMouseCursorPosition(true);
+    }
+    if (window->cursor_hidden) {
+      [NSCursor unhide];
+    }
     [window->window setDelegate:nil];
     [window->window close];
   }
@@ -457,6 +532,12 @@ extern "C" int32_t wolang_window_poll(WolangWindow* window,
           WolangEvent made = Blank(kWolangEventMouseMoved);
           made.x = static_cast<int32_t>(where.x);
           made.y = static_cast<int32_t>(where.y);
+          // Movement in pixels; it keeps arriving while the pointer is
+          // detached from the cursor, which is what mouse-look needs
+          // (D247).
+          const double dense = [window->window backingScaleFactor];
+          made.scroll_x = [event deltaX] * dense;
+          made.scroll_y = [event deltaY] * dense;
           made.modifiers = modifiers;
           window->events.Push(made);
           break;
@@ -504,6 +585,163 @@ extern "C" double wolang_window_scale(WolangWindow* window) {
   @autoreleasepool {
     return [window->window backingScaleFactor];
   }
+}
+
+// ------------------------------------------------- cursor and window ---
+//
+// (D247)
+
+namespace {
+
+// Hide and unhide must balance, so the state is applied from the facts
+// rather than toggled by each call.
+void ApplyCursorVisibility(WolangWindow* window) {
+  const bool want_hidden = !window->cursor_visible || window->locked;
+  if (want_hidden && !window->cursor_hidden) {
+    [NSCursor hide];
+    window->cursor_hidden = true;
+  } else if (!want_hidden && window->cursor_hidden) {
+    [NSCursor unhide];
+    window->cursor_hidden = false;
+  }
+}
+
+double ScreenHeight() {
+  return [[NSScreen screens] firstObject].frame.size.height;
+}
+
+}  // namespace
+
+extern "C" void wolang_window_cursor_visible(WolangWindow* window,
+                                             int32_t visible) {
+  if (window == nullptr) {
+    return;
+  }
+  @autoreleasepool {
+    window->cursor_visible = visible != 0;
+    ApplyCursorVisibility(window);
+  }
+}
+
+extern "C" void wolang_window_cursor_shape(WolangWindow* window,
+                                           int32_t shape) {
+  if (window == nullptr || shape < 0 || shape > 6) {
+    return;
+  }
+  @autoreleasepool {
+    window->shape = shape;
+    [window->window invalidateCursorRectsForView:window->view];
+  }
+}
+
+extern "C" int32_t wolang_window_cursor_lock(WolangWindow* window,
+                                             int32_t locked) {
+  if (window == nullptr) {
+    return 0;
+  }
+  @autoreleasepool {
+    if ((locked != 0) == window->locked) {
+      return 1;
+    }
+    window->locked = locked != 0;
+    CGAssociateMouseAndMouseCursorPosition(!window->locked);
+    ApplyCursorVisibility(window);
+  }
+  return 1;
+}
+
+// The system's own full screen, which gets its own Space; a borderless
+// window made by hand cannot become key and loses the keyboard.
+extern "C" void wolang_window_set_fullscreen(WolangWindow* window,
+                                             int32_t fullscreen) {
+  if (window == nullptr) {
+    return;
+  }
+  @autoreleasepool {
+    const bool now = ([window->window styleMask] &
+                      NSWindowStyleMaskFullScreen) != 0;
+    if (now != (fullscreen != 0)) {
+      [window->window toggleFullScreen:nil];
+    }
+  }
+}
+
+extern "C" int32_t wolang_window_is_fullscreen(WolangWindow* window) {
+  if (window == nullptr) {
+    return 0;
+  }
+  @autoreleasepool {
+    return ([window->window styleMask] & NSWindowStyleMaskFullScreen) != 0
+               ? 1
+               : 0;
+  }
+}
+
+extern "C" void wolang_window_set_size(WolangWindow* window, int32_t width,
+                                       int32_t height) {
+  if (window == nullptr || width <= 0 || height <= 0) {
+    return;
+  }
+  @autoreleasepool {
+    // Points, where the argument is pixels.
+    const double dense = [window->window backingScaleFactor];
+    [window->window setContentSize:NSMakeSize(width / dense, height / dense)];
+  }
+}
+
+extern "C" void wolang_window_set_min_size(WolangWindow* window,
+                                           int32_t width, int32_t height) {
+  if (window == nullptr) {
+    return;
+  }
+  @autoreleasepool {
+    const double dense = [window->window backingScaleFactor];
+    [window->window setContentMinSize:NSMakeSize(width / dense,
+                                                 height / dense)];
+  }
+}
+
+extern "C" void wolang_window_set_position(WolangWindow* window, int32_t x,
+                                           int32_t y) {
+  if (window == nullptr) {
+    return;
+  }
+  @autoreleasepool {
+    // Cocoa counts from the bottom left of the screen, to the bottom of
+    // the window.
+    const NSRect frame = [window->window frame];
+    [window->window setFrameOrigin:NSMakePoint(
+                                       x, ScreenHeight() - y -
+                                              frame.size.height)];
+  }
+}
+
+extern "C" void wolang_window_position(WolangWindow* window, int32_t* x,
+                                       int32_t* y) {
+  NSRect frame = NSZeroRect;
+  if (window != nullptr) {
+    @autoreleasepool {
+      frame = [window->window frame];
+    }
+  }
+  if (x != nullptr) {
+    *x = static_cast<int32_t>(frame.origin.x);
+  }
+  if (y != nullptr) {
+    *y = window != nullptr
+             ? static_cast<int32_t>(ScreenHeight() - frame.origin.y -
+                                    frame.size.height)
+             : 0;
+  }
+}
+
+extern "C" const char* wolang_window_drop_path(WolangWindow* window,
+                                               int32_t index) {
+  if (window == nullptr || index < 0 ||
+      static_cast<size_t>(index) >= window->drops.size()) {
+    return nullptr;
+  }
+  return window->drops[static_cast<size_t>(index)].c_str();
 }
 
 extern "C" void wolang_window_set_title(WolangWindow* window,
@@ -703,4 +941,232 @@ extern "C" int32_t wolang_audio_queued(WolangAudio* audio) {
 
 extern "C" int32_t wolang_audio_room(WolangAudio* audio) {
   return audio == nullptr ? 0 : audio->ring.Room();
+}
+
+// ---------------------------------------------------------- gamepads ---
+//
+// GameController.framework rather than IOKit HID: it already knows the
+// layouts of the pads people own, so there is no table to keep (D247).
+
+namespace {
+
+struct MacPads {
+  // A controller per slot, or nil. Strong references under ARC.
+  GCController* slots[wolang::platform::kMaxGamepads] = {};
+  std::vector<WolangEvent> pending;
+  bool started = false;
+};
+
+MacPads& HeldPads() {
+  static MacPads pads;
+  return pads;
+}
+
+}  // namespace
+
+extern "C" int32_t wolang_gamepad_poll(WolangEvent* out) {
+  using namespace wolang::platform;
+  MacPads& held = HeldPads();
+  @autoreleasepool {
+    if (!held.started) {
+      held.started = true;
+      if (@available(macOS 11.3, *)) {
+        // Without this a pad goes quiet whenever another window has
+        // focus, which is surprising in a game on a second monitor.
+        GCController.shouldMonitorBackgroundEvents = YES;
+      }
+    }
+    if (held.pending.empty()) {
+      NSArray<GCController*>* present = [GCController controllers];
+      for (int32_t i = 0; i < kMaxGamepads; ++i) {
+        if (held.slots[i] != nil && ![present containsObject:held.slots[i]]) {
+          held.slots[i] = nil;
+          WolangEvent made = Blank(kWolangEventGamepadDisconnected);
+          made.key = i;
+          held.pending.push_back(made);
+        }
+      }
+      for (GCController* pad in present) {
+        if (pad.extendedGamepad == nil) {
+          continue;
+        }
+        bool known = false;
+        int32_t free_slot = -1;
+        for (int32_t i = 0; i < kMaxGamepads; ++i) {
+          if (held.slots[i] == pad) {
+            known = true;
+          } else if (held.slots[i] == nil && free_slot < 0) {
+            free_slot = i;
+          }
+        }
+        if (!known && free_slot >= 0) {
+          held.slots[free_slot] = pad;
+          WolangEvent made = Blank(kWolangEventGamepadConnected);
+          made.key = free_slot;
+          held.pending.push_back(made);
+        }
+      }
+    }
+  }
+  if (held.pending.empty() || out == nullptr) {
+    return 0;
+  }
+  *out = held.pending.front();
+  held.pending.erase(held.pending.begin());
+  return 1;
+}
+
+extern "C" int32_t wolang_gamepad_connected(int32_t index) {
+  return index >= 0 && index < wolang::platform::kMaxGamepads &&
+                 HeldPads().slots[index] != nil
+             ? 1
+             : 0;
+}
+
+extern "C" const char* wolang_gamepad_name(int32_t index) {
+  static std::string held;
+  held.clear();
+  if (wolang_gamepad_connected(index) != 0) {
+    @autoreleasepool {
+      NSString* name = HeldPads().slots[index].vendorName;
+      held = name != nil ? [name UTF8String] : "Controller";
+    }
+  }
+  return held.c_str();
+}
+
+extern "C" int32_t wolang_gamepad_button(int32_t index, int32_t button) {
+  using namespace wolang::platform;
+  if (wolang_gamepad_connected(index) == 0 || button < 0 ||
+      button >= kPadButtonCount) {
+    return 0;
+  }
+  @autoreleasepool {
+    GCExtendedGamepad* pad = HeldPads().slots[index].extendedGamepad;
+    if (pad == nil) {
+      return 0;
+    }
+    switch (button) {
+      case kPadA: return pad.buttonA.isPressed;
+      case kPadB: return pad.buttonB.isPressed;
+      case kPadX: return pad.buttonX.isPressed;
+      case kPadY: return pad.buttonY.isPressed;
+      case kPadLeftBumper: return pad.leftShoulder.isPressed;
+      case kPadRightBumper: return pad.rightShoulder.isPressed;
+      case kPadBack: return pad.buttonOptions.isPressed;
+      case kPadStart: return pad.buttonMenu.isPressed;
+      case kPadLeftStick: return pad.leftThumbstickButton.isPressed;
+      case kPadRightStick: return pad.rightThumbstickButton.isPressed;
+      case kPadDpadUp: return pad.dpad.up.isPressed;
+      case kPadDpadDown: return pad.dpad.down.isPressed;
+      case kPadDpadLeft: return pad.dpad.left.isPressed;
+      case kPadDpadRight: return pad.dpad.right.isPressed;
+      default: return 0;
+    }
+  }
+}
+
+extern "C" double wolang_gamepad_axis(int32_t index, int32_t axis) {
+  using namespace wolang::platform;
+  if (wolang_gamepad_connected(index) == 0 || axis < 0 ||
+      axis >= kGamepadAxes) {
+    return 0.0;
+  }
+  @autoreleasepool {
+    GCExtendedGamepad* pad = HeldPads().slots[index].extendedGamepad;
+    if (pad == nil) {
+      return 0.0;
+    }
+    // The framework counts up as positive; the layout counts it negative.
+    switch (axis) {
+      case kPadLeftX: return pad.leftThumbstick.xAxis.value;
+      case kPadLeftY: return -pad.leftThumbstick.yAxis.value;
+      case kPadRightX: return pad.rightThumbstick.xAxis.value;
+      case kPadRightY: return -pad.rightThumbstick.yAxis.value;
+      case kPadLeftTrigger: return pad.leftTrigger.value;
+      case kPadRightTrigger: return pad.rightTrigger.value;
+      default: return 0.0;
+    }
+  }
+}
+
+// ----------------------------------------------------------- dialogs ---
+//
+// (D247) AppKit's own panels, run modally.
+
+extern "C" int32_t wolang_dialog_available(void) { return 1; }
+
+extern "C" int32_t wolang_dialog_message(const char* title, const char* text,
+                                         int32_t level, int32_t buttons) {
+  @autoreleasepool {
+    StartApplication();
+    NSAlert* alert = [[NSAlert alloc] init];
+    [alert setMessageText:[NSString stringWithUTF8String:title != nullptr
+                                                             ? title
+                                                             : ""]];
+    [alert setInformativeText:[NSString stringWithUTF8String:text != nullptr
+                                                                 ? text
+                                                                 : ""]];
+    [alert setAlertStyle:level == kWolangDialogError
+                             ? NSAlertStyleCritical
+                             : (level == kWolangDialogWarning
+                                    ? NSAlertStyleWarning
+                                    : NSAlertStyleInformational)];
+    if (buttons == kWolangButtonsYesNo) {
+      [alert addButtonWithTitle:@"Yes"];
+      [alert addButtonWithTitle:@"No"];
+    } else {
+      [alert addButtonWithTitle:@"OK"];
+      if (buttons == kWolangButtonsOkCancel) {
+        [alert addButtonWithTitle:@"Cancel"];
+      }
+    }
+    const bool first = [alert runModal] == NSAlertFirstButtonReturn;
+    if (buttons == kWolangButtonsYesNo) {
+      return first ? kWolangAnswerYes : kWolangAnswerNo;
+    }
+    if (buttons == kWolangButtonsOkCancel) {
+      return first ? kWolangAnswerOk : kWolangAnswerCancel;
+    }
+    return kWolangAnswerOk;
+  }
+}
+
+namespace {
+
+const char* RunPanel(NSSavePanel* panel, const char* title) {
+  static std::string held;
+  StartApplication();
+  if (title != nullptr) {
+    [panel setMessage:[NSString stringWithUTF8String:title]];
+  }
+  if ([panel runModal] != NSModalResponseOK || [panel URL] == nil) {
+    return nullptr;
+  }
+  held = [[[panel URL] path] UTF8String];
+  return held.c_str();
+}
+
+}  // namespace
+
+extern "C" const char* wolang_dialog_open_file(const char* title) {
+  @autoreleasepool {
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    [panel setCanChooseFiles:YES];
+    [panel setCanChooseDirectories:NO];
+    [panel setAllowsMultipleSelection:NO];
+    return RunPanel(panel, title);
+  }
+}
+
+extern "C" const char* wolang_dialog_save_file(const char* title,
+                                               const char* start_name) {
+  @autoreleasepool {
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    if (start_name != nullptr && start_name[0] != '\0') {
+      [panel setNameFieldStringValue:[NSString
+                                         stringWithUTF8String:start_name]];
+    }
+    return RunPanel(panel, title);
+  }
 }

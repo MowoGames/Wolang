@@ -18,6 +18,8 @@
 
 #include <mmreg.h>
 #include <mmsystem.h>
+#include <shellapi.h>
+#include <commdlg.h>
 #include <windowsx.h>
 
 #include <atomic>
@@ -29,6 +31,7 @@
 #include <vector>
 
 #include "platform/common.h"
+#include "platform/gamepad_decode.h"
 
 using wolang::platform::Blank;
 using wolang::platform::Events;
@@ -141,6 +144,18 @@ struct WolangWindow {
   int32_t pixel_height = 0;
   int32_t width = 0;
   int32_t height = 0;
+  // (D247)
+  int32_t shape = 0;
+  bool cursor_visible = true;
+  bool locked = false;
+  int32_t last_x = -1;
+  int32_t last_y = -1;
+  bool fullscreen = false;
+  DWORD saved_style = 0;
+  WINDOWPLACEMENT saved_placement = {};
+  int32_t min_width = 0;
+  int32_t min_height = 0;
+  std::vector<std::string> drops;
 };
 
 namespace {
@@ -219,11 +234,103 @@ LRESULT CALLBACK Procedure(HWND handle, UINT message, WPARAM w,
       return 0;
     }
     case WM_MOUSEMOVE: {
+      // While locked the raw input below is the truth: the pointer is
+      // pinned and this position never changes (D247).
+      if (owner->locked) {
+        return 0;
+      }
       WolangEvent made = Blank(kWolangEventMouseMoved);
       made.x = GET_X_LPARAM(l);
       made.y = GET_Y_LPARAM(l);
+      if (owner->last_x >= 0) {
+        made.scroll_x = made.x - owner->last_x;
+        made.scroll_y = made.y - owner->last_y;
+      }
+      owner->last_x = made.x;
+      owner->last_y = made.y;
       made.modifiers = ModifiersNow();
       owner->events.Push(made);
+      return 0;
+    }
+    case WM_INPUT: {
+      if (!owner->locked) {
+        break;
+      }
+      RAWINPUT raw;
+      UINT size = sizeof(raw);
+      if (GetRawInputData(reinterpret_cast<HRAWINPUT>(l), RID_INPUT, &raw,
+                          &size, sizeof(RAWINPUTHEADER)) ==
+              static_cast<UINT>(-1) ||
+          raw.header.dwType != RIM_TYPEMOUSE) {
+        break;
+      }
+      if ((raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) != 0 ||
+          (raw.data.mouse.lLastX == 0 && raw.data.mouse.lLastY == 0)) {
+        break;
+      }
+      WolangEvent made = Blank(kWolangEventMouseMoved);
+      made.scroll_x = raw.data.mouse.lLastX;
+      made.scroll_y = raw.data.mouse.lLastY;
+      made.modifiers = ModifiersNow();
+      owner->events.Push(made);
+      break;
+    }
+    case WM_SETCURSOR: {
+      if (LOWORD(l) != HTCLIENT) {
+        break;
+      }
+      static const LPCWSTR kShapes[] = {IDC_ARROW,  IDC_HAND,   IDC_IBEAM,
+                                        IDC_CROSS,  IDC_SIZEWE, IDC_SIZENS,
+                                        IDC_SIZEALL};
+      SetCursor(owner->cursor_visible && !owner->locked
+                    ? LoadCursorW(nullptr, kShapes[owner->shape])
+                    : nullptr);
+      return TRUE;
+    }
+    case WM_GETMINMAXINFO: {
+      if (owner->min_width <= 0 && owner->min_height <= 0) {
+        break;
+      }
+      RECT frame = {0, 0, owner->min_width, owner->min_height};
+      AdjustWindowRect(&frame,
+                       static_cast<DWORD>(GetWindowLongPtrW(handle,
+                                                            GWL_STYLE)),
+                       FALSE);
+      MINMAXINFO* info = reinterpret_cast<MINMAXINFO*>(l);
+      info->ptMinTrackSize.x = frame.right - frame.left;
+      info->ptMinTrackSize.y = frame.bottom - frame.top;
+      return 0;
+    }
+    case WM_DROPFILES: {
+      HDROP drop = reinterpret_cast<HDROP>(w);
+      const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+      owner->drops.clear();
+      for (UINT i = 0; i < count; ++i) {
+        const UINT length = DragQueryFileW(drop, i, nullptr, 0);
+        std::wstring path(length + 1, L'\0');
+        DragQueryFileW(drop, i, path.data(), length + 1);
+        path.resize(length);
+        owner->drops.push_back(Narrow(path.c_str()));
+      }
+      DragFinish(drop);
+      WolangEvent made = Blank(kWolangEventDropped);
+      made.key = static_cast<int32_t>(owner->drops.size());
+      owner->events.Push(made);
+      return 0;
+    }
+    case WM_DPICHANGED: {
+      WolangEvent made = Blank(kWolangEventScaleChanged);
+      made.scroll_x = static_cast<double>(LOWORD(w)) / 96.0;
+      owner->events.Push(made);
+      // The rectangle Windows suggests keeps the window the same size
+      // to the eye on the new display.
+      const RECT* suggested = reinterpret_cast<const RECT*>(l);
+      if (!owner->fullscreen) {
+        SetWindowPos(handle, nullptr, suggested->left, suggested->top,
+                     suggested->right - suggested->left,
+                     suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+      }
       return 0;
     }
     case WM_MOUSEWHEEL: {
@@ -323,6 +430,7 @@ extern "C" WolangWindow* wolang_window_open(const char* title,
   }
   SetWindowLongPtrW(held->handle, GWLP_USERDATA,
                     reinterpret_cast<LONG_PTR>(held));
+  DragAcceptFiles(held->handle, TRUE);
   held->device = GetDC(held->handle);
 
   if ((flags & kWolangWindowGl) != 0 && held->device != nullptr) {
@@ -397,6 +505,158 @@ extern "C" double wolang_window_scale(WolangWindow* window) {
   }
   const UINT dots = GetDpiForWindow(window->handle);
   return dots == 0 ? 1.0 : static_cast<double>(dots) / 96.0;
+}
+
+// ------------------------------------------------- cursor and window ---
+//
+// (D247)
+
+extern "C" void wolang_window_cursor_visible(WolangWindow* window,
+                                             int32_t visible) {
+  if (window == nullptr) {
+    return;
+  }
+  window->cursor_visible = visible != 0;
+  SendMessageW(window->handle, WM_SETCURSOR,
+               reinterpret_cast<WPARAM>(window->handle), HTCLIENT);
+}
+
+extern "C" void wolang_window_cursor_shape(WolangWindow* window,
+                                           int32_t shape) {
+  if (window == nullptr || shape < 0 || shape > 6) {
+    return;
+  }
+  window->shape = shape;
+  SendMessageW(window->handle, WM_SETCURSOR,
+               reinterpret_cast<WPARAM>(window->handle), HTCLIENT);
+}
+
+// Raw input gives movement that does not stop at the edge of the
+// screen, and the clip keeps the pointer inside the window. Clipped to
+// one point at the centre so that it cannot drift off a multi-monitor
+// edge.
+extern "C" int32_t wolang_window_cursor_lock(WolangWindow* window,
+                                             int32_t locked) {
+  if (window == nullptr) {
+    return 0;
+  }
+  if (locked == 0) {
+    if (window->locked) {
+      window->locked = false;
+      ClipCursor(nullptr);
+      RAWINPUTDEVICE device = {0x01, 0x02, RIDEV_REMOVE, nullptr};
+      RegisterRawInputDevices(&device, 1, sizeof(device));
+      window->last_x = -1;
+    }
+    return 1;
+  }
+  if (window->locked) {
+    return 1;
+  }
+  RAWINPUTDEVICE device = {0x01, 0x02, 0, window->handle};
+  if (!RegisterRawInputDevices(&device, 1, sizeof(device))) {
+    return 0;
+  }
+  RECT client;
+  GetClientRect(window->handle, &client);
+  POINT centre = {(client.left + client.right) / 2,
+                  (client.top + client.bottom) / 2};
+  ClientToScreen(window->handle, &centre);
+  RECT point = {centre.x, centre.y, centre.x + 1, centre.y + 1};
+  ClipCursor(&point);
+  window->locked = true;
+  return 1;
+}
+
+extern "C" void wolang_window_set_fullscreen(WolangWindow* window,
+                                             int32_t fullscreen) {
+  if (window == nullptr || (fullscreen != 0) == window->fullscreen) {
+    return;
+  }
+  if (fullscreen != 0) {
+    window->saved_style =
+        static_cast<DWORD>(GetWindowLongPtrW(window->handle, GWL_STYLE));
+    window->saved_placement.length = sizeof(window->saved_placement);
+    GetWindowPlacement(window->handle, &window->saved_placement);
+    MONITORINFO monitor = {};
+    monitor.cbSize = sizeof(monitor);
+    GetMonitorInfoW(MonitorFromWindow(window->handle,
+                                      MONITOR_DEFAULTTONEAREST),
+                    &monitor);
+    SetWindowLongPtrW(window->handle, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+    SetWindowPos(window->handle, HWND_TOP, monitor.rcMonitor.left,
+                 monitor.rcMonitor.top,
+                 monitor.rcMonitor.right - monitor.rcMonitor.left,
+                 monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+                 SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+  } else {
+    SetWindowLongPtrW(window->handle, GWL_STYLE, window->saved_style);
+    SetWindowPlacement(window->handle, &window->saved_placement);
+    SetWindowPos(window->handle, nullptr, 0, 0, 0, 0,
+                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE |
+                     SWP_NOZORDER | SWP_NOOWNERZORDER);
+  }
+  window->fullscreen = fullscreen != 0;
+}
+
+extern "C" int32_t wolang_window_is_fullscreen(WolangWindow* window) {
+  return window != nullptr && window->fullscreen ? 1 : 0;
+}
+
+extern "C" void wolang_window_set_size(WolangWindow* window, int32_t width,
+                                       int32_t height) {
+  if (window == nullptr || width <= 0 || height <= 0) {
+    return;
+  }
+  RECT wanted = {0, 0, width, height};
+  AdjustWindowRect(&wanted,
+                   static_cast<DWORD>(
+                       GetWindowLongPtrW(window->handle, GWL_STYLE)),
+                   FALSE);
+  SetWindowPos(window->handle, nullptr, 0, 0, wanted.right - wanted.left,
+               wanted.bottom - wanted.top,
+               SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+extern "C" void wolang_window_set_min_size(WolangWindow* window,
+                                           int32_t width, int32_t height) {
+  if (window == nullptr) {
+    return;
+  }
+  window->min_width = width > 0 ? width : 0;
+  window->min_height = height > 0 ? height : 0;
+}
+
+extern "C" void wolang_window_set_position(WolangWindow* window, int32_t x,
+                                           int32_t y) {
+  if (window == nullptr) {
+    return;
+  }
+  SetWindowPos(window->handle, nullptr, x, y, 0, 0,
+               SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+extern "C" void wolang_window_position(WolangWindow* window, int32_t* x,
+                                       int32_t* y) {
+  RECT frame = {};
+  if (window != nullptr) {
+    GetWindowRect(window->handle, &frame);
+  }
+  if (x != nullptr) {
+    *x = frame.left;
+  }
+  if (y != nullptr) {
+    *y = frame.top;
+  }
+}
+
+extern "C" const char* wolang_window_drop_path(WolangWindow* window,
+                                               int32_t index) {
+  if (window == nullptr || index < 0 ||
+      static_cast<size_t>(index) >= window->drops.size()) {
+    return nullptr;
+  }
+  return window->drops[static_cast<size_t>(index)].c_str();
 }
 
 extern "C" void wolang_window_set_title(WolangWindow* window,
@@ -610,4 +870,221 @@ extern "C" int32_t wolang_audio_queued(WolangAudio* audio) {
 
 extern "C" int32_t wolang_audio_room(WolangAudio* audio) {
   return audio == nullptr ? 0 : audio->ring.Room();
+}
+
+// ---------------------------------------------------------- gamepads ---
+//
+// XInput, loaded at run time: the DLL is not on every install (N
+// editions of Windows) and a link-time dependency would stop the whole
+// library loading there (D247). Anything that is not an XInput pad does
+// not show up, which is the cost of the smaller of the two APIs.
+
+namespace {
+
+struct XInputGamepad {
+  WORD buttons;
+  BYTE left_trigger;
+  BYTE right_trigger;
+  SHORT lx, ly, rx, ry;
+};
+struct XInputState {
+  DWORD packet;
+  XInputGamepad gamepad;
+};
+using XInputGetStateFn = DWORD(WINAPI*)(DWORD, XInputState*);
+
+struct Pad {
+  bool connected = false;
+  wolang::platform::PadState state;
+};
+
+struct Pads {
+  Pad pads[wolang::platform::kMaxGamepads];
+  std::vector<WolangEvent> pending;
+  double next_probe = 0.0;
+  XInputGetStateFn get_state = nullptr;
+  bool tried = false;
+};
+
+Pads& HeldPads() {
+  static Pads pads;
+  return pads;
+}
+
+void ButtonsFromXInput(wolang::platform::PadState* state, WORD bits) {
+  using namespace wolang::platform;
+  struct Map {
+    WORD mask;
+    int32_t button;
+  };
+  static const Map kMap[] = {
+      {0x1000, kPadA},          {0x2000, kPadB},
+      {0x4000, kPadX},          {0x8000, kPadY},
+      {0x0100, kPadLeftBumper}, {0x0200, kPadRightBumper},
+      {0x0020, kPadBack},       {0x0010, kPadStart},
+      {0x0040, kPadLeftStick},  {0x0080, kPadRightStick},
+      {0x0001, kPadDpadUp},     {0x0002, kPadDpadDown},
+      {0x0004, kPadDpadLeft},   {0x0008, kPadDpadRight},
+  };
+  for (const Map& m : kMap) {
+    SetButton(state, m.button, (bits & m.mask) != 0);
+  }
+}
+
+}  // namespace
+
+extern "C" int32_t wolang_gamepad_poll(WolangEvent* out) {
+  using namespace wolang::platform;
+  Pads& held = HeldPads();
+  if (!held.tried) {
+    held.tried = true;
+    HMODULE library = LoadLibraryW(L"xinput1_4.dll");
+    if (library == nullptr) {
+      library = LoadLibraryW(L"xinput9_1_0.dll");
+    }
+    if (library != nullptr) {
+      held.get_state = reinterpret_cast<XInputGetStateFn>(
+          GetProcAddress(library, "XInputGetState"));
+    }
+  }
+  if (held.get_state != nullptr && held.pending.empty()) {
+    // Asking after a pad that is not there is slow, so absent slots are
+    // only probed once a second.
+    const double now = Monotonic();
+    const bool probe = now >= held.next_probe;
+    if (probe) {
+      held.next_probe = now + 1.0;
+    }
+    for (int32_t i = 0; i < kMaxGamepads; ++i) {
+      Pad& pad = held.pads[i];
+      if (!pad.connected && !probe) {
+        continue;
+      }
+      XInputState raw = {};
+      const bool present = held.get_state(static_cast<DWORD>(i), &raw) == 0;
+      if (present != pad.connected) {
+        pad.connected = present;
+        pad.state = PadState();
+        WolangEvent made = Blank(present ? kWolangEventGamepadConnected
+                                         : kWolangEventGamepadDisconnected);
+        made.key = i;
+        held.pending.push_back(made);
+      }
+      if (!present) {
+        continue;
+      }
+      const XInputGamepad& g = raw.gamepad;
+      ButtonsFromXInput(&pad.state, g.buttons);
+      pad.state.axes[kPadLeftX] = NormalizeAxis(g.lx, -32768, 32767, false);
+      // XInput counts up as positive; the layout counts it negative.
+      pad.state.axes[kPadLeftY] = -NormalizeAxis(g.ly, -32768, 32767, false);
+      pad.state.axes[kPadRightX] = NormalizeAxis(g.rx, -32768, 32767, false);
+      pad.state.axes[kPadRightY] =
+          -NormalizeAxis(g.ry, -32768, 32767, false);
+      pad.state.axes[kPadLeftTrigger] = NormalizeAxis(g.left_trigger, 0, 255, true);
+      pad.state.axes[kPadRightTrigger] =
+          NormalizeAxis(g.right_trigger, 0, 255, true);
+    }
+  }
+  if (held.pending.empty() || out == nullptr) {
+    return 0;
+  }
+  *out = held.pending.front();
+  held.pending.erase(held.pending.begin());
+  return 1;
+}
+
+extern "C" int32_t wolang_gamepad_connected(int32_t index) {
+  return index >= 0 && index < wolang::platform::kMaxGamepads &&
+                 HeldPads().pads[index].connected
+             ? 1
+             : 0;
+}
+
+extern "C" const char* wolang_gamepad_name(int32_t index) {
+  return wolang_gamepad_connected(index) != 0 ? "XInput controller" : "";
+}
+
+extern "C" int32_t wolang_gamepad_button(int32_t index, int32_t button) {
+  if (wolang_gamepad_connected(index) == 0 || button < 0 ||
+      button >= wolang::platform::kPadButtonCount) {
+    return 0;
+  }
+  return (HeldPads().pads[index].state.buttons >> button) & 1u;
+}
+
+extern "C" double wolang_gamepad_axis(int32_t index, int32_t axis) {
+  if (wolang_gamepad_connected(index) == 0 || axis < 0 ||
+      axis >= wolang::platform::kGamepadAxes) {
+    return 0.0;
+  }
+  return HeldPads().pads[index].state.axes[axis];
+}
+
+// ----------------------------------------------------------- dialogs ---
+//
+// (D247) The system's own, which are always there.
+
+namespace {
+
+std::string& HeldPath() {
+  static std::string held;
+  return held;
+}
+
+const char* PickFile(const char* title, const char* start_name, bool save) {
+  wchar_t buffer[MAX_PATH * 4] = {};
+  if (start_name != nullptr) {
+    const std::wstring name = Wide(start_name);
+    wcsncpy(buffer, name.c_str(), MAX_PATH * 4 - 1);
+  }
+  const std::wstring heading = Wide(title != nullptr ? title : "");
+  OPENFILENAMEW request = {};
+  request.lStructSize = sizeof(request);
+  request.lpstrFile = buffer;
+  request.nMaxFile = MAX_PATH * 4;
+  request.lpstrTitle = heading.c_str();
+  request.Flags = OFN_NOCHANGEDIR | OFN_EXPLORER;
+  request.Flags |= save ? OFN_OVERWRITEPROMPT
+                        : (OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST);
+  const BOOL chosen =
+      save ? GetSaveFileNameW(&request) : GetOpenFileNameW(&request);
+  if (!chosen) {
+    return nullptr;
+  }
+  HeldPath() = Narrow(buffer);
+  return HeldPath().c_str();
+}
+
+}  // namespace
+
+extern "C" int32_t wolang_dialog_available(void) { return 1; }
+
+extern "C" int32_t wolang_dialog_message(const char* title, const char* text,
+                                         int32_t level, int32_t buttons) {
+  UINT flags = level == kWolangDialogError     ? MB_ICONERROR
+               : level == kWolangDialogWarning ? MB_ICONWARNING
+                                               : MB_ICONINFORMATION;
+  flags |= buttons == kWolangButtonsYesNo      ? MB_YESNO
+           : buttons == kWolangButtonsOkCancel ? MB_OKCANCEL
+                                               : MB_OK;
+  const int answer = MessageBoxW(nullptr, Wide(text != nullptr ? text : "").c_str(),
+                                 Wide(title != nullptr ? title : "").c_str(),
+                                 flags);
+  switch (answer) {
+    case IDOK: return kWolangAnswerOk;
+    case IDCANCEL: return kWolangAnswerCancel;
+    case IDYES: return kWolangAnswerYes;
+    case IDNO: return kWolangAnswerNo;
+    default: return kWolangAnswerUnavailable;
+  }
+}
+
+extern "C" const char* wolang_dialog_open_file(const char* title) {
+  return PickFile(title, nullptr, false);
+}
+
+extern "C" const char* wolang_dialog_save_file(const char* title,
+                                               const char* start_name) {
+  return PickFile(title, start_name, true);
 }

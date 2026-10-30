@@ -778,6 +778,19 @@ fun main() uses io, unsafe {
 }
 ```
 
+Beyond the window itself (D247), all of it answers "no" cleanly on a build
+with no backend, so a headless run needs no guards:
+
+| Area | API | Notes |
+|---|---|---|
+| Cursor | `ShowCursor(bool)`, `SetCursor(kCursorArrow/Hand/Text/Crosshair/ResizeH/ResizeV/ResizeAll)`, `LockCursor(bool) -> bool` | locked: `kMouseMoved` carries the movement in `scroll_x`/`scroll_y` (unlocked it does too). X11 grabs and warps, Win32 clips and reads raw input, Cocoa detaches the cursor |
+| Window | `SetFullscreen`, `IsFullscreen`, `SetSize`, `SetMinSize`, `SetPosition`, `X()`, `Y()` | content sizes in pixels. Cocoa uses the system full screen (its own Space) |
+| Events | `kDropped` (`key` = count, `DropPath(i)`), `kScaleChanged` (`scroll_x` = new scale) | X11 reads `Xft.dpi`; drops use XDND with `text/uri-list` |
+| Gamepads | `GamepadConnected(i)`, `GamepadName`, `GamepadButton(i, kPadA..)`, `GamepadAxis(i, kAxisLeftX..)`, events `kGamepadConnected` / `kGamepadDisconnected` | up to 4, one layout: sticks -1..1 with up and left negative, triggers 0..1, no deadzone applied. `Deadzone(v, dead)` and `AxisNormalize(raw, low, high)` are helpers. Linux reads `/dev/input/event*` (needs the `input` group, scanned once a second), Windows XInput, macOS GameController |
+| Dialogs | `MessageBox(title, body, kDialogInfo/Warning/Error, kButtonsOk/OkCancel/YesNo) -> kAnswer*`, `OpenFileDialog`, `SaveFileDialog` (both `text?`), `DialogsAvailable()` | Linux runs `zenity` or `kdialog` and otherwise answers `kAnswerUnavailable` / null |
+
+Pad events arrive through `Window.Poll` after the window's own.
+
 ---
 
 ## The `image` package

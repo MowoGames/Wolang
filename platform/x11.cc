@@ -11,11 +11,14 @@
 // needs neither of their headers (D155).
 
 #include <X11/XKBlib.h>
+#include <X11/Xatom.h>
+#include <X11/cursorfont.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <string>
@@ -25,6 +28,7 @@
 
 
 #include "platform/common.h"
+#include "platform/uri_list.h"
 
 using wolang::platform::Blank;
 using wolang::platform::Events;
@@ -177,7 +181,187 @@ struct WolangWindow {
   // The pixels as the server wants them, which is this window's size
   // rather than whatever the program drew at.
   std::vector<uint32_t> scaled;
+
+  // (D247) Cursor: one cursor per shape, made when first asked for.
+  Cursor shapes[7] = {};
+  Cursor blank = 0;
+  int32_t shape = 0;
+  bool cursor_visible = true;
+  bool locked = false;
+  int32_t last_x = -1;
+  int32_t last_y = -1;
+  // Window state.
+  bool fullscreen = false;
+  bool fixed = false;
+  int32_t min_width = 0;
+  int32_t min_height = 0;
+  double scale = 1.0;
+  // XDND: who is dragging, whether they offer files, and what landed.
+  Window drop_source = 0;
+  bool drop_ok = false;
+  long drop_version = 0;
+  std::vector<std::string> drops;
 };
+
+namespace {
+
+// (D247) Atoms the extras need.
+struct Atoms {
+  Atom wm_state, wm_fullscreen, aware, enter, position, status, leave, drop,
+      finished, selection, copy, type_list, uri_list, property;
+};
+
+Atoms AtomsOf(Display* display) {
+  Atoms a;
+  a.wm_state = XInternAtom(display, "_NET_WM_STATE", False);
+  a.wm_fullscreen = XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False);
+  a.aware = XInternAtom(display, "XdndAware", False);
+  a.enter = XInternAtom(display, "XdndEnter", False);
+  a.position = XInternAtom(display, "XdndPosition", False);
+  a.status = XInternAtom(display, "XdndStatus", False);
+  a.leave = XInternAtom(display, "XdndLeave", False);
+  a.drop = XInternAtom(display, "XdndDrop", False);
+  a.finished = XInternAtom(display, "XdndFinished", False);
+  a.selection = XInternAtom(display, "XdndSelection", False);
+  a.copy = XInternAtom(display, "XdndActionCopy", False);
+  a.type_list = XInternAtom(display, "XdndTypeList", False);
+  a.uri_list = XInternAtom(display, "text/uri-list", False);
+  a.property = XInternAtom(display, "WOLANG_DROP", False);
+  return a;
+}
+
+// X says nothing about scale directly; the desktop's `Xft.dpi` is what
+// toolkits follow, so this does too. Read from the root property rather
+// than Xlib's cached string, which does not change after connecting.
+double ReadScale(Display* display) {
+  Window root = DefaultRootWindow(display);
+  Atom type = 0;
+  int format = 0;
+  unsigned long count = 0;
+  unsigned long after = 0;
+  unsigned char* data = nullptr;
+  double scale = 1.0;
+  if (XGetWindowProperty(display, root, XA_RESOURCE_MANAGER, 0, 65536,
+                         False, XA_STRING, &type, &format, &count, &after,
+                         &data) == Success &&
+      data != nullptr) {
+    const std::string text(reinterpret_cast<char*>(data), count);
+    const size_t at = text.find("Xft.dpi:");
+    if (at != std::string::npos) {
+      const double dpi = std::atof(text.c_str() + at + 8);
+      if (dpi >= 48.0 && dpi <= 960.0) {
+        scale = dpi / 96.0;
+      }
+    }
+  }
+  if (data != nullptr) {
+    XFree(data);
+  }
+  return scale;
+}
+
+void ApplyHints(WolangWindow* w) {
+  XSizeHints* hints = XAllocSizeHints();
+  if (hints == nullptr) {
+    return;
+  }
+  if (w->fixed) {
+    hints->flags = PMinSize | PMaxSize;
+    hints->min_width = hints->max_width = w->width;
+    hints->min_height = hints->max_height = w->height;
+  } else if (w->min_width > 0 || w->min_height > 0) {
+    hints->flags = PMinSize;
+    hints->min_width = w->min_width;
+    hints->min_height = w->min_height;
+  }
+  XSetWMNormalHints(w->display, w->window, hints);
+  XFree(hints);
+}
+
+Cursor BlankCursor(WolangWindow* w) {
+  if (w->blank == 0) {
+    static const char kBits[1] = {0};
+    Pixmap empty = XCreateBitmapFromData(w->display, w->window, kBits, 1, 1);
+    XColor black = {};
+    w->blank = XCreatePixmapCursor(w->display, empty, empty, &black, &black,
+                                   0, 0);
+    XFreePixmap(w->display, empty);
+  }
+  return w->blank;
+}
+
+void ApplyCursor(WolangWindow* w) {
+  Cursor cursor = 0;
+  if (!w->cursor_visible || w->locked) {
+    cursor = BlankCursor(w);
+  } else {
+    const unsigned shapes[] = {XC_left_ptr,          XC_hand2,
+                               XC_xterm,             XC_crosshair,
+                               XC_sb_h_double_arrow, XC_sb_v_double_arrow,
+                               XC_fleur};
+    Cursor& made = w->shapes[w->shape];
+    if (made == 0) {
+      made = XCreateFontCursor(w->display, shapes[w->shape]);
+    }
+    cursor = made;
+  }
+  XDefineCursor(w->display, w->window, cursor);
+  XFlush(w->display);
+}
+
+void SendDnd(WolangWindow* w, Atom message, long accepted, long action) {
+  XEvent reply = {};
+  reply.xclient.type = ClientMessage;
+  reply.xclient.display = w->display;
+  reply.xclient.window = w->drop_source;
+  reply.xclient.message_type = message;
+  reply.xclient.format = 32;
+  reply.xclient.data.l[0] = static_cast<long>(w->window);
+  reply.xclient.data.l[1] = accepted;
+  if (message == XInternAtom(w->display, "XdndFinished", False)) {
+    reply.xclient.data.l[2] = action;
+  } else {
+    reply.xclient.data.l[4] = action;
+  }
+  XSendEvent(w->display, w->drop_source, False, NoEventMask, &reply);
+}
+
+// Whether the source offers `text/uri-list`: in the message when it has
+// three types or fewer, in a property on the source otherwise.
+bool OffersFiles(WolangWindow* w, const Atoms& a,
+                 const XClientMessageEvent& e) {
+  if ((e.data.l[1] & 1) == 0) {
+    for (int i = 2; i < 5; ++i) {
+      if (static_cast<Atom>(e.data.l[i]) == a.uri_list) {
+        return true;
+      }
+    }
+    return false;
+  }
+  Atom type = 0;
+  int format = 0;
+  unsigned long count = 0;
+  unsigned long after = 0;
+  unsigned char* data = nullptr;
+  bool found = false;
+  if (XGetWindowProperty(w->display, w->drop_source, a.type_list, 0, 1024,
+                         False, XA_ATOM, &type, &format, &count, &after,
+                         &data) == Success &&
+      data != nullptr) {
+    const Atom* atoms = reinterpret_cast<Atom*>(data);
+    for (unsigned long i = 0; i < count; ++i) {
+      if (atoms[i] == a.uri_list) {
+        found = true;
+      }
+    }
+  }
+  if (data != nullptr) {
+    XFree(data);
+  }
+  return found;
+}
+
+}  // namespace
 
 extern "C" int32_t wolang_platform_available(void) {
   // A display that opens is the only honest test: a build with X11 in it
@@ -273,6 +457,18 @@ extern "C" WolangWindow* wolang_window_open(const char* title,
     }
   }
 
+  held->fixed = (flags & kWolangWindowResizable) == 0;
+
+  // (D247) Take file drops (XDND version 5) and watch the desktop's
+  // resources for a scale change.
+  const Atoms atoms = AtomsOf(display);
+  const Atom version = 5;
+  XChangeProperty(display, held->window, atoms.aware, XA_ATOM, 32,
+                  PropModeReplace,
+                  reinterpret_cast<const unsigned char*>(&version), 1);
+  XSelectInput(display, root, PropertyChangeMask);
+  held->scale = ReadScale(display);
+
   held->context = XCreateGC(display, held->window, 0, nullptr);
   if ((flags & kWolangWindowHidden) == 0) {
     XMapWindow(display, held->window);
@@ -298,6 +494,17 @@ extern "C" void wolang_window_close(WolangWindow* window) {
       gl.destroy(window->display, window->gl);
     }
   }
+  if (window->locked) {
+    XUngrabPointer(window->display, CurrentTime);
+  }
+  for (Cursor cursor : window->shapes) {
+    if (cursor != 0) {
+      XFreeCursor(window->display, cursor);
+    }
+  }
+  if (window->blank != 0) {
+    XFreeCursor(window->display, window->blank);
+  }
   if (window->visual != nullptr) {
     XFree(window->visual);
   }
@@ -320,10 +527,72 @@ extern "C" int32_t wolang_window_poll(WolangWindow* window,
     XEvent event;
     XNextEvent(window->display, &event);
     switch (event.type) {
-      case ClientMessage:
-        if (static_cast<Atom>(event.xclient.data.l[0]) ==
-            window->delete_message) {
+      case ClientMessage: {
+        const Atoms a = AtomsOf(window->display);
+        const Atom message = event.xclient.message_type;
+        if (message == a.enter) {
+          window->drop_source = static_cast<Window>(event.xclient.data.l[0]);
+          window->drop_version = event.xclient.data.l[1] >> 24;
+          window->drop_ok = OffersFiles(window, a, event.xclient);
+        } else if (message == a.position) {
+          SendDnd(window, a.status, window->drop_ok ? 1 : 0,
+                  window->drop_ok ? static_cast<long>(a.copy) : 0);
+        } else if (message == a.leave) {
+          window->drop_ok = false;
+        } else if (message == a.drop) {
+          if (window->drop_ok) {
+            const Time when = window->drop_version >= 1
+                                  ? static_cast<Time>(
+                                        event.xclient.data.l[2])
+                                  : CurrentTime;
+            XConvertSelection(window->display, a.selection, a.uri_list,
+                              a.property, window->window, when);
+          } else {
+            SendDnd(window, a.finished, 0, 0);
+          }
+        } else if (static_cast<Atom>(event.xclient.data.l[0]) ==
+                   window->delete_message) {
           window->events.Push(Blank(kWolangEventClosed));
+        }
+        break;
+      }
+      case SelectionNotify: {
+        const Atoms a = AtomsOf(window->display);
+        if (event.xselection.property != a.property) {
+          break;
+        }
+        Atom type = 0;
+        int format = 0;
+        unsigned long count = 0;
+        unsigned long after = 0;
+        unsigned char* data = nullptr;
+        if (XGetWindowProperty(window->display, window->window, a.property,
+                               0, 1 << 20, True, AnyPropertyType, &type,
+                               &format, &count, &after, &data) == Success &&
+            data != nullptr) {
+          window->drops = wolang::platform::PathsFromUriList(
+              std::string(reinterpret_cast<char*>(data), count));
+          XFree(data);
+          WolangEvent made = Blank(kWolangEventDropped);
+          made.key = static_cast<int32_t>(window->drops.size());
+          if (made.key > 0) {
+            window->events.Push(made);
+          }
+        }
+        SendDnd(window, a.finished, 1, static_cast<long>(a.copy));
+        window->drop_ok = false;
+        break;
+      }
+      case PropertyNotify:
+        if (event.xproperty.window == DefaultRootWindow(window->display) &&
+            event.xproperty.atom == XA_RESOURCE_MANAGER) {
+          const double now = ReadScale(window->display);
+          if (now != window->scale) {
+            window->scale = now;
+            WolangEvent made = Blank(kWolangEventScaleChanged);
+            made.scroll_x = now;
+            window->events.Push(made);
+          }
         }
         break;
       case ConfigureNotify: {
@@ -401,6 +670,26 @@ extern "C" int32_t wolang_window_poll(WolangWindow* window,
         WolangEvent made = Blank(kWolangEventMouseMoved);
         made.x = event.xmotion.x;
         made.y = event.xmotion.y;
+        if (window->locked) {
+          // Movement is measured from the centre the pointer is pulled
+          // back to; the pull itself arrives as a motion to the centre
+          // and is not the person's (D247).
+          const int cx = window->width / 2;
+          const int cy = window->height / 2;
+          if (event.xmotion.x == cx && event.xmotion.y == cy) {
+            break;
+          }
+          made.scroll_x = event.xmotion.x - cx;
+          made.scroll_y = event.xmotion.y - cy;
+          XWarpPointer(window->display, None, window->window, 0, 0, 0, 0,
+                       cx, cy);
+          XFlush(window->display);
+        } else if (window->last_x >= 0) {
+          made.scroll_x = event.xmotion.x - window->last_x;
+          made.scroll_y = event.xmotion.y - window->last_y;
+        }
+        window->last_x = event.xmotion.x;
+        window->last_y = event.xmotion.y;
         made.modifiers = ModifiersOf(event.xmotion.state);
         window->events.Push(made);
         break;
@@ -432,10 +721,8 @@ extern "C" void wolang_window_size(WolangWindow* window, int32_t* width,
 }
 
 extern "C" double wolang_window_scale(WolangWindow* window) {
-  (void)window;
-  // X says nothing reliable about this, and a number this backend made
-  // up would be worse than one.
-  return 1.0;
+  // From the desktop's `Xft.dpi`; one when it says nothing (D247).
+  return window != nullptr ? window->scale : 1.0;
 }
 
 extern "C" void wolang_window_set_title(WolangWindow* window,
@@ -695,4 +982,149 @@ extern "C" int32_t wolang_audio_queued(WolangAudio* audio) {
 
 extern "C" int32_t wolang_audio_room(WolangAudio* audio) {
   return audio == nullptr ? 0 : audio->ring.Room();
+}
+
+// ------------------------------------------------- cursor and window ---
+//
+// (D247)
+
+extern "C" void wolang_window_cursor_visible(WolangWindow* window,
+                                             int32_t visible) {
+  if (window == nullptr) {
+    return;
+  }
+  window->cursor_visible = visible != 0;
+  ApplyCursor(window);
+}
+
+extern "C" void wolang_window_cursor_shape(WolangWindow* window,
+                                           int32_t shape) {
+  if (window == nullptr || shape < 0 || shape > 6) {
+    return;
+  }
+  window->shape = shape;
+  ApplyCursor(window);
+}
+
+// A pointer grab plus a pull back to the middle after every move: raw
+// XInput2 deltas would need a second library, and a grab-and-warp gives
+// the same unbounded movement with the Xlib already linked.
+extern "C" int32_t wolang_window_cursor_lock(WolangWindow* window,
+                                             int32_t locked) {
+  if (window == nullptr) {
+    return 0;
+  }
+  if (locked == 0) {
+    if (window->locked) {
+      XUngrabPointer(window->display, CurrentTime);
+      window->locked = false;
+      window->last_x = -1;
+      ApplyCursor(window);
+    }
+    return 1;
+  }
+  if (window->locked) {
+    return 1;
+  }
+  const int result = XGrabPointer(
+      window->display, window->window, True,
+      ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+      GrabModeAsync, GrabModeAsync, window->window, BlankCursor(window),
+      CurrentTime);
+  if (result != GrabSuccess) {
+    return 0;
+  }
+  window->locked = true;
+  XWarpPointer(window->display, None, window->window, 0, 0, 0, 0,
+               window->width / 2, window->height / 2);
+  ApplyCursor(window);
+  return 1;
+}
+
+extern "C" void wolang_window_set_fullscreen(WolangWindow* window,
+                                             int32_t fullscreen) {
+  if (window == nullptr) {
+    return;
+  }
+  const Atoms a = AtomsOf(window->display);
+  XEvent message = {};
+  message.xclient.type = ClientMessage;
+  message.xclient.window = window->window;
+  message.xclient.message_type = a.wm_state;
+  message.xclient.format = 32;
+  message.xclient.data.l[0] = fullscreen != 0 ? 1 : 0;
+  message.xclient.data.l[1] = static_cast<long>(a.wm_fullscreen);
+  message.xclient.data.l[3] = 1;
+  XSendEvent(window->display, DefaultRootWindow(window->display), False,
+             SubstructureRedirectMask | SubstructureNotifyMask, &message);
+  XFlush(window->display);
+  window->fullscreen = fullscreen != 0;
+}
+
+extern "C" int32_t wolang_window_is_fullscreen(WolangWindow* window) {
+  return window != nullptr && window->fullscreen ? 1 : 0;
+}
+
+extern "C" void wolang_window_set_size(WolangWindow* window, int32_t width,
+                                       int32_t height) {
+  if (window == nullptr || width <= 0 || height <= 0) {
+    return;
+  }
+  if (window->fixed) {
+    // A window that cannot be resized by hand pins its size in the
+    // hints, so those move first or the server refuses.
+    window->width = width;
+    window->height = height;
+    ApplyHints(window);
+  }
+  XResizeWindow(window->display, window->window,
+                static_cast<unsigned>(width), static_cast<unsigned>(height));
+  XFlush(window->display);
+}
+
+extern "C" void wolang_window_set_min_size(WolangWindow* window,
+                                           int32_t width, int32_t height) {
+  if (window == nullptr) {
+    return;
+  }
+  window->min_width = width > 0 ? width : 0;
+  window->min_height = height > 0 ? height : 0;
+  ApplyHints(window);
+  XFlush(window->display);
+}
+
+extern "C" void wolang_window_set_position(WolangWindow* window, int32_t x,
+                                           int32_t y) {
+  if (window == nullptr) {
+    return;
+  }
+  XMoveWindow(window->display, window->window, x, y);
+  XFlush(window->display);
+}
+
+extern "C" void wolang_window_position(WolangWindow* window, int32_t* x,
+                                       int32_t* y) {
+  int px = 0;
+  int py = 0;
+  if (window != nullptr) {
+    Window child = 0;
+    XTranslateCoordinates(window->display, window->window,
+                          DefaultRootWindow(window->display), 0, 0, &px,
+                          &py, &child);
+  }
+  if (x != nullptr) {
+    *x = px;
+  }
+  if (y != nullptr) {
+    *y = py;
+  }
+}
+
+extern "C" const char* wolang_window_drop_path(WolangWindow* window,
+                                               int32_t index) {
+  if (window == nullptr || index < 0 ||
+      static_cast<size_t>(index) >= window->drops.size()) {
+    return nullptr;
+  }
+  return window->drops[static_cast<size_t>(index)].c_str();
 }
