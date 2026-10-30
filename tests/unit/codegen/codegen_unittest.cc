@@ -3258,6 +3258,24 @@ fun Copied() -> int {
   WOLANG_EXPECT_EQ(f.Run("Copied", {}), "1");
 }
 
+WOLANG_TEST(CodegenTest, CallThroughModuleVarOfFunctionTypeAgrees) {
+  // `saved(1)` resolved to the constant initializer `K$saved`, which
+  // takes no arguments, and reading `saved` took that function's address
+  // instead of loading the variable (D240).
+  Fixture f(R"(
+fun Inc(x: int) -> int => x + 1
+fun Twice(x: int) -> int => x * 2
+var saved: fun(int) -> int = Inc
+
+fun Check() -> int {
+  const first = saved(1)
+  saved = Twice
+  return first * 100 + saved(5)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Check", {}), "210");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

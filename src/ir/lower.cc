@@ -5256,7 +5256,10 @@ class Lowerer {
           return CallAs(specialization, type, std::move(arguments));
         }
       }
-      const uint32_t callee = IndexOfName(name);
+      // A module-level `var` of function type is storage, not the function
+      // of that name: calling it goes through the loaded value (D240).
+      const uint32_t callee =
+          GlobalType(name).is_valid() ? 0xFFFFFFFFu : IndexOfName(name);
       if (callee != 0xFFFFFFFFu) {
         return CallAs(callee, type, std::move(arguments));
       }
@@ -5372,6 +5375,12 @@ class Lowerer {
   // signal's subscriber possible.
   InstId FunctionValue(Symbol name, TypeId type) {
     if (types_->KindOf(type) != TypeKind::kFunction) {
+      return InstId{};
+    }
+    // A module-level `var` of function type shares its name with the
+    // initializer that seeds it; that is storage to load, not a function
+    // to take the address of (D240).
+    if (GlobalType(name).is_valid()) {
       return InstId{};
     }
     uint32_t callee = IndexOfName(name);
