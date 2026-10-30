@@ -86,7 +86,8 @@ The title is read by people as it is: every push to `alpha` posts the
 titles of its commits to the studio's changelog in Discord and Telegram,
 and a release tag posts everything since the previous one
 (`.github/changelog.py`). A failed `ci`, `docs` or `release` run is posted
-to the CI channel (`.github/notify.sh`).
+to the CI channel (`.github/notify.sh`), with every job of the run, its
+result and a link to its log.
 
 ## Where things are
 
