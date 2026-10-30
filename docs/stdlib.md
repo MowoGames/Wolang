@@ -77,6 +77,11 @@ fun main() uses io, unsafe {
 }
 ```
 
+`builder.Text()` is a view of the builder's own bytes, valid only until the
+next `Append`, `Reserve` or `Clear` and until the builder dies; returning it
+from the function that owns the builder dangles. `Release()` is the owning
+form: use it for any string that outlives the builder (D227).
+
 `Length`, `IsEmpty`, `StartsWith`, `EndsWith`, `IndexOf`, `LastIndexOf`,
 `After`, `Before`, `TrimStart`, `TrimEnd`, `CountPieces`, `PieceAt`,
 `Repeat`, `PadEnd`, `Lower`, `ParseInt`, `ParseFloat`, `Bytes`,
@@ -209,6 +214,10 @@ fun main() uses io, unsafe {
 ```
 
 A closure captures by copy, so `limit` travels with it.
+
+`Items()` is a view into the list's storage, valid only until the list next
+grows (`Push`, `Reserve`) or dies. Read it after the last mutation; a view
+kept across a `Push` reads freed memory (D227).
 
 ## std.map
 

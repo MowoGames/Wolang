@@ -106,9 +106,11 @@ offer class Builder {
 
   /// What has been built, as a view of the builder's own bytes.
   ///
-  /// The view lasts as long as the builder does: appending more may move
-  /// the bytes, and the destructor gives them back. A string that has to
-  /// outlive the builder is `Release`.
+  /// The view is valid only until the next `Append`, `Reserve` or `Clear`
+  /// (they may move or rewrite the bytes) and until the builder dies (its
+  /// destructor frees them). Returning it from the function that owns the
+  /// builder, or keeping it after, dangles. A string that has to outlive
+  /// the builder is `Release`, the owning one (D227).
   fun Text() -> text uses unsafe {
     return BytesAsText(bytes, count)
   }

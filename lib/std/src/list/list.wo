@@ -38,6 +38,11 @@ offer class List<T> {
   /// function taking `[]T` wants, which is most of them. The language
   /// has no slicing syntax yet, so this is a view built from where the
   /// storage is and how much of it is in use.
+  ///
+  /// The view is valid only until the list next grows: `Push` or `Reserve`
+  /// past the capacity moves the storage and leaves the view pointing at
+  /// freed memory, and so does the list dying. Take it after the last
+  /// mutation and use it before the next (D227).
   fun Items() -> []T uses unsafe {
     if count == 0 {
       return ArrayNew<T>(0)
