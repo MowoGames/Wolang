@@ -190,7 +190,7 @@ WOLANG_TEST(TypeCheck, IntegerLiteralsTakeTheirContextsType) {
       "  const b: u8 = 200\n"
       "  const c: s64 = 1\n"
       "  const d: f64 = 2\n"
-      "  const e = 0xFFFFFFFFFFFF\n"
+      "  const e: s64 = 0xFFFFFFFFFFFF\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   // Without an expectation a literal settles on `int`.
@@ -200,7 +200,7 @@ WOLANG_TEST(TypeCheck, IntegerLiteralsTakeTheirContextsType) {
   // An integer literal in a float context is fine.
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("d"), "f64");
   // Arbitrary precision until used, so no suffix is needed.
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("e"), "s32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("e"), "s64");
 }
 
 WOLANG_TEST(TypeCheck, ReportsALiteralThatDoesNotFit) {
@@ -209,6 +209,29 @@ WOLANG_TEST(TypeCheck, ReportsALiteralThatDoesNotFit) {
   // The boundary values fit.
   WOLANG_EXPECT(Fixture("fun f() { const x: u8 = 255 }").Codes().empty());
   WOLANG_EXPECT(Fixture("fun f() { const x: s8 = 127 }").Codes().empty());
+}
+
+WOLANG_TEST(TypeCheck, AWideLiteralWithNoTypeIsNotCutToInt) {
+  // Settling on `int` used to wrap 4294967297 to 1 without a word (D225).
+  WOLANG_EXPECT(Fixture("fun f() { const x = 4294967297 }").HasCode("E0109"));
+  WOLANG_EXPECT(Fixture("fun f() { const x = -4294967297 }").HasCode("E0109"));
+  // The same number with a type to land in is fine.
+  WOLANG_EXPECT(!Fixture("fun f() { const x: s64 = 4294967297 }")
+                     .HasCode("E0109"));
+  WOLANG_EXPECT(!Fixture("fun f() { const x = 4294967297 as s64 }")
+                     .HasCode("E0109"));
+  WOLANG_EXPECT(!Fixture("fun f() { const x = 4294967297 as u64 }")
+                     .HasCode("E0109"));
+  WOLANG_EXPECT(!Fixture("fun f() { const x = -2147483648 }")
+                     .HasCode("E0109"));
+  WOLANG_EXPECT(Fixture("fun f() { const x = 2147483648 }").HasCode("E0109"));
+}
+
+WOLANG_TEST(TypeCheck, LiteralArithmeticTakesTheContextsType) {
+  WOLANG_EXPECT_EQ(
+      Fixture("fun f() { const m: s64 = -9223372036854775807 - 1\n"
+              "  const _n = m }").Codes(),
+      "");
 }
 
 WOLANG_TEST(TypeCheck, SuffixesFixTheTypeRegardlessOfContext) {

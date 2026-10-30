@@ -415,7 +415,8 @@ class Checker {
   TypeId CheckLiteral(const Expr& expr, TypeId expected);
   TypeId CheckPath(const Expr& expr);
   TypeId CheckUnary(const Expr& expr, TypeId expected);
-  TypeId CheckBinary(const Expr& expr);
+  TypeId CheckBinary(const Expr& expr, TypeId expected);
+  bool IsLiteralTree(ExprId id) const;
   TypeId CheckAssign(const Expr& expr);
   void CheckMachine(const Item& item);
   ExprId RootOfPlace(ExprId id) const;
@@ -436,6 +437,7 @@ class Checker {
   // implementation said: `ListWalk<int>.Item` is `int`.
   TypeId Normalize(TypeId type);
   TypeId Instantiate(ExprId id, const Expr& expr, TypeId declared);
+  bool IsWideLiteral(ExprId id) const;
   void CheckConstructor(const Expr& expr, TypeId type);
 
   // Notes what calling |callee| does: its declared row if it has one, and
@@ -669,6 +671,28 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
            types_->ElementOf(expected) == types_->ElementOf(found);
   }
   return false;
+}
+
+// An unsuffixed integer literal, perhaps negated, too big for the default
+// `int`. It has no type of its own to be checked against, so it is looked
+// for where the default would be taken, and where a cast names the type it
+// is meant to have (D225).
+bool Checker::IsWideLiteral(ExprId id) const {
+  bool negated = false;
+  while (ast_.Contains(id) && ast_.Get(id).kind == ExprKind::kUnary &&
+         ast_.Get(id).op == TokenKind::kMinus) {
+    negated = true;
+    id = ast_.Get(id).lhs;
+  }
+  if (!ast_.Contains(id) || ast_.Get(id).kind != ExprKind::kIntLiteral) {
+    return false;
+  }
+  const NumberLiteral& number = ast_.number(ast_.Get(id).aux);
+  if (number.has_unit() || number.suffix != NumericSuffix::kNone) {
+    return false;
+  }
+  const IntRange range = RangeOf(*types_, types_->default_int());
+  return number.integer_value > range.max_magnitude - (negated ? 0 : 1);
 }
 
 TypeId Checker::Adapt(TypeId found, TypeId expected, SourceSpan span) {
@@ -981,7 +1005,12 @@ TypeId Checker::CheckUnary(const Expr& expr, TypeId expected) {
   if (wanted.is_valid() && types_->IsOptional(wanted)) {
     wanted = types_->ElementOf(wanted);
   }
-  const TypeId operand = Check(expr.lhs, wanted);
+  // `-9223372036854775807 - 1` is a literal expression until the context
+  // says what it is; settling the operand on `int` first made it one (D225).
+  const TypeId operand =
+      Check(expr.lhs, wanted,
+            /*keep_open=*/expr.op == TokenKind::kMinus ||
+                expr.op == TokenKind::kTilde);
   switch (expr.op) {
     case TokenKind::kMinus:
       if (!types_->IsNumeric(operand) && !types_->IsError(operand)) {
@@ -1032,8 +1061,35 @@ TypeId Checker::CheckUnary(const Expr& expr, TypeId expected) {
   }
 }
 
-TypeId Checker::CheckBinary(const Expr& expr) {
-  const TypeId left = Check(expr.lhs, TypeId{}, /*keep_open=*/true);
+// Whether |id| is arithmetic on integer literals alone, which has no type
+// until the context gives it one.
+bool Checker::IsLiteralTree(ExprId id) const {
+  if (!ast_.Contains(id)) {
+    return false;
+  }
+  const Expr& expr = ast_.Get(id);
+  switch (expr.kind) {
+    case ExprKind::kIntLiteral:
+      return true;
+    case ExprKind::kUnary:
+      return (expr.op == TokenKind::kMinus || expr.op == TokenKind::kTilde) &&
+             IsLiteralTree(expr.lhs);
+    case ExprKind::kBinary:
+      return IsLiteralTree(expr.lhs) && IsLiteralTree(expr.rhs);
+    default:
+      return false;
+  }
+}
+
+TypeId Checker::CheckBinary(const Expr& expr, TypeId expected) {
+  // `-9223372036854775807 - 1` where an `s64` is wanted: the literals are
+  // read at that type from the start. Left open they were folded as `int`
+  // and cut to 32 bits (D225).
+  const bool takes_context =
+      expected.is_valid() && types_->KindOf(expected) == TypeKind::kInt &&
+      IsLiteralTree(expr.lhs) && IsLiteralTree(expr.rhs);
+  const TypeId left = Check(expr.lhs, takes_context ? expected : TypeId{},
+                            /*keep_open=*/true);
 
   // The left side's type is normally the expectation for the right, which is
   // what makes `health - 1` give the literal the field's type. Three
@@ -2542,7 +2598,7 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       type = CheckUnary(expr, expected);
       break;
     case ExprKind::kBinary:
-      type = CheckBinary(expr);
+      type = CheckBinary(expr, expected);
       break;
     case ExprKind::kAssign:
       type = CheckAssign(expr);
@@ -2552,8 +2608,13 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       break;
 
     case ExprKind::kCast: {
-      const TypeId source = Check(expr.lhs, TypeId{});
       type = resolver_.Resolve(ast_, expr.type);
+      // A literal too big for `int` is read at the type it is cast to:
+      // `4294967297 as s64` is that number, not the `int` it would have been
+      // cut to first (D225).
+      const bool wide_literal =
+          types_->IsNumeric(type) && IsWideLiteral(expr.lhs);
+      const TypeId source = Check(expr.lhs, wide_literal ? type : TypeId{});
       // Bytes as text, and back. Both are a pointer and a length, so the
       // conversion costs nothing at run time -- but a `text` is valid
       // UTF-8 and a `[]u8` is not, so going that way is a promise the
@@ -2819,6 +2880,15 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
   // asking afterwards gets the answer the context gave (D133).
   const TypeId produced = type;
   if (!(keep_open && !expected.is_valid()) && !pattern) {
+    if (!expected.is_valid() &&
+        types_->KindOf(type) == TypeKind::kIntLiteral &&
+        IsWideLiteral(id)) {
+      // The literal is about to become an `int` and would be cut to fit.
+      Report(kLiteralOutOfRange,
+             "the literal does not fit in `int`; give it a type with "
+             "`as s64` or an annotation",
+             expr.span);
+    }
     type = Adapt(type, expected, expr.span);
   }
   // An owned string handed where a borrowed one is wanted is a borrow, and

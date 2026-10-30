@@ -2993,6 +2993,25 @@ fun Walks() -> int {
   WOLANG_EXPECT_EQ(f.Run("Walks", {}), "11093");
 }
 
+// Literals wider than `int` keep their value in every tier (D225).
+WOLANG_TEST(CodegenTest, WideLiteralsKeepTheirValue) {
+  Fixture f(R"(
+fun Wide() -> int {
+  const g = 4294967297 as u64
+  const n = -4294967297 as s64
+  const c: s64 = -9223372036854775807 - 1
+  const e: s64 = 9223372036854775807 - 1
+  var r = 0
+  if g == 4294967297 { r = r + 1 }
+  if n == -4294967297 { r = r + 2 }
+  if c < 0 { r = r + 4 }
+  if e > 0 { r = r + 8 }
+  return r
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Wide", {}), "15");
+}
+
 // A recursive enum is E0117 in sema; the layout must still answer rather
 // than recurse until the stack ends if one gets past it (D225).
 WOLANG_TEST(CodegenTest, LayoutSurvivesARecursiveEnum) {

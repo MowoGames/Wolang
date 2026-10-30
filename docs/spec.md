@@ -396,7 +396,8 @@ the type the context expects, defaulting to `int`:
 ```wolang
 const a = 1                 // int
 const b: u8 = 200           // the literal takes u8
-const big = 0xFFFFFFFFFFFF  // fits, with no suffix
+const big: s64 = 0xFFFFFFFFFFFF // fits, with no suffix
+const bad = 0xFFFFFFFFFFFF  // E0109: defaults to int, which it does not fit
 comptime const c = 1 << 100 // exact, no overflow
 TakeU8(300)                 // E0101: does not fit in u8
 ```
