@@ -318,7 +318,8 @@ exhausting the stack (D227).
 
 TOML 1.0 as it is used: strings in four styles, numbers in four bases,
 booleans, dates as text, arrays, inline tables, dotted keys, `[table]`
-and `[[array of tables]]`.
+and `[[array of tables]]`. Arrays and inline tables nested deeper than 64
+answer `Malformed` instead of exhausting the stack (D227).
 
 ```wolang
 need std.doc.{AsText, Get, Null}
