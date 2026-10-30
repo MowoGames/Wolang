@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# decision -- read numbered design decisions without loading all of
+# docs/decisions.md (~160 KB, ~40k tokens).
+#
+#   decision D73            the paragraph of one decision
+#   decision 73 120 184     several
+#   decision -s <regex>     one line per decision whose text matches
+#   decision -l             the title line of every decision
+set -euo pipefail
+FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/docs/decisions.md"
+
+case "${1:-}" in
+  "" ) sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  -l ) grep -oE '^\*\*D[0-9]+\.[^*]*\*\*' "$FILE" | tr -d '*' ; exit 0 ;;
+  -s ) shift
+       # Print the title of every decision whose paragraph matches.
+       awk -v re="$1" '
+         /^\*\*D[0-9]+\./ { if (hit) print title; title=$0; hit=0 }
+         tolower($0) ~ tolower(re) { hit=1 }
+         END { if (hit) print title }' "$FILE" \
+         | grep -oE '^\*\*D[0-9]+\.[^*]*\*\*' | tr -d '*'
+       exit 0 ;;
+esac
+
+for id in "$@"; do
+  n="${id#D}"; n="${n#d}"
+  # A decision runs from its bold opening to the next decision or heading.
+  awk -v n="$n" '
+    $0 ~ "^\\*\\*D" n "\\." { on=1; print; next }
+    on && (/^\*\*D[0-9]+\./ || /^#/) { exit }
+    on { print }' "$FILE" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+  echo
+done

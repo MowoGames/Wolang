@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# wl -- build, test and check Wolang with output sized for an agent.
+#
+# Every command writes its full log to build/logs/<command>.log and prints
+# only what a reader needs: a one-line verdict on success, the failures and
+# the first errors on failure. The log is there when the summary is not
+# enough. This is the project's own answer to "token killer" proxies: no
+# dependency, and it knows what a Wolang failure looks like.
+#
+#   wl build   [preset]            configure if needed, then build
+#   wl test    [filter] [preset]   unit tests; a filter runs `--filter <text>`
+#   wl lib     [pkg...]            library @Tests (default: std http game core gfx)
+#   wl fuzz    [count] [seed]      the three tiers against each other
+#   wl fmt                         `wolang fmt --check` over what CI checks
+#   wl docs                        the checks CI runs on includes and docs
+#   wl ci      [preset]            everything above, in CI's order
+#   wl wo      <args...>           the built driver, e.g. `wl wo run x.wo`
+#   wl log     <command> [lines]   the tail of a saved log
+#
+# Set WL_PRESET to change the default preset (debug).
+
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT" || exit 2
+PRESET="${WL_PRESET:-debug}"
+LOGS="$ROOT/build/logs"
+mkdir -p "$LOGS"
+
+# The configure step refuses anything but clang (D184), and most Linux
+# shells call gcc `cc`.
+export CC="${CC:-clang}" CXX="${CXX:-clang++}"
+
+driver() { echo "$ROOT/build/$1/tools/wolang/wolang"; }
+
+# run <name> <cmd...>: run quietly into a log, return the status.
+run() {
+  local name="$1"
+  shift
+  "$@" >"$LOGS/$name.log" 2>&1
+}
+
+fail_tail() {
+  echo "  full log: build/logs/$1.log"
+}
+
+cmd_build() {
+  local preset="${1:-$PRESET}"
+  if [ ! -f "build/$preset/build.ninja" ]; then
+    if ! run configure cmake --preset "$preset"; then
+      echo "configure FAILED ($preset)"
+      grep -E 'Error|error|clang' "$LOGS/configure.log" | head -20
+      fail_tail configure
+      return 1
+    fi
+  fi
+  if run build cmake --build --preset "$preset" -j; then
+    local warnings
+    warnings=$(grep -c 'warning:' "$LOGS/build.log")
+    echo "build ok ($preset, $warnings warnings)"
+    return 0
+  fi
+  echo "build FAILED ($preset)"
+  # The first errors carry the cause; the rest are usually echoes of it.
+  grep -E -A3 '(error|fatal error):' "$LOGS/build.log" | head -60
+  fail_tail build
+  return 1
+}
+
+cmd_test() {
+  local filter="${1:-}" preset="${2:-$PRESET}"
+  cmd_build "$preset" >/dev/null || { cmd_build "$preset"; return 1; }
+  local bin="build/$preset/tests/wolang_tests"
+  local status
+  if [ -n "$filter" ]; then
+    run test "$bin" --filter "$filter"
+  else
+    run test "$bin"
+  fi
+  status=$?
+  if [ $status -eq 0 ]; then
+    echo "tests ok: $(tail -1 "$LOGS/test.log")"
+    return 0
+  fi
+  echo "tests FAILED${filter:+ (filter: $filter)}"
+  # The harness prints `  file:line: what` per failed check (stderr) and
+  # `[   failed ] Suite.Name` per test (stdout); stdout is buffered, so
+  # the two kinds are listed apart rather than interleaved.
+  grep -E '\[ +failed \]' "$LOGS/test.log" | head -40
+  grep -E '^  [^ ]+:[0-9]+: ' "$LOGS/test.log" | head -40
+  tail -2 "$LOGS/test.log"
+  fail_tail test
+  return 1
+}
+
+cmd_lib() {
+  local w status=0 pkgs
+  w="$(driver "$PRESET")"
+  [ -x "$w" ] || cmd_build >/dev/null || { cmd_build; return 1; }
+  if [ $# -gt 0 ]; then pkgs=("$@"); else pkgs=(std http game core gfx); fi
+  for p in "${pkgs[@]}"; do
+    if run "lib-$p" "$w" test "lib/$p"; then
+      echo "lib/$p ok: $(tail -1 "$LOGS/lib-$p.log")"
+    else
+      status=1
+      echo "lib/$p FAILED"
+      grep -E -i -A4 '\[ +failed \]|error|trap' "$LOGS/lib-$p.log" | head -40
+      fail_tail "lib-$p"
+    fi
+  done
+  return $status
+}
+
+cmd_fuzz() {
+  local count="${1:-200}" seed="${2:-$RANDOM}" w
+  w="$(driver "$PRESET")"
+  [ -x "$w" ] || cmd_build >/dev/null || { cmd_build; return 1; }
+  if run fuzz "$w" fuzz --seed "$seed" --count "$count"; then
+    echo "fuzz ok (seed $seed, $count programs): $(tail -1 "$LOGS/fuzz.log")"
+    return 0
+  fi
+  echo "fuzz FAILED (seed $seed, $count programs) -- the tiers disagree"
+  grep -E -A12 '\[ failed \]' "$LOGS/fuzz.log" | head -80
+  fail_tail fuzz
+  return 1
+}
+
+cmd_fmt() {
+  local w
+  w="$(driver "$PRESET")"
+  [ -x "$w" ] || cmd_build >/dev/null || { cmd_build; return 1; }
+  # errors.wo and recovery.wo do not parse, on purpose.
+  # shellcheck disable=SC2046
+  if run fmt "$w" fmt --check lib benchmarks examples/*/ \
+      $(ls examples/*.wo | grep -v -e errors.wo -e recovery.wo); then
+    echo "fmt ok"
+    return 0
+  fi
+  echo "fmt FAILED -- run: wl wo fmt <path>"
+  head -30 "$LOGS/fmt.log"
+  return 1
+}
+
+cmd_docs() {
+  local status=0
+  for check in check_includes check_docs; do
+    if run "$check" python3 "tools/package/$check.py"; then
+      echo "$check ok"
+    else
+      status=1
+      echo "$check FAILED"
+      tail -30 "$LOGS/$check.log"
+    fi
+  done
+  return $status
+}
+
+cmd_ci() {
+  local status=0
+  cmd_build "${1:-$PRESET}" || return 1
+  cmd_test "" "${1:-$PRESET}" || status=1
+  cmd_lib || status=1
+  cmd_fuzz 200 || status=1
+  cmd_fmt || status=1
+  cmd_docs || status=1
+  [ $status -eq 0 ] && echo "ci: all green" || echo "ci: FAILED (see above)"
+  return $status
+}
+
+cmd_log() {
+  local name="${1:?usage: wl log <command> [lines]}"
+  tail -n "${2:-80}" "$LOGS/$name.log"
+}
+
+command="${1:-}"
+shift || true
+case "$command" in
+  build) cmd_build "$@" ;;
+  test) cmd_test "$@" ;;
+  lib) cmd_lib "$@" ;;
+  fuzz) cmd_fuzz "$@" ;;
+  fmt) cmd_fmt ;;
+  docs) cmd_docs ;;
+  ci) cmd_ci "$@" ;;
+  wo) exec "$(driver "$PRESET")" "$@" ;;
+  log) cmd_log "$@" ;;
+  *) sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
