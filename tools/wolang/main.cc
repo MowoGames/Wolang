@@ -2656,7 +2656,7 @@ int RunBuild(const Options& options) {
 // Not a debugger of its own: the binary carries DWARF (D118), so lldb
 // and gdb already know where every line is. What this does is the part a
 // person should not have to remember -- build with the right flags, then
-// hand the binary over with the source root set (D143).
+// hand the binary over with the source root set (D118).
 int RunDebug(const Options& options) {
   Options building = options;
   building.command = "build";

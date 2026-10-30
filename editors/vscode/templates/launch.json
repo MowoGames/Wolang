@@ -5,7 +5,7 @@
   // use works as it is: breakpoints by `file:line`, stepping, and the
   // frame's variables. Two tasks build it first -- one for the program,
   // one for the tests -- and `wolang debug <dir>` does the same thing
-  // from a terminal (D143).
+  // from a terminal (D118).
   //
   // Copy this into `.vscode/launch.json` and `tasks.json` below it.
   "version": "0.2.0",
