@@ -2872,4 +2872,21 @@ enclosing function, as if called, so capabilities and `@Deterministic` or
 `comptime` contexts see it. Registering a layer is therefore charged
 where it is named, which is conservative.
 
-**D223. The HTTP server answers only requests it can frame.** A request is parsed from the bytes that arrived and no more -- the pool buffer is reused, so what lies past `received` is another client's. `Content-Length` must be digits (nine or fewer are read, more are "too large" and get 413), a second one must agree, and `Transfer-Encoding` is refused with 501 (with a `Content-Length` too, 400): the server does not implement chunked requests, and ignoring the header lets a proxy and this server disagree on where a request ends. Idle connections are closed by deadline, not held forever.
+**D223. The HTTP server answers only requests it can frame.** A request is
+parsed from the bytes that arrived and no more -- the pool buffer is
+reused, so what lies past `received` is another client's. `Content-Length`
+must be digits (nine or fewer are read, more are "too large" and get 413),
+a second one must agree, and `Transfer-Encoding` is refused with 501 (with
+a `Content-Length` too, 400): the server does not implement chunked
+requests, and ignoring the header lets a proxy and this server disagree on
+where a request ends. Idle connections are closed by deadline, not held
+forever.
+
+**D224. Every tier answers integer edge cases the way the interpreter
+does.** Constant folding leaves to run time anything that would trap there:
+64-bit overflow, the most negative value over minus one, and negating it.
+Folding them gave the wrapped answer in one tier and a trap in another,
+and `MIN / -1` executed inside the compiler faulted the host. Unsigned
+integers interpolate through their own runtime call, because widening a
+`u64` past 2^63 to `s64` changed its value. Float `%` is C's `fmod` in
+every tier, called through the runtime, so there is one answer to give.
