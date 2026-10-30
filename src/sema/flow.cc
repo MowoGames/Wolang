@@ -94,6 +94,13 @@ class FlowChecker {
     returns_slice_ = declaration.type.is_valid() &&
                      ast_.Contains(declaration.type) &&
                      ast_.Get(declaration.type).kind == TypeRefKind::kSlice;
+    // A parameter is a local the body can move out of: handing a by-value
+    // owning one on twice is the same mistake as doing it to a `const`
+    // (D233).
+    for (ParamId param_id : ast_.Get(declaration.params)) {
+      locals_.push_back(Local{ast_.Get(param_id).name, depth_,
+                              Liveness::kLive, false});
+    }
     const Flow flow = Expression(declaration.body);
     locals_.resize(depth);
 

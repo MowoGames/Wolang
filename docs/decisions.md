@@ -2971,7 +2971,7 @@ the scrutinee, and matching it again is `E0122`. A function written as
 parameter that owns something (a `deinit` value) was never dropped; it
 runs the deferred drops now.
 
-Still open: a `deinit` value captured by a closure is never dropped, a
+
 payload that no arm moves is not dropped with the enum, and a parameter
 is not a flow local, so moving a parameter twice is not diagnosed.
 

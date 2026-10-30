@@ -2482,6 +2482,42 @@ fun F() -> int {
   WOLANG_EXPECT(!fine.HasCode("E0149"));
 }
 
+WOLANG_TEST(TypeCheckTest, MovingAParameterTwiceIsE0122) {
+  // A by-value parameter that owns something is a flow local too (D233).
+  Fixture fires(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun F(r: Res) -> int {
+  const a = Take(r)
+  const b = Take(r)
+  return a + b
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0122"));
+
+  Fixture fine(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun F(r: Res) -> int {
+  const a = r.id
+  return a + Take(r)
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0122"));
+}
+
 WOLANG_TEST(TypeCheckTest, AClosureCannotMoveWhatItCaptured) {
   // The capture is a copy of a view of the enclosing function's value,
   // which still drops it; moving it on from the body drops it twice (D233).
