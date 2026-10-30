@@ -3088,6 +3088,29 @@ fun Once() -> int {
   WOLANG_EXPECT_EQ(f.Run("Once", {}), "1");
 }
 
+WOLANG_TEST(CodegenTest, ATextLiteralReturnedAsAnOptionalIsWrapped) {
+  // The literal was built typed `text?`, which Coerce took for already
+  // wrapped; the interpreter read none and the JIT read garbage (D100).
+  Fixture f(R"(
+fun Pick(n: int) -> text? {
+  if n > 1 {
+    return "found"
+  }
+  return null
+}
+
+fun Check(n: int) -> int {
+  const s = Pick(n) ?? "none"
+  if s == "found" {
+    return 1
+  }
+  return 0
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Check", {Fixture::Wide(3)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Check", {Fixture::Wide(0)}), "0");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

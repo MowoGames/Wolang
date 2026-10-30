@@ -3276,7 +3276,10 @@ class Lowerer {
     if (parts.size() == 1 && ast().Contains(parts[0]) &&
         ast().Get(parts[0]).kind == ExprKind::kStringText) {
       const Expr& text = ast().Get(parts[0]);
-      return builder_->ConstString(type,
+      // Built at the text it is, not the `text?` a `return` asked for:
+      // the wrap that follows is Coerce's, and a literal already typed
+      // optional is taken for wrapped and left bare (D100).
+      return builder_->ConstString(Unwrapped(type),
                                    ast().string(text.aux));
     }
     // Interpolation builds a string at runtime, by turning each piece into
