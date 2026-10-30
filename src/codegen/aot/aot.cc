@@ -2011,6 +2011,15 @@ AotResult Translator::Run(const AotOptions& options) {
 // alias, so the function itself keeps the name the rest of the module
 // calls it by.
 void Translator::EmitExports(const std::vector<uint32_t>& exported) {
+  // So a host checks at load what it linked, as it does for the embedding
+  // library (D241).
+  const std::string version_name = library_ + "_abi_version";
+  LLVMValueRef version = LLVMAddFunction(
+      mod_, version_name.c_str(),
+      LLVMFunctionType(I(32), nullptr, 0, 0));
+  LLVMPositionBuilderAtEnd(
+      b_, LLVMAppendBasicBlockInContext(ctx_, version, "entry"));
+  LLVMBuildRet(b_, Const(kLibraryAbiVersion, I(32)));
   for (const Entry& entry : entries_) {
     const ir::Function& function = FunctionOf(entry);
     if (entry.function == nullptr || function.is_declaration() || std::find(exported.begin(), exported.end(), function.source_file) == exported.end()) {

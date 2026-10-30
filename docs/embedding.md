@@ -157,6 +157,8 @@ WolangVm* vm = wolang_vm_create_with(&options);
   union of `integer`, `number`, `boolean` or `handle`, then `text` and
   `length`. The member names are unchanged, so existing host code compiles.
   The size does not depend on the C compiler's choice of enum size.
+- A library built with `wolang build --library actors` exports
+  `actors_abi_version()` the same way, answering the same number.
 - Kinds are only ever added; a host accepts a kind it does not know.
 - A struct that will grow starts with its size. `WolangVmOptions` is the
   first; `wolang_vm_create_with` answers null for a size it does not know.

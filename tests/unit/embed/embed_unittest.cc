@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "harness/test.h"
+#include "wolang/codegen/aot.h"
 #include "wolang/lsp/json.h"
 #include "wolang/runtime/sockets.h"
 
@@ -981,4 +982,9 @@ WOLANG_TEST(EmbedTest, CallsAnswerAStatus) {
   WOLANG_EXPECT_EQ(out.integer, int64_t{5});
   WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Nope", nullptr, 0, &out), kWolangError);
   wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, LibraryAbiVersionMatchesTheHeader) {
+  WOLANG_EXPECT_EQ(wolang::codegen::kLibraryAbiVersion,
+                   static_cast<uint32_t>(WOLANG_ABI_VERSION));
 }
