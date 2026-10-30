@@ -257,10 +257,31 @@ jobs:
       # generated notes (the merged pull requests) are added after them,
       # and are all there is if the section is missing (D248).
       - name: Release notes from CHANGELOG.md
+        id: notes
         run: |
           version="$(python3 tools/package/check_version.py --print)"
           python3 tools/package/release_notes.py "$version" > notes.md ||
             echo "No CHANGELOG section for $version." > notes.md
+          # How to get it, under the notes: the same lines docs/install.md gives.
+          cat >> notes.md <<EOF
+
+          ### Install
+
+          macOS and Linux:
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/alpha/install.sh | sh -s -- --version $version
+          \`\`\`
+
+          Windows: run \`wolang-$version-x86_64.msi\` from the assets below, or
+
+          \`\`\`powershell
+          & ([scriptblock]::Create((irm https://raw.githubusercontent.com/$GITHUB_REPOSITORY/alpha/install.ps1))) -Version $version
+          \`\`\`
+
+          Every archive is listed in \`SHA256SUMS\`; the installers check it.
+          EOF
+          echo "name=Wolang $version" >> "$GITHUB_OUTPUT"
       # One file of checksums, which is what the install scripts read.
       - name: Gather the checksums
         run: |
@@ -274,6 +295,7 @@ jobs:
             artifacts/**/*.vsix
             artifacts/**/*.msi
             SHA256SUMS
+          name: ${{ steps.notes.outputs.name }}
           body_path: notes.md
           generate_release_notes: true
 
