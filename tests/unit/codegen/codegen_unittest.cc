@@ -2732,6 +2732,23 @@ fun Product() -> int {
                    "trap: overflow at @Product:%13: mul overflowed");
 }
 
+WOLANG_TEST(CodegenTest, AHugeUnsignedDoesNotCastToANarrowSigned) {
+  // Found by the generator (D231): `~20u64` has the bits of -21, and the
+  // fit check compared bits, so the cast to s16 kept the low half.
+  Fixture f(R"(
+fun Huge() -> int {
+  var buf: [2]u64
+  buf[0] = 20
+  const x = buf[0]
+  const y = (~x) as s16
+  return y as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Huge", {}),
+                   "trap: overflow at @Huge:%11: the value does not fit the "
+                   "integer it was cast to");
+}
+
 WOLANG_TEST(CodegenTest, ReleasesWhatObjectsHold) {
   Fixture f(R"(
 extern "C" fun wolang_objects_live() -> s64

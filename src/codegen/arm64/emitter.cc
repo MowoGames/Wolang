@@ -2365,11 +2365,18 @@ class FunctionEmitter {
       return;
     }
     const Register narrowed = Scratch(3);
-    Canonicalize(wide, to, narrowed);
-    assembler_.Cmp(IWidth::k64, narrowed, wide);
     const Label trap =
         TrapLabel(ir::TrapKind::kOverflow, id,
                   "the value does not fit the integer it was cast to");
+    // As on x64: a u64 with its top bit set looks like a small negative
+    // number to the comparison below (D231).
+    if (layouts_.BitsOf(from) >= 64 && !layouts_.IsSignedInteger(from) &&
+        layouts_.IsSignedInteger(to)) {
+      assembler_.CmpImm(IWidth::k64, wide, 0);
+      assembler_.BCond(Condition::kLt, trap);
+    }
+    Canonicalize(wide, to, narrowed);
+    assembler_.Cmp(IWidth::k64, narrowed, wide);
     assembler_.BCond(Condition::kNe, trap);
     assembler_.Mov(IWidth::k64, reg, narrowed);
     FinishInt(id, reg);
