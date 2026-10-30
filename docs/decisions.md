@@ -3049,3 +3049,19 @@ trap. `int` is 32 bits, so 32-bit file fields are read with a clamp to
 minimum-sum filter and the std deflate. QOI is complete; BMP reads 24 and
 32 bit and writes 32 bit. PNG vectors in the tests come from an independent
 encoder (Python zlib) cross-read with Pillow.
+
+**D233. A value that carries a `deinit` value owns it, and what D229 left open is closed.**
+A struct or enum with a field or a variant payload whose type has a
+`deinit` is an owner itself: it moves instead of being copied (so a
+second use is `E0122`), and its end runs a `$drop` that drops the carried
+value -- the field, or the payload of the active variant -- after its own
+`deinit`. Before, `enum Wrap { Has(r: Res) }` leaked `r` when no arm moved
+it, and `Outer(Res(1))` leaked as well. Limits, the same in the checker
+(`IsOwning`) and in lowering (`OwnsByDeinit`) because a mismatch is a
+double drop: named types only (not generic instances, not classes, which
+are counted, D209), and not the owned string.
+
+Matching a name reads it; an arm that hands its payload on is what moves
+the name (its flag is cleared through the payload). Taking an owning field
+out of the value that owns it (`Take(o.r)`) would drop it twice, so it is
+`E0149`; read through the field (`o.r.id`) instead, or move all of `o`.

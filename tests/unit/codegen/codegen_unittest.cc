@@ -3143,6 +3143,93 @@ fun Single() -> f32 => 1.0 / 3.0
 )");
   WOLANG_EXPECT_EQ(f.Run("Third", {}), "0.3333333333333333");
   WOLANG_EXPECT_EQ(f.Run("Mixed", {}), "1.6666666666666665");
+
+WOLANG_TEST(CodegenTest, AnEnumAndAStructDropWhatTheyCarry) {
+  // An enum whose payload no arm moves, and a struct holding a value with a
+  // `deinit`, ran no `deinit` at all; their end drops the carried value
+  // once, and an arm that moves the payload on drops it once too (D233).
+  Fixture f(R"(
+var drops: int = 0
+
+struct Res {
+  var id: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+struct Outer {
+  var r: Res
+}
+
+enum Wrap {
+  None
+  Has(r: Res)
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun Unmatched() -> int {
+  drops = 0
+  const _w = Wrap.Has(Res(1))
+  return 0
+}
+
+fun Left() -> int {
+  drops = 0
+  {
+    const _w = Wrap.Has(Res(1))
+  }
+  return drops
+}
+
+fun InStruct() -> int {
+  drops = 0
+  {
+    const _o = Outer(Res(1))
+  }
+  return drops
+}
+
+fun Moved() -> int {
+  drops = 0
+  {
+    const w = Wrap.Has(Res(1))
+    const _n = match w {
+      Wrap.Has(r) => Take(r),
+      Wrap.None => 0,
+    }
+  }
+  return drops
+}
+
+fun Borrowed() -> int {
+  drops = 0
+  {
+    const w = Wrap.Has(Res(1))
+    const _n = match w {
+      Wrap.Has(r) => r.id,
+      Wrap.None => 0,
+    }
+  }
+  return drops
+}
+
+fun Copied() -> int {
+  drops = 0
+  {
+    const r = Res(4)
+    const w = Wrap.Has(r)
+    const _c = w
+  }
+  return drops
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Left", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("InStruct", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Moved", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Borrowed", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Copied", {}), "1");
 }
 
 }  // namespace

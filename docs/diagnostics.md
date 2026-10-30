@@ -27,6 +27,8 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0145` | `self` stored from its own `deinit` | D229 |
 | `E0147`, `E0148` | what crosses a thread | D232 |
 | `E0159` | `after` on a machine transition | D243 |
+
+| `E0149` | an owning field moved out of the value that holds it | D233 |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E0301`–`E0305` | suspension and tasks | implemented (wave 10) |
 | `E0401`–`E0403` | inheritance, abilities, bounds | implemented (waves 4–5) |
@@ -232,6 +234,8 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0147` | a function or closure given to a `@Thread` parameter (`Spawn`, `ParallelFor`) reads or writes a module-level `var`, directly or through a call, and the caller does not state `uses unsafe` (D232) | `Spawn(Work)` where `Work` pushes to a global list |
 | `E0148` | a closure that captures given to a `@Thread` parameter that has no environment to give it (`Spawn`; not `ParallelFor`), even under `uses unsafe` (D232) | `Spawn(\|\| { Print("{n}") })` |
 | `E0159` | `after <delay>` on a machine transition: it parsed and then fired at once, so it is refused until a machine has a clock (D243) | `on Interact after 3s -> Closed` |
+
+| `E0149` | a value with a `deinit` taken out of a field of the struct or enum that owns it (D233) | `Take(o.r)` where `o: Outer` holds `r: Res` |
 | `E0140` | a generic instantiates itself with ever bigger types | `fun F<T>(x: T) { F([x]) }` (D225) |
 | `E0121` | a reference would outlive what it points into (also through fields, indices, calls and a local array as a slice, D228) | `return &local.n` |
 | `E0142` | an object made inside `arena { }` is stored outside, returned or given out as the block's value (D228) | `kept = Leaf(1)` inside the block, `kept` declared outside |

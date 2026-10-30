@@ -2370,7 +2370,7 @@ class Lowerer {
       return;
     }
     const TypeId type = Erase(raw);
-    if (HoldsCounted(type)) {
+    if (HoldsCounted(type) || HoldsOwned(type)) {
       builder_->Call(ValueDropFor(type), types_->void_type(), {value});
       return;
     }
@@ -2721,6 +2721,50 @@ class Lowerer {
     return answer;
   }
 
+  // Whether a value of |raw| is itself a type with a `deinit`, or carries
+  // one in a field or a variant's payload (D233). The limits match the
+  // checker's `IsOwning`: only named types that are not generic instances
+  // and not classes, and not the owned string, so that lowering and flow
+  // agree on what a move is.
+  bool OwnsByDeinit(TypeId raw) {
+    const TypeId held = types_->StripWrappers(Erase(Apply(raw)));
+    if (types_->KindOf(held) != TypeKind::kNamed || types_->IsHandle(held)) {
+      return false;
+    }
+    return FindDestructor(held) != nullptr || HoldsOwned(held);
+  }
+
+  // Whether a struct or enum carries a value with a `deinit` without
+  // having one itself.
+  bool HoldsOwned(TypeId raw, int depth = 0) {
+    const TypeId held = types_->StripWrappers(Erase(Apply(raw)));
+    if (depth > 8 || types_->KindOf(held) != TypeKind::kNamed ||
+        types_->IsHandle(held) || resolution().IsAbility(held)) {
+      return false;
+    }
+    for (const Member& member : MembersAnywhere(held)) {
+      if (member.kind == MemberKind::kField) {
+        const TypeId field = types_->StripWrappers(Erase(Apply(member.type)));
+        if (types_->KindOf(field) == TypeKind::kNamed &&
+            !types_->IsHandle(field) &&
+            (FindDestructor(field) != nullptr || HoldsOwned(field, depth + 1))) {
+          return true;
+        }
+      } else if (member.kind == MemberKind::kVariant &&
+                 types_->KindOf(member.type) == TypeKind::kFunction) {
+        for (const TypeId carried : types_->ArgumentsOf(member.type)) {
+          const TypeId field = types_->StripWrappers(Erase(Apply(carried)));
+          if (types_->KindOf(field) == TypeKind::kNamed &&
+              !types_->IsHandle(field) &&
+              (FindDestructor(field) != nullptr || HoldsOwned(field, depth + 1))) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   // `[]Leaf$release`: lets go of every element of a slice whose storage is
   // about to be given back. Every slot counts, not only the ones a
   // container says it uses: storage starts as zeroes, which is an empty
@@ -2821,9 +2865,18 @@ class Lowerer {
       const TypeId erased = Erase(field.Type);
       if (Counts(erased)) {
         ReleaseValue(builder.Extract(erased, self, field.Index), erased);
+      } else if (OwnsByDeinit(erased)) {
+        // A value with a `deinit` inside this one goes with it (D233).
+        Destroy(builder.Extract(erased, self, field.Index), erased);
       }
     }
-    ForEachCarried(self, type, [&](InstId payload, TypeId field) { ReleaseValue(payload, field); });
+    ForEachCarried(self, type, [&](InstId payload, TypeId field) {
+      if (Counts(field)) {
+        ReleaseValue(payload, field);
+      } else {
+        Destroy(payload, field);
+      }
+    });
     builder.ReturnVoid();
 
     builder_ = outer;
@@ -2862,7 +2915,7 @@ class Lowerer {
     for (uint32_t index = 0; index < variants.size(); ++index) {
       bool counted = false;
       for (const TypeId field : variants[index]) {
-        counted = counted || Counts(field);
+        counted = counted || Counts(field) || OwnsByDeinit(field);
       }
       if (!counted) {
         continue;
@@ -2875,7 +2928,7 @@ class Lowerer {
       builder_->SetCurrent(carry);
       for (uint32_t position = 0; position < variants[index].size(); ++position) {
         const TypeId field = variants[index][position];
-        if (!Counts(field)) {
+        if (!Counts(field) && !OwnsByDeinit(field)) {
           continue;
         }
         const InstId payload = builder_->Add(Opcode::kVariantPayload, field, {value});
@@ -3059,7 +3112,8 @@ class Lowerer {
     if (IsCountedHandle(type)) {
       return false;
     }
-    return FindDestructor(Erase(Apply(type))) != nullptr;
+    return FindDestructor(Erase(Apply(type))) != nullptr ||
+           HoldsOwned(type);
   }
 
   // Whether a *binding* of |type| releases what it holds when its scope
@@ -6077,9 +6131,21 @@ class Lowerer {
   InstId LowerMatch(const Expr& expr, TypeId type) {
     const bool produces =
         type.is_valid() && types_->KindOf(type) != TypeKind::kVoid;
-    const InstId subject = Value(expr.lhs);
+    // Matching a name does not take what it holds: a payload an arm moves
+    // out is what moves it, through the name's own flag (D233).
+    Symbol subject_name;
+    if (ast().Get(expr.lhs).kind == ExprKind::kPath &&
+        FlagOf(ast().Get(expr.lhs).name).is_valid()) {
+      subject_name = ast().Get(expr.lhs).name;
+    }
+    const InstId subject = [&]() {
+      Borrowing borrow(subject_name.is_valid() ? this : nullptr);
+      return Value(expr.lhs);
+    }();
     HoldTemporary(subject);
     const TypeId subject_type = TypeOf(expr.lhs);
+    const InstId subject_flag =
+        subject_name.is_valid() ? FlagOf(subject_name) : InstId{};
 
     // Made when something needs it rather than up front: a `match` whose
     // every arm returns has nowhere to come back to, and a block nothing
@@ -6144,7 +6210,17 @@ class Lowerer {
 
       builder_->SetCurrent(arms[i].body);
       const size_t depth = locals_.size();
+      const size_t owners_before = owners_.size();
       BindArm(arm, subject, subject_type);
+      if (subject_flag.is_valid()) {
+        // A payload that owns something is the subject's own storage, so
+        // handing it on empties the subject's flag (D233).
+        for (size_t k = depth; k < locals_.size(); ++k) {
+          if (OwnsByDeinit(locals_[k].type)) {
+            owners_.push_back(Owner{locals_[k].name, subject_flag});
+          }
+        }
+      }
       if (produces) {
         const InstId value = Value(arm.body);
         if (!builder_->Terminated()) {
@@ -6157,6 +6233,9 @@ class Lowerer {
         }
       }
       PopLocals(depth);
+      if (owners_.size() > owners_before) {
+        owners_.resize(owners_before);
+      }
 
       if (otherwise.is_valid()) {
         builder_->SetCurrent(otherwise);

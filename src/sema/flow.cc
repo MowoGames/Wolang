@@ -19,6 +19,8 @@ constexpr std::string_view kUsedAfterMove = "E0122";
 // A value built inside `arena { }` that is kept past the block (D228).
 constexpr std::string_view kArenaEscape = "E0142";
 constexpr std::string_view kUsedBeforeWritten = "E0123";
+// An owning value taken out of a field of the value that owns it (D233).
+constexpr std::string_view kMoveOutOfField = "E0149";
 // A function that declares a result and has a path that reaches its end
 // without returning one.
 constexpr std::string_view kMissingReturn = "E0132";
@@ -160,7 +162,49 @@ class FlowChecker {
         }
       }
     }
+    return HoldsOwning(types_.StripWrappers(type), 0);
+  }
+
+  // A struct or enum that carries a value with a `deinit` owns it, so it
+  // is moved too and its end drops it (D233). Generic instances and the
+  // owned string are left out: lowering answers the same question with the
+  // same limits, and the two have to agree on what a move is.
+  bool HoldsOwning(TypeId type, int depth) const {
+    if (depth > 8 || types_.KindOf(type) != TypeKind::kNamed ||
+        types_.IsHandle(type)) {
+      return false;
+    }
+    for (const Member& member : resolution_.MembersOf(type)) {
+      if (member.kind == MemberKind::kField) {
+        if (OwnsByDeinit(member.type, depth)) {
+          return true;
+        }
+      } else if (member.kind == MemberKind::kVariant &&
+                 types_.KindOf(member.type) == TypeKind::kFunction) {
+        for (TypeId field : types_.ArgumentsOf(member.type)) {
+          if (OwnsByDeinit(field, depth)) {
+            return true;
+          }
+        }
+      }
+    }
     return false;
+  }
+
+  bool OwnsByDeinit(TypeId type, int depth) const {
+    const TypeId named = types_.StripWrappers(type);
+    if (types_.KindOf(named) != TypeKind::kNamed || types_.IsHandle(named)) {
+      return false;
+    }
+    for (TypeId current = named; current.is_valid();
+         current = resolution_.BaseOf(current)) {
+      for (const Member& member : resolution_.MembersOf(current)) {
+        if (member.kind == MemberKind::kDeinit) {
+          return true;
+        }
+      }
+    }
+    return HoldsOwning(named, depth + 1);
   }
 
   // Whether anything in |body| could leave the loop it belongs to.
@@ -427,6 +471,45 @@ class FlowChecker {
       }
     }
     return false;
+  }
+
+  // `o.r` where `r` has a `deinit` and `o` is a struct or enum value: the
+  // value would be in two places, `o` and wherever it went, and `o`'s end
+  // drops it a second time (D233). Reading through it is a borrow, and a
+  // field of a class is another holder's business (D209).
+  void MoveOutOfField(ExprId id) {
+    const Expr& expr = ast_.Get(id);
+    if (expr.kind != ExprKind::kField || IsBorrow(id) ||
+        !IsOwning(typed_.TypeOf(id))) {
+      return;
+    }
+    if (types_.KindOf(types_.StripWrappers(typed_.TypeOf(id))) ==
+        TypeKind::kString) {
+      return;
+    }
+    ExprId root = expr.lhs;
+    while (ast_.Contains(root)) {
+      const Expr& step = ast_.Get(root);
+      const TypeId base = types_.StripWrappers(typed_.TypeOf(root));
+      if (types_.IsHandle(base) || types_.KindOf(base) != TypeKind::kNamed) {
+        return;
+      }
+      if (step.kind == ExprKind::kPath) {
+        break;
+      }
+      if (step.kind != ExprKind::kField) {
+        return;
+      }
+      root = step.lhs;
+    }
+    if (!ast_.Contains(root) || !IsOwning(typed_.TypeOf(root))) {
+      return;
+    }
+    diagnostics_->Error(kMoveOutOfField,
+                        "cannot move a value with a `deinit` out of a field")
+        .Primary(expr.span, "this field owns it")
+        .Note("borrow it by reading through the field, or move the whole "
+              "value that holds it");
   }
 
   // Marks |name| moved when the use at |id| hands the value away.
@@ -698,7 +781,14 @@ class FlowChecker {
       }
 
       case ExprKind::kMatch: {
-        Expression(expr.lhs);
+        // A name that is matched is read, not taken: only an arm that
+        // moves its payload empties it (D233).
+        if (ast_.Contains(expr.lhs) &&
+            ast_.Get(expr.lhs).kind == ExprKind::kPath) {
+          Borrowed(expr.lhs);
+        } else {
+          Expression(expr.lhs);
+        }
         const std::vector<Liveness> before = Written();
         std::vector<Liveness> common;
         bool any_falls = false;
@@ -816,6 +906,7 @@ class FlowChecker {
         // Reading a field borrows what it is in: `message.len` does not
         // consume the string, and treating it as a move reported the next
         // use of the name as a use after move.
+        MoveOutOfField(id);
         return Borrowed(expr.lhs);
 
       case ExprKind::kBinary:

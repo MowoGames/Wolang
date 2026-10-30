@@ -2439,6 +2439,70 @@ machine Door {
 }
 )");
   WOLANG_EXPECT(!fine.HasCode("E0159"));
+
+WOLANG_TEST(TypeCheckTest, MovingAnOwningFieldOutOfItsOwnerIsE0149) {
+  // `o` drops `r` when it ends; handing `r` on as well would drop it twice
+  // (D233).
+  Fixture fires(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+struct Outer {
+  var r: Res
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun F() -> int {
+  const o = Outer(Res(1))
+  return Take(o.r)
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0149"));
+
+  Fixture fine(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+struct Outer {
+  var r: Res
+}
+
+fun F() -> int {
+  const o = Outer(Res(1))
+  return o.r.id
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0149"));
+}
+
+WOLANG_TEST(TypeCheckTest, AnEnumHoldingAnOwningValueIsMovedAsAWhole) {
+  Fixture fires(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+enum Wrap {
+  None
+  Has(r: Res)
+}
+
+fun F() {
+  const r = Res(1)
+  const w = Wrap.Has(r)
+  const _c = w
+  const _d = w
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0122"));
 }
 
 }  // namespace
