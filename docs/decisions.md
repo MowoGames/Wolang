@@ -2872,3 +2872,4 @@ enclosing function, as if called, so capabilities and `@Deterministic` or
 `comptime` contexts see it. Registering a layer is therefore charged
 where it is named, which is conservative.
 
+**D223. The HTTP server answers only requests it can frame.** A request is parsed from the bytes that arrived and no more -- the pool buffer is reused, so what lies past `received` is another client's. `Content-Length` must be digits (nine or fewer are read, more are "too large" and get 413), a second one must agree, and `Transfer-Encoding` is refused with 501 (with a `Content-Length` too, 400): the server does not implement chunked requests, and ignoring the header lets a proxy and this server disagree on where a request ends. Idle connections are closed by deadline, not held forever.
