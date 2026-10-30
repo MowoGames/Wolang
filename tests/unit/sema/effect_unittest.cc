@@ -438,6 +438,10 @@ fun Launch(body: fun()) {
 fun Go() {
   const n = 5
   Launch(|| { const _m = n })
+}
+)"), "");
+}
+
 WOLANG_TEST(EffectRowTest, ANamedMethodChargesItsEffects) {
   // A method called or named as a value reaches its effects as surely as a
   // function does; neither was charged before (D222).
