@@ -696,15 +696,15 @@ fun ReadsAChunkSizeWithoutOverflowing() -> bool uses unsafe {
   match Finish(hostile, head.len, -1, true) {
     Truncated => {
       broke = true
-    },
-    _ => {},
+    }
+    _ => {}
   }
   var read = false
   match Finish(fine, head.len, -1, true) {
     Ok(answer) => {
       read = answer.body == "abc"
-    },
-    _ => {},
+    }
+    _ => {}
   }
   return FromHexDigits("ffffffff") == -1 && FromHexDigits("fffffff") == 268435455 && ChunkedEnd(
       hostile,

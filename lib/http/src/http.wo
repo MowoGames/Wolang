@@ -910,7 +910,7 @@ offer fun RunServerOn(
       // does not hold the loop.
       const before = pool.Filled(slot)
       const turn = Turn(&mut pool, slot, handle)
-      if turn > 0 || (before == 0 && pool.Filled(slot) > 0) {
+      if turn > 0 || before == 0 && pool.Filled(slot) > 0 {
         pool.Stamp(slot, Now().seconds)
       }
       if turn < 0 || pool.IsClosing(slot) {
@@ -948,8 +948,8 @@ fun ReadsABodyThatArrivedWhole() -> bool uses unsafe {
 fun ParseIntStopsInsteadOfOverflowing() -> bool uses unsafe {
   return ParseInt("123") == 123 && ParseInt("99999999999999999999999") == -1 && ParseLength(
       "5, 10") == -1 && ParseLength(" 42 ") == 42 && ParseLength("") == -1 && ParseLength(
-      "999999999") == 999999999 && ParseLength(
-      "99999999999999999999") == 2147483647 && ParseLength("99999999999x") == -1
+      "999999999") == 999999999 && ParseLength("99999999999999999999") == 2147483647 && ParseLength(
+      "99999999999x") == -1
 }
 
 @Test

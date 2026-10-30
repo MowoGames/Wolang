@@ -62,7 +62,12 @@ offer struct Held {
 /// A connection with part of a request in its buffer, or one that has not
 /// yet had any request answered, is on the short head deadline; one that
 /// is idle between keep-alive requests gets the long one.
-offer fun IsExpired(now: s64, since: s64, partial: bool, served: bool, limits: Limits) -> bool {
+offer fun IsExpired(
+    now: s64,
+    since: s64,
+    partial: bool,
+    served: bool,
+    limits: Limits) -> bool {
   var allowed = limits.idle_timeout
   if partial || !served {
     allowed = limits.head_timeout
@@ -154,7 +159,12 @@ offer class Connections {
     if slot < 0 || slot >= slots.len || slots[slot].fd < 0 {
       return false
     }
-    return IsExpired(now, slots[slot].since, slots[slot].filled > 0, slots[slot].served, limits)
+    return IsExpired(
+        now,
+        slots[slot].since,
+        slots[slot].filled > 0,
+        slots[slot].served,
+        limits)
   }
 
   fun Fd(slot: int) -> int {
@@ -472,7 +482,8 @@ fun ReadsAHeaderOutOfRawBytes() -> bool uses unsafe {
 @Test
 fun RefusesALengthThatWouldOverflow() -> bool uses unsafe {
   const limits = LimitsDefault()
-  const huge = Bytes("POST / HTTP/1.1\r\nContent-Length: 99999999999999999999999\r\n\r\n")
+  const huge = Bytes(
+      "POST / HTTP/1.1\r\nContent-Length: 99999999999999999999999\r\n\r\n")
   const junk = Bytes("POST / HTTP/1.1\r\nContent-Length: 5, 10\r\n\r\nhello")
   const wide = Bytes("POST / HTTP/1.1\r\nContent-Length: 99999999999\r\n\r\n")
   return RequestLength(huge, huge.len, limits) == -3 && RequestLength(
@@ -484,8 +495,10 @@ fun RefusesALengthThatWouldOverflow() -> bool uses unsafe {
 @Test
 fun RefusesTwoDifferentLengths() -> bool uses unsafe {
   const limits = LimitsDefault()
-  const clash = Bytes("POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello")
-  const same = Bytes("POST / HTTP/1.1\r\nContent-Length: 5\r\ncontent-length: 5\r\n\r\nhello")
+  const clash = Bytes(
+      "POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello")
+  const same = Bytes(
+      "POST / HTTP/1.1\r\nContent-Length: 5\r\ncontent-length: 5\r\n\r\nhello")
   return RequestLength(clash, clash.len, limits) == -2 && RequestLength(
       same,
       same.len,
@@ -495,8 +508,10 @@ fun RefusesTwoDifferentLengths() -> bool uses unsafe {
 @Test
 fun RefusesATransferEncoding() -> bool uses unsafe {
   const limits = LimitsDefault()
-  const chunked = Bytes("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
-  const both = Bytes("POST / HTTP/1.1\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+  const chunked = Bytes(
+      "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+  const both = Bytes(
+      "POST / HTTP/1.1\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
   return RequestLength(chunked, chunked.len, limits) == -4 && RequestLength(
       both,
       both.len,
@@ -528,17 +543,17 @@ fun ExpiresASlowHeaderAndAnIdleConnection() -> bool {
   const limits = LimitsDefault()
   // Mid-request for 10 s: out. Idle between requests for 10 s: fine, for
   // 60 s: out. Never sent anything for 10 s: out (D223).
-  return IsExpired(10, 0, true, true, limits) && !IsExpired(9, 0, true, true, limits) && !IsExpired(
-      10,
+  return IsExpired(10, 0, true, true, limits) && !IsExpired(
+      9,
+      0,
+      true,
+      true,
+      limits) && !IsExpired(10, 0, false, true, limits) && IsExpired(
+      60,
       0,
       false,
       true,
-      limits) && IsExpired(60, 0, false, true, limits) && IsExpired(
-      10,
-      0,
-      false,
-      false,
-      limits)
+      limits) && IsExpired(10, 0, false, false, limits)
 }
 
 @Test
@@ -557,5 +572,7 @@ fun SlotsReportTheirOwnTimeout() -> bool uses io, net, unsafe {
   const fresh = pool.TimedOut(slot, 105)
   const stale = pool.TimedOut(slot, 111)
   pool.MarkServed(slot)
-  return !fresh && stale && !pool.TimedOut(slot, 111) && pool.TimedOut(slot, 161)
+  return !fresh && stale && !pool.TimedOut(slot, 111) && pool.TimedOut(
+      slot,
+      161)
 }
