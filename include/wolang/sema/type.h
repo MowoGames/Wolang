@@ -375,6 +375,10 @@ class TypeStore {
   // True when |id| is a type parameter, or contains one anywhere inside it.
   // A signature that does not is already concrete and needs no inference.
   bool MentionsParameter(TypeId id) const;
+  // True when |id| nests more than |limit| levels of element, base or
+  // argument. Stops descending at the limit, so it is safe on a type that
+  // polymorphic recursion made arbitrarily deep (D225).
+  bool NestsDeeperThan(TypeId id, uint32_t limit) const;
   // The type parameters |id| mentions, in the order they appear. What a
   // call with explicit type arguments matches them against: a signature
   // may mention a parameter only in its result, and then there is nothing

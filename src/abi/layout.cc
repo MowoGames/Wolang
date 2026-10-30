@@ -219,6 +219,14 @@ uint32_t LayoutStore::PayloadSizeOf(TypeId type) {
 }
 
 bool LayoutStore::IsSupported(TypeId type) const {
+  struct Depth {
+    explicit Depth(uint32_t* slot) : slot_(slot) { ++*slot_; }
+    ~Depth() { --*slot_; }
+    uint32_t* slot_;
+  } depth(&supported_depth_);
+  if (supported_depth_ > 64) {
+    return false;
+  }
   switch (ClassOf(type)) {
     case ValueClass::kUnsupported:
       return false;

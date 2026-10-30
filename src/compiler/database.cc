@@ -1268,6 +1268,27 @@ void Database::RegisterQueries() {
                       parsed->ast, checked->body, effects, foreign,
                       schedule, &result.module);
 
+        // Polymorphic recursion would have made a new copy forever; lowering
+        // stopped at a type nested too deep and left a note (D225).
+        if (result.module.runaway_item != 0xFFFFFFFFu) {
+          const ItemId id = ResolveItem(parsed->ast, result.module.runaway_item);
+          Diagnostic diagnostic;
+          diagnostic.severity = Severity::kError;
+          diagnostic.code = "E0140";
+          diagnostic.message =
+              "generic instantiation nests types too deeply; the type "
+              "arguments grow with every call";
+          DiagnosticLabel label;
+          label.is_primary = true;
+          label.span = parsed->ast.Contains(id) ? parsed->ast.Get(id).name_span
+                                                : SourceSpan();
+          label.message = "this generic instantiates itself with a bigger type";
+          diagnostic.labels.push_back(std::move(label));
+          LoweredFile empty;
+          empty.diagnostics.push_back(std::move(diagnostic));
+          return MakeResult(std::move(empty));
+        }
+
         // A `task` is not a function the way the machine means it, so it is
         // split into a state machine here -- before the verifier, so the
         // result is checked, and before the passes, so they see ordinary

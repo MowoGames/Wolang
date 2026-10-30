@@ -176,6 +176,10 @@ class LayoutStore {
   std::unordered_map<uint32_t, Layout> cache_;
   // The storage a class points at, kept apart from the handle's layout.
   std::unordered_map<uint32_t, Layout> objects_;
+  // How deep IsSupported is: a type that contains itself (sema rejects it
+  // with E0117, but this must not trust that) would recurse until the stack
+  // ends (D225).
+  mutable uint32_t supported_depth_ = 0;
 };
 
 // Rounds |value| up to a multiple of |align|.

@@ -202,7 +202,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0110` | no type with that name is in scope | `fun f(a: Nothing)` |
 | `E0111` | the name is not a type | a function used in type position |
 | `E0112` | the type has no such member | `v.z` where `Vec3` has `x` and `y` |
-| `E0117` | a value type contains itself, so it has no size | `struct S { var next: S }` |
+| `E0117` | a value type contains itself, so it has no size | `struct S { var next: S }`, `enum E { X(e: E) }`, `struct W<T> { var w: W<W<T>>? }` |
 | `E0118` | a declaration is defined in terms of itself | `type A = A`, `class A : A`, `dimension D = D` |
 | `E0119` | a type parameter is declared twice | `fun f<T, T>()` |
 | `E0113` | the name is declared twice in one file | |
@@ -219,6 +219,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0137` | `weak` on something that is not a `C?` field of a class | `weak var count: int` |
 | `E0138` | a `type` outside an ability with nothing after it | `type Count` |
 | `E0139` | an `extern class` constructed, or given something other than methods | `Actor()` |
+| `E0140` | a generic instantiates itself with ever bigger types | `fun F<T>(x: T) { F([x]) }` (D225) |
 | `E0121` | a reference would outlive what it points into | `return &local` |
 | `E0122` | a value that was moved out of is used again | `const b = a` then `Take(a)` where `a: Text` |
 | `E0123` | a variable is used before anything is written to it | `var x: int` then `return x` |

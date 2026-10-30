@@ -1657,6 +1657,24 @@ WOLANG_TEST(TypeCheck, ContainingItselfThroughAWrapperStillHasNoSize) {
   WOLANG_EXPECT(Fixture("struct S { var pair: (int, S) }").HasCode("E0117"));
 }
 
+WOLANG_TEST(TypeCheck, ARecursiveEnumPayloadHasNoSize) {
+  WOLANG_EXPECT(Fixture("enum E {\n  X(e: E)\n  Y\n}\n").HasCode("E0117"));
+  WOLANG_EXPECT(
+      Fixture("enum E {\n  X(e: [4]E)\n  Y\n}\n").HasCode("E0117"));
+  // Behind a slice the enum has a size.
+  WOLANG_EXPECT_EQ(Fixture("enum E {\n  X(e: []E)\n  Y\n}\n").Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AGenericValueTypeMayNotContainItself) {
+  WOLANG_EXPECT(Fixture(
+      "struct W<T> {\n  var t: T\n  var w: W<T>\n}\n").HasCode("E0117"));
+  // The same declaration with a bigger argument is still itself.
+  WOLANG_EXPECT(Fixture(
+      "struct W<T> {\n  var w: W<W<T>>?\n}\n").HasCode("E0117"));
+  WOLANG_EXPECT_EQ(Fixture(
+      "struct W<T> {\n  var t: T\n  var w: []W<T>\n}\n").Codes(), "");
+}
+
 WOLANG_TEST(TypeCheck, AMutualCycleHasNoSizeEither) {
   Fixture f("struct A { var b: B }\nstruct B { var a: A }\n");
   WOLANG_EXPECT_EQ(f.Codes(), "E0117,E0117");

@@ -339,6 +339,10 @@ struct Module {
   // values, or 0xFFFFFFFF when there are none. Run before anything else
   // in the program (D88).
   uint32_t initializer = 0xFFFFFFFFu;
+  // The declaration (item index) whose instantiation chain grew past
+  // kMaxTypeNesting, or 0xFFFFFFFF. Lowering cannot report, so the driver
+  // turns this into E0140 (D225).
+  uint32_t runaway_item = 0xFFFFFFFFu;
 
   const Function* Find(Symbol name) const;
 };

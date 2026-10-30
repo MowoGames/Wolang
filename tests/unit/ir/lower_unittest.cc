@@ -529,5 +529,62 @@ offer fun Shout() uses io
   WOLANG_EXPECT(false);
 }
 
+// Polymorphic recursion asks for a new copy with a bigger type each time; it
+// has to stop with E0140 instead of lowering forever (D225).
+std::string LoweringCodes(std::string_view code) {
+  Database db;
+  const FileId file = db.AddFile("<test>", std::string(code));
+  const LoweredFile* lowered = db.Lowered(file);
+  std::string codes;
+  if (lowered != nullptr) {
+    for (const Diagnostic& diagnostic : lowered->diagnostics) {
+      codes.append(diagnostic.code);
+    }
+  }
+  return codes;
+}
+
+WOLANG_TEST(Lower, PolymorphicRecursionOnAFunctionIsE0140) {
+  WOLANG_EXPECT_EQ(LoweringCodes(R"(
+fun F<T>(x: T, n: int) -> int {
+  if n == 0 {
+    return 0
+  }
+  return F([x], n - 1)
+}
+fun main() -> int {
+  return F(1, 3)
+}
+)"), "E0140");
+}
+
+WOLANG_TEST(Lower, PolymorphicRecursionOnAMethodIsE0140) {
+  WOLANG_EXPECT_EQ(LoweringCodes(R"(
+extend<T> S<T> {
+  fun M() -> int => S<S<T>>(1).M()
+}
+struct S<T> {
+  var x: int
+}
+fun main() -> int {
+  return S<int>(1).M()
+}
+)"), "E0140");
+}
+
+WOLANG_TEST(Lower, BoundedGenericRecursionIsNotE0140) {
+  WOLANG_EXPECT_EQ(LoweringCodes(R"(
+fun F<T>(x: T, n: int) -> int {
+  if n == 0 {
+    return 0
+  }
+  return F(x, n - 1)
+}
+fun main() -> int {
+  return F(1, 3)
+}
+)"), "");
+}
+
 }  // namespace
 }  // namespace wolang

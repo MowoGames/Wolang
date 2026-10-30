@@ -20,6 +20,10 @@ namespace wolang {
 namespace ir {
 namespace {
 
+// How deep a type an instantiation may be named with (D225). Real programs
+// nest a handful of levels; polymorphic recursion nests one more per copy.
+constexpr uint32_t kMaxTypeNesting = 64;
+
 // What a name means while a body is being lowered: either a slot holding a
 // mutable binding, or a value directly.
 struct Local {
@@ -520,6 +524,19 @@ class Lowerer {
   // One specialization per instantiation, named after what it was
   // instantiated with: two call sites that inferred the same arguments
   // reach the same copy.
+  // True, and remembered for E0140, when |type| is the kind of nesting only
+  // polymorphic recursion makes (`F<[T]>` calling `F<[[T]]>`...). Each copy
+  // is a new function, so without a bound lowering never finishes (D225).
+  bool RunsAway(TypeId type, uint32_t item) {
+    if (!types_->NestsDeeperThan(type, kMaxTypeNesting)) {
+      return false;
+    }
+    if (module_->runaway_item == 0xFFFFFFFFu) {
+      module_->runaway_item = item == 0xFFFFFFFFu ? 0 : item;
+    }
+    return true;
+  }
+
   uint32_t Instantiate(ItemId item, ExprId call) {
     // The current file's view, for the same reason as above: a copy
     // queued now is lowered later, when the current file may differ.
@@ -548,7 +565,11 @@ class Lowerer {
       // Mapped through the substitution in force: a generic body calling
       // another generic passes its own parameters along, and by the time
       // this copy exists they stand for something.
-      const TypeId concrete = Erase(Apply((*arguments)[i]));
+      const TypeId applied = Apply((*arguments)[i]);
+      if (RunsAway(applied, binding->item)) {
+        return 0xFFFFFFFFu;
+      }
+      const TypeId concrete = Erase(applied);
       if (!concrete.is_valid() || types_->MentionsParameter(concrete)) {
         return 0xFFFFFFFFu;
       }
@@ -640,7 +661,11 @@ class Lowerer {
 
     TypeStore::Substitution substitution;
     for (size_t i = 0; i < parameters.size() && i < arguments.size(); ++i) {
-      const TypeId concrete = Erase(Apply(arguments[i]));
+      const TypeId applied = Apply(arguments[i]);
+      if (RunsAway(applied, member.item)) {
+        return 0xFFFFFFFFu;
+      }
+      const TypeId concrete = Erase(applied);
       if (!concrete.is_valid() || types_->MentionsParameter(concrete)) {
         return 0xFFFFFFFFu;
       }

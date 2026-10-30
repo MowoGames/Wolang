@@ -3439,14 +3439,55 @@ bool Checker::ReachesByValue(TypeId type, TypeId target, int depth) const {
       return ReachesByValue(types_->ElementOf(type), target, depth + 1);
 
     case TypeKind::kTuple:
-    case TypeKind::kInstance:
       for (TypeId argument : types_->ArgumentsOf(type)) {
-        if (argument == target ||
-            ReachesByValue(argument, target, depth + 1)) {
+        if (ReachesByValue(argument, target, depth + 1)) {
           return true;
         }
       }
       return false;
+
+    case TypeKind::kInstance: {
+      // `W<W<T>>` inside `W<T>` is the declaration again with a bigger
+      // argument, so the bases are compared, not the instances (D225).
+      const TypeId base = types_->Get(type).base;
+      const TypeId target_base = types_->KindOf(target) == TypeKind::kInstance
+                                     ? types_->Get(target).base
+                                     : target;
+      if (base == target_base) {
+        return true;
+      }
+      if (!resolution_->IsValueType(base)) {
+        return false;
+      }
+      // What the instance stores is the base's fields with the arguments
+      // put in; a class or a slice in there ends the walk as before.
+      const std::span<const TypeId> parameters =
+          resolution_->ParametersOf(base);
+      const std::vector<TypeId> arguments = types_->ArgumentsOf(type);
+      TypeStore::Substitution substitution;
+      for (size_t i = 0; i < parameters.size() && i < arguments.size(); ++i) {
+        substitution.emplace_back(parameters[i], arguments[i]);
+      }
+      bool is_enum = false;
+      for (const Member& member : resolution_->MembersOf(base)) {
+        is_enum |= member.kind == MemberKind::kVariant;
+        if (member.kind == MemberKind::kField &&
+            ReachesByValue(types_->Substitute(member.type, substitution),
+                           target, depth + 1)) {
+          return true;
+        }
+      }
+      // An enum's payloads are not in the member table, so what it holds is
+      // approximated by what it was given.
+      if (is_enum) {
+        for (TypeId argument : arguments) {
+          if (ReachesByValue(argument, target, depth + 1)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
 
     case TypeKind::kNamed:
       if (!resolution_->IsValueType(type)) {
@@ -3496,6 +3537,11 @@ void Checker::CheckBaseChain(const Item& item, TypeId type) {
 }
 
 void Checker::CheckSized(const Item& item, TypeId type) {
+  // A generic's `self` is an instance of its own parameters; the member
+  // table belongs to the declaration (D225).
+  if (type.is_valid() && types_->KindOf(type) == TypeKind::kInstance) {
+    type = types_->Get(type).base;
+  }
   if (!type.is_valid() || !resolution_->IsValueType(type)) {
     return;
   }
@@ -3702,6 +3748,7 @@ void Checker::CheckItem(ItemId id) {
         CheckBaseChain(item, self_type_);
         CheckSized(item, self_type_);
       }
+      bool reported_unsized = false;
       for (ItemId member : ast_.Get(item.members)) {
         if (item.kind == ItemKind::kClass && HasFlag(item.flags, ItemFlags::kExtern) && ast_.Contains(member) && ast_.Get(member).kind != ItemKind::kFunction) {
           std::string message = "an `extern class` has methods and nothing else; `";
@@ -3740,7 +3787,20 @@ void Checker::CheckItem(ItemId id) {
           for (ParamId carried : ast_.Get(ast_.Get(member).params)) {
             if (ast_.Contains(carried) &&
                 ast_.Get(carried).type.is_valid()) {
-              resolver_.Resolve(ast_, ast_.Get(carried).type);
+              const TypeId payload =
+                  resolver_.Resolve(ast_, ast_.Get(carried).type);
+              // A payload is stored inline like a field, so an enum that
+              // carries itself has no size either (D225).
+              if (!reported_unsized && item.kind == ItemKind::kEnum &&
+                  self_type_.is_valid() &&
+                  ReachesByValue(payload, self_type_, 0)) {
+                reported_unsized = true;
+                std::string message = "`";
+                message.append(interner_->Text(item.name));
+                message.append("` contains itself, so it has no size");
+                Report(kInfiniteType, std::move(message), item.name_span,
+                       "store it behind a `Box<T>`, a slice or a reference");
+              }
             }
           }
         }

@@ -2993,6 +2993,20 @@ fun Walks() -> int {
   WOLANG_EXPECT_EQ(f.Run("Walks", {}), "11093");
 }
 
+// A recursive enum is E0117 in sema; the layout must still answer rather
+// than recurse until the stack ends if one gets past it (D225).
+WOLANG_TEST(CodegenTest, LayoutSurvivesARecursiveEnum) {
+  Database db;
+  const FileId file = db.AddFile("<test>", "enum E {\n  X(e: E)\n  Y\n}\n");
+  const CheckedFile* checked = db.Checked(file);
+  WOLANG_ASSERT(checked != nullptr);
+  const Binding* binding =
+      checked->resolution.Find(db.interner().Intern("E"));
+  WOLANG_ASSERT(binding != nullptr);
+  abi::LayoutStore layouts(db.types(), checked->resolution);
+  WOLANG_EXPECT(!layouts.IsSupported(binding->type));
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

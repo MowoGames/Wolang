@@ -2901,3 +2901,19 @@ trap text, not only the kind. Floats print as the shortest digits that read
 back as the same number (a `float`/f32 gets its own shortest f32 digits),
 and every NaN prints `nan` whatever its sign bit, from one function used by
 the runtime and the interpreter.
+**D225. Every depth is bounded where it is made.** Sema, lowering, the
+printer and the formatter walk the tree recursively, and a 3000-term
+`1+1+...` or `----1` overflowed the native stack in each of them. The
+parser's paren limit never saw it: left chains are built by loops. The
+parser now tracks the height of the expression it is building -- one per
+link of a chain, per prefix operator, per postfix, per `else if` -- and
+reports `E0041` past 1024 instead of producing the node, so every later
+walker sees a bounded tree and none needs its own guard.
+
+The same rule for types: a generic that calls itself with a bigger type
+(`F<T>` calling `F<[T]>`) is a new copy each time, and lowering never
+finished. An instantiation whose argument nests past 64 levels is `E0140`.
+`E0117` now covers what the member table could not see: an enum's payloads
+and a generic's own instance (`W<W<T>>` inside `W<T>` is the declaration
+again), and the layout's `IsSupported` is depth guarded for the case where
+sema misses one.
