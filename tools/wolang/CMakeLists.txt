@@ -7,4 +7,5 @@ wolang_ship_llvm_c(wolang_cli)
 # Where the standard library is in this tree, so the driver's own commands --
 # `new`, above all -- can name the standard library (D132).
 target_compile_definitions(wolang_cli PRIVATE
+    WOLANG_VERSION_STRING="${PROJECT_VERSION}"
     WOLANG_LIBRARY_DIRECTORY="${PROJECT_SOURCE_DIR}/lib")

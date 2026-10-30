@@ -2009,7 +2009,7 @@ const char* wolang_vm_file_name(const WolangVm* vm, int32_t index) {
 }
 
 const char* wolang_version(void) {
-  return "0.1.0";
+  return WOLANG_VERSION_STRING;
 }
 
 }  // extern "C"

@@ -197,7 +197,7 @@ No npm needed:
 
 ```sh
 python3 tools/package/make_vsix.py
-code --install-extension build/wolang-0.1.0.vsix
+code --install-extension build/wolang-1.1.0.vsix
 ```
 
 ## When something goes wrong

@@ -76,7 +76,8 @@
 namespace wolang {
 namespace {
 
-constexpr std::string_view kVersion = "0.1.0";
+// From project(VERSION) in CMakeLists.txt, the one place it is written (D248).
+constexpr std::string_view kVersion = WOLANG_VERSION_STRING;
 
 struct Options {
   std::string command;

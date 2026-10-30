@@ -44,8 +44,8 @@ The extension is plain JavaScript with no dependencies, so building the
 `.vsix` needs neither npm nor a network:
 
 ```sh
-python3 tools/package/make_vsix.py          # build/wolang-0.1.0.vsix
-code --install-extension build/wolang-0.1.0.vsix
+python3 tools/package/make_vsix.py          # build/wolang-1.1.0.vsix
+code --install-extension build/wolang-1.1.0.vsix
 ```
 
 What that produces is a complete extension: the grammar, the language

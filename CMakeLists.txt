@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(Wolang
-    VERSION 0.1.0
+    VERSION 1.1.0
     DESCRIPTION "Wolang - a statically typed, compiled language with gamedev-grade ergonomics"
     HOMEPAGE_URL "https://github.com/MowoGames/Wolang"
     LANGUAGES CXX)

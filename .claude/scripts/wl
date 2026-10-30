@@ -143,7 +143,7 @@ cmd_fmt() {
 
 cmd_docs() {
   local status=0
-  for check in check_includes check_docs; do
+  for check in check_includes check_docs check_version; do
     if run "$check" python3 "tools/package/$check.py"; then
       echo "$check ok"
     else
