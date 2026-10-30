@@ -1014,7 +1014,9 @@ fun ReadFlowMapping(value: text, depth: int) -> Step uses unsafe {
         name = AsTextValue(held.value)
       }
     }
-    const step = ReadScalarAt(Trim(Substring(piece, split + 1, Length(piece))), depth)
+    const step = ReadScalarAt(
+        Trim(Substring(piece, split + 1, Length(piece))),
+        depth)
     if !step.ok {
       return Bad()
     }
