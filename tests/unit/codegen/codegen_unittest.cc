@@ -3111,6 +3111,22 @@ fun Check(n: int) -> int {
   WOLANG_EXPECT_EQ(f.Run("Check", {Fixture::Wide(0)}), "0");
 }
 
+WOLANG_TEST(CodegenTest, TextOrderingAgreesInEveryTier) {
+  // `<` on text calls wolang_text_compare; the interpreter needs the same
+  // intrinsic as the machine code (D226).
+  Fixture f(R"(
+fun Order(a: text, b: text) -> int {
+  var n = 0
+  if a < b { n = n + 1 }
+  if a >= b { n = n + 10 }
+  return n
+}
+
+fun Check() -> int => Order("a", "b") * 100 + Order("b", "a") + Order("a", "ab")
+)");
+  WOLANG_EXPECT_EQ(f.Run("Check", {}), "111");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang
