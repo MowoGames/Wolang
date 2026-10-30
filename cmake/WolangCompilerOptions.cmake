@@ -44,8 +44,11 @@ function(wolang_configure_target target)
       target_link_options(${target} PRIVATE -fsanitize=${WOLANG_SANITIZER_LIST})
       # Without this UBSan prints and carries on, and CI stays green.
       if(WOLANG_SANITIZER_LIST MATCHES "undefined")
+        # `function` checks a type signature stored in the bytes before
+        # an indirect call's target; JIT code and foreign entry points have
+        # none, so the check reads unmapped memory and faults.
         target_compile_options(${target} PRIVATE
-            -fno-sanitize-recover=undefined)
+            -fno-sanitize-recover=undefined -fno-sanitize=function)
       endif()
     endif()
   endif()
