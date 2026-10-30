@@ -1306,6 +1306,11 @@ class Formatter {
         case '{':
           Put("\\{");
           break;
+        case '\0':
+          // A raw NUL in a source file is unreadable and truncates C
+          // string consumers; the escape reads back the same (D230).
+          Put("\\0");
+          break;
         default:
           Put(std::string_view(&c, 1));
           break;
@@ -1315,6 +1320,9 @@ class Formatter {
 
   void PutEscapedCodePoint(uint32_t code_point) {
     switch (code_point) {
+      case 0:
+        Put("\\0");
+        return;
       case '\n':
         Put("\\n");
         return;

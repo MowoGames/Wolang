@@ -457,5 +457,14 @@ WOLANG_TEST(Formatter, HonoursTheColumnLimit) {
                 std::string::npos);
 }
 
+WOLANG_TEST(Formatter, WritesNulAsAnEscapeNotARawByte) {
+  Pass pass("fun f() {\n  const a = \"x\\0y\"\n  const b = '\\0'\n}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(),
+                   "fun f() {\n"
+                   "  const a = \"x\\0y\"\n"
+                   "  const b = '\\0'\n"
+                   "}\n");
+}
+
 }  // namespace
 }  // namespace wolang
