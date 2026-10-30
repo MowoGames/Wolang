@@ -3160,3 +3160,15 @@ Dialogs block. Windows and macOS use their own; Linux runs `zenity` or
 `kdialog` with fork and exec (never a shell) and otherwise answers
 unavailable, which `DialogsAvailable()` reports first. Not done: XInput2
 raw motion on X11, pad rumble, multiple-file open, file-type filters.
+
+**D231. The fuzzer generates the language, not a calculator.** It made
+`int` and `float` arithmetic, so every bug the audit found in folding,
+casts, labelled loops, narrow types and counting was out of its reach.
+It now generates every integer width with boundary values, casts,
+shifts, bitwise operators, labelled `break`/`continue`, `match` on ints
+and enums with payloads, optionals, `T!`, interpolated text, classes
+with aliasing and a live-object count before and after, and compares
+trap text as well as trap kind. Operations that can trap are rare (6%)
+so most programs run to a value. A unit test checks that every generated
+program type checks, so a generator bug is not mistaken for a compiler
+bug, and `wolang fuzz <file>` replays one program for minimising.

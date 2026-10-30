@@ -10,6 +10,22 @@ The first public release after an audit of the compiler, the runtime, the
 sandbox and the libraries that read other people's bytes, and the fixes
 for what it found.
 
+### Upgrading from 0.1
+
+Some programs that compiled before are now refused, because what they did
+was unsound or silently wrong:
+
+- Code calling `Free`, `ArrayNew`, `ViewFromRaw`, `std.text.Bytes` or a
+  thread body that touches module-level vars has to state `uses unsafe`.
+- A dependency written as a bare string in `wolang.toml` has to become
+  `{ path = ... }` or `{ git = ..., tag = ... }`.
+- `after` on a machine transition is refused (`E0159`); it never waited.
+- An integer literal too wide for `int` needs its type (`const e: s64 = ...`).
+- `x += 1` used to store `1`. Code that relied on that was already broken.
+- Embedding hosts must be rebuilt: `WolangValue` is 32 bytes, calls return
+  a `WolangStatus`, and `WOLANG_ABI_VERSION` says which shape a header has
+  (D241).
+
 ### Safety
 
 - A bodiless `uses unsafe` primitive (`Free`, `ArrayNew`, `ViewFromRaw`)
@@ -58,7 +74,17 @@ for what it found.
 - `std.net` has UDP sockets for game networking.
 - A dependency in `wolang.toml` can say which versions it accepts, and a
   bare-string dependency is refused (D242).
+- `gfx` gains cursor modes (hidden, locked for mouse-look, shapes),
+  fullscreen, window size and position, DPI-change and file-drop events,
+  up to four gamepads, and native message boxes and file dialogs (D247).
 - `lib/db`, `lib/tls` and `lib/image` are tested in CI on every system.
+
+### Embedding
+
+- The C ABI has the shape it will keep: `WOLANG_ABI_VERSION` and
+  `wolang_abi_version()`, a 32-byte `WolangValue`, `WolangStatus` results,
+  a sized `WolangVmOptions` for `wolang_vm_create_with`, and
+  `<lib>_abi_version` exported by `wolang build --library` (D241).
 
 ### Tiers
 
@@ -68,6 +94,11 @@ for what it found.
   `%` is `fmod`, and sign-changing 64-bit casts trap (D224, D226).
 - Trap text is identical in every tier, and floats print as the shortest
   round-trip text with every NaN as `nan`.
+- The differential fuzzer covers every integer width, casts, shifts and
+  bitwise operators, labelled loops, `match`, enums, optionals, `T!`,
+  text, classes and live-object counts; it found and closed seven more
+  disagreements in narrow signed arithmetic, payload reads, text copies
+  and unsigned folding.
 - The interpreter stops before the native stack runs out, so deep
   compile-time recursion is a diagnostic.
 
