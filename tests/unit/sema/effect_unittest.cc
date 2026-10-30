@@ -298,5 +298,149 @@ comptime fun Pick() -> int {
 )"), "");
 }
 
+// D232: what a `@Thread` parameter is given runs on another thread.
+WOLANG_TEST(EffectRowTest, ThreadBodyCannotReachAMutableGlobal) {
+  WOLANG_EXPECT_EQ(CodesOf("thread-global", R"(
+var shared: int = 0
+
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Work() {
+  shared = shared + 1
+}
+
+fun Go() {
+  Launch(Work)
+}
+)"), "E0147");
+  // Through a call, not only directly.
+  WOLANG_EXPECT_EQ(CodesOf("thread-global-indirect", R"(
+var shared: int = 0
+
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Bump() {
+  shared = 1
+}
+
+fun Work() {
+  Bump()
+}
+
+fun Go() {
+  Launch(Work)
+}
+)"), "E0147");
+  // A closure body is judged too.
+  WOLANG_EXPECT_EQ(CodesOf("thread-global-closure", R"(
+var shared: int = 0
+
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Go() {
+  Launch(|| { shared = 2 })
+}
+)"), "E0147");
+}
+
+WOLANG_TEST(EffectRowTest, ThreadBodyThatTouchesNothingIsFine) {
+  WOLANG_EXPECT_EQ(CodesOf("thread-clean", R"(
+const limit: int = 3
+var shared: int = 0
+
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Work() {
+  const _x = limit
+}
+
+fun Poke() {
+  shared = 1
+}
+
+fun Go() {
+  Launch(Work)
+  Poke()
+}
+)"), "");
+  // The caller takes responsibility.
+  WOLANG_EXPECT_EQ(CodesOf("thread-unsafe", R"(
+var shared: int = 0
+
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Work() {
+  shared = shared + 1
+}
+
+fun Go() uses unsafe {
+  Launch(Work)
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, ThreadClosureCannotCapture) {
+  WOLANG_EXPECT_EQ(CodesOf("thread-capture", R"(
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Go() {
+  const n = 5
+  Launch(|| { const _m = n })
+}
+)"), "E0148");
+  WOLANG_EXPECT_EQ(CodesOf("thread-capture-twin", R"(
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Go() {
+  Launch(|| { const _m = 5 })
+}
+)"), "");
+  // Not even `uses unsafe` supplies the environment a capture needs.
+  WOLANG_EXPECT_EQ(CodesOf("thread-capture-unsafe", R"(
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Go() uses unsafe {
+  const n = 5
+  Launch(|| { const _m = n })
+}
+)"), "E0148");
+  // `@Thread(captures)`: the runtime copies the environment per thread.
+  WOLANG_EXPECT_EQ(CodesOf("thread-capture-allowed", R"(
+@Thread(captures)
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Go() {
+  const n = 5
+  Launch(|| { const _m = n })
+}
+)"), "");
+}
+
 }  // namespace
 }  // namespace wolang

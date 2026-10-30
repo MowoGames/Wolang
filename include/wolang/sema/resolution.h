@@ -67,6 +67,10 @@ struct Binding {
   // suspension primitive: it suspends once and then finishes, and the
   // compiler writes that machine itself.
   bool has_body = false;
+  // `@Thread` on the declaration: what it is given runs on another OS
+  // thread. 1 = no captures either, 2 = `@Thread(captures)`, where the
+  // runtime copies the environment per thread (D232).
+  uint8_t thread_args = 0;
 
   friend bool operator==(const Binding& lhs, const Binding& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
@@ -75,7 +79,8 @@ struct Binding {
            lhs.factor == rhs.factor && lhs.is_mutable == rhs.is_mutable &&
            lhs.is_public == rhs.is_public &&
            lhs.is_foreign == rhs.is_foreign &&
-           lhs.is_task == rhs.is_task && lhs.has_body == rhs.has_body;
+           lhs.is_task == rhs.is_task && lhs.has_body == rhs.has_body &&
+           lhs.thread_args == rhs.thread_args;
   }
 };
 

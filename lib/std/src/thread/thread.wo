@@ -45,6 +45,7 @@ offer class Thread {
 /// is what it can reach, which in this language means a module-level
 /// `var` or something behind a lock. A parameter would be a pointer whose
 /// lifetime nobody checks.
+@Thread
 offer fun Spawn(body: fun()) -> Thread uses unsafe {
   return Thread(wolang_thread_spawn(body, 0))
 }
@@ -137,6 +138,7 @@ fun ReportsHowManyThreadsRun() -> bool uses unsafe {
 /// Declared with no body: what the runtime needs is the two halves of
 /// the body's function value, and lowering is the only place that can
 /// take a function value apart (D147).
+@Thread(captures)
 offer fun ParallelFor(count: int, threads: int, body: fun(int, int)) uses unsafe
 
 @Test

@@ -25,6 +25,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0130` | a module-level declaration with no type written | wave 12 |
 | `E0137` | `weak` fields | D207 |
 | `E0145` | `self` stored from its own `deinit` | D229 |
+| `E0147`, `E0148` | what crosses a thread | D232 |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E0301`–`E0305` | suspension and tasks | implemented (wave 10) |
 | `E0401`–`E0403` | inheritance, abilities, bounds | implemented (waves 4–5) |
@@ -221,6 +222,8 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0138` | a `type` outside an ability with nothing after it | `type Count` |
 | `E0139` | an `extern class` constructed, or given something other than methods | `Actor()` |
 | `E0145` | `self` stored into a field or global from its own `deinit` | `deinit { stash = self }` |
+| `E0147` | a function or closure given to a `@Thread` parameter (`Spawn`, `ParallelFor`) reads or writes a module-level `var`, directly or through a call, and the caller does not state `uses unsafe` (D232) | `Spawn(Work)` where `Work` pushes to a global list |
+| `E0148` | a closure that captures given to a `@Thread` parameter that has no environment to give it (`Spawn`; not `ParallelFor`), even under `uses unsafe` (D232) | `Spawn(\|\| { Print("{n}") })` |
 | `E0140` | a generic instantiates itself with ever bigger types | `fun F<T>(x: T) { F([x]) }` (D225) |
 | `E0121` | a reference would outlive what it points into (also through fields, indices, calls and a local array as a slice, D228) | `return &local.n` |
 | `E0142` | an object made inside `arena { }` is stored outside, returned or given out as the block's value (D228) | `kept = Leaf(1)` inside the block, `kept` declared outside |

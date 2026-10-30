@@ -448,7 +448,23 @@ void CompiledModule::Impl::Compile() {
         EmitFunction(target_, interner_, types_, &file.layouts, file.module, function,
                      file.compilable, file.foreign, file.strings,
                      static_cast<uint32_t>(traps_.size()));
-    WOLANG_CHECK(compiled.compiled);
+    if (!compiled.compiled) {
+      // The probe above said yes and the real emit says no (it sees the
+      // real trap numbering). Calls between functions are patched only
+      // once all have a place, so half a module cannot be kept: give the
+      // whole tier up and leave everything to the interpreter, which is
+      // always correct, rather than aborting the compiler (D232).
+      for (Entry& undone : entries_) {
+        undone.compiled = false;
+        undone.reason = compiled.reason.empty() ? "could not be emitted"
+                                                : compiled.reason;
+      }
+      bytes_.clear();
+      traps_.clear();
+      compiled_count_ = 0;
+      skipped_count_ = static_cast<uint32_t>(entries_.size());
+      return;
+    }
 
     entry.compiled = true;
     entry.begin = base;

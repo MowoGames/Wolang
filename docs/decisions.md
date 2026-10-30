@@ -2972,3 +2972,28 @@ runs the deferred drops now.
 Still open: a `deinit` value captured by a closure is never dropped, a
 payload that no arm moves is not dropped with the enum, and a parameter
 is not a flow local, so moving a parameter twice is not diagnosed.
+
+**D232. What crosses a thread.** `Spawn` absorbed `unsafe` and ran any
+`fun()`, so two threads pushing to one module-level `List` raced and
+segfaulted, and a capturing closure handed to it had no environment to
+run with. The rule: a function marked `@Thread` runs what it is given on
+another OS thread (`Spawn`, `ParallelFor`; every std API that does so
+carries the mark). The function or closure passed there must not read or
+write a module-level `var`, directly or through anything it calls
+(`E0147`), unless the *caller* declares `uses unsafe`, which takes
+responsibility for the sharing, as it does for `extern` (D221). Locks and
+atomics are reached through such a `var` handle, so code using them
+states `uses unsafe` with a comment. A closure that captures is `E0148`
+for plain `@Thread` (Spawn passes no environment), and no `uses unsafe`
+lifts that; `@Thread(captures)` (ParallelFor) allows it because the
+runtime copies the environment per thread (D147).
+
+The check is a flag per body (names a mutable global) plus every call it
+makes, closed over the module in the same pass shape as the effect
+fixpoint (database.cc, effect diagnostics), not a new effect: an effect
+would have to be declared on every function in between. Limits: calls
+into other modules and method calls are not followed, and a function
+value held in a variable is not judged; the interpreter runs a spawned
+body inline (D97) so it never sees the race. Separately, the JIT driver
+now gives the whole tier up to the interpreter if an emit fails after the
+probe passed, instead of aborting the compiler.

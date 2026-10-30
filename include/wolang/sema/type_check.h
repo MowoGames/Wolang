@@ -40,6 +40,20 @@ struct TypedBody {
   // starting work is being responsible for it -- except `async`: the
   // spawner does not suspend.
   std::vector<std::pair<uint32_t, uint32_t>> spawned_callees;
+  // Whether the body names a module-level `var` (read or write), and
+  // every function it names or calls, declared row or not. The module
+  // walk over them finds what a thread body can reach (D232).
+  bool touches_global = false;
+  std::vector<std::pair<uint32_t, uint32_t>> all_callees;
+  // What was handed to a `@Thread` parameter: a function (its callees)
+  // or a closure (what its own body touches). Empty when the caller
+  // states `uses unsafe`, which takes responsibility for the sharing.
+  struct ThreadRoot {
+    SourceSpan span;
+    bool touches = false;
+    std::vector<std::pair<uint32_t, uint32_t>> callees;
+  };
+  std::vector<ThreadRoot> thread_roots;
   // Expressions that were accepted as an implicit borrow: an owned
   // `String` where a `str` was wanted (D15b). Recorded because it is the
   // difference between a use that moves and a use that does not, and only

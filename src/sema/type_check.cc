@@ -34,6 +34,9 @@ constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadWeak = "E0137";
 constexpr std::string_view kTypeWithoutTarget = "E0138";
 constexpr std::string_view kSelfEscapesDeinit = "E0145";
+// A closure that captures, started on another thread (D232). E0147, the
+// module-level `var` it may not reach, is reported by the module walk.
+constexpr std::string_view kThreadCaptures = "E0148";
 // `extern class` is made, kept and freed by the host: no constructor and
 // no fields, only methods the host binds (D213).
 constexpr std::string_view kForeignClass = "E0139";
@@ -390,6 +393,110 @@ class Checker {
   // The closures being checked, innermost last: a name read inside one
   // is captured by it (D138).
   std::vector<ExprId> closures_;
+  // Thread safety (D232). What each closure's own body touches, so that
+  // handing one to a `@Thread` parameter can be judged without the
+  // function around it; and the closures so handed, judged at the end of
+  // the body when their captures are all known.
+  struct ClosureFacts {
+    ExprId closure;
+    bool touches = false;
+    std::vector<std::pair<uint32_t, uint32_t>> callees;
+  };
+  struct PendingThread {
+    ExprId closure;
+    uint8_t mode = 1;
+    // False when the caller states `uses unsafe`: the globals are its
+    // responsibility, but a missing environment is not a matter of trust
+    // (D232).
+    bool judge_globals = true;
+  };
+  std::vector<ClosureFacts> closure_facts_;
+  std::vector<PendingThread> pending_threads_;
+  // `uses unsafe` on the declaration being checked: the caller takes
+  // responsibility for what the threads share.
+  bool caller_unsafe_ = false;
+
+  bool InsideClosure(ExprId closure) const {
+    return std::find(closures_.begin(), closures_.end(), closure) !=
+           closures_.end();
+  }
+
+  void NoteGlobalTouch() {
+    result_.touches_global = true;
+    for (ClosureFacts& facts : closure_facts_) {
+      if (InsideClosure(facts.closure)) {
+        facts.touches = true;
+      }
+    }
+  }
+
+  void NoteCall(uint32_t file, uint32_t item) {
+    result_.all_callees.emplace_back(file, item);
+    for (ClosureFacts& facts : closure_facts_) {
+      if (InsideClosure(facts.closure)) {
+        facts.callees.emplace_back(file, item);
+      }
+    }
+  }
+
+  // Looks at the arguments of a call to a `@Thread` function.
+  void CollectThreadArguments(const Expr& call) {
+    if (!ast_.Contains(call.lhs) ||
+        ast_.Get(call.lhs).kind != ExprKind::kPath) {
+      return;
+    }
+    const Binding* callee = Lookup(ast_.Get(call.lhs).name);
+    if (callee == nullptr || callee->thread_args == 0) {
+      return;
+    }
+    for (ExprId argument : ast_.Get(call.args)) {
+      if (!ast_.Contains(argument)) {
+        continue;
+      }
+      const Expr& value = ast_.Get(argument);
+      if (value.kind == ExprKind::kClosure) {
+        pending_threads_.push_back(
+            {argument, callee->thread_args, !caller_unsafe_});
+      } else if (value.kind == ExprKind::kPath && !caller_unsafe_) {
+        const Binding* named = Lookup(value.name);
+        if (named != nullptr && named->kind == BindingKind::kFunction &&
+            named->item != Binding::kNoItem) {
+          TypedBody::ThreadRoot root;
+          root.span = value.span;
+          root.callees.emplace_back(named->file, named->item);
+          result_.thread_roots.push_back(std::move(root));
+        }
+      }
+    }
+  }
+
+  void SettleThreadClosures() {
+    for (const PendingThread& pending : pending_threads_) {
+      const SourceSpan span = ast_.Get(pending.closure).span;
+      if (pending.mode == 1 &&
+          !result_.CapturesOf(pending.closure).empty()) {
+        Report(kThreadCaptures,
+               "a closure that captures cannot be started on another thread",
+               span,
+               "a thread gets no environment here; use a function and a "
+               "module-level atomic or lock, or state `uses unsafe`");
+      }
+      if (!pending.judge_globals) {
+        continue;
+      }
+      TypedBody::ThreadRoot root;
+      root.span = span;
+      for (const ClosureFacts& facts : closure_facts_) {
+        if (facts.closure == pending.closure) {
+          root.touches = facts.touches;
+          root.callees = facts.callees;
+          break;
+        }
+      }
+      result_.thread_roots.push_back(std::move(root));
+    }
+    pending_threads_.clear();
+  }
 
   // ---------------------------------------------------------- statements --
 
@@ -975,6 +1082,10 @@ TypeId Checker::CheckPath(const Expr& expr) {
     message.append("` is in scope");
     Report(kUnknownName, std::move(message), expr.span);
     return types_->error();
+  }
+  if (binding->kind == BindingKind::kValue && binding->is_mutable &&
+      binding->item != Binding::kNoItem) {
+    NoteGlobalTouch();
   }
   if (binding->kind == BindingKind::kErrorTag) {
     // An error tag is a value of the error set it belongs to.
@@ -1575,6 +1686,7 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
   }
 
   RecordCallEffects(expr.lhs, id);
+  CollectThreadArguments(expr);
 
   const Expr* previous_callee = callee_path_;
   callee_path_ = ast_.Contains(expr.lhs) ? &ast_.Get(expr.lhs) : nullptr;
@@ -1800,6 +1912,7 @@ void Checker::RecordCallEffects(ExprId callee, ExprId call) {
 }
 
 void Checker::ChargeBinding(const Binding* binding, bool drop_async) {
+  NoteCall(binding->file, binding->item);
   if (const EffectRow* declared =
           resolution_->DeclaredRow(binding->file, binding->item);
       declared != nullptr) {
@@ -2805,6 +2918,15 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       // read is noticed and recorded as a capture (D138).
       const size_t enclosing = HideLocals();
       closures_.push_back(id);
+      {
+        bool known = false;
+        for (const ClosureFacts& facts : closure_facts_) {
+          known |= facts.closure == id;
+        }
+        if (!known) {
+          closure_facts_.push_back({id, false, {}});
+        }
+      }
       std::vector<TypeId> params;
       size_t position = 0;
       for (ParamId param_id : ast_.Get(expr.params)) {
@@ -3246,6 +3368,13 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   const TypeId previous_return = return_type_;
   const bool previous_task = in_task_;
   in_task_ = HasFlag(item.flags, ItemFlags::kAsync);
+  const bool previous_unsafe = caller_unsafe_;
+  caller_unsafe_ = false;
+  for (TypeRefId effect : ast_.Get(item.effects)) {
+    const std::span<const Symbol> path = ast_.Get(ast_.Get(effect).path);
+    caller_unsafe_ |= !path.empty() &&
+                      interner_->Text(path.back()) == "unsafe";
+  }
   const bool previous_deinit = in_deinit_;
   in_deinit_ = item.kind == ItemKind::kDeinit;
   return_type_ = item.type.is_valid() ? resolver_.Resolve(ast_, item.type)
@@ -3314,6 +3443,7 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
 
   return_type_ = previous_return;
   in_task_ = previous_task;
+  caller_unsafe_ = previous_unsafe;
   in_deinit_ = previous_deinit;
   resolver_.PopTypeParameters(pushed);
   PopScope();
@@ -3910,6 +4040,7 @@ TypedBody Checker::Run(ItemId item, uint32_t item_index) {
   at_module_level_ = true;
   CheckItem(item);
   PopScope();
+  SettleThreadClosures();
   result_.diagnostics = diagnostics_.diagnostics();
   return std::move(result_);
 }

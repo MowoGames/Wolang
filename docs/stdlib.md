@@ -640,6 +640,13 @@ fun main() uses io, unsafe {
 }
 ```
 
+A body started on another thread (`Spawn`, `ParallelFor`: the
+parameters of functions marked `@Thread`) may not read or write a
+module-level `var`, directly or through the functions it calls, unless
+the function making the call states `uses unsafe` (`E0147`), and `Spawn`
+takes no capturing closure at all (`E0148`); `ParallelFor`'s closure
+may capture, each thread getting a copy (D232).
+
 ## std.tasks
 
 `std.thread.ParallelFor(count, body)` is a range split across the cores,

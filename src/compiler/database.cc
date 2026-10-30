@@ -210,6 +210,8 @@ constexpr std::string_view kUndeclaredEffect = "E0701";
 constexpr std::string_view kUnstatedPublicEffect = "E0704";
 constexpr std::string_view kForbiddenEffect = "E0702";
 constexpr std::string_view kUnsafeForbidden = "E0801";
+// What a function started on another thread may not reach (D232).
+constexpr std::string_view kThreadTouchesGlobal = "E0147";
 constexpr std::string_view kUngrantedCapability = "E0703";
 // A sandboxed package declaring something outside the language (D217).
 constexpr std::string_view kSandboxedExtern = "E0705";
@@ -1057,6 +1059,82 @@ void Database::RegisterQueries() {
             message.append(interner_.Text(ast.Get(id).name));
             message.append("` is `extern`, which a sandboxed package cannot declare");
             diagnostics.Error(kSandboxedExtern, std::move(message)).Primary(ast.Get(id).name_span, "the host's API comes from a package it trusts");
+          }
+        }
+
+        // A function handed to a `@Thread` parameter must not reach a
+        // module-level `var`, directly or through what it calls. Same
+        // shape as the effect fixpoint above, but a plain flag and over
+        // every call, declared row or not (D232). Calls into other
+        // modules are not followed: a library vouches for itself.
+        if (const auto* files =
+                db.GetAs<std::vector<FileId>>(ModuleFilesKey(module))) {
+          struct Reach {
+            uint32_t file;
+            uint32_t item;
+            bool touches;
+            const std::vector<std::pair<uint32_t, uint32_t>>* callees;
+          };
+          std::vector<Reach> reach;
+          const CheckedFile* mine = nullptr;
+          for (FileId other : *files) {
+            const auto* checked = db.GetAs<CheckedFile>(TypeCheckKey(other));
+            if (checked == nullptr) {
+              continue;
+            }
+            if (other.index == arg) {
+              mine = checked;
+            }
+            for (const TypedBody& body : checked->items) {
+              if (body.item_index != 0xFFFFFFFFu) {
+                reach.push_back({other.index, body.item_index,
+                                 body.touches_global, &body.all_callees});
+              }
+            }
+          }
+          const auto touches = [&reach](const Reach& node) {
+            for (const auto& [to_file, to_item] : *node.callees) {
+              for (const Reach& other : reach) {
+                if (other.file == to_file && other.item == to_item &&
+                    other.touches) {
+                  return true;
+                }
+              }
+            }
+            return false;
+          };
+          bool grew = true;
+          for (size_t pass = 0; grew && pass <= reach.size(); ++pass) {
+            grew = false;
+            for (Reach& node : reach) {
+              if (!node.touches && touches(node)) {
+                node.touches = true;
+                grew = true;
+              }
+            }
+          }
+          if (mine != nullptr) {
+            for (const TypedBody& body : mine->items) {
+              for (const TypedBody::ThreadRoot& root : body.thread_roots) {
+                bool reaches = root.touches;
+                for (const auto& [to_file, to_item] : root.callees) {
+                  for (const Reach& node : reach) {
+                    reaches |= node.file == to_file && node.item == to_item &&
+                               node.touches;
+                  }
+                }
+                if (!reaches) {
+                  continue;
+                }
+                diagnostics
+                    .Error(kThreadTouchesGlobal,
+                           "code started on another thread reaches a "
+                           "module-level `var`")
+                    .Primary(root.span,
+                             "two threads would share it unguarded; state "
+                             "`uses unsafe` here to take responsibility");
+              }
+            }
           }
         }
 

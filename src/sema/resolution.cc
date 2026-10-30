@@ -925,6 +925,21 @@ FileResolution ResolveFile(TypeStore* types,
     binding.is_foreign = HasFlag(entry.flags, ItemFlags::kExtern);
     binding.is_task = HasFlag(entry.flags, ItemFlags::kAsync);
     binding.has_body = HasFlag(entry.flags, ItemFlags::kHasBody);
+    if (item != nullptr && entry.kind == ItemKind::kFunction) {
+      for (AttributeId attribute_id : ast.Get(item->attributes)) {
+        const Attribute& attribute = ast.Get(attribute_id);
+        if (interner->Text(attribute.name) != "Thread") {
+          continue;
+        }
+        binding.thread_args = 1;
+        for (ExprId argument : ast.Get(attribute.args)) {
+          if (ast.Contains(argument) &&
+              interner->Text(ast.Get(argument).name) == "captures") {
+            binding.thread_args = 2;
+          }
+        }
+      }
+    }
     resolution.scope.push_back(binding);
   }
 
