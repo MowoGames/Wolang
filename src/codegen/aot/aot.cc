@@ -1572,6 +1572,12 @@ void Translator::EmitCast(ir::InstId id, const ir::Inst& inst) {
     TrapIf(LLVMBuildICmp(b_, LLVMIntNE, again, extended, "c"),
            ir::TrapKind::kOverflow,
            "the value does not fit the integer it was cast to");
+  } else if (layouts.IsSignedInteger(from) != layouts.IsSignedInteger(to)) {
+    // Other signedness at 64 bits: fits exactly when not negative (D226).
+    TrapIf(LLVMBuildICmp(b_, LLVMIntSLT, extended,
+                         LLVMConstInt(wide, 0, 0), "c"),
+           ir::TrapKind::kOverflow,
+           "the value does not fit the integer it was cast to");
   }
   Produce(id, narrowed);
 }

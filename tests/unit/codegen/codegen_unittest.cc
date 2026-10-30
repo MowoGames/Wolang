@@ -3,6 +3,7 @@
 
 #include "wolang/codegen/compiler.h"
 
+#include <cstdio>
 #include <string>
 #include <string_view>
 
@@ -399,6 +400,34 @@ fun Truncate(x: float) -> int => x as int
                    "the value does not fit the integer it was cast to");
   WOLANG_EXPECT_EQ(f.Run("ToFloat", {Fixture::Int(3)}), "3");
   WOLANG_EXPECT_EQ(f.Run("Truncate", {Fixture::Float(-2.75)}), "-2");
+}
+
+// Run fails the test itself when the tiers disagree (D226).
+WOLANG_TEST(CodegenTest, TrapsOnSignChangingCastsAt64Bits) {
+  Fixture f(R"(
+fun ToUnsigned(n: s64) -> u64 => n as u64
+
+fun ToSigned(n: u64) -> s64 => n as s64
+
+fun Promote(n: s32) -> u64 => n as u64
+)");
+  const char* kTrap =
+      "trap: overflow at @%s:%%1: "
+      "the value does not fit the integer it was cast to";
+  char text[160];
+  std::snprintf(text, sizeof(text), kTrap, "ToUnsigned");
+  WOLANG_EXPECT_EQ(f.Run("ToUnsigned", {Fixture::Wide(-1)}), text);
+  WOLANG_EXPECT_EQ(f.Run("ToUnsigned", {Fixture::Wide(7)}), "7");
+  std::snprintf(text, sizeof(text), kTrap, "ToSigned");
+  WOLANG_EXPECT_EQ(
+      f.Run("ToSigned",
+            {interp::Value::Int(~uint64_t{0}, IntWidth::k64, false)}),
+      text);
+  WOLANG_EXPECT_EQ(
+      f.Run("ToSigned", {interp::Value::Int(7, IntWidth::k64, false)}),
+      "7");
+  std::snprintf(text, sizeof(text), kTrap, "Promote");
+  WOLANG_EXPECT_EQ(f.Run("Promote", {Fixture::Int(-1)}), text);
 }
 
 WOLANG_TEST(CodegenTest, RunsStructsThroughTheFrame) {

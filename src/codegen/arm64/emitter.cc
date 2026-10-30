@@ -2348,6 +2348,15 @@ class FunctionEmitter {
     const Register reg = DestInt(id, 0);
     const uint32_t bits = layouts_.BitsOf(to);
     if (bits >= 64) {
+      // Other signedness at 64 bits: the value fits exactly when it is
+      // not negative, as the interpreter's rule has it (D226).
+      if (layouts_.IsSignedInteger(from) != layouts_.IsSignedInteger(to)) {
+        assembler_.CmpImm(IWidth::k64, wide, 0);
+        const Label negative =
+            TrapLabel(ir::TrapKind::kOverflow, id,
+                      "the value does not fit the integer it was cast to");
+        assembler_.BCond(Condition::kLt, negative);
+      }
       assembler_.Mov(IWidth::k64, reg, wide);
       FinishInt(id, reg);
       return;
