@@ -2971,9 +2971,8 @@ the scrutinee, and matching it again is `E0122`. A function written as
 parameter that owns something (a `deinit` value) was never dropped; it
 runs the deferred drops now.
 
-
-payload that no arm moves is not dropped with the enum, and a parameter
-is not a flow local, so moving a parameter twice is not diagnosed.
+Closed by D233: a captured `deinit` value, a payload no arm moves, and a
+parameter moved twice.
 
 **D232. What crosses a thread.** `Spawn` absorbed `unsafe` and ran any
 `fun()`, so two threads pushing to one module-level `List` raced and
@@ -3072,3 +3071,5 @@ and a closure body that hands a captured `deinit` value on would drop it
 twice, so that is `E0149` too. Closure bodies are walked by the flow
 check for this (their params shadow captures); nothing they do changes
 the flow after the closure.
+
+A by-value parameter is a flow local, so moving it twice is `E0122`.
