@@ -21,10 +21,11 @@ std::string Describe(const interp::Outcome& outcome) {
   if (outcome.ok()) {
     return outcome.value.Describe();
   }
-  // The kind of trap and where, without the message: a pass that turns one
+  // The kind of trap and its words, without where: a pass that turns one
   // instruction into several moves the trap onto a different one without
-  // changing which operation failed.
-  return "trap: " + std::string(ir::TrapKindName(outcome.trap));
+  // changing which operation failed (D231).
+  return "trap: " + std::string(ir::TrapKindName(outcome.trap)) + " (" +
+         outcome.message + ")";
 }
 
 // Runs one generated program through every tier and reports the first
@@ -116,6 +117,61 @@ WOLANG_TEST(FuzzTest, TheTiersAgreeWithoutTraps) {
   for (uint64_t seed = 1; seed <= 80; ++seed) {
     const std::string disagreement = CompareTiers(seed + 1000, false);
     WOLANG_EXPECT_EQ(disagreement, "");
+  }
+}
+
+// Whether the checker and lowering accept |source|; the empty string when
+// they do. A generator that writes a program the compiler rejects compares
+// nothing, so this is the self-check that every program is valid (D231).
+std::string Rejection(uint64_t seed, const fuzz::Options& options) {
+  const std::string source = fuzz::Generate(options);
+  Database db;
+  const FileId file = db.AddFile("<fuzz>", source);
+  if (const std::vector<Diagnostic>* diagnostics = db.Diagnostics(file)) {
+    for (const Diagnostic& diagnostic : *diagnostics) {
+      if (diagnostic.severity == Severity::kError) {
+        return "seed " + std::to_string(seed) + ": " + diagnostic.code +
+               " " + diagnostic.message + "\n" + source;
+      }
+    }
+  }
+  const LoweredFile* lowered = db.Lowered(file);
+  if (lowered == nullptr || !lowered->problems.empty()) {
+    return "seed " + std::to_string(seed) + ": did not lower\n" + source;
+  }
+  return {};
+}
+
+WOLANG_TEST(FuzzTest, EveryGeneratedProgramChecksClean) {
+  for (uint64_t seed = 5000; seed < 5300; ++seed) {
+    fuzz::Options options;
+    options.seed = seed;
+    WOLANG_EXPECT_EQ(Rejection(seed, options), "");
+  }
+  // And with the optional features off, which write different programs.
+  for (uint64_t seed = 6000; seed < 6060; ++seed) {
+    fuzz::Options options;
+    options.seed = seed;
+    options.floats = false;
+    options.traps = false;
+    WOLANG_EXPECT_EQ(Rejection(seed, options), "");
+  }
+}
+
+WOLANG_TEST(FuzzTest, GeneratedProgramsUseTheWholeLanguageSurface) {
+  // The point of the extension (D231): over a range of seeds, each
+  // construct the generator is meant to reach is actually written.
+  std::string all;
+  for (uint64_t seed = 1; seed <= 60; ++seed) {
+    fuzz::Options options;
+    options.seed = seed;
+    all += fuzz::Generate(options);
+  }
+  for (const char* needle :
+       {"as u8", "as s64", " << ", " >> ", "~", "break L", "continue L",
+        "loop {", "match ", "Shape.Box", "?? ", "Check_", " % ", "u64",
+        "Cell(", ".len", "wolang_objects_live", "..="}) {
+    WOLANG_EXPECT(all.find(needle) != std::string::npos);
   }
 }
 

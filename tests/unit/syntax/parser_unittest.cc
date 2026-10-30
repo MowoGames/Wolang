@@ -203,6 +203,14 @@ WOLANG_TEST(Parser, ComparisonIsNotMistakenForGenericArguments) {
   WOLANG_EXPECT(fixture.InitTree().find("(binary &&") == 0);
 }
 
+WOLANG_TEST(Parser, ShiftInsideAComparisonIsNotGenericArguments) {
+  // Found by the generator (D231): the scan counted the `>>` as two
+  // closers and saw `a<(b>>(c))` as a call with explicit arguments.
+  Fixture fixture("const x = a < ((b >> (c & 15)) * d)");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.InitTree().find("(binary <") == 0);
+}
+
 WOLANG_TEST(Parser, ExplicitGenericCall) {
   Fixture fixture("const x = World.Spawn<Projectile>(origin)");
   WOLANG_EXPECT(fixture.Codes().empty());
@@ -932,6 +940,53 @@ WOLANG_TEST(Parser, ReportsDeeplyNestedExpressions) {
   code.append(400, ')');
   Fixture fixture(code);
   WOLANG_EXPECT(fixture.HasCode("E0041"));
+}
+
+// The chains below are built by loops, not recursion, so the paren limit never
+// sees them; the tree height limit does (D225).
+WOLANG_TEST(Parser, ReportsDeepBinaryChain) {
+  std::string code = "const x = 1";
+  for (int i = 0; i < 100000; ++i) {
+    code += "+1";
+  }
+  Fixture fixture(code);
+  WOLANG_EXPECT(fixture.HasCode("E0041"));
+}
+
+WOLANG_TEST(Parser, ReportsDeepPrefixChain) {
+  std::string code = "const x = ";
+  code.append(100000, '-');
+  code += "1";
+  Fixture fixture(code);
+  WOLANG_EXPECT(fixture.HasCode("E0041"));
+}
+
+WOLANG_TEST(Parser, ReportsDeepMethodChain) {
+  std::string code = "const x = a";
+  for (int i = 0; i < 100000; ++i) {
+    code += ".F()";
+  }
+  Fixture fixture(code);
+  WOLANG_EXPECT(fixture.HasCode("E0041"));
+}
+
+WOLANG_TEST(Parser, ReportsDeepElseIfChain) {
+  std::string code = "fun F() {\n if a { }";
+  for (int i = 0; i < 5000; ++i) {
+    code += " else if a { }";
+  }
+  code += "\n}\n";
+  Fixture fixture(code);
+  WOLANG_EXPECT(fixture.HasCode("E0041"));
+}
+
+WOLANG_TEST(Parser, AcceptsModerateBinaryChain) {
+  std::string code = "const x = 1";
+  for (int i = 0; i < 300; ++i) {
+    code += "+1";
+  }
+  Fixture fixture(code);
+  WOLANG_EXPECT(!fixture.HasCode("E0041"));
 }
 
 WOLANG_TEST(Parser, EmptyFileHasNoDeclarations) {

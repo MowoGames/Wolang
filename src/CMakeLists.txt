@@ -90,6 +90,8 @@ endif()
 # Where the runtime archive ends up, so that `wolang build` can hand it
 # to the linker without being told.
 target_compile_definitions(wolang_core PRIVATE
+    # The compiler's version has one home, project(VERSION) (D248).
+    WOLANG_VERSION_STRING="${PROJECT_VERSION}"
     WOLANG_RUNTIME_ARCHIVE="$<TARGET_FILE:wolang_runtime>"
     # The C runtime the archive was built against, which a binary linked
     # with it on Windows has to use as well.
@@ -113,6 +115,8 @@ add_library(wolang::core ALIAS wolang_core)
 add_library(wolang_embed STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/embed/embed.cc)
 target_link_libraries(wolang_embed PUBLIC wolang_core)
+target_compile_definitions(wolang_embed PRIVATE
+    WOLANG_VERSION_STRING="${PROJECT_VERSION}")
 target_include_directories(wolang_embed PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
@@ -138,6 +142,8 @@ if(WIN32)
         WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 target_link_libraries(wolang_embed_shared PRIVATE wolang_core)
+target_compile_definitions(wolang_embed_shared PRIVATE
+    WOLANG_VERSION_STRING="${PROJECT_VERSION}")
 target_include_directories(wolang_embed_shared PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)

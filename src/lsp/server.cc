@@ -211,7 +211,7 @@ class Server {
 
     Json server = Json::Object();
     server.Set("name", Json::String("wolang"));
-    server.Set("version", Json::String("0.1.0"));
+    server.Set("version", Json::String(WOLANG_VERSION_STRING));
 
     Json result = Json::Object();
     result.Set("capabilities", std::move(text_document));

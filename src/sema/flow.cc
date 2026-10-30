@@ -3,6 +3,7 @@
 
 #include "wolang/sema/flow.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -15,7 +16,11 @@ namespace {
 
 constexpr std::string_view kEscapesRegion = "E0121";
 constexpr std::string_view kUsedAfterMove = "E0122";
+// A value built inside `arena { }` that is kept past the block (D228).
+constexpr std::string_view kArenaEscape = "E0142";
 constexpr std::string_view kUsedBeforeWritten = "E0123";
+// An owning value taken out of a field of the value that owns it (D233).
+constexpr std::string_view kMoveOutOfField = "E0149";
 // A function that declares a result and has a path that reaches its end
 // without returning one.
 constexpr std::string_view kMissingReturn = "E0132";
@@ -50,6 +55,13 @@ struct Local {
   // Reported once: a variable used three times after being moved is one
   // mistake, not three.
   bool reported = false;
+  // The arena nesting this local's value was built in, or zero when it is
+  // not known to come from one (D228).
+  uint32_t arena = 0;
+  // A copy of an enclosing local made by the closure being walked: the
+  // original still owns it, so the closure may read it and not hand it on
+  // (D233).
+  bool captured = false;
 };
 
 class FlowChecker {
@@ -79,6 +91,16 @@ class FlowChecker {
       return;
     }
     const size_t depth = locals_.size();
+    returns_slice_ = declaration.type.is_valid() &&
+                     ast_.Contains(declaration.type) &&
+                     ast_.Get(declaration.type).kind == TypeRefKind::kSlice;
+    // A parameter is a local the body can move out of: handing a by-value
+    // owning one on twice is the same mistake as doing it to a `const`
+    // (D233).
+    for (ParamId param_id : ast_.Get(declaration.params)) {
+      locals_.push_back(Local{ast_.Get(param_id).name, depth_,
+                              Liveness::kLive, false});
+    }
     const Flow flow = Expression(declaration.body);
     locals_.resize(depth);
 
@@ -109,6 +131,15 @@ class FlowChecker {
   }
 
  private:
+  const Local* Find(Symbol name) const {
+    for (auto it = locals_.rbegin(); it != locals_.rend(); ++it) {
+      if (it->name == name) {
+        return &*it;
+      }
+    }
+    return nullptr;
+  }
+
   Local* Find(Symbol name) {
     for (auto it = locals_.rbegin(); it != locals_.rend(); ++it) {
       if (it->name == name) {
@@ -142,7 +173,49 @@ class FlowChecker {
         }
       }
     }
+    return HoldsOwning(types_.StripWrappers(type), 0);
+  }
+
+  // A struct or enum that carries a value with a `deinit` owns it, so it
+  // is moved too and its end drops it (D233). Generic instances and the
+  // owned string are left out: lowering answers the same question with the
+  // same limits, and the two have to agree on what a move is.
+  bool HoldsOwning(TypeId type, int depth) const {
+    if (depth > 8 || types_.KindOf(type) != TypeKind::kNamed ||
+        types_.IsHandle(type)) {
+      return false;
+    }
+    for (const Member& member : resolution_.MembersOf(type)) {
+      if (member.kind == MemberKind::kField) {
+        if (OwnsByDeinit(member.type, depth)) {
+          return true;
+        }
+      } else if (member.kind == MemberKind::kVariant &&
+                 types_.KindOf(member.type) == TypeKind::kFunction) {
+        for (TypeId field : types_.ArgumentsOf(member.type)) {
+          if (OwnsByDeinit(field, depth)) {
+            return true;
+          }
+        }
+      }
+    }
     return false;
+  }
+
+  bool OwnsByDeinit(TypeId type, int depth) const {
+    const TypeId named = types_.StripWrappers(type);
+    if (types_.KindOf(named) != TypeKind::kNamed || types_.IsHandle(named)) {
+      return false;
+    }
+    for (TypeId current = named; current.is_valid();
+         current = resolution_.BaseOf(current)) {
+      for (const Member& member : resolution_.MembersOf(current)) {
+        if (member.kind == MemberKind::kDeinit) {
+          return true;
+        }
+      }
+    }
+    return HoldsOwning(named, depth + 1);
   }
 
   // Whether anything in |body| could leave the loop it belongs to.
@@ -237,28 +310,76 @@ class FlowChecker {
     }
   }
 
-  // The local a `&x` refers to, or an invalid symbol when the expression is
-  // not a reference to a name.
-  Symbol Referent(ExprId id) const {
+  // The local a place expression lives in: `c`, `c.n`, `arr[i]` and
+  // `o.inner.items[2]` all live in `c`, `c`, `arr` and `o`. The walk stops at
+  // a slice, reference or pointer, because what is behind one of those
+  // lives somewhere else (D228).
+  Symbol PlaceRoot(ExprId id) const {
+    ExprId current = id;
+    while (ast_.Contains(current)) {
+      const Expr& expr = ast_.Get(current);
+      if (expr.kind == ExprKind::kPath) {
+        return expr.name;
+      }
+      if (expr.kind != ExprKind::kField &&
+          expr.kind != ExprKind::kOptionalField &&
+          expr.kind != ExprKind::kIndex) {
+        return Symbol();
+      }
+      const TypeKind base = types_.KindOf(typed_.TypeOf(expr.lhs));
+      if (base == TypeKind::kSlice || base == TypeKind::kReference ||
+          base == TypeKind::kPointer) {
+        return Symbol();
+      }
+      current = expr.lhs;
+    }
+    return Symbol();
+  }
+
+  // The local whose storage the reference or slice that |id| evaluates to
+  // may point into, or an invalid symbol when none is known (D228). Four
+  // shapes: `&place`; a local array used as a slice (|as_slice|); and a call
+  // that returns a reference or a slice, which is assumed to be derived
+  // from every reference or slice argument -- the deepest local wins.
+  Symbol RootOf(ExprId id, bool as_slice) const {
     if (!ast_.Contains(id)) {
       return Symbol();
     }
     const Expr& expr = ast_.Get(id);
-    if (expr.kind != ExprKind::kUnary || expr.op != TokenKind::kAmp) {
-      return Symbol();
+    if (expr.kind == ExprKind::kUnary && expr.op == TokenKind::kAmp) {
+      return PlaceRoot(expr.lhs);
     }
-    if (!ast_.Contains(expr.lhs) ||
-        ast_.Get(expr.lhs).kind != ExprKind::kPath) {
-      return Symbol();
+    if (as_slice && types_.KindOf(typed_.TypeOf(id)) == TypeKind::kArray) {
+      return PlaceRoot(id);
     }
-    return ast_.Get(expr.lhs).name;
+    if (expr.kind == ExprKind::kCall) {
+      const TypeKind result = types_.KindOf(typed_.TypeOf(id));
+      if (result != TypeKind::kReference && result != TypeKind::kSlice) {
+        return Symbol();
+      }
+      Symbol best;
+      uint32_t best_depth = 0;
+      for (ExprId argument : ast_.Get(expr.args)) {
+        const Symbol root = RootOf(argument, true);
+        const Local* local = root.is_valid() ? Find(root) : nullptr;
+        if (local != nullptr &&
+            (!best.is_valid() || local->depth > best_depth)) {
+          best = root;
+          best_depth = local->depth;
+        }
+      }
+      return best;
+    }
+    return Symbol();
   }
 
   // Reports a reference that would outlive what it points into. |depth| is
   // where the reference is going: a shallower depth outlives a deeper one,
-  // and -1 is outside the call altogether.
-  void CheckEscape(ExprId value, int depth, SourceSpan span) {
-    const Symbol referent = Referent(value);
+  // and -1 is outside the call altogether. |as_slice| says the value ends
+  // up as a slice, which makes a local array's storage the referent.
+  void CheckEscape(ExprId value, int depth, SourceSpan span,
+                   bool as_slice = false) {
+    const Symbol referent = RootOf(value, as_slice);
     if (!referent.is_valid()) {
       return;
     }
@@ -275,6 +396,82 @@ class FlowChecker {
               "never kept somewhere that outlives it");
   }
 
+  // Whether a value of |type| can hold an object made in an arena: a class
+  // handle, or an aggregate that may contain one.
+  bool MayHoldObject(TypeId type) const {
+    if (types_.IsHandle(type)) {
+      return true;
+    }
+    switch (types_.KindOf(types_.StripWrappers(type))) {
+      case TypeKind::kNamed:
+      case TypeKind::kInstance:
+      case TypeKind::kTuple:
+      case TypeKind::kArray:
+      case TypeKind::kSlice:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // The arena nesting |id| was built in when it is, or is derived from, an
+  // object made inside an `arena { }`; zero otherwise. A call or
+  // construction that yields a class is assumed to allocate in the arena
+  // it runs in, since the arena is not named at the call (D228).
+  uint32_t ArenaOf(ExprId id) const {
+    if (!ast_.Contains(id)) {
+      return 0;
+    }
+    const Expr& expr = ast_.Get(id);
+    const TypeId type = typed_.TypeOf(id);
+    uint32_t level = 0;
+    switch (expr.kind) {
+      case ExprKind::kPath: {
+        const Local* local = Find(expr.name);
+        return local != nullptr ? local->arena : 0;
+      }
+      case ExprKind::kCall:
+      case ExprKind::kStructLiteral:
+        if (depth_ > 0 && types_.IsHandle(type)) {
+          level = depth_;
+        }
+        [[fallthrough]];
+      case ExprKind::kArrayLiteral:
+      case ExprKind::kTupleLiteral:
+        if (MayHoldObject(type)) {
+          for (ExprId argument : ast_.Get(expr.args)) {
+            level = std::max(level, ArenaOf(argument));
+          }
+        }
+        return level;
+      case ExprKind::kField:
+      case ExprKind::kOptionalField:
+      case ExprKind::kIndex:
+        return MayHoldObject(type) ? ArenaOf(expr.lhs) : 0;
+      case ExprKind::kUnary:
+      case ExprKind::kTry:
+      case ExprKind::kUnsafe:
+        return expr.op == TokenKind::kAmp || MayHoldObject(type)
+                   ? ArenaOf(expr.lhs)
+                   : 0;
+      case ExprKind::kBinary:
+        return MayHoldObject(type)
+                   ? std::max(ArenaOf(expr.lhs), ArenaOf(expr.rhs))
+                   : 0;
+      default:
+        return 0;
+    }
+  }
+
+  void ArenaEscape(SourceSpan span, const char* where) {
+    std::string message = "an object made inside `arena` would outlive it, ";
+    message.append(where);
+    diagnostics_->Error(kArenaEscape, std::move(message))
+        .Primary(span, "escapes here")
+        .Note("everything an arena took is gone when its block ends; keep "
+              "it inside the block, or build it outside");
+  }
+
   // Whether the use at |id| was accepted as a borrow rather than taken by
   // value. Only the checker knows, because only it knows which conversion
   // rule it applied.
@@ -285,6 +482,45 @@ class FlowChecker {
       }
     }
     return false;
+  }
+
+  // `o.r` where `r` has a `deinit` and `o` is a struct or enum value: the
+  // value would be in two places, `o` and wherever it went, and `o`'s end
+  // drops it a second time (D233). Reading through it is a borrow, and a
+  // field of a class is another holder's business (D209).
+  void MoveOutOfField(ExprId id) {
+    const Expr& expr = ast_.Get(id);
+    if (expr.kind != ExprKind::kField || IsBorrow(id) ||
+        !IsOwning(typed_.TypeOf(id))) {
+      return;
+    }
+    if (types_.KindOf(types_.StripWrappers(typed_.TypeOf(id))) ==
+        TypeKind::kString) {
+      return;
+    }
+    ExprId root = expr.lhs;
+    while (ast_.Contains(root)) {
+      const Expr& step = ast_.Get(root);
+      const TypeId base = types_.StripWrappers(typed_.TypeOf(root));
+      if (types_.IsHandle(base) || types_.KindOf(base) != TypeKind::kNamed) {
+        return;
+      }
+      if (step.kind == ExprKind::kPath) {
+        break;
+      }
+      if (step.kind != ExprKind::kField) {
+        return;
+      }
+      root = step.lhs;
+    }
+    if (!ast_.Contains(root) || !IsOwning(typed_.TypeOf(root))) {
+      return;
+    }
+    diagnostics_->Error(kMoveOutOfField,
+                        "cannot move a value with a `deinit` out of a field")
+        .Primary(expr.span, "this field owns it")
+        .Note("borrow it by reading through the field, or move the whole "
+              "value that holds it");
   }
 
   // Marks |name| moved when the use at |id| hands the value away.
@@ -310,12 +546,38 @@ class FlowChecker {
     return Expression(id);
   }
 
+  // The names a pattern binds are locals of the arm.
+  void BindPattern(PatternId id) {
+    if (!ast_.Contains(id)) {
+      return;
+    }
+    const Pattern& pattern = ast_.Get(id);
+    if (pattern.kind == PatternKind::kBinding && pattern.name.is_valid()) {
+      locals_.push_back(Local{pattern.name, depth_, Liveness::kLive, false});
+    }
+    for (PatternId element : ast_.Get(pattern.elements)) {
+      BindPattern(element);
+    }
+  }
+
   void MaybeMove(Symbol name, ExprId id) {
     Local* local = Find(name);
     if (local == nullptr || local->state != Liveness::kLive) {
       return;
     }
     if (!IsOwning(typed_.TypeOf(id)) || IsBorrow(id)) {
+      return;
+    }
+    if (local->captured) {
+      if (!local->reported) {
+        local->reported = true;
+        diagnostics_->Error(kMoveOutOfField,
+                            "cannot move a captured value with a `deinit` "
+                            "out of a closure")
+            .Primary(ast_.Get(id).span, "the function around it owns it")
+            .Note("a closure borrows what it captures; read it, or move it "
+                  "outside the closure");
+      }
       return;
     }
     local->state = Liveness::kMoved;
@@ -360,11 +622,12 @@ class FlowChecker {
         const bool zero_filled =
             !stmt.expr.is_valid() && ast_.Contains(stmt.type) &&
             ast_.Get(stmt.type).kind == TypeRefKind::kArray;
+        const uint32_t arena = stmt.expr.is_valid() ? ArenaOf(stmt.expr) : 0;
         locals_.push_back(
             Local{pattern.name, depth_,
                   stmt.expr.is_valid() || zero_filled ? Liveness::kLive
                                                       : Liveness::kUnwritten,
-                  false});
+                  false, arena});
         return Flow::kFalls;
       }
 
@@ -373,7 +636,11 @@ class FlowChecker {
           Expression(stmt.expr);
           // Nothing inside this function outlives the call, so a reference
           // to a local cannot be returned at all.
-          CheckEscape(stmt.expr, -1, ast_.Get(stmt.expr).span);
+          CheckEscape(stmt.expr, -1, ast_.Get(stmt.expr).span,
+                      returns_slice_);
+          if (ArenaOf(stmt.expr) > 0) {
+            ArenaEscape(ast_.Get(stmt.expr).span, "returned from the function");
+          }
         }
         return Flow::kDiverges;
 
@@ -381,6 +648,11 @@ class FlowChecker {
       case StmtKind::kContinue:
         if (stmt.expr.is_valid()) {
           Expression(stmt.expr);
+          // A loop outside the arena takes the value past the block.
+          if (!loop_depths_.empty() &&
+              ArenaOf(stmt.expr) > loop_depths_.back()) {
+            ArenaEscape(ast_.Get(stmt.expr).span, "broken out of the block");
+          }
         }
         return Flow::kDiverges;
 
@@ -464,9 +736,18 @@ class FlowChecker {
           // A compound assignment reads the target as well.
           Report(name, expr.span);
         }
+        const uint32_t arena = ArenaOf(expr.rhs);
+        if (arena > 0) {
+          const Local* target = Find(name);
+          if (target == nullptr || target->depth < arena) {
+            ArenaEscape(expr.span, "stored where the block does not reach");
+          }
+        }
         if (Local* local = Find(name)) {
-          CheckEscape(expr.rhs, static_cast<int>(local->depth),
-                      expr.span);
+          local->arena = std::max(local->arena, arena);
+          CheckEscape(expr.rhs, static_cast<int>(local->depth), expr.span,
+                      types_.KindOf(typed_.TypeOf(expr.lhs)) ==
+                          TypeKind::kSlice);
           // Assigning to a name that was moved out of gives it a value
           // again, which is the whole of what makes `var` and moves get
           // along.
@@ -523,18 +804,41 @@ class FlowChecker {
       }
 
       case ExprKind::kMatch: {
-        Expression(expr.lhs);
+        // A name that is matched is read, not taken: only an arm that
+        // moves its payload empties it (D233).
+        if (ast_.Contains(expr.lhs) &&
+            ast_.Get(expr.lhs).kind == ExprKind::kPath) {
+          Borrowed(expr.lhs);
+        } else {
+          Expression(expr.lhs);
+        }
         const std::vector<Liveness> before = Written();
         std::vector<Liveness> common;
         bool any_falls = false;
+        // A payload bound by an arm is the scrutinee's own storage; moving
+        // it out empties the scrutinee for whatever matches it next, or
+        // both would run the `deinit` (D229).
+        Symbol scrutinee;
+        if (ast_.Contains(expr.lhs) &&
+            ast_.Get(expr.lhs).kind == ExprKind::kPath) {
+          scrutinee = ast_.Get(expr.lhs).name;
+        }
+        bool payload_moved = false;
         for (MatchArmId arm_id : ast_.Get(expr.arms)) {
           const MatchArm& arm = ast_.Get(arm_id);
           Restore(before);
+          const size_t depth = locals_.size();
+          for (PatternId pattern : ast_.Get(arm.patterns)) {
+            BindPattern(pattern);
+          }
           if (arm.guard.is_valid()) {
             Expression(arm.guard);
           }
-          const size_t depth = locals_.size();
           const Flow flow = Expression(arm.body);
+          for (size_t i = depth; i < locals_.size(); ++i) {
+            payload_moved =
+                payload_moved || locals_[i].state == Liveness::kMoved;
+          }
           locals_.resize(depth);
           if (flow == Flow::kDiverges) {
             continue;
@@ -543,6 +847,13 @@ class FlowChecker {
           any_falls = true;
         }
         Restore(any_falls ? common : before);
+        if (payload_moved && scrutinee.is_valid()) {
+          if (Local* local = Find(scrutinee)) {
+            if (local->state == Liveness::kLive) {
+              local->state = Liveness::kMoved;
+            }
+          }
+        }
         return any_falls ? Flow::kFalls : Flow::kDiverges;
       }
 
@@ -584,9 +895,15 @@ class FlowChecker {
           flow = Statements(ast_.Get(expr.lhs).stmts);
           CheckEscape(ValueOf(expr.lhs), static_cast<int>(depth_) - 1,
                       expr.span);
+          if (ArenaOf(ValueOf(expr.lhs)) >= depth_) {
+            ArenaEscape(expr.span, "given out as the block's value");
+          }
         } else {
           flow = Expression(expr.lhs);
           CheckEscape(expr.lhs, static_cast<int>(depth_) - 1, expr.span);
+          if (ArenaOf(expr.lhs) >= depth_) {
+            ArenaEscape(expr.span, "given out as the block's value");
+          }
         }
         locals_.resize(base);
         --depth_;
@@ -612,6 +929,7 @@ class FlowChecker {
         // Reading a field borrows what it is in: `message.len` does not
         // consume the string, and treating it as a move reported the next
         // use of the name as a use after move.
+        MoveOutOfField(id);
         return Borrowed(expr.lhs);
 
       case ExprKind::kBinary:
@@ -637,10 +955,28 @@ class FlowChecker {
         }
         return Flow::kFalls;
 
-      case ExprKind::kClosure:
-        // A closure body runs later, and whether it runs at all is not a
-        // question this walk can answer.
+      case ExprKind::kClosure: {
+        // The body runs later, and whether it runs at all is not a question
+        // this walk can answer, so nothing it does changes the flow after
+        // it. It is still walked for what it takes: an owning value it
+        // captured is the enclosing function's to drop, and handing it on
+        // from in here would drop it twice (D233).
+        const size_t depth = locals_.size();
+        const std::vector<Liveness> before = Written();
+        for (const Symbol captured : typed_.CapturesOf(id)) {
+          Local local{captured, depth_, Liveness::kLive, false};
+          local.captured = true;
+          locals_.push_back(local);
+        }
+        for (ParamId param_id : ast_.Get(expr.params)) {
+          locals_.push_back(Local{ast_.Get(param_id).name, depth_,
+                                  Liveness::kLive, false});
+        }
+        Expression(expr.lhs);
+        locals_.resize(depth);
+        Restore(before);
         return Flow::kFalls;
+      }
 
       default:
         return Flow::kFalls;
@@ -672,6 +1008,12 @@ class FlowChecker {
   // The body may also not run at all, so nothing it wrote is known
   // afterwards -- while anything it moved is gone.
   void Body(ExprId body) {
+    loop_depths_.push_back(depth_);
+    BodyWalk(body);
+    loop_depths_.pop_back();
+  }
+
+  void BodyWalk(ExprId body) {
     const std::vector<Liveness> before = Written();
     const size_t depth = locals_.size();
     Expression(body);
@@ -749,6 +1091,10 @@ class FlowChecker {
   DiagnosticEngine* diagnostics_;
   std::vector<Local> locals_;
   uint32_t depth_ = 0;
+  // The function being walked declares a slice result.
+  bool returns_slice_ = false;
+  // The arena nesting at each enclosing loop, for `break` with a value.
+  std::vector<uint32_t> loop_depths_;
 };
 
 }  // namespace

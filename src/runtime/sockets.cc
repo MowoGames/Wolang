@@ -13,9 +13,11 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #endif
 
+#include <cerrno>
 #include <cstddef>
 #include <cstring>
 
@@ -221,6 +223,126 @@ extern "C" int32_t wolang_socket_blocking(int64_t socket, int32_t on) {
   const int wanted =
       on != 0 ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
   return ::fcntl(Held(socket), F_SETFL, wanted) == 0 ? 0 : -1;
+#endif
+}
+
+// ---- UDP (D244) ----------------------------------------------------------
+// The largest payload an IPv4 datagram can carry (65535 less the IP and
+// UDP headers). Anything bigger is refused here rather than left to each
+// system to word its own error.
+constexpr int64_t kMaxDatagram = 65507;
+
+extern "C" int64_t wolang_udp_open(void) {
+  if (!Started()) {
+    return -1;
+  }
+  const Socket made = ::socket(AF_INET, SOCK_DGRAM, 0);
+  if (made == kNoSocket) {
+    return -1;
+  }
+  return static_cast<int64_t>(made);
+}
+
+extern "C" int32_t wolang_udp_bind(int64_t socket, uint32_t address,
+                                   uint32_t port) {
+  const sockaddr_in where = Where(address, port);
+  return ::bind(Held(socket), reinterpret_cast<const sockaddr*>(&where),
+                sizeof(where)) == 0
+             ? 0
+             : -1;
+}
+
+extern "C" int64_t wolang_udp_send_to(int64_t socket, uint32_t address,
+                                      uint32_t port, const uint8_t* bytes,
+                                      int64_t count) {
+  if (bytes == nullptr || count <= 0 || count > kMaxDatagram) {
+    return -1;
+  }
+  const sockaddr_in where = Where(address, port);
+#if defined(_WIN32)
+  return ::sendto(Held(socket), reinterpret_cast<const char*>(bytes),
+                  static_cast<int>(count), 0,
+                  reinterpret_cast<const sockaddr*>(&where),
+                  sizeof(where));
+#else
+  return ::sendto(Held(socket), bytes, static_cast<size_t>(count), 0,
+                  reinterpret_cast<const sockaddr*>(&where),
+                  sizeof(where));
+#endif
+}
+
+extern "C" int64_t wolang_udp_receive_from(int64_t socket, uint8_t* bytes,
+                                           int64_t room, uint32_t* address,
+                                           uint32_t* port,
+                                           int32_t* truncated) {
+  if (bytes == nullptr || room <= 0 || address == nullptr ||
+      port == nullptr || truncated == nullptr) {
+    return -1;
+  }
+  if (room > kMaxDatagram) {
+    room = kMaxDatagram;
+  }
+  *truncated = 0;
+  sockaddr_in from;
+  std::memset(&from, 0, sizeof(from));
+#if defined(_WIN32)
+  int length = sizeof(from);
+  const int got =
+      ::recvfrom(Held(socket), reinterpret_cast<char*>(bytes),
+                 static_cast<int>(room), 0,
+                 reinterpret_cast<sockaddr*>(&from), &length);
+  if (got == SOCKET_ERROR) {
+    const int why = ::WSAGetLastError();
+    if (why == WSAEWOULDBLOCK) {
+      return -2;
+    }
+    if (why != WSAEMSGSIZE) {
+      return -1;
+    }
+    // The buffer is filled and the rest of the datagram is gone.
+    *truncated = 1;
+    *address = ntohl(from.sin_addr.s_addr);
+    *port = ntohs(from.sin_port);
+    return room;
+  }
+#else
+  // `recvmsg` rather than `recvfrom` because only it reports `MSG_TRUNC`
+  // the same way on Linux and the BSDs.
+  iovec piece;
+  piece.iov_base = bytes;
+  piece.iov_len = static_cast<size_t>(room);
+  msghdr message;
+  std::memset(&message, 0, sizeof(message));
+  message.msg_name = &from;
+  message.msg_namelen = sizeof(from);
+  message.msg_iov = &piece;
+  message.msg_iovlen = 1;
+  const ssize_t got = ::recvmsg(Held(socket), &message, 0);
+  if (got < 0) {
+    return (errno == EAGAIN || errno == EWOULDBLOCK) ? -2 : -1;
+  }
+  if ((message.msg_flags & MSG_TRUNC) != 0) {
+    *truncated = 1;
+  }
+#endif
+  *address = ntohl(from.sin_addr.s_addr);
+  *port = ntohs(from.sin_port);
+  return static_cast<int64_t>(got);
+}
+
+extern "C" int32_t wolang_udp_broadcast(int64_t socket, int32_t on) {
+  const int value = on != 0 ? 1 : 0;
+#if defined(_WIN32)
+  return ::setsockopt(Held(socket), SOL_SOCKET, SO_BROADCAST,
+                      reinterpret_cast<const char*>(&value),
+                      sizeof(value)) == 0
+             ? 0
+             : -1;
+#else
+  return ::setsockopt(Held(socket), SOL_SOCKET, SO_BROADCAST, &value,
+                      sizeof(value)) == 0
+             ? 0
+             : -1;
 #endif
 }
 

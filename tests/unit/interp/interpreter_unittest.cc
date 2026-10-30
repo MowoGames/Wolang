@@ -109,6 +109,143 @@ fun Sum(n: int) -> int {
   WOLANG_EXPECT_EQ(f.Run("Sum", {Fixture::Int(0)}), "0");
 }
 
+WOLANG_TEST(InterpreterTest, LabelledBreakAndContinueReachRangeForAndWhile) {
+  // The label used to be read from the wrong field, so a labelled jump out of
+  // a range-for or while never found its loop and hit `unreachable`.
+  Fixture f(R"(
+fun BreakFor() -> int {
+  var n = 0
+  outer: for i in 0..5 {
+    for j in 0..5 {
+      if j == 2 { break outer }
+      n = n + 1
+    }
+  }
+  return n
+}
+fun ContinueFor() -> int {
+  var n = 0
+  outer: for i in 0..3 {
+    for j in 0..5 {
+      if j == 2 { continue outer }
+      n = n + 1
+    }
+  }
+  return n
+}
+fun BreakWhile() -> int {
+  var n = 0
+  var i = 0
+  outer: while i < 5 {
+    i = i + 1
+    for j in 0..5 {
+      if j == 1 { break outer }
+      n = n + 1
+    }
+  }
+  return n
+}
+fun ContinueWhile() -> int {
+  var n = 0
+  var i = 0
+  outer: while i < 3 {
+    i = i + 1
+    var j = 0
+    while j < 5 {
+      j = j + 1
+      if j == 2 { continue outer }
+      n = n + 1
+    }
+  }
+  return n
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("BreakFor"), "2");
+  WOLANG_EXPECT_EQ(f.Run("ContinueFor"), "6");
+  WOLANG_EXPECT_EQ(f.Run("BreakWhile"), "1");
+  WOLANG_EXPECT_EQ(f.Run("ContinueWhile"), "3");
+}
+
+WOLANG_TEST(InterpreterTest, ConstantFoldingLeavesOverflowToTrap) {
+  // Fixture::Run checks the optimized IR against the unoptimized one, so a
+  // fold into the wrapped value (or a crash inside the compiler on
+  // MIN / -1) shows up here (D224).
+  Fixture f(R"(
+fun AddS64() -> s64 {
+  const a: s64 = 9223372036854775807
+  const b: s64 = 1
+  return a + b
+}
+fun AddU64() -> u64 {
+  const a: u64 = 18446744073709551615
+  const b: u64 = 1
+  return a + b
+}
+fun SubU64() -> u64 {
+  const a: u64 = 0
+  const b: u64 = 1
+  return a - b
+}
+fun MulS64() -> s64 {
+  const a: s64 = 4611686018427387904
+  const b: s64 = 2
+  return a * b
+}
+fun MulU64() -> u64 {
+  const a: u64 = 4294967296
+  const b: u64 = 4294967296
+  return a * b
+}
+fun DivMin() -> s64 {
+  const m: s64 = -9223372036854775807
+  const a: s64 = m - 1
+  const b: s64 = -1
+  return a / b
+}
+fun RemMin() -> s64 {
+  const m: s64 = -9223372036854775807
+  const a: s64 = m - 1
+  const b: s64 = -1
+  return a % b
+}
+fun DivMin8() -> s8 {
+  const a: s8 = -128
+  const b: s8 = -1
+  return a / b
+}
+fun NegMin() -> s64 {
+  const m: s64 = -9223372036854775807
+  const a: s64 = m - 1
+  return -a
+}
+fun NegMin8() -> s8 {
+  const a: s8 = -128
+  return -a
+}
+fun FineDiv() -> s64 {
+  const a: s64 = -9223372036854775807
+  const b: s64 = -1
+  return a / b
+}
+fun FineNeg() -> s64 {
+  const a: s64 = -9223372036854775807
+  return -a
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("AddS64"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("AddU64"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("SubU64"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("MulS64"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("MulU64"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("DivMin"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("RemMin"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("DivMin8"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("NegMin"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("NegMin8"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("FineDiv"), "9223372036854775807");
+  WOLANG_EXPECT_EQ(f.Run("FineNeg"), "9223372036854775807");
+}
+
 WOLANG_TEST(InterpreterTest, RunsRecursion) {
   Fixture f(R"(
 fun Fib(n: int) -> int {
@@ -272,11 +409,12 @@ fun Third() -> float {
 }
 
 fun Wide() -> f64 {
-  return 1.0 / 3.0
+  const one: f64 = 1.0
+  return one / 3.0
 }
 )");
-  WOLANG_EXPECT_EQ(f.Run("Third"), "0.333333");
-  WOLANG_EXPECT_EQ(f.Run("Wide"), "0.333333");
+  WOLANG_EXPECT_EQ(f.Run("Third"), "0.33333334");
+  WOLANG_EXPECT_EQ(f.Run("Wide"), "0.3333333333333333");
   // The two differ in their bits even though both print rounded, which is
   // what the width is for; the check that matters is that neither traps.
 }
@@ -406,6 +544,20 @@ WOLANG_TEST(ComptimeTest, AnEndlessEvaluationStopsBeingTheCompilersProblem) {
   const std::vector<Diagnostic>* diagnostics = db.Diagnostics(file);
   WOLANG_ASSERT_NE(diagnostics, nullptr);
   WOLANG_ASSERT_EQ(diagnostics->size(), size_t{1});
+  WOLANG_EXPECT_EQ(diagnostics->front().code, "E0901");
+}
+
+// Limits::depth is 1024 calls, but a debug build's native frames are big
+// enough that the real stack ended first and the compiler crashed (D225).
+WOLANG_TEST(ComptimeTest, EndlessRecursionStopsBeforeTheNativeStackDoes) {
+  Database db;
+  const FileId file = db.AddFile(
+      "<test>",
+      "comptime fun R(n: int) -> int {\n  return R(n + 1) + 1\n}\n"
+      "comptime const X: int = R(0)\n");
+  const std::vector<Diagnostic>* diagnostics = db.Diagnostics(file);
+  WOLANG_ASSERT_NE(diagnostics, nullptr);
+  WOLANG_ASSERT(!diagnostics->empty());
   WOLANG_EXPECT_EQ(diagnostics->front().code, "E0901");
 }
 
@@ -571,6 +723,37 @@ fun main() uses io {
 offer fun Print(message: text) uses io
 )");
   WOLANG_EXPECT_EQ(f.Output(), "hello, world\n");
+}
+
+WOLANG_TEST(IntrinsicTest, AnUnsignedIntegerInterpolatesWithoutGoingNegative) {
+  // It used to be widened to s64 first, so 2^63 and up printed negative or
+  // trapped (D224).
+  ProgramFixture f(R"(
+fun main() uses io {
+  const big: u64 = 18446744073709551615
+  const small: u8 = 200
+  const neg: s64 = -5
+  Print("{big} {small} {neg}")
+}
+
+offer fun Print(message: text) uses io
+)");
+  WOLANG_EXPECT_EQ(f.Output(), "18446744073709551615 200 -5\n");
+}
+
+WOLANG_TEST(IntrinsicTest, FloatRemainderFollowsFmod) {
+  // `%` on floats type checked but had no implementation in any tier (D224).
+  ProgramFixture f(R"(
+fun main() uses io {
+  const a: float = 5.5
+  const b: float = -5.5
+  const two: float = 2.0
+  Print("{a % two} {b % two} {a % -two}")
+}
+
+offer fun Print(message: text) uses io
+)");
+  WOLANG_EXPECT_EQ(f.Output(), "1.5 -1.5 1.5\n");
 }
 
 WOLANG_TEST(IntrinsicTest, ADeclarationThatIsNotAnIntrinsicTraps) {

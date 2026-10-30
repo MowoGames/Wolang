@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0
+
+Versioned with the compiler from here on (D248); no changes to the
+extension itself.
+
 ## 0.1.0
 
 The first release.

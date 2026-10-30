@@ -205,5 +205,304 @@ task fun Nothing() {}
   WOLANG_EXPECT_EQ(PackageCodes(&db), "");
 }
 
+// Writes a one-file package and returns the codes it reports (D221, D222).
+std::string CodesOf(const char* name, const char* source) {
+  testing::TempTree tree(name);
+  tree.Write("wolang.toml", "[package]\nname = \"t\"\nversion = \"1\"\n");
+  tree.Write("src/main.wo", source);
+  Database db;
+  DiagnosticEngine diagnostics;
+  if (!LoadPackage(&db, tree.path(), &diagnostics)) {
+    return "load failed";
+  }
+  return PackageCodes(&db);
+}
+
+WOLANG_TEST(EffectRowTest, BodilessUnsafePrimitiveReExportsUnsafe) {
+  // A primitive has no body vouching for it, so its `uses unsafe` is the
+  // caller's to state, like `extern` (D221).
+  WOLANG_EXPECT_EQ(CodesOf("prim-fires", R"(
+fun Free(items: []u8) uses unsafe
+
+offer fun Drop(items: []u8) {
+  Free(items)
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("prim-twin", R"(
+fun Free(items: []u8) uses unsafe
+
+offer fun Drop(items: []u8) uses unsafe {
+  Free(items)
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, WrapperWithABodyStillAbsorbsUnsafe) {
+  WOLANG_EXPECT_EQ(CodesOf("wrap-absorbs", R"(
+fun Free(items: []u8) uses unsafe
+
+fun Release(items: []u8) uses unsafe {
+  Free(items)
+}
+
+fun Safe(items: []u8) {
+  Release(items)
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, NamingAFunctionAsAValueChargesItsEffects) {
+  // Binding a function to a local and calling that must cost what calling
+  // it directly does (D222).
+  WOLANG_EXPECT_EQ(CodesOf("value-fires", R"(
+fun Out() uses io
+
+offer fun Sneaky() {
+  const w: fun() = Out
+  w()
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("value-twin", R"(
+fun Out() uses io
+
+offer fun Sneaky() uses io {
+  const w: fun() = Out
+  w()
+}
+)"), "");
+  WOLANG_EXPECT_EQ(CodesOf("value-unsafe", R"(
+fun Free(items: []u8) uses unsafe
+
+offer fun Sneaky() {
+  const _w: fun([]u8) = Free
+}
+)"), "E0704");
+}
+
+WOLANG_TEST(EffectRowTest, ComptimeCannotNameAnIoFunctionAsAValue) {
+  WOLANG_EXPECT_EQ(CodesOf("value-comptime", R"(
+fun Out() uses io
+
+comptime fun Pick() -> int {
+  const _w: fun() = Out
+  return 1
+}
+)"), "E0702");
+  WOLANG_EXPECT_EQ(CodesOf("value-comptime-twin", R"(
+fun Pure() {}
+
+comptime fun Pick() -> int {
+  const _w: fun() = Pure
+  return 1
+}
+)"), "");
+}
+
+// D232: what a `@Thread` parameter is given runs on another thread.
+WOLANG_TEST(EffectRowTest, ThreadBodyCannotReachAMutableGlobal) {
+  WOLANG_EXPECT_EQ(CodesOf("thread-global", R"(
+var shared: int = 0
+
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Work() {
+  shared = shared + 1
+}
+
+fun Go() {
+  Launch(Work)
+}
+)"), "E0147");
+  // Through a call, not only directly.
+  WOLANG_EXPECT_EQ(CodesOf("thread-global-indirect", R"(
+var shared: int = 0
+
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Bump() {
+  shared = 1
+}
+
+fun Work() {
+  Bump()
+}
+
+fun Go() {
+  Launch(Work)
+}
+)"), "E0147");
+  // A closure body is judged too.
+  WOLANG_EXPECT_EQ(CodesOf("thread-global-closure", R"(
+var shared: int = 0
+
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Go() {
+  Launch(|| { shared = 2 })
+}
+)"), "E0147");
+}
+
+WOLANG_TEST(EffectRowTest, ThreadBodyThatTouchesNothingIsFine) {
+  WOLANG_EXPECT_EQ(CodesOf("thread-clean", R"(
+const limit: int = 3
+var shared: int = 0
+
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Work() {
+  const _x = limit
+}
+
+fun Poke() {
+  shared = 1
+}
+
+fun Go() {
+  Launch(Work)
+  Poke()
+}
+)"), "");
+  // The caller takes responsibility.
+  WOLANG_EXPECT_EQ(CodesOf("thread-unsafe", R"(
+var shared: int = 0
+
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Work() {
+  shared = shared + 1
+}
+
+fun Go() uses unsafe {
+  Launch(Work)
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, ThreadClosureCannotCapture) {
+  WOLANG_EXPECT_EQ(CodesOf("thread-capture", R"(
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Go() {
+  const n = 5
+  Launch(|| { const _m = n })
+}
+)"), "E0148");
+  WOLANG_EXPECT_EQ(CodesOf("thread-capture-twin", R"(
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Go() {
+  Launch(|| { const _m = 5 })
+}
+)"), "");
+  // Not even `uses unsafe` supplies the environment a capture needs.
+  WOLANG_EXPECT_EQ(CodesOf("thread-capture-unsafe", R"(
+@Thread
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Go() uses unsafe {
+  const n = 5
+  Launch(|| { const _m = n })
+}
+)"), "E0148");
+  // `@Thread(captures)`: the runtime copies the environment per thread.
+  WOLANG_EXPECT_EQ(CodesOf("thread-capture-allowed", R"(
+@Thread(captures)
+fun Launch(body: fun()) {
+  body()
+}
+
+fun Go() {
+  const n = 5
+  Launch(|| { const _m = n })
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, ANamedMethodChargesItsEffects) {
+  // A method called or named as a value reaches its effects as surely as a
+  // function does; neither was charged before (D222).
+  WOLANG_EXPECT_EQ(CodesOf("method-call-fires", R"(
+struct Box {
+  var n: int
+
+  fun Out() uses io {
+  }
+}
+
+offer fun Sneaky(b: Box) {
+  b.Out()
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("method-value-fires", R"(
+struct Box {
+  var n: int
+
+  fun Out() uses io {
+  }
+}
+
+offer fun Sneaky(b: Box) {
+  const _w = b.Out
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("method-type-value-fires", R"(
+struct Box {
+  var n: int
+
+  fun Out() uses io {
+  }
+}
+
+offer fun Sneaky() {
+  const _w = Box.Out
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("method-twin", R"(
+struct Box {
+  var n: int
+
+  fun Out() uses io {
+  }
+
+  fun Quiet() {
+  }
+}
+
+offer fun Declared(b: Box) uses io {
+  const _w = b.Out
+  b.Out()
+}
+
+offer fun Pure(b: Box) {
+  b.Quiet()
+  const _w = b.Quiet
+}
+)"), "");
+}
+
 }  // namespace
 }  // namespace wolang

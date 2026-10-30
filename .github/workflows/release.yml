@@ -14,9 +14,26 @@ on:
         description: "Version to build, without the v"
         required: true
 
+# Nothing here writes to the repository except `publish`, which says so.
+permissions:
+  contents: read
+
 jobs:
+  # First, and cheap: a tag that does not match the source is a release
+  # that would say one version and be another, so stop before 20 minutes
+  # of building (D248).
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag is the version in CMakeLists.txt
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', inputs.version) }}
+        run: python3 tools/package/check_version.py --tag "$TAG"
+
   artifacts:
     name: ${{ matrix.name }}
+    needs: check
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -56,6 +73,48 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
 
+      # The release carries the ahead-of-time back end, so `wolang build`
+      # works: the same pinned LLVM 22 that ci.yml's `aot` jobs use (23
+      # miscompiles a remainder, D208).
+      - name: Cache the LLVM packages
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: llvm-22.1.8-${{ matrix.os }}
+
+      - name: Install LLVM 22
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+            chmod +x /tmp/llvm.sh
+            sudo /tmp/llvm.sh 22
+            sudo apt-get install -y llvm-22-dev
+            echo "CMAKE_PREFIX_PATH=/usr/lib/llvm-22" >> $GITHUB_ENV
+          else
+            brew install llvm@22
+            echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm@22)" >> $GITHUB_ENV
+          fi
+
+      # Windows has no package for it: LLVM 22.1.8's C API, fetched by
+      # script and kept between runs (D208).
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
+        with:
+          python-version: "3.14"
+      - name: Cache the LLVM SDK
+        if: runner.os == 'Windows'
+        id: llvm-sdk
+        uses: actions/cache@v4
+        with:
+          path: build/llvm-sdk
+          key: llvm-sdk-22.1.8-windows-x86_64
+      - name: Fetch the LLVM SDK
+        if: runner.os == 'Windows' && steps.llvm-sdk.outputs.cache-hit != 'true'
+        run: python tools/package/fetch_llvm.py --version 22.1.8
+
       - name: Build
         shell: bash
         run: |
@@ -76,6 +135,12 @@ jobs:
           [ "$RUNNER_OS" = "Windows" ] && W="$W.exe"
           "$W" --version
           "$W" test lib/std
+          # Built without the back end this would say so, and a release
+          # that cannot `build` is not the release that was promised.
+          exe=hello
+          [ "$RUNNER_OS" = "Windows" ] && exe=hello.exe
+          "$W" build examples/hello.wo -o "$RUNNER_TEMP/$exe"
+          "$RUNNER_TEMP/$exe"
 
       # The whole thing, laid out by `cmake --install`: the compiler, the
       # libraries, the embedding headers, the CMake package and the
@@ -132,15 +197,28 @@ jobs:
   # The Windows installer: a real `.msi`, with the PATH entry and an
   # Add/Remove Programs record (D188).
   msi:
+    needs: check
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Cache the LLVM SDK
+        id: llvm-sdk
+        uses: actions/cache@v4
+        with:
+          path: build/llvm-sdk
+          key: llvm-sdk-22.1.8-windows-x86_64
       - name: Install what it takes
         run: |
           choco install ninja llvm --no-progress -y
           dotnet tool install --global wix
           wix extension add -g WixToolset.UI.wixext
+      - name: Fetch the LLVM SDK
+        if: steps.llvm-sdk.outputs.cache-hit != 'true'
+        run: python tools/package/fetch_llvm.py --version 22.1.8
       - name: Build
         run: |
           cmake --preset windows -DCMAKE_BUILD_TYPE=Release
@@ -154,6 +232,7 @@ jobs:
 
   # The editor extension, which needs no compiler to build (D175).
   extension:
+    needs: check
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -170,9 +249,39 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      # The notes are the CHANGELOG section for this version; GitHub's
+      # generated notes (the merged pull requests) are added after them,
+      # and are all there is if the section is missing (D248).
+      - name: Release notes from CHANGELOG.md
+        id: notes
+        run: |
+          version="$(python3 tools/package/check_version.py --print)"
+          python3 tools/package/release_notes.py "$version" > notes.md ||
+            echo "No CHANGELOG section for $version." > notes.md
+          # How to get it, under the notes: the same lines docs/install.md gives.
+          cat >> notes.md <<EOF
+
+          ### Install
+
+          macOS and Linux:
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/alpha/install.sh | sh -s -- --version $version
+          \`\`\`
+
+          Windows: run \`wolang-$version-x86_64.msi\` from the assets below, or
+
+          \`\`\`powershell
+          & ([scriptblock]::Create((irm https://raw.githubusercontent.com/$GITHUB_REPOSITORY/alpha/install.ps1))) -Version $version
+          \`\`\`
+
+          Every archive is listed in \`SHA256SUMS\`; the installers check it.
+          EOF
+          echo "name=Wolang $version" >> "$GITHUB_OUTPUT"
       # One file of checksums, which is what the install scripts read.
       - name: Gather the checksums
         run: |
@@ -186,13 +295,49 @@ jobs:
             artifacts/**/*.vsix
             artifacts/**/*.msi
             SHA256SUMS
+          name: ${{ steps.notes.outputs.name }}
+          body_path: notes.md
           generate_release_notes: true
+
+  # The release as a user gets it: the install scripts, from the tagged
+  # checkout, pinned to this version, on each system they claim to run on.
+  # A script that cannot install what was just published is a broken
+  # release (D248).
+  smoke:
+    name: install on ${{ matrix.os }}
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: |
+          v="$(python3 tools/package/check_version.py --print)"
+          sh install.sh --version "$v" --prefix "$RUNNER_TEMP/w" --no-modify-path
+          W="$RUNNER_TEMP/w/bin/wolang"
+          test "$("$W" --version)" = "wolang $v"
+          "$W" run examples/hello.wo
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = python tools/package/check_version.py --print
+          ./install.ps1 -Version $v -Prefix "$env:RUNNER_TEMP\w" -NoModifyPath
+          $w = "$env:RUNNER_TEMP\w\current\bin\wolang.exe"
+          if ((& $w --version) -ne "wolang $v") { throw "wrong version" }
+          & $w run examples/hello.wo
+          if ($LASTEXITCODE -ne 0) { throw "hello failed" }
 
   # Discord #wolang-ci and the Telegram topic Wolang CI: the release was published, or it was not.
   # Secrets DISCORD_WEBHOOK_URL and TELEGRAM_BOT_TOKEN; without them nothing is sent, and a
   # message that cannot be sent never fails the job (.github/notify.sh).
   notify:
-    needs: [artifacts, msi, extension, publish]
+    needs: [artifacts, msi, extension, publish, smoke]
     if: always() && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     # actions: read lets notify.sh list the run's jobs with their results and links

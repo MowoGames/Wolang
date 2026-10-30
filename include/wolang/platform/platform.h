@@ -59,6 +59,15 @@ enum {
   kWolangEventText = 9,
   kWolangEventFocus = 10,
   kWolangEventBlur = 11,
+  // Files were dropped on the window: `key` is how many, and
+  // `wolang_window_drop_path` answers each one (D247).
+  kWolangEventDropped = 12,
+  // The pixel scale changed, for instance by moving to another display:
+  // `scroll_x` is the new scale (D247).
+  kWolangEventScaleChanged = 13,
+  // A pad appeared or went away: `key` is its slot, 0 to 3 (D247).
+  kWolangEventGamepadConnected = 14,
+  kWolangEventGamepadDisconnected = 15,
 };
 
 // Where a key is, not what it prints: a layout is the person's business
@@ -111,7 +120,10 @@ typedef struct WolangEvent {
   // Where the pointer is, in pixels from the top left of the content.
   int32_t x;
   int32_t y;
-  // How far a wheel turned, and the size a resize arrived at.
+  // How far a wheel turned, and the size a resize arrived at. For
+  // `kWolangEventMouseMoved` these are instead the movement since the
+  // last such event, which is the only thing that means anything while
+  // the cursor is locked (D247).
   double scroll_x;
   double scroll_y;
   int32_t width;
@@ -213,6 +225,108 @@ WOLANG_PLATFORM_EXPORT int32_t wolang_audio_queue(WolangAudio* audio,
 // How many frames are waiting to be played, and how many more fit.
 WOLANG_PLATFORM_EXPORT int32_t wolang_audio_queued(WolangAudio* audio);
 WOLANG_PLATFORM_EXPORT int32_t wolang_audio_room(WolangAudio* audio);
+
+// ------------------------------------------------------------ cursor ---
+//
+// (D247) Everything from here to the end is optional in the sense that a
+// backend may answer no; none of it is required to open a window.
+
+enum {
+  kWolangCursorArrow = 0,
+  kWolangCursorHand = 1,
+  kWolangCursorText = 2,
+  kWolangCursorCrosshair = 3,
+  kWolangCursorResizeH = 4,
+  kWolangCursorResizeV = 5,
+  kWolangCursorResizeAll = 6,
+};
+
+WOLANG_PLATFORM_EXPORT void wolang_window_cursor_visible(WolangWindow* window,
+                                                         int32_t visible);
+WOLANG_PLATFORM_EXPORT void wolang_window_cursor_shape(WolangWindow* window,
+                                                       int32_t shape);
+// Locks the pointer to the window and reports only its movement, for
+// mouse-look. Answers whether the system allowed it.
+WOLANG_PLATFORM_EXPORT int32_t wolang_window_cursor_lock(
+    WolangWindow* window, int32_t locked);
+
+// ------------------------------------------------------------ window ---
+
+WOLANG_PLATFORM_EXPORT void wolang_window_set_fullscreen(
+    WolangWindow* window, int32_t fullscreen);
+WOLANG_PLATFORM_EXPORT int32_t wolang_window_is_fullscreen(
+    WolangWindow* window);
+// Content size in pixels. The minimum of 0 by 0 means none.
+WOLANG_PLATFORM_EXPORT void wolang_window_set_size(WolangWindow* window,
+                                                   int32_t width,
+                                                   int32_t height);
+WOLANG_PLATFORM_EXPORT void wolang_window_set_min_size(WolangWindow* window,
+                                                       int32_t width,
+                                                       int32_t height);
+WOLANG_PLATFORM_EXPORT void wolang_window_set_position(WolangWindow* window,
+                                                       int32_t x, int32_t y);
+WOLANG_PLATFORM_EXPORT void wolang_window_position(WolangWindow* window,
+                                                   int32_t* x, int32_t* y);
+// The paths of the last drop, UTF-8, owned by the window until the next
+// drop. Null past the end.
+WOLANG_PLATFORM_EXPORT const char* wolang_window_drop_path(
+    WolangWindow* window, int32_t index);
+
+// ---------------------------------------------------------- gamepads ---
+//
+// Up to four pads in one standard layout whatever the system calls them.
+// Buttons: 0 A, 1 B, 2 X, 3 Y, 4 left bumper, 5 right bumper, 6 back,
+// 7 start, 8 guide, 9 left stick, 10 right stick, 11 to 14 dpad up, down,
+// left, right. Axes: 0 left x, 1 left y, 2 right x, 3 right y (up and
+// left are negative), 4 left trigger, 5 right trigger (0 to 1). No
+// deadzone is applied: that is the program's call (D247).
+
+// Looks for pads coming and going and reads what they did. Answers the
+// next connect or disconnect as `kWolangEventGamepad*` in |out|, or 0.
+WOLANG_PLATFORM_EXPORT int32_t wolang_gamepad_poll(WolangEvent* out);
+WOLANG_PLATFORM_EXPORT int32_t wolang_gamepad_connected(int32_t index);
+WOLANG_PLATFORM_EXPORT const char* wolang_gamepad_name(int32_t index);
+WOLANG_PLATFORM_EXPORT int32_t wolang_gamepad_button(int32_t index,
+                                                     int32_t button);
+WOLANG_PLATFORM_EXPORT double wolang_gamepad_axis(int32_t index,
+                                                  int32_t axis);
+
+// ----------------------------------------------------------- dialogs ---
+//
+// Native dialogs. They block until answered (D247).
+
+enum {
+  kWolangDialogInfo = 0,
+  kWolangDialogWarning = 1,
+  kWolangDialogError = 2,
+};
+enum {
+  kWolangButtonsOk = 0,
+  kWolangButtonsOkCancel = 1,
+  kWolangButtonsYesNo = 2,
+};
+// What the person pressed; zero means no dialog could be shown.
+enum {
+  kWolangAnswerUnavailable = 0,
+  kWolangAnswerOk = 1,
+  kWolangAnswerCancel = 2,
+  kWolangAnswerYes = 3,
+  kWolangAnswerNo = 4,
+};
+
+// Whether the dialogs below can work here. On Linux that needs `zenity`
+// or `kdialog` on the PATH.
+WOLANG_PLATFORM_EXPORT int32_t wolang_dialog_available(void);
+WOLANG_PLATFORM_EXPORT int32_t wolang_dialog_message(const char* title,
+                                                     const char* text,
+                                                     int32_t level,
+                                                     int32_t buttons);
+// The chosen path as UTF-8 (owned by the library until the next call), or
+// null when cancelled or unavailable. |start_name| may be null.
+WOLANG_PLATFORM_EXPORT const char* wolang_dialog_open_file(
+    const char* title);
+WOLANG_PLATFORM_EXPORT const char* wolang_dialog_save_file(
+    const char* title, const char* start_name);
 
 #ifdef __cplusplus
 }  // extern "C"

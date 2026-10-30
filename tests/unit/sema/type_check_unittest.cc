@@ -190,7 +190,7 @@ WOLANG_TEST(TypeCheck, IntegerLiteralsTakeTheirContextsType) {
       "  const b: u8 = 200\n"
       "  const c: s64 = 1\n"
       "  const d: f64 = 2\n"
-      "  const e = 0xFFFFFFFFFFFF\n"
+      "  const e: s64 = 0xFFFFFFFFFFFF\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   // Without an expectation a literal settles on `int`.
@@ -200,7 +200,7 @@ WOLANG_TEST(TypeCheck, IntegerLiteralsTakeTheirContextsType) {
   // An integer literal in a float context is fine.
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("d"), "f64");
   // Arbitrary precision until used, so no suffix is needed.
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("e"), "s32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("e"), "s64");
 }
 
 WOLANG_TEST(TypeCheck, ReportsALiteralThatDoesNotFit) {
@@ -209,6 +209,29 @@ WOLANG_TEST(TypeCheck, ReportsALiteralThatDoesNotFit) {
   // The boundary values fit.
   WOLANG_EXPECT(Fixture("fun f() { const x: u8 = 255 }").Codes().empty());
   WOLANG_EXPECT(Fixture("fun f() { const x: s8 = 127 }").Codes().empty());
+}
+
+WOLANG_TEST(TypeCheck, AWideLiteralWithNoTypeIsNotCutToInt) {
+  // Settling on `int` used to wrap 4294967297 to 1 without a word (D225).
+  WOLANG_EXPECT(Fixture("fun f() { const x = 4294967297 }").HasCode("E0109"));
+  WOLANG_EXPECT(Fixture("fun f() { const x = -4294967297 }").HasCode("E0109"));
+  // The same number with a type to land in is fine.
+  WOLANG_EXPECT(!Fixture("fun f() { const x: s64 = 4294967297 }")
+                     .HasCode("E0109"));
+  WOLANG_EXPECT(!Fixture("fun f() { const x = 4294967297 as s64 }")
+                     .HasCode("E0109"));
+  WOLANG_EXPECT(!Fixture("fun f() { const x = 4294967297 as u64 }")
+                     .HasCode("E0109"));
+  WOLANG_EXPECT(!Fixture("fun f() { const x = -2147483648 }")
+                     .HasCode("E0109"));
+  WOLANG_EXPECT(Fixture("fun f() { const x = 2147483648 }").HasCode("E0109"));
+}
+
+WOLANG_TEST(TypeCheck, LiteralArithmeticTakesTheContextsType) {
+  WOLANG_EXPECT_EQ(
+      Fixture("fun f() { const m: s64 = -9223372036854775807 - 1\n"
+              "  const _n = m }").Codes(),
+      "");
 }
 
 WOLANG_TEST(TypeCheck, SuffixesFixTheTypeRegardlessOfContext) {
@@ -439,6 +462,27 @@ WOLANG_TEST(TypeCheck, NullCoalescingRemovesOneLayer) {
 }
 
 // ---------------------------------------------------------------- units -----
+
+WOLANG_TEST(TypeCheck, CompoundAssignmentIsHeldToTheOperatorsOperands) {
+  // `a op= b` is `a = a op b`, so it asks the same of its operands (D246).
+  Fixture ok(
+      "fun f(o: int?) {\n"
+      "  var n = 1\n"
+      "  n += 2\n"
+      "  n <<= 1\n"
+      "  var m = o\n"
+      "  m ?\?= 3\n"
+      "  var x = 1.5\n"
+      "  x *= 2.0\n"
+      "}\n");
+  WOLANG_EXPECT(ok.Codes().empty());
+
+  WOLANG_EXPECT(Fixture("fun f() { var b = true\n b += 1 }").HasCode("E0108"));
+  WOLANG_EXPECT(Fixture("fun f() { var x = 1.5\n x &= 1 }").HasCode("E0108"));
+  WOLANG_EXPECT(Fixture("fun f() { var n = 1\n n ?\?= 2 }").HasCode("E0108"));
+  WOLANG_EXPECT(Fixture("fun f(o: int?) { var m = o\n m ?\?= true }")
+                    .HasCode("E0101"));
+}
 
 WOLANG_TEST(TypeCheck, UnitLiteralsCarryTheirDimension) {
   Fixture fixture(
@@ -1657,6 +1701,24 @@ WOLANG_TEST(TypeCheck, ContainingItselfThroughAWrapperStillHasNoSize) {
   WOLANG_EXPECT(Fixture("struct S { var pair: (int, S) }").HasCode("E0117"));
 }
 
+WOLANG_TEST(TypeCheck, ARecursiveEnumPayloadHasNoSize) {
+  WOLANG_EXPECT(Fixture("enum E {\n  X(e: E)\n  Y\n}\n").HasCode("E0117"));
+  WOLANG_EXPECT(
+      Fixture("enum E {\n  X(e: [4]E)\n  Y\n}\n").HasCode("E0117"));
+  // Behind a slice the enum has a size.
+  WOLANG_EXPECT_EQ(Fixture("enum E {\n  X(e: []E)\n  Y\n}\n").Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AGenericValueTypeMayNotContainItself) {
+  WOLANG_EXPECT(Fixture(
+      "struct W<T> {\n  var t: T\n  var w: W<T>\n}\n").HasCode("E0117"));
+  // The same declaration with a bigger argument is still itself.
+  WOLANG_EXPECT(Fixture(
+      "struct W<T> {\n  var w: W<W<T>>?\n}\n").HasCode("E0117"));
+  WOLANG_EXPECT_EQ(Fixture(
+      "struct W<T> {\n  var t: T\n  var w: []W<T>\n}\n").Codes(), "");
+}
+
 WOLANG_TEST(TypeCheck, AMutualCycleHasNoSizeEither) {
   Fixture f("struct A { var b: B }\nstruct B { var a: A }\n");
   WOLANG_EXPECT_EQ(f.Codes(), "E0117,E0117");
@@ -2077,6 +2139,131 @@ fun Local() -> int {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheckTest, RejectsEscapesThroughPathsCallsAndArrays) {
+  // The root of a reference is found through fields, indices, calls that
+  // return a reference or slice, and a local array used as a slice (D228).
+  Fixture f(R"(
+class C {
+  var n: int = 0
+}
+fun Ret(a: &int) -> &int => a
+
+fun ViaField() -> &int {
+  const c = C(2)
+  return &c.n
+}
+
+fun ViaIndex() -> &int {
+  var a: [4]int
+  return &a[1]
+}
+
+fun ViaCall() -> &int {
+  var x = 1
+  return Ret(&x)
+}
+
+fun ViaArray() -> []int {
+  var a: [4]int
+  return a
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0121,E0121,E0121,E0121");
+}
+
+WOLANG_TEST(TypeCheckTest, ReferencesToOutsideStorageMayBeReturned) {
+  // Non-firing twin: a reference derived from a parameter, or a slice that
+  // is passed through, points at the caller's storage.
+  Fixture f(R"(
+fun Ret(a: &int) -> &int => a
+fun Through(a: &int) -> &int {
+  return Ret(a)
+}
+fun Same(s: []int) -> []int {
+  return s
+}
+fun Local() -> int {
+  var x = 1
+  return *Ret(&x)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheckTest, RejectsAnArenaObjectThatLeavesTheBlock) {
+  // An object made in an arena is gone when the block ends (D228): it may
+  // not be stored outside, returned, or given out as the block's value.
+  Fixture f(R"(
+class Leaf {
+  var id: int = 0
+}
+class Box {
+  var leaf: Leaf = Leaf(0)
+}
+
+var kept: Leaf? = null
+
+fun ToGlobal() {
+  arena {
+    kept = Leaf(1)
+  }
+}
+
+fun ToOuterLocal() {
+  var outer: Leaf? = null
+  arena {
+    const inner = Leaf(2)
+    outer = inner
+  }
+}
+
+fun ToOuterField(b: Box) {
+  arena {
+    b.leaf = Leaf(3)
+  }
+}
+
+fun Returned() -> Leaf {
+  arena {
+    const l = Leaf(4)
+    return l
+  }
+}
+
+fun AsValue() -> Leaf {
+  return arena {
+    Leaf(5)
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "E0142,E0142,E0142,E0142,E0142");
+}
+
+WOLANG_TEST(TypeCheckTest, AnArenaObjectInsideItsBlockIsFine) {
+  // Non-firing twin: using it, and keeping an object made outside.
+  Fixture f(R"(
+class Leaf {
+  var id: int = 0
+}
+class Box {
+  var leaf: Leaf = Leaf(0)
+}
+
+fun Inside() -> int {
+  const outside = Leaf(9)
+  var total = 0
+  arena {
+    const a = Leaf(1)
+    const b = Box(a)
+    b.leaf = Leaf(2)
+    total = a.id + b.leaf.id + outside.id
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 WOLANG_TEST(TypeCheckTest, OnlyATaskMaySuspend) {
   // `wait` is where a function suspends, and `task` is the signature's way
   // of saying it can. Keeping the word at the call site is what makes a
@@ -2170,6 +2357,250 @@ fun Use() {
 }
 )");
   WOLANG_EXPECT_EQ(f.Codes(), "E0105");
+}
+
+WOLANG_TEST(TypeCheckTest, DeinitCannotStoreSelf) {
+  Fixture fires(R"(
+var stash: Zombie? = null
+
+class Zombie {
+  var id: int = 0
+  deinit {
+    stash = self
+  }
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0145"));
+
+  Fixture fine(R"(
+var seen: int = 0
+
+class Zombie {
+  var id: int = 0
+  deinit {
+    seen = self.id
+  }
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0145"));
+}
+
+WOLANG_TEST(TypeCheckTest, MovingAPayloadOutOfAMatchMovesTheEnum) {
+  Fixture fires(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+enum Wrap {
+  Empty
+  Has(r: Res)
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun Twice() -> int {
+  const w = Wrap.Has(Res(1))
+  const a = match w {
+    Wrap.Has(r) => Take(r),
+    Wrap.Empty => 0,
+  }
+  const b = match w {
+    Wrap.Has(r) => Take(r),
+    Wrap.Empty => 0,
+  }
+  return a + b
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0122"));
+
+  Fixture fine(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+enum Wrap {
+  Empty
+  Has(r: Res)
+}
+
+fun Twice() -> int {
+  const w = Wrap.Has(Res(1))
+  const a = match w {
+    Wrap.Has(r) => r.id,
+    Wrap.Empty => 0,
+  }
+  const b = match w {
+    Wrap.Has(r) => r.id,
+    Wrap.Empty => 0,
+  }
+  return a + b
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0122"));
+}
+
+// `after` parsed and was then ignored, so the transition fired at once
+// (D243).
+WOLANG_TEST(TypeCheck, AfterOnATransitionIsRefused) {
+  Fixture f(R"(
+machine Door {
+  state Closed { on Interact -> Open }
+  state Open { on Interact after 3s -> Closed }
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0159"));
+  Fixture fine(R"(
+machine Door {
+  state Closed { on Interact -> Open }
+  state Open { on Interact -> Closed }
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0159"));
+}
+
+WOLANG_TEST(TypeCheckTest, MovingAnOwningFieldOutOfItsOwnerIsE0149) {
+  // `o` drops `r` when it ends; handing `r` on as well would drop it twice
+  // (D233).
+  Fixture fires(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+struct Outer {
+  var r: Res
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun F() -> int {
+  const o = Outer(Res(1))
+  return Take(o.r)
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0149"));
+
+  Fixture fine(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+struct Outer {
+  var r: Res
+}
+
+fun F() -> int {
+  const o = Outer(Res(1))
+  return o.r.id
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0149"));
+}
+
+WOLANG_TEST(TypeCheckTest, MovingAParameterTwiceIsE0122) {
+  // A by-value parameter that owns something is a flow local too (D233).
+  Fixture fires(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun F(r: Res) -> int {
+  const a = Take(r)
+  const b = Take(r)
+  return a + b
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0122"));
+
+  Fixture fine(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun F(r: Res) -> int {
+  const a = r.id
+  return a + Take(r)
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0122"));
+}
+
+WOLANG_TEST(TypeCheckTest, AClosureCannotMoveWhatItCaptured) {
+  // The capture is a copy of a view of the enclosing function's value,
+  // which still drops it; moving it on from the body drops it twice (D233).
+  Fixture fires(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun F() -> int {
+  const r = Res(1)
+  const f = || Take(r)
+  return f()
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0149"));
+
+  Fixture fine(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun F() -> int {
+  const r = Res(1)
+  const f = || r.id
+  const n = f()
+  return n + Take(r)
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0149"));
+  WOLANG_EXPECT(!fine.HasCode("E0122"));
+}
+
+WOLANG_TEST(TypeCheckTest, AnEnumHoldingAnOwningValueIsMovedAsAWhole) {
+  Fixture fires(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+enum Wrap {
+  None
+  Has(r: Res)
+}
+
+fun F() {
+  const r = Res(1)
+  const w = Wrap.Has(r)
+  const _c = w
+  const _d = w
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0122"));
 }
 
 }  // namespace

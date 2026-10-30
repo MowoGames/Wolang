@@ -574,7 +574,6 @@ apart -- and a call that cannot tell two methods apart calls whichever came
 first, which is what happened. Members and IR functions carry a `slot`
 beside the item now, and the linker matches on all three.
 
-
 **D73. `soa []T` is a layout, not a type.** The same record, the same
 fields and the same code reading them; what changes is where the storage
 puts them. A pass that touches one field of a wide record reads every
@@ -2565,7 +2564,6 @@ The rules now, in every tier, because all of it is lowering:
 
 Cycles still leak. `weak` is what breaks them, and it is next.
 
-
 **D207. `weak var` breaks a cycle.** A parent that holds its child and a
 child that holds its parent is the shape of every scene graph, and
 counting alone never frees it. A field marked `weak` holds a `C?` of a
@@ -2856,3 +2854,321 @@ because only its author read it. The repository is open now, and
 `STATUS.md` is where a contributor learns what is done and what is
 open -- `README.md` and `CONTRIBUTING.md` both send people there. A
 working log nobody else can read is a closed door in an open project.
+
+**D221. A bodiless primitive does not absorb `unsafe`.** A declared
+`uses unsafe` absorbs the obligation because the author of a body takes
+responsibility for it. A primitive with no body (`Free`, `ArrayNew`,
+`ViewFromRaw` in `std.mem`) has nobody vouching, so its `unsafe` passes to
+the caller, exactly as an `extern` call does. Without this a sandboxed mod
+could reach raw memory through `std.mem` with no `uses unsafe` of its own.
+
+**D222. Naming a function as a value costs its effects.** Binding
+`const w = WriteAll` and calling `w` through a local escaped the effect
+check, because only direct calls were charged. Any reference to a function
+item that is not the callee of a call now charges its full row to the
+enclosing function, as if called, so capabilities and `@Deterministic` or
+`comptime` contexts see it. Registering a layer is therefore charged
+where it is named, which is conservative.
+A method is charged the same way, called or named (`b.Out`,
+`Type.Out`); methods were not charged at all before.
+
+**D223. The HTTP server answers only requests it can frame.** A request is
+parsed from the bytes that arrived and no more -- the pool buffer is
+reused, so what lies past `received` is another client's. `Content-Length`
+must be digits (nine or fewer are read, more are "too large" and get 413),
+a second one must agree, and `Transfer-Encoding` is refused with 501 (with
+a `Content-Length` too, 400): the server does not implement chunked
+requests, and ignoring the header lets a proxy and this server disagree on
+where a request ends. Idle connections are closed by deadline, not held
+forever.
+
+**D224. Every tier answers integer edge cases the way the interpreter
+does.** Constant folding leaves to run time anything that would trap there:
+64-bit overflow, the most negative value over minus one, and negating it.
+Folding them gave the wrapped answer in one tier and a trap in another,
+and `MIN / -1` executed inside the compiler faulted the host. Unsigned
+integers interpolate through their own runtime call, because widening a
+`u64` past 2^63 to `s64` changed its value. Float `%` is C's `fmod` in
+every tier, called through the runtime, so there is one answer to give.
+
+**D225. Every depth is bounded where it is made.** Sema, lowering, the
+printer and the formatter walk the tree recursively, and a 3000-term
+`1+1+...` or `----1` overflowed the native stack in each of them. The
+parser's paren limit never saw it: left chains are built by loops. The
+parser now tracks the height of the expression it is building -- one per
+link of a chain, per prefix operator, per postfix, per `else if` -- and
+reports `E0041` past 1024 instead of producing the node, so every later
+walker sees a bounded tree and none needs its own guard.
+
+The same rule for types: a generic that calls itself with a bigger type
+(`F<T>` calling `F<[T]>`) is a new copy each time, and lowering never
+finished. An instantiation whose argument nests past 64 levels is `E0140`.
+`E0117` now covers what the member table could not see: an enum's payloads
+and a generic's own instance (`W<W<T>>` inside `W<T>` is the declaration
+again), and the layout's `IsSupported` is depth guarded for the case where
+sema misses one.
+
+An unsuffixed integer literal too wide for `int` is `E0109` where the
+default would be taken (D9: an error, not a silent wrap), and `<literal> as
+s64` reads the literal at the cast's type. The interpreter also measures the
+native stack, not only `Limits::depth`: a debug build's frames are large
+enough that a runaway `comptime` recursion crashed the compiler before 1024
+calls, and it now stops with the same depth trap.
+
+**D226. Tiers agree on integer-cast traps, trap text and float text.** A
+cast between `s64` and `u64` (or a signed value to `u64`) traps when the
+value is negative as a signed number, in the JIT and AOT as in the
+interpreter. Trap messages are one table in effect: the interpreter says
+"index is outside the length" where the length is a runtime value, because
+compiled code cannot print it, and the codegen test harness now compares
+trap text, not only the kind. Floats print as the shortest digits that read
+back as the same number (a `float`/f32 gets its own shortest f32 digits),
+and every NaN prints `nan` whatever its sign bit, from one function used by
+the runtime and the interpreter.
+
+**D227. A reader of someone else's bytes bounds what they can make it
+do.** A document is input, and input decides how deep the parser recurses
+and how much it allocates. JSON stops at 128 levels of nesting, YAML and
+TOML at 64, a regex at 32 nested groups, 1000 repeats and a program of
+20000 steps; `InflateLimited` and `GunzipLimited` stop at the output size
+the caller names. Each limit answers the module's own error (`Malformed`,
+`BadPattern`) rather than trapping, because a trap in a server is the
+whole server. The depths are low because the interpreter recurses on the
+host's stack. YAML aliases share one handle, so a billion-laughs document
+reads in linear time and needs no cap.
+
+**D228. Reference roots and arena escapes are found by a conservative
+walk.** `E0121` no longer recognises only a bare `&name`: the root of a
+reference is the local reached through fields and indices (stopping at a
+slice, reference or pointer, whose referent lives elsewhere), a local
+`[N]T` used where a slice is expected (a `return`, or an assignment to a
+slice), and, for a call whose result is a reference or slice, the deepest
+local among the roots of its arguments -- the result is assumed derived
+from every one. Receivers are not walked. Values held in other locals are
+not tracked. `E0142` (arena escape) uses the same spirit: a value built
+inside `arena { }` -- a class construction, or a call returning one, or a
+name bound to such a value inside the block -- may not be stored in a
+variable declared outside the block, a global, or a field of an outer
+object, nor leave through `return`, `break` or the block's value, because
+the arena is reset at the block's end and the object is uncounted (forged
+pointers otherwise, even in sandboxed code). Using it inside the block is
+fine.
+**D229. A `deinit` cannot keep `self`, and a move out of a match is a move.**
+A `deinit` that stored `self` somewhere that outlives it raised the count
+of an object that was about to be freed: the storage went and the reference
+stayed, a segfault in machine code and stale reads in the interpreter. The
+rule is Swift's: when a destructor returns and the count is not zero the
+object escaped, and that is a trap in every tier (`deinit let self escape`).
+The check is `wolang_object_escaped`, called from the generated `$drop`
+right after the `deinit`, so all tiers share it. Assigning `self` to a
+field or global directly inside a `deinit` is `E0145` before it gets that
+far; a call that stores it is only caught by the trap.
+
+Moves are tracked across `match`: a payload bound by an arm is the
+scrutinee's own storage, so moving it out (handing it on by value) moves
+the scrutinee, and matching it again is `E0122`. A function written as
+`=> expr` left without the destroy a `return` runs, so a by-value
+parameter that owns something (a `deinit` value) was never dropped; it
+runs the deferred drops now.
+
+Closed by D233: a captured `deinit` value, a payload no arm moves, and a
+parameter moved twice.
+
+**D232. What crosses a thread.** `Spawn` absorbed `unsafe` and ran any
+`fun()`, so two threads pushing to one module-level `List` raced and
+segfaulted, and a capturing closure handed to it had no environment to
+run with. The rule: a function marked `@Thread` runs what it is given on
+another OS thread (`Spawn`, `ParallelFor`; every std API that does so
+carries the mark). The function or closure passed there must not read or
+write a module-level `var`, directly or through anything it calls
+(`E0147`), unless the *caller* declares `uses unsafe`, which takes
+responsibility for the sharing, as it does for `extern` (D221). Locks and
+atomics are reached through such a `var` handle, so code using them
+states `uses unsafe` with a comment. A closure that captures is `E0148`
+for plain `@Thread` (Spawn passes no environment), and no `uses unsafe`
+lifts that; `@Thread(captures)` (ParallelFor) allows it because the
+runtime copies the environment per thread (D147).
+
+The check is a flag per body (names a mutable global) plus every call it
+makes, closed over the module in the same pass shape as the effect
+fixpoint (database.cc, effect diagnostics), not a new effect: an effect
+would have to be declared on every function in between. Limits: calls
+into other modules and method calls are not followed, and a function
+value held in a variable is not judged; the interpreter runs a spawned
+body inline (D97) so it never sees the race. Separately, the JIT driver
+now gives the whole tier up to the interpreter if an emit fails after the
+probe passed, instead of aborting the compiler.
+
+**D244. UDP in `std.net`.** Game networking wants datagrams, so the
+runtime gained `wolang_udp_open/bind/send_to/receive_from/broadcast`
+beside the TCP calls (`sockets.cc`, POSIX and Winsock in one file, D158),
+and `std.net` gained `UdpSocket`, `BindUdp`, `BindUdpOn` and `Datagram`.
+Every primitive is `uses net` on its extern (D217). Closing, blocking
+and the bound port reuse the TCP calls, and a UDP `fd` goes to the same
+poller as a TCP one. Receive never writes past the caller's buffer: a
+longer datagram is cut and `Datagram.truncated` is set (`MSG_TRUNC` via
+`recvmsg` on POSIX, `WSAEMSGSIZE` on Windows). A non-blocking socket with
+nothing to read answers null (runtime -2). Sends of zero bytes or more
+than 65507 are refused (-1). The Windows path is written to mirror the
+POSIX one but is not built or run here.
+
+**D243. What a machine and a task do not do yet is refused, not ignored.**
+`on X after 3s` parsed and then fired at once (D71 said so; the compiler
+did not). It is now `E0159`, reported at the transition. The syntax stays
+reserved for a machine that is given time by a generated `Tick(dt)`. A
+`wait` in `enter` was already refused by `E0301`, since a block is not a
+task. Section 8 promised that a task is cancelled with the scope that
+spawned it, and nothing cancels a task. A spawned task runs to its end.
+Stopping one early is a flag it reads. The promise is struck from the spec.
+
+**D242. A dependency can say which versions it accepts.**
+`std = { path = "..", version = "^1.2" }`, or with a repository. The grammar
+is Cargo's: `1.2` means `^1.2`; `~`, `=`, `>=`, `>`, `<=`, `<`, a comma for
+"and", `*`. There is no resolution: the one copy found must satisfy every
+requirement on it, or the build says which package asked and what it found
+(`E0053`). A bare string, `std = "1.2"`, is a version, which is what every
+other manifest means by it. It is an error until there is a registry,
+rather than a path as before. The inline-table reader no longer splits on a
+comma inside quotes. Pre-release ordering and ranges across a registry are
+deferred. The lock file records the version found for each fetched package.
+**D245. `lib/image`: PNG, QOI and BMP in Wolang.** Pictures are read
+and written by a package of their own, written here for the reason deflate
+was (D177): published byte layouts over arithmetic, and the first code a
+hostile file reaches. It depends on `std` only; `gfx` does not know it, and
+`Image.Get` answers `0xAARRGGBB`, the canvas format, so the bridge is a
+loop. An `Image` owns RGBA8 bytes. Every size in a file is checked before
+an allocation: at most 16384 on a side and 64 Mi pixels (`TooLarge`), the
+PNG inflater is held to the size the header implies with `InflateLimited`
+(D227), chunk CRCs, the zlib header and Adler-32 are verified, and bad or
+truncated input is `Malformed` (or `Unsupported` for real features not
+done: compressed or palette BMP, unknown critical PNG chunks), never a
+trap. `int` is 32 bits, so 32-bit file fields are read with a clamp to
+2^31-1 and checksums as `u32`. PNG decodes every colour type, depth 1 to 16
+(16 is cut to 8) and Adam7; the encoder writes RGBA8 with the per-row
+minimum-sum filter and the std deflate. QOI is complete; BMP reads 24 and
+32 bit and writes 32 bit. PNG vectors in the tests come from an independent
+encoder (Python zlib) cross-read with Pillow.
+
+**D233. A value that carries a `deinit` value owns it, and what D229 left open is closed.**
+A struct or enum with a field or a variant payload whose type has a
+`deinit` is an owner itself: it moves instead of being copied (so a
+second use is `E0122`), and its end runs a `$drop` that drops the carried
+value -- the field, or the payload of the active variant -- after its own
+`deinit`. Before, `enum Wrap { Has(r: Res) }` leaked `r` when no arm moved
+it, and `Outer(Res(1))` leaked as well. Limits, the same in the checker
+(`IsOwning`) and in lowering (`OwnsByDeinit`) because a mismatch is a
+double drop: named types only (not generic instances, not classes, which
+are counted, D209), and not the owned string.
+
+Matching a name reads it; an arm that hands its payload on is what moves
+the name (its flag is cleared through the payload). Taking an owning field
+out of the value that owns it (`Take(o.r)`) would drop it twice, so it is
+`E0149`; read through the field (`o.r.id`) instead, or move all of `o`.
+
+A closure borrows what it captures: the environment is a copy that cannot
+outlive the frame (D138), the function around it still drops the value,
+and a closure body that hands a captured `deinit` value on would drop it
+twice, so that is `E0149` too. Closure bodies are walked by the flow
+check for this (their params shadow captures); nothing they do changes
+the flow after the closure.
+
+A by-value parameter is a flow local, so moving it twice is `E0122`.
+
+`std.text.Bytes` returned a writable `[]u8` over text that may be a
+literal: `Bytes("Hello")[0] = 74` made every "Hello" in the program
+"Jello", and in AOT a literal is in read-only memory. The language has no
+read-only slice, and a copy would leak because nothing frees it, so the
+least disruptive sound choice is to make the caller answer for it: an
+`@Exposes` attribute on a function means its `uses unsafe` is not
+absorbed by the body (the usual rule of D221), so calling `Bytes` is
+`unsafe` in the caller. The library already declared `uses unsafe` where
+it called `Bytes`. A real read-only slice type is the proper fix and is
+left for later.
+**D246. `module.Name` reaches what a module offers.** `need std.json`
+used to bind the module's own name as a nameless type, so `json.Parse(x)`
+typed as an error with no diagnostic and lowered to `undef`; a bare `need`
+also dumped the module's whole surface in unqualified, where the first of
+two `Parse`s silently won. Now every `need`, bare or with a list, makes its
+last path segment a qualifier: `json.Parse`, `json.Value`, `json.Corrupt`
+(function, type, constant, error tag; `json.Value.Num(1)` is the type then
+its variant). The resolver keeps these as `FileResolution::qualified`,
+bindings spelled `json.Parse` that point at the real declaration, so
+lowering and linking (by file and item) tell two `Parse`s apart. A local,
+a `self` member or a file-scope name called like the module wins; an
+unknown or non-`offer` name is `E0144`. Unqualified access is unchanged,
+but when two different modules offer one name and the file uses it bare the
+use is `E0143` (first still wins, so the rest checks). Not covered yet:
+qualified names in patterns, qualified assignment to another module's
+`var`, and ambiguity of bare type names in annotations. There is no
+`need x as y`; the qualifier is the last segment.
+
+**D241. The embedding ABI says its version and keeps its shape.**
+`wolang.h` gains `WOLANG_ABI_VERSION` (major<<16 | minor) and
+`wolang_abi_version()`, so a host checks at load what it was compiled
+against. A `WolangValue` is a kind, a reserved word and one union of the
+scalar or handle, beside a text and its length: 32 bytes where it was 56.
+The field names stay, so host source compiles unchanged. `kind` is a
+`uint32_t`, because an enum's size is the C compiler's choice. Kinds are only
+ever added, and a host must accept one it does not know. A struct that will
+grow starts with its size: `WolangVmOptions` for `wolang_vm_create_with`
+(which answers null for a size it does not know; `wolang_vm_create` stays).
+Calls answer a `WolangStatus` (`kWolangOk`, `kWolangError`, `kWolangTrap`)
+instead of "non zero", with the same 0 and 1. An object value keeps its
+type's id in the reserved word, since the union holds the object. A C11
+translation unit asserts the layout in the test build. MowoEngine's
+generated glue calls through C functions and words (D218, D219), not values,
+so it does not change.
+**D248. A release is one tag push, and the version is written once.** The
+compiler's version lives in `project(VERSION)` in `CMakeLists.txt`; the
+driver, the language server and the embedding API take it from there at
+build time (`WOLANG_VERSION_STRING`), and `tools/package/bump_version.py`
+sets the only two other copies (the VS Code and Zed manifests), which
+`check_version.py` keeps equal in `wl docs` and CI. The embedding ABI
+version, when it exists, is separate. `release.yml` first checks the tag
+is `v<that version>` and that `CHANGELOG.md` has its section; builds every
+archive with the pinned LLVM 22 so `wolang build` works from a release;
+publishes with the changelog section as the notes; then installs the
+published release with `install.sh` and `install.ps1` on three systems.
+The installers refuse a download with no checksum line unless told
+`--no-verify`, fall back to the `/releases/latest` redirect when the API is
+rate limited, and read the archive's top directory instead of assuming
+it. `WOLANG_DOWNLOAD_BASE` points them at a local server, for
+`tools/package/test_install.sh` only.
+**D247. The platform layer grows a cursor, window control, pads and
+dialogs.** What a game or a tool needs next to a window (D155) goes in
+`platform/` and `lib/gfx`, one C function each and one backend per system,
+with `none.cc` answering no. Cursor: visibility, seven shapes and a lock
+for mouse-look; a locked pointer reports movement in `scroll_x`/`scroll_y`
+of `kMouseMoved` (X11 grabs and warps to the centre rather than loading
+XInput2, Win32 clips and reads raw input, Cocoa disassociates the cursor).
+Window: fullscreen (Cocoa uses the system Space, since a hand-made
+borderless window cannot become key), size, minimum size, position, file
+drops (`kDropped`, XDND `text/uri-list` on X11, `WM_DROPFILES`, the
+dragging destination) and `kScaleChanged` (`Xft.dpi` on X11, which is the
+only scale X offers).
+
+Gamepads are four slots in one Xbox-shaped layout, no deadzone (the
+program's call; `gfx.Deadzone` is the helper), up and left negative like
+a screen. Linux reads evdev directly, non-blocking, rescanning once a
+second, with no libudev; Windows loads XInput at run time; macOS uses
+GameController.framework, the smaller of it and IOKit HID because it
+already knows the pads. Connect and disconnect come through `Window.Poll`
+behind the window's own events. The evdev and URI-list decoding is
+header-only and system-free, so it is unit-tested from byte buffers.
+
+Dialogs block. Windows and macOS use their own; Linux runs `zenity` or
+`kdialog` with fork and exec (never a shell) and otherwise answers
+unavailable, which `DialogsAvailable()` reports first. Not done: XInput2
+raw motion on X11, pad rumble, multiple-file open, file-type filters.
+
+**D231. The fuzzer generates the language, not a calculator.** It made
+`int` and `float` arithmetic, so every bug the audit found in folding,
+casts, labelled loops, narrow types and counting was out of its reach.
+It now generates every integer width with boundary values, casts,
+shifts, bitwise operators, labelled `break`/`continue`, `match` on ints
+and enums with payloads, optionals, `T!`, interpolated text, classes
+with aliasing and a live-object count before and after, and compares
+trap text as well as trap kind. Operations that can trap are rare (6%)
+so most programs run to a value. A unit test checks that every generated
+program type checks, so a generator bug is not mistaken for a compiler
+bug, and `wolang fuzz <file>` replays one program for minimising.

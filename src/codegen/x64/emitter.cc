@@ -652,11 +652,15 @@ class FunctionEmitter {
     // The bias that makes the shift round towards zero: the sign bit
     // smeared across the low `shift` bits.
     if (shift != 0) {
+      // Counted in the register's width, not the type's: an s16 lives
+      // sign-extended in 32 bits, and shifting out `16 - shift` of them
+      // left a bias of `2^17 - 1` and a quotient of -1 for -1 / 2 (D231).
+      const unsigned register_bits = width == IWidth::k64 ? 64 : 32;
       assembler_.Mov(IWidth::k64, temp, original);
       assembler_.SarImmediate(width, temp,
-                              static_cast<uint8_t>(bits - 1));
+                              static_cast<uint8_t>(register_bits - 1));
       assembler_.ShrImmediate(width, temp,
-                              static_cast<uint8_t>(bits - shift));
+                              static_cast<uint8_t>(register_bits - shift));
       assembler_.Add(width, work, temp);
       assembler_.SarImmediate(width, work,
                               static_cast<uint8_t>(shift));
@@ -2223,16 +2227,32 @@ class FunctionEmitter {
     Extend64(value, from, kAccumulator);
     const Register reg = DestInt(id, 0);
     if (layouts_.BitsOf(to) >= 64) {
+      // Other signedness at 64 bits: the value fits exactly when it is
+      // not negative, as the interpreter's rule has it (D226).
+      if (layouts_.IsSignedInteger(from) != layouts_.IsSignedInteger(to)) {
+        assembler_.CmpImmediate(IWidth::k64, kAccumulator, 0);
+        const Label negative =
+            TrapLabel(ir::TrapKind::kOverflow, id,
+                      "the value does not fit the integer it was cast to");
+        assembler_.Jcc(Condition::kLess, negative);
+      }
       assembler_.Mov(IWidth::k64, reg, kAccumulator);
       FinishInt(id, reg);
       return;
     }
     const Register narrowed = Scratch(2);
-    Canonicalize(kAccumulator, to, narrowed);
-    assembler_.Cmp(IWidth::k64, narrowed, kAccumulator);
     const Label trap =
         TrapLabel(ir::TrapKind::kOverflow, id,
                   "the value does not fit the integer it was cast to");
+    // A u64 with its top bit set has the same 64 bits as a small negative
+    // number, so the comparison below calls `~20u64 as s16` a fit (D231).
+    if (layouts_.BitsOf(from) >= 64 && !layouts_.IsSignedInteger(from) &&
+        layouts_.IsSignedInteger(to)) {
+      assembler_.CmpImmediate(IWidth::k64, kAccumulator, 0);
+      assembler_.Jcc(Condition::kLess, trap);
+    }
+    Canonicalize(kAccumulator, to, narrowed);
+    assembler_.Cmp(IWidth::k64, narrowed, kAccumulator);
     assembler_.Jcc(Condition::kNotEqual, trap);
     assembler_.Mov(IWidth::k64, reg, narrowed);
     FinishInt(id, reg);
@@ -2554,6 +2574,13 @@ class FunctionEmitter {
         } else {
           assembler_.Sub(IWidth::k32, kAccumulator, right);
         }
+        // The 32-bit operation zero-extended its result, and a negative
+        // one that fits is the sign-extended form: widen it the way the
+        // canonical form is before comparing, or `3s16 - 5s16` traps
+        // (D231). A multiply is already a full 64-bit product.
+        if (is_signed) {
+          assembler_.Movsx(IWidth::k32, kAccumulator, kAccumulator);
+        }
         const Register reg = DestInt(id, 0);
         CheckFits(id, kAccumulator, operand_type, reg, inst.opcode);
         FinishInt(id, reg);
@@ -2664,6 +2691,9 @@ class FunctionEmitter {
           return;
         }
         assembler_.Neg(IWidth::k32, kAccumulator);
+        if (is_signed) {
+          assembler_.Movsx(IWidth::k32, kAccumulator, kAccumulator);
+        }
         CheckFits(id, kAccumulator, operand_type, reg, inst.opcode);
         FinishInt(id, reg);
         return;
@@ -2784,7 +2814,9 @@ class FunctionEmitter {
     assembler_.Cmp(IWidth::k64, narrowed, raw);
     const Label trap = TrapLabel(
         ir::TrapKind::kOverflow, id,
-        std::string(ir::OpcodeMnemonic(opcode)) + " overflowed");
+        opcode == ir::Opcode::kNeg
+            ? std::string("negation overflowed")
+            : std::string(ir::OpcodeMnemonic(opcode)) + " overflowed");
     assembler_.Jcc(Condition::kNotEqual, trap);
     assembler_.Mov(IWidth::k64, destination, narrowed);
   }

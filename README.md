@@ -58,7 +58,7 @@ the usual places. These five are the parts it is actually built around:
 | **Effects and capabilities** | A function's signature states what it may do (`uses io, alloc, rand`). One mechanism covers determinism, allocation-free hot paths, sandboxed plugins, compile-time evaluation and server/client separation. |
 | **Units in the type system** | `dimension` and `unit` declarations make `10m / 2s` a velocity and `Quat.FromAxis(up, 90deg)` reject radians. Checked at compile time, free at runtime. |
 | **Layout polymorphism** | `soa []Particle` stores one array per field; `aos []Particle` stores records. Layout belongs to the storage, so the same type works both ways and `foreach` maps the loop onto SIMD lanes either way. |
-| **State machines and timelines** | `machine`, `state`, `on ... after 3s ->` are language constructs, checked for unreachable states, survivable across hot reload. |
+| **State machines and timelines** | `machine`, `state`, `on ... ->` are language constructs, checked for unreachable states, survivable across hot reload. |
 | **Reactive values** | `derived` fields recompute when their inputs change, which is what UI and stat aggregation actually need. |
 
 Two smaller things it does differently. `T?` may be absent and `T!` may fail —
@@ -211,6 +211,7 @@ docs/             specification, architecture, decisions, diagnostics, style
 - [docs/tour.md](docs/tour.md) — the language in examples, start here
 - [docs/cookbook.md](docs/cookbook.md) — whole programs that do a thing
 - [docs/install.md](docs/install.md) — installing it, on each system
+- [docs/releasing.md](docs/releasing.md) — making a release
 - [docs/building.md](docs/building.md) — building it, on each system
 - [docs/stdlib.md](docs/stdlib.md) — the standard library, module by module
 - [docs/style.md](docs/style.md) — code and commit conventions

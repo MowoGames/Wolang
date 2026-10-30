@@ -5,8 +5,10 @@ calls. This is what each one is for, what it gives you, and what it does
 not. Every example here compiles.
 
 How to read a signature: `uses unsafe` on a standard library function
-means *it* takes the responsibility, not you — `std.text.Bytes` looks at
-a string's bytes, and a caller does not have to declare anything.
+means *it* takes the responsibility, not you — `std.math.Sqrt`-style
+wrappers over a C call. The one exception is `std.text.Bytes`: it hands
+out a writable view of text that may be a literal, so a caller declares
+`uses unsafe` and answers for never writing through it (D233).
 
 | Module | What it is for |
 |---|---|
@@ -77,13 +79,18 @@ fun main() uses io, unsafe {
 }
 ```
 
+`builder.Text()` is a view of the builder's own bytes, valid only until the
+next `Append`, `Reserve` or `Clear` and until the builder dies; returning it
+from the function that owns the builder dangles. `Release()` is the owning
+form: use it for any string that outlives the builder (D227).
+
 `Length`, `IsEmpty`, `StartsWith`, `EndsWith`, `IndexOf`, `LastIndexOf`,
 `After`, `Before`, `TrimStart`, `TrimEnd`, `CountPieces`, `PieceAt`,
 `Repeat`, `PadEnd`, `Lower`, `ParseInt`, `ParseFloat`, `Bytes`,
 `TextFromRaw`.
 
 A `text` is bytes and a length. There is no copy on a substring and no
-terminator; `Bytes` hands you the bytes and `TextFromRaw` takes them
+terminator; `Bytes` (`uses unsafe`, a view you must not write) hands you the bytes and `TextFromRaw` takes them
 back.
 
 ## std.fmt
@@ -130,7 +137,9 @@ fun main() uses io, unsafe {
 ## std.regex
 
 A backtracking matcher with a budget: the famous exponential patterns
-answer "no" rather than never answering.
+answer "no" rather than never answering. `Compile` answers `BadPattern` for
+what would blow up: groups nested more than 32 deep, a repeat count over
+1000, or a program over 20000 steps (D227).
 
 ```wolang
 need std.io.{Print}
@@ -207,6 +216,10 @@ fun main() uses io, unsafe {
 ```
 
 A closure captures by copy, so `limit` travels with it.
+
+`Items()` is a view into the list's storage, valid only until the list next
+grows (`Push`, `Reserve`) or dies. Read it after the last mutation; a view
+kept across a `Push` reads freed memory (D227).
 
 ## std.map
 
@@ -311,11 +324,15 @@ fun main() uses io, unsafe {
 }
 ```
 
+Arrays and objects nested more than 128 deep answer `Malformed` rather than
+exhausting the stack (D227).
+
 ## std.toml
 
 TOML 1.0 as it is used: strings in four styles, numbers in four bases,
 booleans, dates as text, arrays, inline tables, dotted keys, `[table]`
-and `[[array of tables]]`.
+and `[[array of tables]]`. Arrays and inline tables nested deeper than 64
+answer `Malformed` instead of exhausting the stack (D227).
 
 ```wolang
 need std.doc.{AsText, Get, Null}
@@ -337,7 +354,8 @@ fun main() uses io, unsafe {
 
 YAML 1.2: block and flow collections, every scalar style, block scalars
 with chomping, anchors and aliases, merge keys, the standard tags, and
-documents in a stream (`ParseAll`).
+documents in a stream (`ParseAll`). Block or flow nesting deeper than 64
+answers `Malformed` instead of exhausting the stack (D227).
 
 ```wolang
 need std.doc.{AsInt, Get, Null}
@@ -430,6 +448,8 @@ Also `Open`/`Create` for a kept-open file, `KindOf`, `SizeOf`,
 
 `Join`, `Parent`, `Name`, `Stem`, `Extension`, `WithExtension`,
 `IsAbsolute`, `Normalize`, `IsInside` — string work, no filesystem.
+`Normalize` answers `""` for a path with more than 64 parts left after
+`.` and `..` are worked out; `IsInside` is false for such a path.
 
 ## std.net
 
@@ -449,6 +469,35 @@ fun main() uses io, net, unsafe {
   }
 }
 ```
+
+UDP, for game networking (D244). A datagram is one message: it arrives whole
+or not at all, and a buffer that is too small cuts it and sets `truncated`.
+
+```wolang
+need std.io.{Print}
+need std.mem.{ArrayNew, Free}
+need std.net.{BindUdpOn, ParseAddress}
+
+fun main() uses io, net, unsafe {
+  const lo = ParseAddress("127.0.0.1") ?? 0
+  var server = BindUdpOn(lo, 0)          // port 0: the system picks
+  var client = BindUdpOn(lo, 0)
+  const _sent = client.SendTextTo(lo, server.LocalPort(), "ping")
+  var buffer = ArrayNew<u8>(512)
+  if const got = server.ReceiveFrom(buffer) {
+    Print("{got.count} bytes from port {got.port}, cut: {got.truncated}")
+  }
+  Free(buffer)
+  server.SetNonBlocking(true)            // ReceiveFrom now answers null
+  client.Close()                         // when nothing is waiting
+  server.Close()
+}
+```
+
+`BindUdp(port)` binds every interface; `SetBroadcast(true)` allows sending
+to the broadcast address. `SendTo` takes `[]u8`, answers the bytes sent or
+-1 (closed, empty, or over 65507 bytes). `UdpSocket.fd` can be watched by
+a poller like a TCP descriptor.
 
 ## std.process
 
@@ -551,6 +600,11 @@ fun main() uses io, unsafe {
 
 What it writes, the system's `gzip` reads, and the other way round.
 
+`Inflate` and `Gunzip` put no cap on the output, so a hostile stream can
+expand about a thousandfold. For anything that arrived from outside use
+`InflateLimited(bytes, most)` / `GunzipLimited(bytes, most)`: they answer
+`Malformed` once the output would pass `most` bytes (D227).
+
 ## std.encoding
 
 `ToBase64`, `FromBase64`, `ToHex`, `FromHex`, `ToUrl`, `FromUrl`.
@@ -616,6 +670,13 @@ fun main() uses io, unsafe {
   Print("{total}")        // 2000
 }
 ```
+
+A body started on another thread (`Spawn`, `ParallelFor`: the
+parameters of functions marked `@Thread`) may not read or write a
+module-level `var`, directly or through the functions it calls, unless
+the function making the call states `uses unsafe` (`E0147`), and `Spawn`
+takes no capturing closure at all (`E0148`); `ParallelFor`'s closure
+may capture, each thread getting a copy (D232).
 
 ## std.tasks
 
@@ -717,7 +778,65 @@ fun main() uses io, unsafe {
 }
 ```
 
+Beyond the window itself (D247), all of it answers "no" cleanly on a build
+with no backend, so a headless run needs no guards:
+
+| Area | API | Notes |
+|---|---|---|
+| Cursor | `ShowCursor(bool)`, `SetCursor(kCursorArrow/Hand/Text/Crosshair/ResizeH/ResizeV/ResizeAll)`, `LockCursor(bool) -> bool` | locked: `kMouseMoved` carries the movement in `scroll_x`/`scroll_y` (unlocked it does too). X11 grabs and warps, Win32 clips and reads raw input, Cocoa detaches the cursor |
+| Window | `SetFullscreen`, `IsFullscreen`, `SetSize`, `SetMinSize`, `SetPosition`, `X()`, `Y()` | content sizes in pixels. Cocoa uses the system full screen (its own Space) |
+| Events | `kDropped` (`key` = count, `DropPath(i)`), `kScaleChanged` (`scroll_x` = new scale) | X11 reads `Xft.dpi`; drops use XDND with `text/uri-list` |
+| Gamepads | `GamepadConnected(i)`, `GamepadName`, `GamepadButton(i, kPadA..)`, `GamepadAxis(i, kAxisLeftX..)`, events `kGamepadConnected` / `kGamepadDisconnected` | up to 4, one layout: sticks -1..1 with up and left negative, triggers 0..1, no deadzone applied. `Deadzone(v, dead)` and `AxisNormalize(raw, low, high)` are helpers. Linux reads `/dev/input/event*` (needs the `input` group, scanned once a second), Windows XInput, macOS GameController |
+| Dialogs | `MessageBox(title, body, kDialogInfo/Warning/Error, kButtonsOk/OkCancel/YesNo) -> kAnswer*`, `OpenFileDialog`, `SaveFileDialog` (both `text?`), `DialogsAvailable()` | Linux runs `zenity` or `kdialog` and otherwise answers `kAnswerUnavailable` / null |
+
+Pad events arrive through `Window.Poll` after the window's own.
+
 ---
+
+## The `image` package
+
+PNG, QOI and BMP, read and written in Wolang (D245). Everything decodes to an
+`Image`: `width`, `height` and RGBA8 `pixels`, which it frees when it goes
+out of scope. `Get(x, y)` answers `0xAARRGGBB`, the format a `gfx` canvas
+holds, so putting an image on screen is a loop over `canvas.pixels` and this
+package does not depend on `gfx`.
+
+```wolang
+need image.{Image, ImageNew, PngDecode, PngEncode, QoiEncode}
+need std.io.{Print}
+
+fun main() uses io, unsafe {
+  match ImageNew(2, 2) {
+    Ok(picture) => {
+      picture.Set(0, 0, 0xffff0000)
+      const file = PngEncode(&picture)
+      match PngDecode(file) {
+        Ok(back) => { Print("{back.width}x{back.height} {back.Get(0, 0)}") },
+        _ => { Print("unreadable") },
+      }
+      Print("{QoiEncode(&picture).len} bytes of QOI")
+    },
+    _ => { Print("too large") },
+  }
+}
+```
+
+| Function | What |
+|---|---|
+| `PngDecode(bytes)` | every colour type, depths 1 to 16 (16 is cut to 8), all filters, Adam7, `PLTE`, `tRNS`; checks CRCs, zlib header and Adler-32 |
+| `PngEncode(&image)` | RGBA8, best of the five filters per row, std deflate |
+| `QoiDecode` / `QoiEncode` | the whole format |
+| `BmpDecode` | 24 and 32 bit, uncompressed, bottom-up or top-down |
+| `BmpEncode` | 32 bit, bottom-up |
+| `ImageNew(w, h)` | a transparent picture |
+
+Decoders answer `Malformed` (bad signature, checksum, length, or data that
+stops early), `Unsupported` (a real feature not done: compressed or palette
+BMP, an unknown critical PNG chunk) or `TooLarge` (over `kMaxSide` = 16384
+on a side or `kMaxPixels` = 64 Mi pixels); sizes are checked before any
+allocation and the PNG inflater is limited to what the header implies
+(D227), so a hostile file cannot trap or balloon. Encoders return storage
+the caller owns.
 
 ## How this compares
 

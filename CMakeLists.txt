@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(Wolang
-    VERSION 0.1.0
+    VERSION 1.1.0
     DESCRIPTION "Wolang - a statically typed, compiled language with gamedev-grade ergonomics"
     HOMEPAGE_URL "https://github.com/MowoGames/Wolang"
     LANGUAGES CXX)
@@ -52,6 +52,7 @@ option(WOLANG_BUILD_TOOLS "Build the wolang command line driver" ON)
 option(WOLANG_BUILD_BENCHMARKS "Build the embedding benchmarks" ON)
 option(WOLANG_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(WOLANG_ENABLE_SANITIZERS "Enable address/undefined sanitizers in Debug" OFF)
+set(WOLANG_SANITIZER_LIST "address,undefined" CACHE STRING "Which sanitizers WOLANG_ENABLE_SANITIZERS turns on")
 
 # Ahead-of-time compilation, through LLVM's C API.
 #

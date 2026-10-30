@@ -299,7 +299,33 @@ const Binding* FileResolution::Find(Symbol name) const {
       return &binding;
     }
   }
+  // A qualified spelling made up by the resolver (D246).
+  for (const Qualified& entry : qualified) {
+    if (entry.binding.name == name) {
+      return &entry.binding;
+    }
+  }
   return nullptr;
+}
+
+const Binding* FileResolution::FindQualified(Symbol qualifier,
+                                             Symbol member) const {
+  for (const Qualified& entry : qualified) {
+    if (entry.qualifier == qualifier && entry.binding.real_name == member) {
+      return &entry.binding;
+    }
+  }
+  return nullptr;
+}
+
+bool FileResolution::IsQualifier(Symbol name) const {
+  return std::find(qualifiers.begin(), qualifiers.end(), name) !=
+         qualifiers.end();
+}
+
+bool FileResolution::IsAmbiguous(Symbol name) const {
+  return std::find(ambiguous.begin(), ambiguous.end(), name) !=
+         ambiguous.end();
 }
 
 namespace {
@@ -656,6 +682,19 @@ TypeId TypeResolver::ResolvePath(const Ast& ast, const TypeRef& type) {
     }
   }
 
+  // `json.Value` names the type the module `json` offers, even when another
+  // module offers a `Value` too (D246).
+  if (path.size() == 2 && resolution_ != nullptr) {
+    if (const Binding* qualified =
+            resolution_->FindQualified(path.front(), path.back());
+        qualified != nullptr && qualified->kind == BindingKind::kType) {
+      if (used_ != nullptr) {
+        used_->push_back(path.back());
+      }
+      return qualified->type;
+    }
+  }
+
   // Only the last segment names the type; earlier segments are the module or
   // the enclosing type, which module resolution already checked.
   const Symbol name = path.back();
@@ -910,7 +949,11 @@ FileResolution ResolveFile(TypeStore* types,
 
     // An `extend` block is named after the type it extends; it declares no
     // new name, so binding it would collide with the declaration itself.
-    if (!entry.name.is_valid() || entry.kind == ItemKind::kExtend) {
+    // A `need` is named after its module so that `module.Name` can be read,
+    // but it declares no value: binding it made `json` a type with no type,
+    // and `json.Parse` an error value nothing reported (D246).
+    if (!entry.name.is_valid() || entry.kind == ItemKind::kExtend ||
+        entry.kind == ItemKind::kNeed) {
       continue;
     }
 
@@ -925,6 +968,25 @@ FileResolution ResolveFile(TypeStore* types,
     binding.is_foreign = HasFlag(entry.flags, ItemFlags::kExtern);
     binding.is_task = HasFlag(entry.flags, ItemFlags::kAsync);
     binding.has_body = HasFlag(entry.flags, ItemFlags::kHasBody);
+    if (item != nullptr && entry.kind == ItemKind::kFunction) {
+      for (AttributeId attribute_id : ast.Get(item->attributes)) {
+        const Attribute& attribute = ast.Get(attribute_id);
+        if (interner->Text(attribute.name) == "Exposes") {
+          binding.exposes = true;
+          continue;
+        }
+        if (interner->Text(attribute.name) != "Thread") {
+          continue;
+        }
+        binding.thread_args = 1;
+        for (ExprId argument : ast.Get(attribute.args)) {
+          if (ast.Contains(argument) &&
+              interner->Text(ast.Get(argument).name) == "captures") {
+            binding.thread_args = 2;
+          }
+        }
+      }
+    }
     resolution.scope.push_back(binding);
   }
 

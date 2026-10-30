@@ -67,6 +67,18 @@ struct Binding {
   // suspension primitive: it suspends once and then finishes, and the
   // compiler writes that machine itself.
   bool has_body = false;
+  // `@Thread` on the declaration: what it is given runs on another OS
+  // thread. 1 = no captures either, 2 = `@Thread(captures)`, where the
+  // runtime copies the environment per thread (D232).
+  uint8_t thread_args = 0;
+  // Whether the declaration is marked `@Exposes`: its `unsafe` is not
+  // absorbed by the body, because what it returns lets the caller write
+  // memory the caller does not own (D233).
+  bool exposes = false;
+  // For a name reached as `module.Name` (D246): the spelling the declaration
+  // has in its own module. `name` is then the qualified spelling, which is
+  // what keeps two modules' `Parse` apart once a file has both.
+  Symbol real_name;
 
   friend bool operator==(const Binding& lhs, const Binding& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
@@ -75,7 +87,10 @@ struct Binding {
            lhs.factor == rhs.factor && lhs.is_mutable == rhs.is_mutable &&
            lhs.is_public == rhs.is_public &&
            lhs.is_foreign == rhs.is_foreign &&
-           lhs.is_task == rhs.is_task && lhs.has_body == rhs.has_body;
+           lhs.is_task == rhs.is_task && lhs.has_body == rhs.has_body &&
+           lhs.thread_args == rhs.thread_args &&
+           lhs.exposes == rhs.exposes &&
+           lhs.real_name == rhs.real_name;
   }
 };
 
@@ -141,6 +156,22 @@ struct FileResolution {
   // Every name visible at file scope: this file's declarations, the other
   // files of its module, and whatever its imports selected.
   std::vector<Binding> scope;
+  // The same names reached through the module they came from, `json.Parse`
+  // (D246). Kept apart from |scope| so an unqualified lookup does not pay
+  // for them; |Find| consults them last, by their qualified spelling.
+  struct Qualified {
+    Symbol qualifier;
+    Binding binding;
+    friend bool operator==(const Qualified& lhs, const Qualified& rhs) {
+      return lhs.qualifier == rhs.qualifier && lhs.binding == rhs.binding;
+    }
+  };
+  std::vector<Qualified> qualified;
+  // Every name a `need` made a qualifier, whether or not it offers anything.
+  std::vector<Symbol> qualifiers;
+  // Names two different modules both brought in unqualified. Using one is
+  // an error (E0143); the first still wins so the rest of the file checks.
+  std::vector<Symbol> ambiguous;
   // The type each declaration of this file introduces, indexed by item tree
   // index. Invalid for declarations that are not types.
   std::vector<TypeId> item_types;
@@ -179,6 +210,11 @@ struct FileResolution {
   mutable std::vector<TypeMembers> instances;
 
   const Binding* Find(Symbol name) const;
+
+  // `qualifier.member` where |qualifier| is a module a `need` named.
+  const Binding* FindQualified(Symbol qualifier, Symbol member) const;
+  bool IsQualifier(Symbol name) const;
+  bool IsAmbiguous(Symbol name) const;
 
   // True when |type| stores its members inline. False for a class, a type
   // from a file this one cannot see, or anything that is not a named type.
@@ -224,7 +260,10 @@ struct FileResolution {
 
   friend bool operator==(const FileResolution& lhs,
                          const FileResolution& rhs) {
-    return lhs.scope == rhs.scope && lhs.item_types == rhs.item_types &&
+    return lhs.scope == rhs.scope && lhs.qualified == rhs.qualified &&
+           lhs.qualifiers == rhs.qualifiers &&
+           lhs.ambiguous == rhs.ambiguous &&
+           lhs.item_types == rhs.item_types &&
            lhs.dimension_products == rhs.dimension_products &&
            lhs.type_members == rhs.type_members &&
            lhs.relations == rhs.relations &&

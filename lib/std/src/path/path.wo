@@ -94,6 +94,11 @@ offer fun Join(left: text, right: text) -> text uses unsafe {
 ///
 /// Textual: it never looks at the filesystem, so a `..` after a symbolic
 /// link means what the text says rather than what the disk says.
+///
+/// A path with more than 64 parts left after the dots are worked out
+/// answers "" -- the one thing Normalize otherwise never returns -- rather
+/// than dropping the rest, which would turn a deep path into a different,
+/// shallower one (D223).
 offer fun Normalize(path: text) -> text uses unsafe {
   const absolute = IsAbsolute(path)
   var parts: [64]text
@@ -121,10 +126,11 @@ offer fun Normalize(path: text) -> text uses unsafe {
         continue
       }
     }
-    if count < 64 {
-      parts[count] = part
-      count = count + 1
+    if count >= 64 {
+      return ""
     }
+    parts[count] = part
+    count = count + 1
   }
 
   var builder = BuilderNew()
@@ -153,6 +159,10 @@ offer fun Normalize(path: text) -> text uses unsafe {
 offer fun IsInside(path: text, directory: text) -> bool uses unsafe {
   const whole = Normalize(path)
   const inside = Normalize(directory)
+  // "" is a path too deep to normalize: it is inside nothing.
+  if Length(whole) == 0 || Length(inside) == 0 {
+    return false
+  }
   if !StartsWith(whole, inside) {
     return false
   }
@@ -210,4 +220,23 @@ fun SaysWhatIsInsideWhat() -> bool uses unsafe {
   return IsInside("/a/b/c", "/a/b") && IsInside("/a/b", "/a/b") && !IsInside(
       "/ab/c",
       "/a") && !IsInside("/a", "/a/b")
+}
+
+@Test
+fun RefusesAPathTooDeepToNormalize() -> bool uses unsafe {
+  var deep = "/"
+  var i = 0
+  while i < 70 {
+    deep = deep + "d/"
+    i = i + 1
+  }
+  var fine = "/"
+  i = 0
+  while i < 64 {
+    fine = fine + "d/"
+    i = i + 1
+  }
+  return Normalize(deep) == "" && !IsInside(deep, "/") && Normalize(fine) != "" && IsInside(
+      fine,
+      "/")
 }

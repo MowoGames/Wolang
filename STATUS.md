@@ -4,9 +4,9 @@
 > below; if it disagrees with the code, the code is right and this file
 > needs fixing.
 
-**Date:** 2026-10-27
+**Date:** 2026-10-30
 **Waves are closed through the 11th**; after that the work was "a complete
-language" without waves, and everything below belongs to it (D119–D220).
+language" without waves, and everything below belongs to it (D119–D248). **Released as 1.1.0.**
 
 ## In short
 
@@ -22,9 +22,68 @@ that they do.
 | Platforms | macOS arm64/x86-64, Linux x86-64/arm64, Windows x86-64 (clang-cl) |
 | Cross targets | `--target`: Windows COFF, Linux ELF, WebAssembly, RISC-V |
 | std | 34 modules (see [docs/stdlib.md](docs/stdlib.md)) |
-| Packages | `http` (server and client), `db` (storage), `gfx` (window/GPU/sound), `tls`, `game`, `core` |
-| Tests | 692 unit tests + 184 library tests, a three-tier fuzzer, a check of every example in the docs |
+| Packages | `http` (server and client), `db` (storage), `gfx` (window/GPU/sound/gamepads), `image` (PNG/QOI/BMP), `tls`, `game`, `core` |
+| Tests | 810 unit tests + 263 library tests, a three-tier fuzzer, a check of every example in the docs |
 | Server | 53,900 requests/s on one thread, 58,900 on eight |
+
+## Done since 27.10: the audit and 1.1.0 (D221–D248)
+
+An audit of the compiler, the runtime, the sandbox and the libraries that
+read other people's bytes, and the fixes for what it found.
+
+**Safety.** A bodiless `uses unsafe` primitive (`Free`, `ArrayNew`,
+`ViewFromRaw`) no longer absorbs `unsafe`, which closed a way for a
+sandboxed mod to reach raw memory (D221); naming a function as a value
+costs its effects (D222). A reference cannot leave through a field, an
+index, a call or a local array turned into a slice (`E0121`), and an
+object made in an `arena` cannot leave its block (`E0142`, D228). A
+`deinit` that keeps `self` traps in every tier (`E0145` for the plain
+case), and a move out of a `match` is a move (D229).
+
+**Servers and readers.** The HTTP server parses only the bytes that
+arrived (it used to read the previous client's), refuses a `Content-Length`
+that would overflow and any `Transfer-Encoding`, and closes slow and idle
+connections (D223). JSON, YAML, TOML and regex bound their depth, and
+`InflateLimited`/`GunzipLimited` bound their output (D227).
+
+**Tiers.** Labelled `break`/`continue` on range-`for` and `while` work;
+folding leaves 64-bit overflow and `MIN / -1` to trap; `u64` interpolates
+above 2^63; float `%` is `fmod` (D224). Sign-changing 64-bit casts trap in
+the compiled tiers, trap text is identical everywhere, floats print as the
+shortest round-trip text (D226). Every depth is bounded where it is made:
+long expression chains are `E0041`, runaway generics `E0140`, recursive
+enums `E0117`, a literal too wide for `int` is `E0109`, and the
+interpreter stops before the native stack runs out (D225).
+
+**Language.** `need std.json` gives `json.Parse` (`E0143` for an
+ambiguous bare name, `E0144` for an unknown qualified one, D246);
+compound assignment is a read-modify-write (it used to store the right
+side); a module-level var of function type is called through its storage;
+`after` on a transition is `E0159` and task cancellation is gone from the
+spec (D243); thread bodies may not touch module-level vars or capture
+(`E0147`, `E0148`, D232); owning values inside enums and structs are
+dropped and moved with them, and a closure cannot move what it captured
+(`E0149`, D233).
+
+**Libraries.** `lib/image` (PNG, QOI, BMP, D245); UDP in `std.net`
+(D244); `gfx` cursor modes, fullscreen, file drop, DPI events, gamepads
+and native dialogs (D247); dependency version requirements (D242).
+
+**Embedding.** The C ABI's frozen shape: `WOLANG_ABI_VERSION`, a 32-byte
+`WolangValue`, `WolangStatus`, `WolangVmOptions` (D241).
+
+**Fuzzer.** Every integer width, casts, bitwise operators, labelled
+loops, `match`, enums, optionals, `T!`, text, classes and live-object
+counts; seven disagreements it found are fixed (D231).
+
+**Release.** The version is written once in `CMakeLists.txt`; a tag push
+builds every platform with the LLVM back end, publishes `SHA256SUMS` and
+smoke-tests both installers ([docs/releasing.md](docs/releasing.md),
+[CHANGELOG.md](CHANGELOG.md), D248).
+
+**CI.** AOT is built and fuzzed on every system, `lib/db` and `lib/tls`
+are tested, there is a UBSan job, and `fuzz --aot` fails without a back
+end instead of passing.
 
 ## Done since 15.10 (D191–D200)
 
@@ -455,6 +514,38 @@ These are the ones that shape everything else.
 ---
 
 ## Not done yet
+
+**Next: 1.2.0.** The breaking language decisions designed in
+[docs/plans/pre-1.0.md](docs/plans/pre-1.0.md) and not yet built: `int`
+is 64 bits (D238, steps D2–D3; D1's guard test is in), errors carry data
+and offered functions state their sets (D235), `unsafe fun` (D236),
+allocation checked by `@Hot` (D237), `Self` and operator abilities
+(D239), escaping closures with `keep` (D240, F1–F2; F0 is in). Then the
+libraries that need them: `math` (vectors with operators), `font`,
+`audio`, `gpu`, an immediate-mode `ui`, `app`. Self-hosting is a later
+plan: [docs/plans/self-hosting.md](docs/plans/self-hosting.md).
+
+Known gaps found on the way, for 1.2.0:
+
+- `var a: s8 = -128` traps "negation overflowed" in every tier (the
+  literal is negated after being read as positive).
+- `"{t}"` of an owned `Text` inside a loop is `E0122` on the second
+  iteration, though the same use in straight-line code is accepted.
+- `E0147` does not follow calls into other modules, method calls or
+  function values in variables; the interpreter runs a spawned body
+  inline, so it can never see a race (D97, D232).
+- A capturing closure passed down and stored by the callee dangles until
+  `keep` lands (F1).
+- Qualified names do not work in patterns, as intrinsic callees or as the
+  target of an assignment to another module's var (D246).
+- There is no read-only slice; `Bytes` is `unsafe` instead (D233).
+- The blocking `Serve`/`ServeWith` HTTP path has no deadline; only the
+  polled `RunServerOn` does.
+- Written but never compiled or run here: the Windows paths of UDP and
+  the new `gfx` features, the Cocoa ones, the arm64 emitter changes and
+  everything changed in `aot.cc` — CI is what runs them.
+
+### Older open items
 
 An honest list. Everything else that used to be in this section is done
 — generics across files, enum construction, `comptime` with arguments,

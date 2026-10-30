@@ -17,9 +17,61 @@
 #include <cstring>
 #include <utility>
 
+#if defined(__linux__)
+#include <pthread.h>
+#endif
+
 namespace wolang {
 namespace interp {
 namespace {
+
+// Set by RunNamed for the length of one run (D240).
+thread_local std::vector<Value>* shared_tokens = nullptr;
+
+// The native stack this thread may use, as [low, high); {0, 0} when it
+// cannot be found. Looked up once per thread: finding it reads the process
+// map. Limits::depth alone is not enough, because one interpreted call is
+// several native frames and a debug build's are large, so the real stack ran
+// out first and a runaway `comptime` recursion crashed `check` (D225).
+struct NativeStack {
+  uintptr_t low = 0;
+  uintptr_t high = 0;
+};
+
+NativeStack ThisThreadsStack() {
+  thread_local NativeStack cached;
+  thread_local bool known = false;
+  if (!known) {
+    known = true;
+#if defined(__linux__)
+    pthread_attr_t attributes;
+    if (pthread_getattr_np(pthread_self(), &attributes) == 0) {
+      void* address = nullptr;
+      size_t size = 0;
+      if (pthread_attr_getstack(&attributes, &address, &size) == 0) {
+        cached.low = reinterpret_cast<uintptr_t>(address);
+        cached.high = cached.low + size;
+      }
+      pthread_attr_destroy(&attributes);
+    }
+#endif
+  }
+  return cached;
+}
+
+// What is left unused when the interpreter gives up, for the frames the trap
+// itself and its callers need.
+constexpr uintptr_t kStackHeadroom = 512 * 1024;
+
+// True when the native stack is nearly spent. A scheduler task runs on a
+// stack of its own, which is outside the thread's, and is not measured.
+bool NativeStackNearlySpent() {
+  const NativeStack stack = ThisThreadsStack();
+  volatile char marker = 0;
+  const auto here = reinterpret_cast<uintptr_t>(&marker);
+  return stack.high != 0 && here >= stack.low && here < stack.high &&
+         here - stack.low < kStackHeadroom;
+}
 
 
 // One activation. Values are indexed by instruction, which is what makes
@@ -131,7 +183,7 @@ class Interpreter {
                   "@" + std::string(interner_.Text(function.name)),
                   "has no body to run");
     }
-    if (depth_ >= limits_.depth) {
+    if (depth_ >= limits_.depth || NativeStackNearlySpent()) {
       return Trap(outcome, TrapKind::kStepLimit,
                   "@" + std::string(interner_.Text(function.name)),
                   "call depth limit reached");
@@ -1317,9 +1369,11 @@ class Interpreter {
         const uint64_t index = Operand(frame, inst, 0).integer();
         const uint64_t length = Operand(frame, inst, 1).integer();
         if (index >= length) {
+          // The length here is a runtime value a compiled tier cannot
+          // put in text it built while compiling, so neither does this
+          // one (D226).
           return TrapAt(outcome, TrapKind::kOutOfBounds, function, id,
-                "index is outside a length of " +
-                          std::to_string(length));
+                "index is outside the length");
         }
         return Value();
       }
@@ -1355,8 +1409,7 @@ class Interpreter {
         const uint64_t length = Operand(frame, inst, 2).integer();
         if (index.integer() >= length) {
           return TrapAt(outcome, TrapKind::kOutOfBounds, function, id,
-                "index is outside a length of " +
-                          std::to_string(length));
+                "index is outside the length");
         }
         if (base.kind() == Value::Kind::kSlot ||
             base.kind() == Value::Kind::kPlace) {
@@ -1572,20 +1625,30 @@ class Interpreter {
   // keeps the value. One table per run, which is as long as a signal's
   // handlers are reachable.
   uint64_t Token(const Value& function) {
-    for (size_t i = 0; i < tokens_.size(); ++i) {
-      if (tokens_[i] == function) {
+    std::vector<Value>& tokens = Tokens();
+    for (size_t i = 0; i < tokens.size(); ++i) {
+      if (tokens[i] == function) {
         return i + 1;
       }
     }
-    tokens_.push_back(function);
-    return tokens_.size();
+    tokens.push_back(function);
+    return tokens.size();
+  }
+
+  // One table for the global initializer's run and the run after it: a
+  // function value stored in a module-level `var` is a token in memory,
+  // and the table that made it must still be there when it is called
+  // (D240).
+  std::vector<Value>& Tokens() const {
+    return shared_tokens != nullptr ? *shared_tokens : tokens_;
   }
 
   Value FromToken(uint64_t token) const {
-    if (token == 0 || token > tokens_.size()) {
+    const std::vector<Value>& tokens = Tokens();
+    if (token == 0 || token > tokens.size()) {
       return Value();
     }
-    return tokens_[token - 1];
+    return tokens[token - 1];
   }
 
   // Whatever a call wrote into a bounced buffer belongs back where it
@@ -2024,7 +2087,7 @@ class Interpreter {
           const int64_t x = left.signed_integer();
           const int64_t y = right.signed_integer();
           // The one signed division that overflows.
-          if (y == -1 && !FitsSigned(-x, width)) {
+          if (y == -1 && !NegatedFits(x, width)) {
             return TrapAt(outcome, TrapKind::kOverflow, function, id,
                 "the quotient does not fit");
           }
@@ -2062,7 +2125,7 @@ class Interpreter {
       case ir::Opcode::kBitNot:
         return Value::Int(~a, width, is_signed);
       case ir::Opcode::kNeg: {
-        if (is_signed && !FitsSigned(-left.signed_integer(), width)) {
+        if (is_signed && !NegatedFits(left.signed_integer(), width)) {
           return TrapAt(outcome, TrapKind::kOverflow, function, id,
                 "negation overflowed");
         }
@@ -2230,6 +2293,15 @@ class Interpreter {
     return 32;
   }
 
+  // Whether -value fits. At 64 bits the negation itself would wrap (and
+  // INT64_MIN / -1 faults the host), so the one bad value is named (D224).
+  static bool NegatedFits(int64_t value, IntWidth width) {
+    if (BitsOfWidth(width) >= 64) {
+      return value != INT64_MIN;
+    }
+    return FitsSigned(-value, width);
+  }
+
   static bool FitsSigned(int64_t value, IntWidth width) {
     const uint32_t bits = BitsOfWidth(width);
     if (bits >= 64) {
@@ -2340,7 +2412,7 @@ class Interpreter {
     return nullptr;
   }
   // Function values handed to the runtime, by the token it holds instead.
-  std::vector<Value> tokens_;
+  mutable std::vector<Value> tokens_;
   uint64_t steps_ = 0;
   uint32_t depth_ = 0;
   // The activations, outermost first, for a debugger to look at.
@@ -2390,6 +2462,9 @@ Outcome RunNamed(const StringInterner& interner,
   if (!limits.keep_globals) {
     runtime::wolang_global_reset();
   }
+  std::vector<Value> run_tokens;
+  std::vector<Value>* const previous_tokens = shared_tokens;
+  shared_tokens = &run_tokens;
   const auto initialize = [&](const ir::Module& home) {
     if (limits.keep_globals) {
       // The host has them as it wants them.
@@ -2408,8 +2483,11 @@ Outcome RunNamed(const StringInterner& interner,
   }
   initialize(module);
 
-  return Run(interner, types, module, *function, std::move(arguments),
-             limits, output, foreign, layouts, linked);
+  const Outcome result =
+      Run(interner, types, module, *function, std::move(arguments), limits,
+          output, foreign, layouts, linked);
+  shared_tokens = previous_tokens;
+  return result;
 }
 
 }  // namespace interp

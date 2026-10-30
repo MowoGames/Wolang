@@ -405,7 +405,11 @@ offer fun Finish(whole: text, head: int, length: int, chunked: bool) -> Reply! u
     }
     const size = FromHexDigits(Substring(whole, at, at + line))
     at = at + line + 2
-    if size <= 0 {
+    if size < 0 {
+      // Not a size, or one too big to be a chunk: stop rather than guess.
+      return Truncated
+    }
+    if size == 0 {
       break
     }
     if at + size > Length(whole) {
@@ -431,6 +435,8 @@ offer fun ChunkedEnd(whole: text, head: int) -> int uses unsafe {
     const size = FromHexDigits(Substring(whole, at, at + line))
     at = at + line + 2
     if size <= 0 {
+      // Zero ends the body; a malformed size ends the wait, and `Finish`
+      // reports it.
       return at
     }
     at = at + size + 2
@@ -441,6 +447,9 @@ offer fun ChunkedEnd(whole: text, head: int) -> int uses unsafe {
 }
 
 /// The number a hexadecimal chunk header spells, or -1.
+///
+/// More than seven digits is -1: eight would overflow `int` and trap the
+/// client on a hostile server's chunk header (D223).
 ///
 /// A header may carry extensions after a `;`, which nothing uses and
 /// everything has to skip.
@@ -461,6 +470,9 @@ offer fun FromHexDigits(line: text) -> int uses unsafe {
     } else if byte == 59 {
       break
     } else {
+      return -1
+    }
+    if seen >= 7 {
       return -1
     }
     total = total * 16 + digit
@@ -671,4 +683,30 @@ fun RefusesWhatIsNotHttp() -> bool uses unsafe {
       return false
     }
   }
+}
+
+@Test
+fun ReadsAChunkSizeWithoutOverflowing() -> bool uses unsafe {
+  // Eight hex digits would trap the multiplication; a hostile server must
+  // not be able to choose that (D223).
+  const head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+  const hostile = head + "FFFFFFFFFF\r\nabc\r\n0\r\n\r\n"
+  const fine = head + "3\r\nabc\r\n0\r\n\r\n"
+  var broke = false
+  match Finish(hostile, head.len, -1, true) {
+    Truncated => {
+      broke = true
+    }
+    _ => {}
+  }
+  var read = false
+  match Finish(fine, head.len, -1, true) {
+    Ok(answer) => {
+      read = answer.body == "abc"
+    }
+    _ => {}
+  }
+  return FromHexDigits("ffffffff") == -1 && FromHexDigits("fffffff") == 268435455 && ChunkedEnd(
+      hostile,
+      head.len) >= 0 && broke && read
 }

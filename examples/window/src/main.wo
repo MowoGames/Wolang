@@ -13,7 +13,7 @@
 need std.io.{Print}
 need std.math.{Sin}
 need std.mem.{ArrayNew, Free}
-need gfx.{Available, Backend, CanvasNew, Open, OpenAudio, Rgb, Sleep, Time, kClosed, kKeyDown, kKeyEscape, kKeyLeft, kKeyRight, kKeySpace, kKeyUp, kPressed, kReleased, kResizable, kResized}
+need gfx.{Available, Backend, CanvasNew, GamepadName, Open, OpenAudio, Rgb, Sleep, Time, kClosed, kGamepadConnected, kGamepadDisconnected, kKeyDown, kKeyEscape, kKeyLeft, kKeyRight, kKeySpace, kKeyUp, kPressed, kReleased, kResizable, kResized}
 
 fun main() uses io, unsafe {
   if !Available() {
@@ -72,6 +72,10 @@ fun main() uses io, unsafe {
         } else if event.key == kKeySpace {
           playing = down_now
         }
+      } else if event.kind == kGamepadConnected {
+        Print("pad {event.key} connected: {GamepadName(event.key as int)}")
+      } else if event.kind == kGamepadDisconnected {
+        Print("pad {event.key} disconnected")
       } else if event.kind == kResized {
         Print("resized to {event.width} by {event.height}")
       }

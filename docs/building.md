@@ -93,6 +93,7 @@ purpose.
 | `debug` | Everything on, warnings are errors. What to develop against. |
 | `release` | `-O2`, no assertions. What to measure and ship. |
 | `asan` | Address and undefined-behaviour sanitizers. Where memory bugs die. |
+| `ubsan` | Undefined-behaviour sanitizer alone, recovery off; cheaper than `asan`, run in CI. |
 | `windows` | clang-cl, on Windows. |
 | `x64` | Cross-build to x86-64 on an arm64 machine, for the other back end. |
 
@@ -196,7 +197,7 @@ No npm needed:
 
 ```sh
 python3 tools/package/make_vsix.py
-code --install-extension build/wolang-0.1.0.vsix
+code --install-extension build/wolang-1.1.0.vsix
 ```
 
 ## When something goes wrong

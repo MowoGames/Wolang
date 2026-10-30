@@ -1373,7 +1373,7 @@ void Translator::EmitArithmetic(ir::InstId id, const ir::Inst& inst) {
         return;
       }
       TrapIf(LLVMBuildICmp(b_, LLVMIntEQ, rhs, Const(0, type), "c"),
-             ir::TrapKind::kDivisionByZero, "division by zero");
+             ir::TrapKind::kDivisionByZero, "divided by zero");
       if (is_signed) {
         // The one division that overflows: the least value by -1.
         const uint32_t bits = LLVMGetIntTypeWidth(type);
@@ -1383,7 +1383,7 @@ void Translator::EmitArithmetic(ir::InstId id, const ir::Inst& inst) {
         LLVMValueRef minus_one = LLVMBuildICmp(
             b_, LLVMIntEQ, rhs, LLVMConstAllOnes(type), "c");
         TrapIf(LLVMBuildAnd(b_, is_least, minus_one, "c"),
-               ir::TrapKind::kOverflow, "division overflowed");
+               ir::TrapKind::kOverflow, "the quotient does not fit");
       }
       if (inst.opcode == ir::Opcode::kDiv) {
         Produce(id, is_signed ? LLVMBuildSDiv(b_, lhs, rhs, "d")
@@ -1435,7 +1435,8 @@ void Translator::EmitArithmetic(ir::InstId id, const ir::Inst& inst) {
           b_, LLVMIntrinsicGetType(ctx_, which, arguments, 1), intrinsic,
           pair, 2, "v");
       TrapIf(LLVMBuildExtractValue(b_, answer, 1, "f"),
-             ir::TrapKind::kOverflow, "arithmetic overflowed");
+             ir::TrapKind::kOverflow,
+             std::string(ir::OpcodeMnemonic(inst.opcode)) + " overflowed");
       Produce(id, LLVMBuildExtractValue(b_, answer, 0, "v"));
       return;
     }
@@ -1570,6 +1571,12 @@ void Translator::EmitCast(ir::InstId id, const ir::Inst& inst) {
                            : LLVMBuildZExtOrBitCast(b_, narrowed, wide, "e");
   if (LLVMGetIntTypeWidth(narrow) < 64) {
     TrapIf(LLVMBuildICmp(b_, LLVMIntNE, again, extended, "c"),
+           ir::TrapKind::kOverflow,
+           "the value does not fit the integer it was cast to");
+  } else if (layouts.IsSignedInteger(from) != layouts.IsSignedInteger(to)) {
+    // Other signedness at 64 bits: fits exactly when not negative (D226).
+    TrapIf(LLVMBuildICmp(b_, LLVMIntSLT, extended,
+                         LLVMConstInt(wide, 0, 0), "c"),
            ir::TrapKind::kOverflow,
            "the value does not fit the integer it was cast to");
   }
@@ -2004,6 +2011,15 @@ AotResult Translator::Run(const AotOptions& options) {
 // alias, so the function itself keeps the name the rest of the module
 // calls it by.
 void Translator::EmitExports(const std::vector<uint32_t>& exported) {
+  // So a host checks at load what it linked, as it does for the embedding
+  // library (D241).
+  const std::string version_name = library_ + "_abi_version";
+  LLVMValueRef version = LLVMAddFunction(
+      mod_, version_name.c_str(),
+      LLVMFunctionType(I(32), nullptr, 0, 0));
+  LLVMPositionBuilderAtEnd(
+      b_, LLVMAppendBasicBlockInContext(ctx_, version, "entry"));
+  LLVMBuildRet(b_, Const(kLibraryAbiVersion, I(32)));
   for (const Entry& entry : entries_) {
     const ir::Function& function = FunctionOf(entry);
     if (entry.function == nullptr || function.is_declaration() || std::find(exported.begin(), exported.end(), function.source_file) == exported.end()) {

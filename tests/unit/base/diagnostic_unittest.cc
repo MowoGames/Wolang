@@ -236,5 +236,24 @@ WOLANG_TEST(DiagnosticRenderer, ColorOptionAddsEscapeSequences) {
   WOLANG_EXPECT(rendered.find("\x1b[0m") != std::string::npos);
 }
 
+WOLANG_TEST(DiagnosticRenderer, EscapesControlBytesInMessages) {
+  SourceManager sources;
+  DiagnosticEngine diagnostics;
+  constexpr char kText[] = "bad \0 and \x1b[31m bytes";
+  diagnostics.Error("E0001", std::string(kText, sizeof(kText) - 1));
+  const std::string rendered =
+      RenderDiagnostic(sources, diagnostics.diagnostics().front());
+  WOLANG_EXPECT_EQ(rendered, "error[E0001]: bad \\x00 and \\x1b[31m bytes\n");
+}
+
+WOLANG_TEST(DiagnosticRenderer, KeepsPrintableAndUtf8Messages) {
+  SourceManager sources;
+  DiagnosticEngine diagnostics;
+  diagnostics.Error("E0001", "caf\xc3\xa9 `x`");
+  WOLANG_EXPECT_EQ(
+      RenderDiagnostic(sources, diagnostics.diagnostics().front()),
+      "error[E0001]: caf\xc3\xa9 `x`\n");
+}
+
 }  // namespace
 }  // namespace wolang

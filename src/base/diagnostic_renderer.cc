@@ -16,6 +16,26 @@ constexpr std::string_view kReset = "\x1b[0m";
 constexpr std::string_view kBold = "\x1b[1m";
 constexpr std::string_view kBlue = "\x1b[1;34m";
 
+// Messages quote the user's own bytes. A raw NUL truncates the C string a
+// terminal path prints and ESC injects escape sequences, so control bytes
+// are shown as \xNN (D230).
+std::string Printable(std::string_view text) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(text.size());
+  for (const char c : text) {
+    const unsigned char byte = static_cast<unsigned char>(c);
+    if (byte < 0x20 || byte == 0x7f) {
+      out.append("\\x");
+      out.push_back(kHex[byte >> 4]);
+      out.push_back(kHex[byte & 15]);
+    } else {
+      out.push_back(c);
+    }
+  }
+  return out;
+}
+
 std::string_view SeverityColor(Severity severity) {
   switch (severity) {
     case Severity::kError:
@@ -166,7 +186,7 @@ void AppendMarkerLine(std::string* out,
   std::string painted = Paint(markers, color, options);
   if (label.message && !label.message->empty()) {
     painted.push_back(' ');
-    painted.append(Paint(*label.message, color, options));
+    painted.append(Paint(Printable(*label.message), color, options));
   }
   out->append(painted);
   out->push_back('\n');
@@ -188,7 +208,7 @@ std::string RenderDiagnostic(const SourceManager& sources,
   }
   out.append(Paint(headline, SeverityColor(diagnostic.severity), options));
   out.append(": ");
-  out.append(Paint(diagnostic.message, kBold, options));
+  out.append(Paint(Printable(diagnostic.message), kBold, options));
   out.push_back('\n');
 
   const SourceSpan primary = diagnostic.PrimarySpan();
@@ -197,7 +217,7 @@ std::string RenderDiagnostic(const SourceManager& sources,
       out.append("  = ");
       out.append(Paint("note", kBold, options));
       out.append(": ");
-      out.append(note);
+      out.append(Printable(note));
       out.push_back('\n');
     }
     return out;
@@ -216,7 +236,7 @@ std::string RenderDiagnostic(const SourceManager& sources,
       note.append(sources.FormatPosition(label.span.file, label.span.begin));
       if (!label.message.empty()) {
         note.append(": ");
-        note.append(label.message);
+        note.append(Printable(label.message));
       }
       extra_notes.push_back(std::move(note));
       continue;
@@ -299,7 +319,7 @@ std::string RenderDiagnostic(const SourceManager& sources,
     out.append(Paint(note_prefix, kBlue, options));
     out.append(Paint("note", kBold, options));
     out.append(": ");
-    out.append(note);
+    out.append(Printable(note));
     out.push_back('\n');
   }
   for (const std::string& note : extra_notes) {
@@ -318,7 +338,7 @@ std::string RenderDiagnostic(const SourceManager& sources,
     out.append(Paint(note_prefix, kBlue, options));
     out.append(Paint("help", kBold, options));
     out.append(": ");
-    out.append(fix.message);
+    out.append(Printable(fix.message));
     out.push_back('\n');
 
     // Single-line replacements are shown with the edit already applied, which

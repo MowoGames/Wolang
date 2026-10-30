@@ -42,7 +42,7 @@ class Value {
                                                  : std::string_view(value)
                                                        .size())) {}
 
-  WolangKind kind() const { return held_.kind; }
+  WolangKind kind() const { return static_cast<WolangKind>(held_.kind); }
   const WolangValue& raw() const { return held_; }
 
   long long integer() const {

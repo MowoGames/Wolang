@@ -26,6 +26,9 @@
 
 .PARAMETER NoModifyPath
   Do not touch the PATH.
+
+.PARAMETER NoVerify
+  Install without checking SHA256SUMS (not advised).
 #>
 [CmdletBinding()]
 param(
@@ -33,7 +36,8 @@ param(
   [string]$Prefix = $env:WOLANG_HOME,
   [switch]$FromSource,
   [switch]$Uninstall,
-  [switch]$NoModifyPath
+  [switch]$NoModifyPath,
+  [switch]$NoVerify
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,14 +95,45 @@ if ($FromSource) {
 } else {
   if ($Version -eq 'latest') {
     Say 'looking up the newest release'
-    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
-    $Version = $release.tag_name -replace '^v', ''
+    $Version = ''
+    # The API first; it is rate limited, so when it refuses, read where
+    # /releases/latest redirects to, which is not.
+    try {
+      $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
+      $Version = $release.tag_name
+    } catch {
+      # A redirect is an error when redirects are refused; the answer is
+      # in the exception. Windows PowerShell and PowerShell 7 spell it
+      # differently, so ask both ways.
+      try {
+        Invoke-WebRequest "https://github.com/$repo/releases/latest" -MaximumRedirection 0 -UseBasicParsing | Out-Null
+      } catch {
+        $headers = $_.Exception.Response.Headers
+        $location = [string]$headers.Location
+        if (-not $location) {
+          $location = [string]$headers['Location']
+        }
+        if ($location -match '/releases/tag/(.+)$') {
+          $Version = $Matches[1]
+        }
+      }
+    }
     if (-not $Version) {
       Die 'could not find a release; try -FromSource'
     }
   }
+  # v1.1.0 and 1.1.0 are the same request.
+  $Version = $Version -replace '^v', ''
+  if ($Version -notmatch '^\d+\.\d+\.\d+') {
+    Die "'$Version' is not a version like 1.1.0"
+  }
 
-  $base = "https://github.com/$repo/releases/download/v$Version"
+  # WOLANG_DOWNLOAD_BASE is for tools/package/test_install.sh and the
+  # release smoke test only (D248).
+  $base = $env:WOLANG_DOWNLOAD_BASE
+  if (-not $base) {
+    $base = "https://github.com/$repo/releases/download/v$Version"
+  }
   $archive = "$target.zip"
   $work = Join-Path $env:TEMP ("wolang-" + [guid]::NewGuid())
   New-Item -ItemType Directory -Path $work | Out-Null
@@ -110,31 +145,43 @@ if ($FromSource) {
     Die "no build for $target in v$Version; try -FromSource"
   }
 
-  # The checksum, when the release published one: a download nobody
-  # checked is a download somebody else could have written.
-  try {
-    Invoke-WebRequest "$base/SHA256SUMS" -OutFile "$work\SHA256SUMS"
-    $line = Select-String -Path "$work\SHA256SUMS" -Pattern ([regex]::Escape($archive)) |
-            Select-Object -First 1
-    if ($line) {
-      $expected = ($line.Line -split '\s+')[0]
-      $actual = (Get-FileHash "$work\$archive" -Algorithm SHA256).Hash.ToLower()
-      if ($actual -ne $expected.ToLower()) {
-        Die 'the checksum does not match; refusing to install'
-      }
-      Say 'checksum matches'
+  # A download nobody checked is a download somebody else could have
+  # written, so a missing checksum is a failure, not a shrug.
+  if ($NoVerify) {
+    Say 'skipping the checksum (-NoVerify)'
+  } else {
+    try {
+      Invoke-WebRequest "$base/SHA256SUMS" -OutFile "$work\SHA256SUMS"
+    } catch {
+      Die "v$Version published no SHA256SUMS; refusing to install (-NoVerify skips the check)"
     }
-  } catch {
-    Say 'no checksums published for this release; continuing'
+    $line = Get-Content "$work\SHA256SUMS" |
+            Where-Object { $_ -match ('^[0-9a-fA-F]{64}\s+\*?(\./)?' + [regex]::Escape($archive) + '$') } |
+            Select-Object -First 1
+    if (-not $line) {
+      Die "SHA256SUMS has no line for $archive; refusing to install (-NoVerify skips the check)"
+    }
+    $expected = ($line -split '\s+')[0]
+    $actual = (Get-FileHash "$work\$archive" -Algorithm SHA256).Hash
+    if ($actual -ne $expected.ToUpper()) {
+      Die 'the checksum does not match; refusing to install'
+    }
+    Say 'checksum matches'
   }
 
-  Expand-Archive "$work\$archive" -DestinationPath $work -Force
+  # The archive's one top-level directory is named after the platform
+  # today; read it rather than assume.
+  Expand-Archive "$work\$archive" -DestinationPath "$work\x" -Force
+  $top = Get-ChildItem "$work\x" -Directory | Select-Object -First 1
+  if (-not $top -or -not (Test-Path (Join-Path $top.FullName 'bin\wolang.exe'))) {
+    Die 'the archive does not have bin\wolang.exe in its top directory'
+  }
   $current = Join-Path $Prefix 'current'
   if (Test-Path $current) {
     Remove-Item -Recurse -Force $current
   }
   New-Item -ItemType Directory -Path $Prefix -Force | Out-Null
-  Move-Item "$work\$target" $current
+  Move-Item $top.FullName $current
   Remove-Item -Recurse -Force $work
   Say "installed $Version into $Prefix"
 }

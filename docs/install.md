@@ -16,7 +16,7 @@ installs under Program Files, puts `wolang` on the PATH, and appears in
 Add/Remove Programs like anything else. Silently, for a fleet:
 
 ```powershell
-msiexec /i wolang-0.1.1-x86_64.msi /qn
+msiexec /i wolang-1.1.0-x86_64.msi /qn
 ```
 
 Or, without the installer:
@@ -36,6 +36,18 @@ Then:
 wolang new hello && cd hello && wolang run .
 ```
 
+## Installing 1.1.0
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MowoGames/Wolang/alpha/install.sh | sh -s -- --version 1.1.0
+wolang --version
+```
+
+That prints `wolang 1.1.0`. The scripts check the download against the
+release's `SHA256SUMS` and stop if the checksum is wrong or missing. To
+check an archive yourself, see "By hand" below. To find the newest release
+without naming it, leave `--version` out.
+
 ## Reading it first
 
 Piping a script into a shell is a thing to be uneasy about. Both scripts
@@ -51,20 +63,21 @@ sh install.sh
 
 | | |
 |---|---|
-| `--version 0.2.0` | A particular release rather than the newest |
+| `--version 1.1.0` | A particular release rather than the newest (`v1.1.0` works too) |
+| `--no-verify` | Skip the checksum check. Without this, a release with no checksum for your archive is refused | |
 | `--prefix /opt/wolang` | Somewhere else |
 | `--from-source` | Clone and build instead of downloading |
 | `--no-modify-path` | Leave the shell profile alone |
 | `--uninstall` | Take it away |
 
 ```sh
-sh install.sh --version 0.2.0 --prefix /opt/wolang
+sh install.sh --version 1.1.0 --prefix /opt/wolang
 ```
 
 PowerShell takes the same as named parameters:
 
 ```powershell
-.\install.ps1 -Version 0.2.0 -Prefix C:\tools\wolang -NoModifyPath
+.\install.ps1 -Version 1.1.0 -Prefix C:\tools\wolang -NoModifyPath
 ```
 
 ## Building the installer yourself
@@ -85,10 +98,10 @@ Every release has an archive per platform and a `SHA256SUMS` beside
 them:
 
 ```sh
-v=0.1.0
+v=1.1.0
 curl -fLO "https://github.com/MowoGames/Wolang/releases/download/v$v/wolang-macos-arm64.tar.gz"
 curl -fLO "https://github.com/MowoGames/Wolang/releases/download/v$v/SHA256SUMS"
-shasum -a 256 -c SHA256SUMS --ignore-missing
+shasum -a 256 -c SHA256SUMS --ignore-missing    # sha256sum -c on Linux
 tar -xzf wolang-macos-arm64.tar.gz
 export PATH="$PWD/wolang-macos-arm64/bin:$PATH"
 ```
@@ -118,7 +131,7 @@ The full guide, including what each system needs and why it is clang, is
 ## The editor
 
 ```sh
-code --install-extension wolang-0.1.1.vsix     # from the release
+code --install-extension wolang-1.1.0.vsix     # from the release
 ```
 
 Or build it yourself — no npm needed:
@@ -154,4 +167,7 @@ alone.
 sh install.sh --uninstall        # or: .\install.ps1 -Uninstall
 ```
 
-The line it added to your shell profile stays; take it out by hand.
+The line it added to your shell profile stays; take it out by hand. The
+installer only ever writes under its prefix (`~/.wolang`), so removing that
+directory is the whole uninstall. A release made with the `.msi` is removed
+in Add/Remove Programs.

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "harness/test.h"
+#include "wolang/codegen/aot.h"
 #include "wolang/lsp/json.h"
 #include "wolang/runtime/sockets.h"
 
@@ -37,6 +38,12 @@ std::string TextOf(const WolangValue& value) {
 }
 
 }  // namespace
+
+extern "C" uint32_t wolang_abi_c_check_size(void);
+
+static_assert(sizeof(WolangValue) == 32, "WolangValue is 32 bytes (D241)");
+static_assert(offsetof(WolangValue, integer) == 8, "payload at 8 (D241)");
+static_assert(sizeof(WolangValue::kind) == 4, "kind is 32 bits (D241)");
 
 WOLANG_TEST(EmbedTest, CallsAFunctionInLoadedSource) {
   WolangVm* vm = wolang_vm_create();
@@ -679,6 +686,82 @@ offer fun Poke(address: u64) -> u8 uses unsafe {
   for (const std::filesystem::path& root : {reader, greedy, door, raw}) {
     std::filesystem::remove_all(root);
   }
+
+  // A bodiless `uses unsafe` primitive hands its obligation to the caller,
+  // so a mod cannot reach it by leaving `unsafe` out (D221).
+  const std::filesystem::path prim = WritePackage("modprim", "", R"(
+need std.mem.{ArrayNew}
+
+offer fun Grab() -> int {
+  const room = ArrayNew<u8>(8)
+  return room.len
+}
+)");
+  WolangVm* grabbing = wolang_vm_create();
+  WOLANG_EXPECT(wolang_vm_load_mod(grabbing, prim.string().c_str(), "io") != 0);
+  wolang_vm_destroy(grabbing);
+  std::filesystem::remove_all(prim);
+}
+
+WOLANG_TEST(EmbedTest, ASandboxedModCannotHideAnExternInsideAType) {
+  // The door check walked only top-level items, so an `extern` in a struct
+  // body or an `extend` got through (D217).
+  const char* const nested[] = {R"(
+struct Holder {
+  var n: int
+
+  extern "C" fun system(command: *u8) -> s32
+}
+
+offer fun Nothing() -> int {
+  return 0
+}
+)", R"(
+struct Holder {
+  var n: int
+}
+
+extend Holder {
+  extern "C" fun system(command: *u8) -> s32
+}
+
+offer fun Nothing() -> int {
+  return 0
+}
+)"};
+  int which = 0;
+  for (const char* source : nested) {
+    const std::filesystem::path root =
+        WritePackage("modnested" + std::to_string(which++), "", source);
+    WolangVm* vm = wolang_vm_create();
+    WOLANG_EXPECT(wolang_vm_load_mod(vm, root.string().c_str(), "io") != 0);
+    WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("E0705") !=
+                  std::string::npos);
+    wolang_vm_destroy(vm);
+    std::filesystem::remove_all(root);
+  }
+
+  // The twin: a plain method in the same places is fine.
+  const std::filesystem::path plain = WritePackage("modplain", "", R"(
+struct Holder {
+  var n: int
+
+  fun Get() -> int => n
+}
+
+extend Holder {
+  fun Twice() -> int => n * 2
+}
+
+offer fun Nothing() -> int {
+  return 0
+}
+)");
+  WolangVm* ok = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_mod(ok, plain.string().c_str(), "io"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(ok)), "");
+  wolang_vm_destroy(ok);
+  std::filesystem::remove_all(plain);
 }
 
 WOLANG_TEST(EmbedTest, CallsBackIntoTheHost) {
@@ -855,4 +938,53 @@ WOLANG_TEST(EmbedTest, ReloadsWhatItLoaded) {
   WOLANG_EXPECT_EQ(wolang_vm_call(vm, "N", nullptr, 0, &answer), 0);
   WOLANG_EXPECT_EQ(answer.integer, 1);
   wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ReportsItsAbiVersion) {
+  WOLANG_EXPECT_EQ(wolang_abi_version(), WOLANG_ABI_VERSION);
+  WOLANG_EXPECT_EQ(wolang_abi_version() >> 16, 1u);
+}
+
+WOLANG_TEST(EmbedTest, ValueLayoutAgreesBetweenCAndCxx) {
+  WOLANG_EXPECT_EQ(wolang_abi_c_check_size(),
+                   static_cast<uint32_t>(sizeof(WolangValue)));
+}
+
+WOLANG_TEST(EmbedTest, CreatesWithOptionsOfAKnownSize) {
+  WolangVmOptions options;
+  std::memset(&options, 0, sizeof(options));
+  options.size = sizeof(options);
+  WolangVm* vm = wolang_vm_create_with(&options);
+  WOLANG_ASSERT(vm != nullptr);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, RefusesOptionsOfAnUnknownSize) {
+  WolangVmOptions options;
+  std::memset(&options, 0, sizeof(options));
+  options.size = 0;
+  WOLANG_EXPECT(wolang_vm_create_with(&options) == nullptr);
+  options.size = sizeof(options) + 8;
+  WOLANG_EXPECT(wolang_vm_create_with(&options) == nullptr);
+  WOLANG_EXPECT(wolang_vm_create_with(nullptr) == nullptr);
+}
+
+WOLANG_TEST(EmbedTest, CallsAnswerAStatus) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(
+                       vm, "s.wo",
+                       "offer fun Id(a: int) -> int => a\n"),
+                   kWolangOk);
+  WolangValue out = wolang_void();
+  WolangValue args[1] = {wolang_int(5)};
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Id", args, 1, &out), kWolangOk);
+  WOLANG_EXPECT_EQ(out.kind, static_cast<uint32_t>(kWolangInt));
+  WOLANG_EXPECT_EQ(out.integer, int64_t{5});
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Nope", nullptr, 0, &out), kWolangError);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, LibraryAbiVersionMatchesTheHeader) {
+  WOLANG_EXPECT_EQ(wolang::codegen::kLibraryAbiVersion,
+                   static_cast<uint32_t>(WOLANG_ABI_VERSION));
 }

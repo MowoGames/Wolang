@@ -4,6 +4,7 @@
 #ifndef WOLANG_RUNTIME_TEXT_H_
 #define WOLANG_RUNTIME_TEXT_H_
 
+#include <cstddef>
 #include <cstdint>
 
 namespace wolang {
@@ -20,6 +21,17 @@ struct Text {
   uint64_t length = 0;
 };
 
+// A float as text: the shortest digits that read back as the same number,
+// and `nan` for every NaN whatever its sign bit (D226). One function so the
+// interpreter, the runtime and every compiled tier print the same bytes.
+// Returns the length written; |capacity| of 32 is always enough.
+size_t FormatFloat(double value, char* buffer, size_t capacity);
+
+// The same for a 32-bit float, which arrives widened to a double: the
+// shortest digits for the float, not for the double it was widened to, so
+// 0.1 stays `0.1` rather than becoming 0.10000000149011612 (D226).
+size_t FormatFloat32(double value, char* buffer, size_t capacity);
+
 // What an interpolated string is made of.
 //
 // These allocate, and nothing frees them yet: the collector is a later
@@ -28,7 +40,10 @@ struct Text {
 extern "C" {
 
 Text* wolang_text_from_int(int64_t value);
+Text* wolang_text_from_uint(uint64_t value);
+double wolang_fmod(double left, double right);
 Text* wolang_text_from_float(double value);
+Text* wolang_text_from_float32(double value);
 Text* wolang_text_from_bool(bool value);
 Text* wolang_text_concat(const uint8_t* left,
                          uint64_t left_length,

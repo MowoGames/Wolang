@@ -595,8 +595,11 @@ class FunctionEmitter {
       assembler_.Mov(width, biased, left);
     } else {
       const Register sign = Scratch(4);
-      assembler_.Asr(width, sign, left, bits - 1);
-      assembler_.Lsr(width, sign, sign, bits - shift);
+      // Counted in the register's width, not the type's: an s16 lives
+      // sign-extended in 32 bits (D231).
+      const unsigned register_bits = width == IWidth::k64 ? 64 : 32;
+      assembler_.Asr(width, sign, left, register_bits - 1);
+      assembler_.Lsr(width, sign, sign, register_bits - shift);
       assembler_.Add(width, biased, left, sign);
     }
     const Register quotient =
@@ -2348,16 +2351,32 @@ class FunctionEmitter {
     const Register reg = DestInt(id, 0);
     const uint32_t bits = layouts_.BitsOf(to);
     if (bits >= 64) {
+      // Other signedness at 64 bits: the value fits exactly when it is
+      // not negative, as the interpreter's rule has it (D226).
+      if (layouts_.IsSignedInteger(from) != layouts_.IsSignedInteger(to)) {
+        assembler_.CmpImm(IWidth::k64, wide, 0);
+        const Label negative =
+            TrapLabel(ir::TrapKind::kOverflow, id,
+                      "the value does not fit the integer it was cast to");
+        assembler_.BCond(Condition::kLt, negative);
+      }
       assembler_.Mov(IWidth::k64, reg, wide);
       FinishInt(id, reg);
       return;
     }
     const Register narrowed = Scratch(3);
-    Canonicalize(wide, to, narrowed);
-    assembler_.Cmp(IWidth::k64, narrowed, wide);
     const Label trap =
         TrapLabel(ir::TrapKind::kOverflow, id,
                   "the value does not fit the integer it was cast to");
+    // As on x64: a u64 with its top bit set looks like a small negative
+    // number to the comparison below (D231).
+    if (layouts_.BitsOf(from) >= 64 && !layouts_.IsSignedInteger(from) &&
+        layouts_.IsSignedInteger(to)) {
+      assembler_.CmpImm(IWidth::k64, wide, 0);
+      assembler_.BCond(Condition::kLt, trap);
+    }
+    Canonicalize(wide, to, narrowed);
+    assembler_.Cmp(IWidth::k64, narrowed, wide);
     assembler_.BCond(Condition::kNe, trap);
     assembler_.Mov(IWidth::k64, reg, narrowed);
     FinishInt(id, reg);
@@ -2645,6 +2664,12 @@ class FunctionEmitter {
         } else {
           assembler_.Sub(IWidth::k32, raw, left, right);
         }
+        // As on x64: a negative result that fits comes out of the 32-bit
+        // operation zero-extended; widen it as the canonical form is
+        // before comparing (D231). A multiply is already a 64-bit product.
+        if (is_signed) {
+          assembler_.Sxtw(raw, raw);
+        }
         CheckFits(id, raw, operand_type, reg, inst.opcode);
         FinishInt(id, reg);
         return;
@@ -2748,6 +2773,9 @@ class FunctionEmitter {
         }
         const Register raw = Scratch(3);
         assembler_.Sub(IWidth::k32, raw, Register::kZr, left);
+        if (is_signed) {
+          assembler_.Sxtw(raw, raw);
+        }
         CheckFits(id, raw, operand_type, reg, inst.opcode);
         FinishInt(id, reg);
         return;
@@ -2863,7 +2891,9 @@ class FunctionEmitter {
     assembler_.Cmp(IWidth::k64, narrowed, raw);
     const Label trap = TrapLabel(
         ir::TrapKind::kOverflow, id,
-        std::string(ir::OpcodeMnemonic(opcode)) + " overflowed");
+        opcode == ir::Opcode::kNeg
+            ? std::string("negation overflowed")
+            : std::string(ir::OpcodeMnemonic(opcode)) + " overflowed");
     assembler_.BCond(Condition::kNe, trap);
     assembler_.Mov(IWidth::k64, destination, narrowed);
   }

@@ -113,3 +113,124 @@ extern "C" int32_t wolang_audio_room(WolangAudio* audio) {
   (void)audio;
   return 0;
 }
+
+// (D247) The window, cursor, pad and dialog additions: all of them no.
+
+extern "C" void wolang_window_cursor_visible(WolangWindow* window,
+                                             int32_t visible) {
+  (void)window;
+  (void)visible;
+}
+
+extern "C" void wolang_window_cursor_shape(WolangWindow* window,
+                                           int32_t shape) {
+  (void)window;
+  (void)shape;
+}
+
+extern "C" int32_t wolang_window_cursor_lock(WolangWindow* window,
+                                             int32_t locked) {
+  (void)window;
+  (void)locked;
+  return 0;
+}
+
+extern "C" void wolang_window_set_fullscreen(WolangWindow* window,
+                                             int32_t fullscreen) {
+  (void)window;
+  (void)fullscreen;
+}
+
+extern "C" int32_t wolang_window_is_fullscreen(WolangWindow* window) {
+  (void)window;
+  return 0;
+}
+
+extern "C" void wolang_window_set_size(WolangWindow* window, int32_t width,
+                                       int32_t height) {
+  (void)window;
+  (void)width;
+  (void)height;
+}
+
+extern "C" void wolang_window_set_min_size(WolangWindow* window,
+                                           int32_t width, int32_t height) {
+  (void)window;
+  (void)width;
+  (void)height;
+}
+
+extern "C" void wolang_window_set_position(WolangWindow* window, int32_t x,
+                                           int32_t y) {
+  (void)window;
+  (void)x;
+  (void)y;
+}
+
+extern "C" void wolang_window_position(WolangWindow* window, int32_t* x,
+                                       int32_t* y) {
+  (void)window;
+  if (x != nullptr) {
+    *x = 0;
+  }
+  if (y != nullptr) {
+    *y = 0;
+  }
+}
+
+extern "C" const char* wolang_window_drop_path(WolangWindow* window,
+                                               int32_t index) {
+  (void)window;
+  (void)index;
+  return nullptr;
+}
+
+extern "C" int32_t wolang_gamepad_poll(WolangEvent* out) {
+  (void)out;
+  return 0;
+}
+
+extern "C" int32_t wolang_gamepad_connected(int32_t index) {
+  (void)index;
+  return 0;
+}
+
+extern "C" const char* wolang_gamepad_name(int32_t index) {
+  (void)index;
+  return "";
+}
+
+extern "C" int32_t wolang_gamepad_button(int32_t index, int32_t button) {
+  (void)index;
+  (void)button;
+  return 0;
+}
+
+extern "C" double wolang_gamepad_axis(int32_t index, int32_t axis) {
+  (void)index;
+  (void)axis;
+  return 0.0;
+}
+
+extern "C" int32_t wolang_dialog_available(void) { return 0; }
+
+extern "C" int32_t wolang_dialog_message(const char* title, const char* text,
+                                         int32_t level, int32_t buttons) {
+  (void)title;
+  (void)text;
+  (void)level;
+  (void)buttons;
+  return kWolangAnswerUnavailable;
+}
+
+extern "C" const char* wolang_dialog_open_file(const char* title) {
+  (void)title;
+  return nullptr;
+}
+
+extern "C" const char* wolang_dialog_save_file(const char* title,
+                                               const char* start_name) {
+  (void)title;
+  (void)start_name;
+  return nullptr;
+}

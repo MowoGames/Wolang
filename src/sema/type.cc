@@ -673,6 +673,28 @@ bool TypeStore::MentionsParameter(TypeId id) const {
   return false;
 }
 
+bool TypeStore::NestsDeeperThan(TypeId id, uint32_t limit) const {
+  if (!id.is_valid()) {
+    return false;
+  }
+  if (limit == 0) {
+    return true;
+  }
+  const Type& type = Get(id);
+  if (CarriesElement(type.kind) && NestsDeeperThan(type.element, limit - 1)) {
+    return true;
+  }
+  if (CarriesBase(type.kind) && NestsDeeperThan(type.base, limit - 1)) {
+    return true;
+  }
+  for (TypeId arg : ArgumentsOf(id)) {
+    if (NestsDeeperThan(arg, limit - 1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void TypeStore::CollectParameters(TypeId id,
                                   std::vector<TypeId>* out) const {
   if (!id.is_valid()) {

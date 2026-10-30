@@ -24,6 +24,12 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0127`–`E0129` | systems and the access graph | all wave 11 |
 | `E0130` | a module-level declaration with no type written | wave 12 |
 | `E0137` | `weak` fields | D207 |
+| `E0143`, `E0144` | module-qualified names | D246 |
+| `E0145` | `self` stored from its own `deinit` | D229 |
+| `E0147`, `E0148` | what crosses a thread | D232 |
+| `E0159` | `after` on a machine transition | D243 |
+
+| `E0149` | an owning field moved out of the value that holds it | D233 |
 | `E0201` | pattern matching | implemented (wave 4) |
 | `E0301`–`E0305` | suspension and tasks | implemented (wave 10) |
 | `E0401`–`E0403` | inheritance, abilities, bounds | implemented (waves 4–5) |
@@ -79,7 +85,7 @@ character.
 | `E0036` | expected a transition | a stray name inside a `state` |
 | `E0037` | expected a unit definition | `unit m` with no dimension |
 | `E0040` | expected a line break between statements | `const a = 1 const b = 2` |
-| `E0041` | nesting too deep | hundreds of nested parentheses |
+| `E0041` | nesting too deep | hundreds of nested parentheses, or a chain of a thousand `+1` (D225) |
 | `E0042` | unknown type parameter in a `where` clause | `fun f<T>() where U: A {}` |
 | `E0043` | unexpected token after an expression | `"{a b}"` |
 | `E0044` | no enclosing loop carries that label | `break nowhere` |
@@ -102,7 +108,7 @@ already produced one, so each broken spot yields one diagnostic.
 | `E0050` | manifest syntax error | a line without `=`, an unclosed table header |
 | `E0051` | unknown manifest key or table | `author = "me"` under `[package]` |
 | `E0052` | missing manifest key | no `[package]`, no `name`, a dependency without a path |
-| `E0053` | invalid manifest value | `name = p`, `unsafe = "maybe"`, an unknown severity |
+| `E0053` | invalid manifest value, a version requirement that is malformed or that the copy found does not meet, or a bare-string dependency (D242) | `name = p`, `version = "^x"`, `core = "1.2"` |
 | `E0054` | duplicate manifest key | `name` given twice in one table |
 | `E0055` | unresolved module | `need game.nowhere` |
 | `E0056` | a needed name is not declared | `need game.math.{Vec4}` when there is no `Vec4` |
@@ -131,11 +137,17 @@ P0101 = "error"
 |---|---|---|
 | `W0101` | a name is never used | an unused local, parameter or `need` |
 | `W0102` | this code is never reached | a statement after `return` |
+| `W0109` | a state nothing leads to | `state Stuck` with no transition to it |
 
 A name starting with `_` is never reported, which is how an unused parameter
 is marked deliberate. A declaration with no body — an ability method, an
 `extern` — has nowhere to use its parameters, so it is exempt. `W0102` is
 reported once per block rather than once per statement after the jump.
+
+A machine is a table, so it is checked as one: `E0206` for a transition to
+a state that is not there, and `W0109` for a state nothing leads to. Both
+are mistakes somebody makes while editing a table, which is why the spec
+asks for them.
 
 An unused `need` is checked by the type checker rather than by import
 resolution, because only type checking knows what a file actually named. A
@@ -202,7 +214,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0110` | no type with that name is in scope | `fun f(a: Nothing)` |
 | `E0111` | the name is not a type | a function used in type position |
 | `E0112` | the type has no such member | `v.z` where `Vec3` has `x` and `y` |
-| `E0117` | a value type contains itself, so it has no size | `struct S { var next: S }` |
+| `E0117` | a value type contains itself, so it has no size | `struct S { var next: S }`, `enum E { X(e: E) }`, `struct W<T> { var w: W<W<T>>? }` |
 | `E0118` | a declaration is defined in terms of itself | `type A = A`, `class A : A`, `dimension D = D` |
 | `E0119` | a type parameter is declared twice | `fun f<T, T>()` |
 | `E0113` | the name is declared twice in one file | |
@@ -219,7 +231,19 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0137` | `weak` on something that is not a `C?` field of a class | `weak var count: int` |
 | `E0138` | a `type` outside an ability with nothing after it | `type Count` |
 | `E0139` | an `extern class` constructed, or given something other than methods | `Actor()` |
-| `E0121` | a reference would outlive what it points into | `return &local` |
+| `E0143` | a name two `need`ed modules both offer is used bare (D246) | `need json` and `need ini`, then `Parse(text)` |
+| `E0144` | `module.Name` where the module offers no such name, or does not offer it (D246) | `json.Nothing(x)` |
+| `E0145` | `self` stored into a field or global from its own `deinit` | `deinit { stash = self }` |
+| `E0147` | a function or closure given to a `@Thread` parameter (`Spawn`, `ParallelFor`) reads or writes a module-level `var`, directly or through a call, and the caller does not state `uses unsafe` (D232) | `Spawn(Work)` where `Work` pushes to a global list |
+| `E0148` | a closure that captures given to a `@Thread` parameter that has no environment to give it (`Spawn`; not `ParallelFor`), even under `uses unsafe` (D232) | `Spawn(\|\| { Print("{n}") })` |
+| `E0159` | `after <delay>` on a machine transition: it parsed and then fired at once, so it is refused until a machine has a clock (D243) | `on Interact after 3s -> Closed` |
+
+| `E0149` | a value with a `deinit` taken out of a field of the struct or enum that owns it (D233) | `Take(o.r)` where `o: Outer` holds `r: Res` |
+
+| `E0149` | a value with a `deinit` taken out of a field of the struct or enum that owns it, or moved on from inside a closure that captured it (D233) | `Take(o.r)` where `o: Outer` holds `r: Res` |
+| `E0140` | a generic instantiates itself with ever bigger types | `fun F<T>(x: T) { F([x]) }` (D225) |
+| `E0121` | a reference would outlive what it points into (also through fields, indices, calls and a local array as a slice, D228) | `return &local.n` |
+| `E0142` | an object made inside `arena { }` is stored outside, returned or given out as the block's value (D228) | `kept = Leaf(1)` inside the block, `kept` declared outside |
 | `E0122` | a value that was moved out of is used again | `const b = a` then `Take(a)` where `a: Text` |
 | `E0123` | a variable is used before anything is written to it | `var x: int` then `return x` |
 | `E0124` | the conversion is not between numbers | `s as int` where `s: text` |
@@ -341,8 +365,8 @@ in use appear in the implemented tables above, not here.
 
 | Code | Catches |
 |---|---|
-| `E0501` | two systems write the same component without an ordering |
-| `E0502` | cycle in system ordering |
+| `E0501` | reserved, unused: implemented as `E0127` |
+| `E0502` | reserved, unused: ordering errors are `E0127` and `E0128` |
 | `E0601` | server-only function called from a client context |
 | `E0602` | RPC parameter type is not serializable |
 | `E0901` | `comptime` assertion failed |
@@ -356,20 +380,14 @@ in use appear in the implemented tables above, not here.
 | `W0104` | ignored result of a `@MustUse` function |
 | `W0105` | floats compared with `==` |
 | `W0106` | overflow or division by zero in a constant expression |
-| `W0109` | a state nothing leads to | `state Stuck` with no transition to it |
-
-A machine is a table, so it is checked as one: `E0206` for a transition to
-a state that is not there, and `W0109` for a state nothing leads to. Both
-are mistakes somebody makes while editing a table, which is why the spec
-asks for them.
 | `W0107` | reference held across an `wait` |
 | `W0108` | `loop` in a `task` function with a path that never waits |
-| `W0109` | signal subscription that outlives the subscriber |
+| `W0109` | (code taken by the unreachable-state warning above; needs a new code) signal subscription that outlives the subscriber |
 | `W0110` | replicated field written on a client |
 | `W0111` | `self` used after `Destroy()` |
 | `W0112` | recursion with no base case |
 | `W0113` | weak reference dereferenced without a liveness check |
-| `W0115` | unreachable state in a `machine` |
+| `W0115` | reserved; the unreachable-state check is implemented as `W0109` |
 
 ### Performance
 

@@ -425,3 +425,173 @@ fun main() uses io, unsafe {
   Print("{rows.Len()} rows, total {total}")
 }
 ```
+
+## Threads
+
+```wolang
+need std.thread.{Spawn, MutexNew}
+
+var total: s64 = 0
+
+fun Work() {
+  // What a thread can reach is what is global or behind a lock.
+}
+
+fun main() uses unsafe {
+  var worker = Spawn(Work)
+  const finished = worker.Join()
+}
+```
+
+A spawned body takes nothing and gives nothing back: what a thread works
+on is what it can reach, which means a module-level `var` or something
+behind a `Mutex`. `AtomicAdd` is there for the counter case.
+
+## Building a binary
+
+```sh
+wolang build path/to/package -o program   # a binary that needs no compiler
+wolang build path/to/package --emit-object -o program.o
+wolang build path/to/package -O3 -o program
+```
+
+`wolang run` compiles in memory and runs; `wolang build` writes a program
+that runs on its own. Both come from the same IR, and a function the
+ahead-of-time backend cannot translate is named rather than quietly left
+to trap.
+
+## Running the systems
+
+A world holds entities and their components:
+
+```wolang
+need game.world.{WorldNew, Add, Get, RunSystems, TokenOf, Has}
+
+component Position {
+  var x: f32
+  var y: f32
+}
+
+component Velocity {
+  var x: f32
+  var y: f32
+}
+
+system Integrate(q: Query<mut Position, Velocity>) {
+  foreach p in q {
+    p.x = p.x + 1.0
+  }
+}
+
+fun main() uses unsafe {
+  var world = WorldNew()
+  const entity = world.Spawn()
+  Add(world, entity, Position(0.0, 0.0))
+  Add(world, entity, Velocity(1.0, 0.0))
+
+  RunSystems(world, 0.016)
+
+  if const p = Get<Position>(world, entity) {
+    // p.x is 1.0
+  }
+  world.Destroy()
+}
+```
+
+`Add`, `Get`, `Remove` and `Has` work on one entity at a time; a `system`
+works on every entity that matches its query. `foreach p in q` binds where
+the first component the query names *is*, so a `mut` query writes the
+world rather than a copy.
+
+`RunSystems(world, delta)` runs the systems of the file that calls it,
+stage by stage: every system in a stage runs at the same time as the
+others in it, because the compiler has proved that none of them writes
+what another reads (`wolang systems <dir>` prints the stages). A program
+whose systems live in several files calls it once per file.
+
+A component's storage is one dense array per component type, so a walk
+over every `Position` is a walk over contiguous memory.
+
+## Serving an API
+
+```wolang
+need http.{Created, NotFound, Ok, OkJson, Param, Query, Request, Response,
+            RouterNew, ServeRoutes}
+
+fun User(request: Request) -> Response uses unsafe {
+  const id = Param(&request, "id", "0")
+  return OkJson("\{\"id\":\"{id}\"\}\n")
+}
+
+fun Hello(request: Request) -> Response uses unsafe {
+  return Ok("hello, {Query(&request, "name", "world")}\n")
+}
+
+fun main() uses io, net, time, unsafe {
+  var router = RouterNew()
+  router.Get("/users/:id", User)
+  router.Get("/hello", Hello)
+  const _code = ServeRoutes(8080, 256, router)
+}
+```
+
+A request carries its method, path, query string, body, headers and the
+path parameters the router matched; all of them are views into the buffer
+it was read from, so reading one costs nothing. `Header`, `Query` and
+`Param` take the request by reference, because a request is a value and
+reading it must not consume it.
+
+A response is a status, a body, a content type and up to eight headers:
+`Ok`, `OkJson`, `Created`, `NoContent`, `NotFound`, `BadRequest` and
+`Status` build one, and `WithHeader` adds to it.
+
+`ServeRoutes(port, most, router)` is the loop: one thread, readiness
+polling, keep-alive, and an arena per request so everything a handler
+allocates goes back at the end of the turn. On this machine it serves
+**39 000 requests a second over 500 connections** compiled in memory, and
+**42 800** as a binary built with `wolang build`.
+
+## Editors
+
+```sh
+wolang lsp      # speaks the Language Server Protocol on stdin and stdout
+```
+
+Point an editor's language client at that command for files matching
+`*.wo`. It answers with diagnostics as you type, the type and doc comment
+of what is under the cursor, go to definition, the file's symbols, and
+whole-file formatting with the same formatter `wolang fmt` uses.
+
+For Neovim:
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "wolang",
+  callback = function()
+    vim.lsp.start({ name = "wolang", cmd = { "wolang", "lsp" },
+                    root_dir = vim.fs.root(0, { "wolang.toml" }) })
+  end,
+})
+```
+
+## Debugging
+
+A binary built with `wolang build` carries the line table of the Wolang
+source, so a debugger works on the program as written:
+
+```
+$ lldb ./app
+(lldb) b main.wo:11
+Breakpoint 1: where = app`wo$1$Total + 152 at main.wo:11:11
+(lldb) run
+(lldb) next
+frame #0: app`wo$1$Total at main.wo:12:9
+```
+
+A trap names a line too, in every tier:
+
+```
+wolang: out of bounds at app.wo:4:10 (@main:%55): index is outside a length of 4
+```
+
+`wolang build --no-debug` leaves the line table out.

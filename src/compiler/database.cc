@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <span>
+#include <unordered_set>
 #include <utility>
 
 #include "wolang/interp/interpreter.h"
@@ -210,6 +211,8 @@ constexpr std::string_view kUndeclaredEffect = "E0701";
 constexpr std::string_view kUnstatedPublicEffect = "E0704";
 constexpr std::string_view kForbiddenEffect = "E0702";
 constexpr std::string_view kUnsafeForbidden = "E0801";
+// What a function started on another thread may not reach (D232).
+constexpr std::string_view kThreadTouchesGlobal = "E0147";
 constexpr std::string_view kUngrantedCapability = "E0703";
 // A sandboxed package declaring something outside the language (D217).
 constexpr std::string_view kSandboxedExtern = "E0705";
@@ -325,6 +328,7 @@ void Database::RegisterQueries() {
           ResolvedImport resolved;
           resolved.ordinal = ordinal++;
           resolved.module = FindModule(ImportPathText(interner_, ast, item));
+          resolved.qualifier = item.name;
 
           const ModuleScope* scope =
               resolved.module.is_valid()
@@ -436,6 +440,8 @@ void Database::RegisterQueries() {
         if (imports == nullptr) {
           return MakeComparableResult(std::move(result));
         }
+        // Names that came from an import rather than from this module.
+        std::unordered_set<uint32_t> imported;
         for (const ResolvedImport& import : imports->imports) {
           const Module* module = GetModule(import.module);
           if (module == nullptr) {
@@ -448,6 +454,21 @@ void Database::RegisterQueries() {
               continue;
             }
             for (const Binding& binding : names->first.scope) {
+              // Every public name is also reachable as `module.Name`,
+              // whatever the list selected (D246).
+              if (import.qualifier.is_valid() &&
+                  (binding.is_public ||
+                   binding.kind == BindingKind::kErrorTag)) {
+                Binding qualified = binding;
+                std::string spelled(interner_.Text(import.qualifier));
+                spelled.push_back('.');
+                spelled.append(interner_.Text(binding.name));
+                qualified.name = interner_.Intern(spelled);
+                qualified.real_name = binding.name;
+                result.first.qualified.push_back(
+                    FileResolution::Qualified{import.qualifier,
+                                              std::move(qualified)});
+              }
               // An import list selects names; a bare import brings the
               // module's whole public surface.
               if (!import.names.empty()) {
@@ -462,9 +483,27 @@ void Database::RegisterQueries() {
                   continue;
                 }
               }
+              // Two modules offering one name: the first stays, and using
+              // the bare name is an error rather than a silent pick (D246).
+              if (const Binding* held = result.first.Find(binding.name);
+                  held != nullptr && imported.count(binding.name.index) > 0 &&
+                  (held->file != binding.file || held->item != binding.item) &&
+                  (binding.is_public ||
+                   binding.kind == BindingKind::kErrorTag) &&
+                  !result.first.IsAmbiguous(binding.name)) {
+                result.first.ambiguous.push_back(binding.name);
+              }
+              const size_t before = result.first.scope.size();
               add(binding, /*public_only=*/true);
+              if (result.first.scope.size() != before) {
+                imported.insert(binding.name.index);
+              }
             }
             add_dimensions(names->first);
+          }
+          if (import.qualifier.is_valid() &&
+              !result.first.IsQualifier(import.qualifier)) {
+            result.first.qualifiers.push_back(import.qualifier);
           }
         }
         return MakeComparableResult(std::move(result));
@@ -607,6 +646,15 @@ void Database::RegisterQueries() {
             }
             binding.type = other.item_types[binding.item];
           }
+          for (FileResolution::Qualified& entry : resolution.qualified) {
+            Binding& binding = entry.binding;
+            if (binding.file != other_file || binding.type.is_valid() ||
+                binding.item == Binding::kNoItem ||
+                binding.item >= other.item_types.size()) {
+              continue;
+            }
+            binding.type = other.item_types[binding.item];
+          }
         };
 
         const ModuleId own_module = ModuleOf(file);
@@ -732,6 +780,9 @@ void Database::RegisterQueries() {
           result.body.borrows.insert(result.body.borrows.end(),
                                      body.borrows.begin(),
                                      body.borrows.end());
+          result.body.qualified.insert(result.body.qualified.end(),
+                                       body.qualified.begin(),
+                                       body.qualified.end());
           // What each closure takes with it (D138).
           result.body.captures.insert(result.body.captures.end(),
                                       body.captures.begin(),
@@ -1049,14 +1100,102 @@ void Database::RegisterQueries() {
         // system() }` binds `wolang_system` -- even though calling it is
         // `unsafe` already (D217).
         if (sandboxed) {
-          for (ItemId id : ast.Get(ast.root())) {
-            if (!ast.Contains(id) || !HasFlag(ast.Get(id).flags, ItemFlags::kExtern)) {
+          // Nested too: an `extern fun` inside a struct or an `extend` binds
+          // a C symbol just as a top-level one does (D217).
+          std::vector<ItemId> pending(ast.Get(ast.root()).begin(),
+                                      ast.Get(ast.root()).end());
+          while (!pending.empty()) {
+            const ItemId id = pending.back();
+            pending.pop_back();
+            if (!ast.Contains(id)) {
+              continue;
+            }
+            if (!HasFlag(ast.Get(id).flags, ItemFlags::kExtern)) {
+              for (ItemId member : ast.Get(ast.Get(id).members)) {
+                pending.push_back(member);
+              }
               continue;
             }
             std::string message = "`";
             message.append(interner_.Text(ast.Get(id).name));
             message.append("` is `extern`, which a sandboxed package cannot declare");
             diagnostics.Error(kSandboxedExtern, std::move(message)).Primary(ast.Get(id).name_span, "the host's API comes from a package it trusts");
+          }
+        }
+
+        // A function handed to a `@Thread` parameter must not reach a
+        // module-level `var`, directly or through what it calls. Same
+        // shape as the effect fixpoint above, but a plain flag and over
+        // every call, declared row or not (D232). Calls into other
+        // modules are not followed: a library vouches for itself.
+        if (const auto* files =
+                db.GetAs<std::vector<FileId>>(ModuleFilesKey(module))) {
+          struct Reach {
+            uint32_t file;
+            uint32_t item;
+            bool touches;
+            const std::vector<std::pair<uint32_t, uint32_t>>* callees;
+          };
+          std::vector<Reach> reach;
+          const CheckedFile* mine = nullptr;
+          for (FileId other : *files) {
+            const auto* checked = db.GetAs<CheckedFile>(TypeCheckKey(other));
+            if (checked == nullptr) {
+              continue;
+            }
+            if (other.index == arg) {
+              mine = checked;
+            }
+            for (const TypedBody& body : checked->items) {
+              if (body.item_index != 0xFFFFFFFFu) {
+                reach.push_back({other.index, body.item_index,
+                                 body.touches_global, &body.all_callees});
+              }
+            }
+          }
+          const auto touches = [&reach](const Reach& node) {
+            for (const auto& [to_file, to_item] : *node.callees) {
+              for (const Reach& other : reach) {
+                if (other.file == to_file && other.item == to_item &&
+                    other.touches) {
+                  return true;
+                }
+              }
+            }
+            return false;
+          };
+          bool grew = true;
+          for (size_t pass = 0; grew && pass <= reach.size(); ++pass) {
+            grew = false;
+            for (Reach& node : reach) {
+              if (!node.touches && touches(node)) {
+                node.touches = true;
+                grew = true;
+              }
+            }
+          }
+          if (mine != nullptr) {
+            for (const TypedBody& body : mine->items) {
+              for (const TypedBody::ThreadRoot& root : body.thread_roots) {
+                bool reaches = root.touches;
+                for (const auto& [to_file, to_item] : root.callees) {
+                  for (const Reach& node : reach) {
+                    reaches |= node.file == to_file && node.item == to_item &&
+                               node.touches;
+                  }
+                }
+                if (!reaches) {
+                  continue;
+                }
+                diagnostics
+                    .Error(kThreadTouchesGlobal,
+                           "code started on another thread reaches a "
+                           "module-level `var`")
+                    .Primary(root.span,
+                             "two threads would share it unguarded; state "
+                             "`uses unsafe` here to take responsibility");
+              }
+            }
           }
         }
 
@@ -1267,6 +1406,27 @@ void Database::RegisterQueries() {
         ir::LowerFile(&interner_, &types_, file.index, checked->resolution,
                       parsed->ast, checked->body, effects, foreign,
                       schedule, &result.module);
+
+        // Polymorphic recursion would have made a new copy forever; lowering
+        // stopped at a type nested too deep and left a note (D225).
+        if (result.module.runaway_item != 0xFFFFFFFFu) {
+          const ItemId id = ResolveItem(parsed->ast, result.module.runaway_item);
+          Diagnostic diagnostic;
+          diagnostic.severity = Severity::kError;
+          diagnostic.code = "E0140";
+          diagnostic.message =
+              "generic instantiation nests types too deeply; the type "
+              "arguments grow with every call";
+          DiagnosticLabel label;
+          label.is_primary = true;
+          label.span = parsed->ast.Contains(id) ? parsed->ast.Get(id).name_span
+                                                : SourceSpan();
+          label.message = "this generic instantiates itself with a bigger type";
+          diagnostic.labels.push_back(std::move(label));
+          LoweredFile empty;
+          empty.diagnostics.push_back(std::move(diagnostic));
+          return MakeResult(std::move(empty));
+        }
 
         // A `task` is not a function the way the machine means it, so it is
         // split into a state machine here -- before the verifier, so the

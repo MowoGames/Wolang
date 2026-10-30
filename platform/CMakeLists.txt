@@ -20,11 +20,12 @@ if(APPLE)
        "-framework CoreGraphics"
        "-framework AudioToolbox"
        "-framework AudioUnit"
-       "-framework OpenGL")
+       "-framework OpenGL"
+       "-framework GameController")
 elseif(WIN32)
   list(APPEND WOLANG_PLATFORM_SOURCES win32.cc)
   set(WOLANG_PLATFORM_BACKEND "win32")
-  list(APPEND WOLANG_PLATFORM_LIBS user32 gdi32 opengl32 winmm)
+  list(APPEND WOLANG_PLATFORM_LIBS user32 gdi32 opengl32 winmm shell32 comdlg32)
 else()
   # X11 and ALSA are looked for rather than required: a container with no
   # display still builds the language, and `Available()` answers false.
@@ -32,7 +33,8 @@ else()
   find_library(WOLANG_X11_LIB X11)
   find_library(WOLANG_ASOUND_LIB asound)
   if(WOLANG_X11_INCLUDE AND WOLANG_X11_LIB)
-    list(APPEND WOLANG_PLATFORM_SOURCES x11.cc)
+    list(APPEND WOLANG_PLATFORM_SOURCES x11.cc gamepad_linux.cc
+         dialog_linux.cc)
     set(WOLANG_PLATFORM_BACKEND "x11")
     list(APPEND WOLANG_PLATFORM_LIBS ${WOLANG_X11_LIB} dl)
     if(WOLANG_ASOUND_LIB)

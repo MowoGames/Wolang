@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -75,7 +76,8 @@
 namespace wolang {
 namespace {
 
-constexpr std::string_view kVersion = "0.1.0";
+// From project(VERSION) in CMakeLists.txt, the one place it is written (D248).
+constexpr std::string_view kVersion = WOLANG_VERSION_STRING;
 
 struct Options {
   std::string command;
@@ -212,6 +214,7 @@ void PrintUsage() {
       "  --seed <n>      the first seed `fuzz` generates from\n"
       "  --count <n>     how many programs `fuzz` generates\n"
       "  --source        print the programs `fuzz` generated\n"
+      "                  (`fuzz <file>` compares that program instead)\n"
       "  --aot           `fuzz`: build and run each program as a binary "
       "too\n"
       "  --unoptimized   `ir`: print what lowering produced, before passes\n"
@@ -224,7 +227,6 @@ void PrintUsage() {
       "  --spans         annotate `ast` output with positions\n"
       "  --check         `fmt` only: fail if a file is not formatted\n"
       "  --write         `fmt` and `fix`: change the files in place\n"
-      "  --write         `fmt` only: rewrite the file in place\n"
       "  --no-cache      ignore and do not write the on-disk cache\n"
       "  --interpret     `run` only: do not use the compiled tier\n"
       "  --stdin         `fmt` only: read the file from standard input\n"
@@ -239,12 +241,18 @@ void PrintUsage() {
       std::string(kVersion).c_str());
 }
 
+// fputs stops at the first NUL; text that carries user bytes goes out by
+// length instead (D230).
+void WriteAll(const std::string& text, std::FILE* stream) {
+  std::fwrite(text.data(), 1, text.size(), stream);
+}
+
 int Report(const SourceManager& sources,
            const std::vector<Diagnostic>& diagnostics,
            const RenderOptions& options) {
   if (!diagnostics.empty()) {
     const std::string text = RenderDiagnostics(sources, diagnostics, options);
-    std::fputs(text.c_str(), stderr);
+    WriteAll(text, stderr);
   }
 
   size_t errors = 0;
@@ -472,7 +480,7 @@ int RunSyntaxCommand(const Options& options) {
         const std::string text = PrintAst(&database.sources(),
                                           database.interner(), parsed->ast,
                                           print);
-        std::fputs(text.c_str(), stdout);
+        WriteAll(text, stdout);
       }
     }
 
@@ -692,7 +700,7 @@ int RunFormat(const Options& options) {
       continue;
     }
 
-    std::fputs(formatted.c_str(), stdout);
+    WriteAll(formatted, stdout);
   }
   return exit_code;
 }
@@ -1142,7 +1150,7 @@ int RunRepl(const Options& options) {
         if (vm->LoadSource(file, again)) {
           ran = vm->Call(name).has_value();
           if (ran) {
-            std::fputs(repl_output.c_str(), stdout);
+            WriteAll(repl_output, stdout);
           } else {
             std::fputs(vm->errors().c_str(), stderr);
           }
@@ -1539,7 +1547,7 @@ int RunProgram(const Options& options) {
     profile::Report(compiled.get());
   }
   runtime::JournalClose();
-  std::fputs(output.text.c_str(), stdout);
+  WriteAll(output.text, stdout);
   if (!outcome.ok()) {
     std::fprintf(stderr, "wolang: %s at %s: %s\n",
                  std::string(interp::TrapKindName(outcome.trap)).c_str(),
@@ -2013,8 +2021,15 @@ std::string BuildAndRun(const std::string& source, uint64_t seed) {
 }
 
 int RunFuzz(const Options& options) {
+  if (options.fuzz_aot && !codegen::HasAotBackend()) {
+    // A silent skip would report success for a comparison never made.
+    std::fprintf(stderr,
+                 "wolang: --aot needs an ahead-of-time backend and this "
+                 "build has none; configure with LLVM to get one\n");
+    return 2;
+  }
   const uint64_t first = options.fuzz_seed;
-  const uint64_t count = options.fuzz_count;
+  const uint64_t count = options.inputs.empty() ? options.fuzz_count : 1;
   uint64_t checked = 0;
   uint64_t failed = 0;
 
@@ -2024,7 +2039,15 @@ int RunFuzz(const Options& options) {
     generated.depth = options.fuzz_depth;
     generated.statements = options.fuzz_statements;
     generated.functions = options.fuzz_statements <= 2 ? 1 : 3;
-    const std::string source = fuzz::Generate(generated);
+    std::string source = fuzz::Generate(generated);
+    if (!options.inputs.empty()) {
+      // A program to compare instead of a generated one: what a
+      // disagreement is cut down to by hand or by script (D231).
+      std::ifstream in(options.inputs.front(), std::ios::binary);
+      std::ostringstream text;
+      text << in.rdbuf();
+      source = text.str();
+    }
     if (options.show_source) {
       std::fprintf(stdout, "// seed %llu\n%s\n",
                    static_cast<unsigned long long>(seed), source.c_str());
@@ -2085,9 +2108,12 @@ int RunFuzz(const Options& options) {
     ++checked;
 
     const auto describe = [](const interp::Outcome& outcome) {
+      // The kind and the words: two tiers that stop for the same reason
+      // with different messages disagree about what happened (D231).
       return outcome.ok() ? outcome.value.Describe()
                           : "trap: " + std::string(
-                                           ir::TrapKindName(outcome.trap));
+                                           ir::TrapKindName(outcome.trap)) +
+                                " (" + outcome.message + ")";
     };
     if (describe(reference) != describe(optimized)) {
       std::fprintf(stdout,
@@ -2128,7 +2154,13 @@ int RunFuzz(const Options& options) {
         ++failed;
         continue;
       }
-      if (said != describe(reference)) {
+      // The binary prints its trap in its own words (and cannot say the
+      // length an index missed), so only the kind is compared here.
+      std::string expected = describe(reference);
+      if (const size_t cut = expected.find(" ("); cut != std::string::npos) {
+        expected.resize(cut);
+      }
+      if (said != expected) {
         std::fprintf(stdout,
                      "[ failed ] seed %llu: the binary disagrees: "
                      "interpreter said %s, the binary said %s\n",
@@ -2421,7 +2453,7 @@ int RunBindReflection(const Options& options) {
   settings.effect = options.bind_effect;
   const bind::ReflectionResult result = bind::GenerateFromReflection(documents, settings);
   if (options.output.empty()) {
-    std::fputs(result.source.c_str(), stdout);
+    WriteAll(result.source, stdout);
   }
   else if (!WriteText(options.output, result.source)) {
     return 2;
@@ -2468,7 +2500,7 @@ int RunBind(const Options& options) {
     }
     out << result.source;
   } else {
-    std::fputs(result.source.c_str(), stdout);
+    WriteAll(result.source, stdout);
   }
 
   std::fprintf(stderr,
@@ -2644,7 +2676,7 @@ int RunBuild(const Options& options) {
 // Not a debugger of its own: the binary carries DWARF (D118), so lldb
 // and gdb already know where every line is. What this does is the part a
 // person should not have to remember -- build with the right flags, then
-// hand the binary over with the source root set (D143).
+// hand the binary over with the source root set (D118).
 int RunDebug(const Options& options) {
   Options building = options;
   building.command = "build";

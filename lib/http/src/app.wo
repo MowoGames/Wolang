@@ -72,7 +72,7 @@ offer fun AppNew() -> App uses unsafe {
 var running: App = App(
     Router(ListNew<Route>(), NotFoundHandler, false),
     Layers(ListNew<Before>(), ListNew<After>()),
-    Limits(1048576, 16384, true))
+    Limits(1048576, 16384, true, 10, 60))
 
 fun Handle(request: Request) -> Response uses io, time, unsafe {
   return Through(&running.layers, request, Routed)

@@ -10,6 +10,165 @@
 namespace wolang {
 namespace {
 
+// A version with its missing parts counted, because `^1.2` and `^1.2.0`
+// accept different things.
+struct Version {
+  uint64_t part[3] = {0, 0, 0};
+  int count = 0;
+};
+
+bool ParseVersion(std::string_view text, Version* out) {
+  *out = Version();
+  size_t position = 0;
+  while (true) {
+    if (out->count == 3 || position >= text.size()) {
+      return false;
+    }
+    size_t digits = 0;
+    uint64_t value = 0;
+    while (position < text.size() && text[position] >= '0' &&
+           text[position] <= '9') {
+      value = value * 10 + static_cast<uint64_t>(text[position] - '0');
+      ++position;
+      ++digits;
+    }
+    if (digits == 0 || digits > 15) {
+      return false;
+    }
+    out->part[out->count++] = value;
+    if (position == text.size()) {
+      return true;
+    }
+    if (text[position] != '.') {
+      return false;
+    }
+    ++position;
+  }
+}
+
+int Compare(const Version& a, const Version& b) {
+  for (int i = 0; i < 3; ++i) {
+    if (a.part[i] != b.part[i]) {
+      return a.part[i] < b.part[i] ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+// The first version past everything that shares the first |index| + 1
+// parts: `1.2` bumped at 1 is `1.3.0`, `1` bumped at 0 is `2.0.0`.
+Version Bump(const Version& v, int index) {
+  Version next;
+  for (int i = 0; i < index; ++i) {
+    next.part[i] = v.part[i];
+  }
+  next.part[index] = v.part[index] + 1;
+  next.count = 3;
+  return next;
+}
+
+enum class Op {
+  kCaret,
+  kTilde,
+  kEqual,
+  kGreaterEqual,
+  kGreater,
+  kLessEqual,
+  kLess,
+  kAny,
+};
+
+struct Comparator {
+  Op op = Op::kCaret;
+  Version version;
+};
+
+std::string_view TrimBlanks(std::string_view t) {
+  while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) {
+    t.remove_prefix(1);
+  }
+  while (!t.empty() && (t.back() == ' ' || t.back() == '\t')) {
+    t.remove_suffix(1);
+  }
+  return t;
+}
+
+bool ParseComparator(std::string_view text, Comparator* out) {
+  text = TrimBlanks(text);
+  if (text == "*") {
+    out->op = Op::kAny;
+    return true;
+  }
+  out->op = Op::kCaret;
+  size_t skip = 0;
+  if (text.substr(0, 2) == ">=") {
+    out->op = Op::kGreaterEqual;
+    skip = 2;
+  } else if (text.substr(0, 2) == "<=") {
+    out->op = Op::kLessEqual;
+    skip = 2;
+  } else if (!text.empty()) {
+    switch (text.front()) {
+      case '^':
+        skip = 1;
+        break;
+      case '~':
+        out->op = Op::kTilde;
+        skip = 1;
+        break;
+      case '=':
+        out->op = Op::kEqual;
+        skip = 1;
+        break;
+      case '>':
+        out->op = Op::kGreater;
+        skip = 1;
+        break;
+      case '<':
+        out->op = Op::kLess;
+        skip = 1;
+        break;
+      default:
+        break;
+    }
+  }
+  return ParseVersion(TrimBlanks(text.substr(skip)), &out->version);
+}
+
+bool Meets(const Comparator& c, const Version& v) {
+  const Version& w = c.version;
+  const int last = w.count - 1;
+  switch (c.op) {
+    case Op::kAny:
+      return true;
+    case Op::kCaret: {
+      // The leftmost non-zero part is the one that may not change; a
+      // written `0` before it pins the parts to its left.
+      int index = 0;
+      if (w.part[0] == 0 && w.count > 1) {
+        index = (w.part[1] == 0 && w.count > 2) ? 2 : 1;
+      }
+      return Compare(v, w) >= 0 && Compare(v, Bump(w, index)) < 0;
+    }
+    case Op::kTilde:
+      return Compare(v, w) >= 0 &&
+             Compare(v, Bump(w, w.count == 1 ? 0 : 1)) < 0;
+    case Op::kEqual:
+      return Compare(v, w) >= 0 && Compare(v, Bump(w, last)) < 0;
+    case Op::kGreaterEqual:
+      return Compare(v, w) >= 0;
+    case Op::kGreater:
+      return w.count == 3 ? Compare(v, w) > 0
+                          : Compare(v, Bump(w, last)) >= 0;
+    case Op::kLessEqual:
+      return w.count == 3 ? Compare(v, w) <= 0
+                          : Compare(v, Bump(w, last)) < 0;
+    case Op::kLess:
+      return Compare(v, w) < 0;
+  }
+  return false;
+}
+
 constexpr std::string_view kSyntaxError = "E0050";
 constexpr std::string_view kUnknownKey = "E0051";
 constexpr std::string_view kMissingKey = "E0052";
@@ -191,7 +350,20 @@ void ManifestParser::ApplyDependencyField(const Field& field,
         field.value.substr(1, field.value.size() - 2);
     size_t position = 0;
     while (position < body.size()) {
-      const size_t comma = body.find(',', position);
+      // A comma inside quotes belongs to the value: `version = ">=1, <2"`
+      // (D242).
+      size_t comma = std::string_view::npos;
+      bool quoted = false;
+      for (size_t i = position; i < body.size(); ++i) {
+        if (body[i] == '\\' && quoted) {
+          ++i;
+        } else if (body[i] == '"') {
+          quoted = !quoted;
+        } else if (body[i] == ',' && !quoted) {
+          comma = i;
+          break;
+        }
+      }
       const std::string_view part = Trim(body.substr(
           position, comma == std::string_view::npos ? std::string_view::npos
                                                     : comma - position));
@@ -213,13 +385,21 @@ void ManifestParser::ApplyDependencyField(const Field& field,
             ReadString(inner, &dependency.revision);
           } else if (inner.key == "dir") {
             ReadString(inner, &dependency.subdirectory);
+          } else if (inner.key == "version") {
+            if (ReadString(inner, &dependency.version_req) &&
+                !IsValidVersionReq(dependency.version_req)) {
+              Report(kInvalidValue, "not a version requirement",
+                     Span(inner.value_offset, inner.value.size()),
+                     "write `^1.2`, `~1.2`, `=1.2.3`, `>=1, <2` or `*`");
+              dependency.version_req.clear();
+            }
           } else {
             std::string message = "unknown dependency key `";
             message.append(inner.key);
             message.append("`");
             Report(kUnknownKey, std::move(message),
                    Span(inner.key_offset, inner.key.size()),
-                   "known keys are path, git, rev, tag, branch and dir");
+                   "known keys are path, git, rev, tag, branch, dir and version");
           }
         }
       }
@@ -228,7 +408,17 @@ void ManifestParser::ApplyDependencyField(const Field& field,
       }
       position = comma + 1;
     }
-  } else if (!ReadString(field, &dependency.path)) {
+  } else {
+    // A bare string is a version in every other manifest, so it is not
+    // quietly read as a path here. There is no registry to look it up in
+    // (D242).
+    std::string message = "dependency `";
+    message.append(field.key);
+    message.append("` is a bare string, which would be a version");
+    Report(kInvalidValue, std::move(message),
+           Span(field.value_offset, field.value.size()),
+           "there is no registry yet; write `{ path = \"...\" }` or "
+           "`{ git = \"...\", rev = \"...\" }`");
     return;
   }
 
@@ -483,6 +673,54 @@ Severity Manifest::SeverityFor(std::string_view code,
     }
   }
   return fallback;
+}
+
+bool IsValidVersion(std::string_view version) {
+  Version parsed;
+  return ParseVersion(version, &parsed);
+}
+
+bool IsValidVersionReq(std::string_view requirement) {
+  size_t position = 0;
+  while (true) {
+    const size_t comma = requirement.find(',', position);
+    Comparator comparator;
+    if (!ParseComparator(requirement.substr(position,
+                                            comma == std::string_view::npos
+                                                ? std::string_view::npos
+                                                : comma - position),
+                         &comparator)) {
+      return false;
+    }
+    if (comma == std::string_view::npos) {
+      return true;
+    }
+    position = comma + 1;
+  }
+}
+
+bool VersionSatisfies(std::string_view requirement, std::string_view version) {
+  Version found;
+  if (!ParseVersion(version, &found) || !IsValidVersionReq(requirement)) {
+    return false;
+  }
+  size_t position = 0;
+  while (true) {
+    const size_t comma = requirement.find(',', position);
+    Comparator comparator;
+    ParseComparator(requirement.substr(position,
+                                       comma == std::string_view::npos
+                                           ? std::string_view::npos
+                                           : comma - position),
+                    &comparator);
+    if (!Meets(comparator, found)) {
+      return false;
+    }
+    if (comma == std::string_view::npos) {
+      return true;
+    }
+    position = comma + 1;
+  }
 }
 
 Manifest ParseManifest(const SourceManager& sources,

@@ -33,6 +33,10 @@ constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadWeak = "E0137";
 constexpr std::string_view kTypeWithoutTarget = "E0138";
+constexpr std::string_view kSelfEscapesDeinit = "E0145";
+// A closure that captures, started on another thread (D232). E0147, the
+// module-level `var` it may not reach, is reported by the module walk.
+constexpr std::string_view kThreadCaptures = "E0148";
 // `extern class` is made, kept and freed by the host: no constructor and
 // no fields, only methods the host binds (D213).
 constexpr std::string_view kForeignClass = "E0139";
@@ -73,7 +77,12 @@ constexpr std::string_view kUnreachableCode = "W0102";
 // unreachable row is a mistake somebody made while editing it.
 constexpr std::string_view kUnreachableState = "W0109";
 constexpr std::string_view kUnknownState = "E0206";
+// `after <delay>` parses and nothing reads it, so it used to fire at once
+// (D243).
+constexpr std::string_view kAfterNotSupported = "E0159";
 constexpr std::string_view kBadOperand = "E0108";
+constexpr std::string_view kAmbiguousName = "E0143";
+constexpr std::string_view kUnknownModuleItem = "E0144";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
 constexpr std::string_view kDimensionMismatch = "E1001";
 constexpr std::string_view kUnknownUnit = "E1002";
@@ -389,6 +398,110 @@ class Checker {
   // The closures being checked, innermost last: a name read inside one
   // is captured by it (D138).
   std::vector<ExprId> closures_;
+  // Thread safety (D232). What each closure's own body touches, so that
+  // handing one to a `@Thread` parameter can be judged without the
+  // function around it; and the closures so handed, judged at the end of
+  // the body when their captures are all known.
+  struct ClosureFacts {
+    ExprId closure;
+    bool touches = false;
+    std::vector<std::pair<uint32_t, uint32_t>> callees;
+  };
+  struct PendingThread {
+    ExprId closure;
+    uint8_t mode = 1;
+    // False when the caller states `uses unsafe`: the globals are its
+    // responsibility, but a missing environment is not a matter of trust
+    // (D232).
+    bool judge_globals = true;
+  };
+  std::vector<ClosureFacts> closure_facts_;
+  std::vector<PendingThread> pending_threads_;
+  // `uses unsafe` on the declaration being checked: the caller takes
+  // responsibility for what the threads share.
+  bool caller_unsafe_ = false;
+
+  bool InsideClosure(ExprId closure) const {
+    return std::find(closures_.begin(), closures_.end(), closure) !=
+           closures_.end();
+  }
+
+  void NoteGlobalTouch() {
+    result_.touches_global = true;
+    for (ClosureFacts& facts : closure_facts_) {
+      if (InsideClosure(facts.closure)) {
+        facts.touches = true;
+      }
+    }
+  }
+
+  void NoteCall(uint32_t file, uint32_t item) {
+    result_.all_callees.emplace_back(file, item);
+    for (ClosureFacts& facts : closure_facts_) {
+      if (InsideClosure(facts.closure)) {
+        facts.callees.emplace_back(file, item);
+      }
+    }
+  }
+
+  // Looks at the arguments of a call to a `@Thread` function.
+  void CollectThreadArguments(const Expr& call) {
+    if (!ast_.Contains(call.lhs) ||
+        ast_.Get(call.lhs).kind != ExprKind::kPath) {
+      return;
+    }
+    const Binding* callee = Lookup(ast_.Get(call.lhs).name);
+    if (callee == nullptr || callee->thread_args == 0) {
+      return;
+    }
+    for (ExprId argument : ast_.Get(call.args)) {
+      if (!ast_.Contains(argument)) {
+        continue;
+      }
+      const Expr& value = ast_.Get(argument);
+      if (value.kind == ExprKind::kClosure) {
+        pending_threads_.push_back(
+            {argument, callee->thread_args, !caller_unsafe_});
+      } else if (value.kind == ExprKind::kPath && !caller_unsafe_) {
+        const Binding* named = Lookup(value.name);
+        if (named != nullptr && named->kind == BindingKind::kFunction &&
+            named->item != Binding::kNoItem) {
+          TypedBody::ThreadRoot root;
+          root.span = value.span;
+          root.callees.emplace_back(named->file, named->item);
+          result_.thread_roots.push_back(std::move(root));
+        }
+      }
+    }
+  }
+
+  void SettleThreadClosures() {
+    for (const PendingThread& pending : pending_threads_) {
+      const SourceSpan span = ast_.Get(pending.closure).span;
+      if (pending.mode == 1 &&
+          !result_.CapturesOf(pending.closure).empty()) {
+        Report(kThreadCaptures,
+               "a closure that captures cannot be started on another thread",
+               span,
+               "a thread gets no environment here; use a function and a "
+               "module-level atomic or lock, or state `uses unsafe`");
+      }
+      if (!pending.judge_globals) {
+        continue;
+      }
+      TypedBody::ThreadRoot root;
+      root.span = span;
+      for (const ClosureFacts& facts : closure_facts_) {
+        if (facts.closure == pending.closure) {
+          root.touches = facts.touches;
+          root.callees = facts.callees;
+          break;
+        }
+      }
+      result_.thread_roots.push_back(std::move(root));
+    }
+    pending_threads_.clear();
+  }
 
   // ---------------------------------------------------------- statements --
 
@@ -415,8 +528,15 @@ class Checker {
   TypeId CheckLiteral(const Expr& expr, TypeId expected);
   TypeId CheckPath(const Expr& expr);
   TypeId CheckUnary(const Expr& expr, TypeId expected);
-  TypeId CheckBinary(const Expr& expr);
+  TypeId CheckBinary(const Expr& expr, TypeId expected);
+  bool IsLiteralTree(ExprId id) const;
+  bool IsFloatLiteralTree(ExprId id, bool* has_float) const;
   TypeId CheckAssign(const Expr& expr);
+  // `module.Name` (D246).
+  bool IsModuleQualified(const Expr& field);
+  TypeId CheckQualified(ExprId id, const Expr& field);
+  TypeId CheckBinding(const Expr& expr, const Binding* binding);
+  void CheckAmbiguous(const Expr& use, const Binding* binding);
   void CheckMachine(const Item& item);
   ExprId RootOfPlace(ExprId id) const;
   const Member* SignalOperand(ExprId id) const;
@@ -436,11 +556,19 @@ class Checker {
   // implementation said: `ListWalk<int>.Item` is `int`.
   TypeId Normalize(TypeId type);
   TypeId Instantiate(ExprId id, const Expr& expr, TypeId declared);
+  bool IsWideLiteral(ExprId id) const;
   void CheckConstructor(const Expr& expr, TypeId type);
 
   // Notes what calling |callee| does: its declared row if it has one, and
   // otherwise who to ask once the module-wide rows are known.
   void RecordCallEffects(ExprId callee, ExprId call);
+  // The effects of reaching `binding`, whether by calling it or by naming it
+  // as a value (D221, D222).
+  void ChargeBinding(const Binding* binding, bool drop_async);
+  // The same for a method, reached through `obj.Method` or `Type.Method`
+  // (D222): methods are not file-scope names, so the member names the
+  // declaration instead of a binding.
+  void ChargeMember(const Member* member, bool drop_async);
 
   // The member of the enclosing type named |name|, or null when there is no
   // enclosing type or it has no such member.
@@ -503,7 +631,16 @@ class Checker {
   // is currently the operand of a `wait` or a `spawn`. Both are about where
   // suspension is allowed to happen.
   bool in_task_ = false;
+  bool in_deinit_ = false;
   ExprId started_;
+  // The path being called, which RecordCallEffects has already charged.
+  const Expr* callee_path_ = nullptr;
+  // The use already reported as ambiguous, so a callee checked twice is
+  // reported once (D246).
+  const Expr* ambiguous_reported_ = nullptr;
+  // The method a callee resolved to, left by CheckField for CheckCall to
+  // charge once it knows whether the call is a `spawn` (D222).
+  const Member* callee_method_ = nullptr;
   bool spawned_ = false;
   // Whether a `wait` may appear at the expression about to be checked, and
   // whether the block being entered stands somewhere one may.
@@ -664,6 +801,28 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
            types_->ElementOf(expected) == types_->ElementOf(found);
   }
   return false;
+}
+
+// An unsuffixed integer literal, perhaps negated, too big for the default
+// `int`. It has no type of its own to be checked against, so it is looked
+// for where the default would be taken, and where a cast names the type it
+// is meant to have (D225).
+bool Checker::IsWideLiteral(ExprId id) const {
+  bool negated = false;
+  while (ast_.Contains(id) && ast_.Get(id).kind == ExprKind::kUnary &&
+         ast_.Get(id).op == TokenKind::kMinus) {
+    negated = true;
+    id = ast_.Get(id).lhs;
+  }
+  if (!ast_.Contains(id) || ast_.Get(id).kind != ExprKind::kIntLiteral) {
+    return false;
+  }
+  const NumberLiteral& number = ast_.number(ast_.Get(id).aux);
+  if (number.has_unit() || number.suffix != NumericSuffix::kNone) {
+    return false;
+  }
+  const IntRange range = RangeOf(*types_, types_->default_int());
+  return number.integer_value > range.max_magnitude - (negated ? 0 : 1);
 }
 
 TypeId Checker::Adapt(TypeId found, TypeId expected, SourceSpan span) {
@@ -945,9 +1104,76 @@ TypeId Checker::CheckPath(const Expr& expr) {
     Report(kUnknownName, std::move(message), expr.span);
     return types_->error();
   }
+  CheckAmbiguous(expr, binding);
+  return CheckBinding(expr, binding);
+}
+
+// Two modules offered this name unqualified and the file used it bare, so
+// nothing says which one was meant (D246).
+void Checker::CheckAmbiguous(const Expr& use, const Binding* binding) {
+  if (binding == nullptr || binding->item == Binding::kNoItem ||
+      resolution_ == nullptr || !resolution_->IsAmbiguous(use.name) ||
+      &use == ambiguous_reported_) {
+    return;
+  }
+  ambiguous_reported_ = &use;
+  std::string message = "`";
+  message.append(interner_->Text(use.name));
+  message.append("` is offered by more than one module you need");
+  Report(kAmbiguousName, std::move(message), use.span,
+         "write it with its module, as in `json.Parse`");
+}
+
+bool Checker::IsModuleQualified(const Expr& field) {
+  if (field.kind != ExprKind::kField || !ast_.Contains(field.lhs) ||
+      resolution_ == nullptr) {
+    return false;
+  }
+  const Expr& base = ast_.Get(field.lhs);
+  // A local, a member of `self` or a declaration named like the module
+  // wins: `const json = Load()` must keep meaning the value.
+  return base.kind == ExprKind::kPath &&
+         resolution_->IsQualifier(base.name) && !IsLocalName(base.name) &&
+         SelfMember(base.name) == nullptr &&
+         resolution_->Find(base.name) == nullptr;
+}
+
+TypeId Checker::CheckQualified(ExprId id, const Expr& field) {
+  const Expr& base = ast_.Get(field.lhs);
+  const Binding* binding = resolution_->FindQualified(base.name, field.name);
+  if (binding == nullptr) {
+    std::string message = "module `";
+    message.append(interner_->Text(base.name));
+    message.append("` offers nothing named `");
+    message.append(interner_->Text(field.name));
+    message.append("`");
+    Report(kUnknownModuleItem, std::move(message), field.span,
+           "only names the module marks `offer` can be reached");
+    return types_->error();
+  }
+  result_.qualified.push_back(id);
+  // Counts as using the name for the unused-import check.
+  result_.used_names.push_back(binding->real_name);
+  return CheckBinding(field, binding);
+}
+
+TypeId Checker::CheckBinding(const Expr& expr, const Binding* binding) {
+  if (binding->kind == BindingKind::kValue && binding->is_mutable &&
+      binding->item != Binding::kNoItem) {
+    NoteGlobalTouch();
+  }
   if (binding->kind == BindingKind::kErrorTag) {
     // An error tag is a value of the error set it belongs to.
-    return types_->ErrorSet({binding->name});
+    return types_->ErrorSet({binding->real_name.is_valid()
+                                 ? binding->real_name
+                                 : binding->name});
+  }
+  // Naming a function as a value reaches it as surely as calling it does,
+  // so it costs the same effects; the callee of a call is charged by
+  // RecordCallEffects instead (D222).
+  if (binding->kind == BindingKind::kFunction &&
+      binding->item != Binding::kNoItem && &expr != callee_path_) {
+    ChargeBinding(binding, false);
   }
   return binding->type.is_valid() ? binding->type : types_->error();
 }
@@ -969,7 +1195,12 @@ TypeId Checker::CheckUnary(const Expr& expr, TypeId expected) {
   if (wanted.is_valid() && types_->IsOptional(wanted)) {
     wanted = types_->ElementOf(wanted);
   }
-  const TypeId operand = Check(expr.lhs, wanted);
+  // `-9223372036854775807 - 1` is a literal expression until the context
+  // says what it is; settling the operand on `int` first made it one (D225).
+  const TypeId operand =
+      Check(expr.lhs, wanted,
+            /*keep_open=*/expr.op == TokenKind::kMinus ||
+                expr.op == TokenKind::kTilde);
   switch (expr.op) {
     case TokenKind::kMinus:
       if (!types_->IsNumeric(operand) && !types_->IsError(operand)) {
@@ -1020,8 +1251,71 @@ TypeId Checker::CheckUnary(const Expr& expr, TypeId expected) {
   }
 }
 
-TypeId Checker::CheckBinary(const Expr& expr) {
-  const TypeId left = Check(expr.lhs, TypeId{}, /*keep_open=*/true);
+// Whether |id| is arithmetic on integer literals alone, which has no type
+// until the context gives it one.
+bool Checker::IsLiteralTree(ExprId id) const {
+  if (!ast_.Contains(id)) {
+    return false;
+  }
+  const Expr& expr = ast_.Get(id);
+  switch (expr.kind) {
+    case ExprKind::kIntLiteral:
+      return true;
+    case ExprKind::kUnary:
+      return (expr.op == TokenKind::kMinus || expr.op == TokenKind::kTilde) &&
+             IsLiteralTree(expr.lhs);
+    case ExprKind::kBinary:
+      return IsLiteralTree(expr.lhs) && IsLiteralTree(expr.rhs);
+    default:
+      return false;
+  }
+}
+
+// The same for arithmetic on literals of either family with at least one
+// float among them: `1.0 / 3.0` is not a number until the context says
+// which float (D225).
+bool Checker::IsFloatLiteralTree(ExprId id, bool* has_float) const {
+  if (!ast_.Contains(id)) {
+    return false;
+  }
+  const Expr& expr = ast_.Get(id);
+  switch (expr.kind) {
+    case ExprKind::kIntLiteral:
+      return true;
+    case ExprKind::kFloatLiteral:
+      *has_float = true;
+      return true;
+    case ExprKind::kUnary:
+      return expr.op == TokenKind::kMinus &&
+             IsFloatLiteralTree(expr.lhs, has_float);
+    case ExprKind::kBinary:
+      return IsFloatLiteralTree(expr.lhs, has_float) &&
+             IsFloatLiteralTree(expr.rhs, has_float);
+    default:
+      return false;
+  }
+}
+
+TypeId Checker::CheckBinary(const Expr& expr, TypeId expected) {
+  // `-9223372036854775807 - 1` where an `s64` is wanted: the literals are
+  // read at that type from the start. Left open they were folded as `int`
+  // and cut to 32 bits (D225).
+  //
+  // A float is the same: `1.0 / 3.0` where an `f64` is wanted was divided
+  // as the default float and widened, which printed
+  // 0.3333333432674408. A tree of integers only stays an integer tree
+  // (`1 / 3` is 0), so a float must be written somewhere in it.
+  bool has_float = false;
+  const bool float_context =
+      expected.is_valid() && types_->IsFloatingPoint(expected) &&
+      IsFloatLiteralTree(expr.lhs, &has_float) &&
+      IsFloatLiteralTree(expr.rhs, &has_float) && has_float;
+  const bool takes_context =
+      float_context ||
+      (expected.is_valid() && types_->KindOf(expected) == TypeKind::kInt &&
+       IsLiteralTree(expr.lhs) && IsLiteralTree(expr.rhs));
+  const TypeId left = Check(expr.lhs, takes_context ? expected : TypeId{},
+                            /*keep_open=*/true);
 
   // The left side's type is normally the expectation for the right, which is
   // what makes `health - 1` give the literal the field's type. Three
@@ -1319,6 +1613,13 @@ void Checker::CheckMachine(const Item& item) {
         continue;
       }
       const Transition& transition = ast_.Get(transition_id);
+      if (transition.delay.is_valid()) {
+        // Reserved for a machine given time by a generated `Tick(dt)`;
+        // refuse it rather than run it as if there were no delay (D243).
+        Report(kAfterNotSupported,
+               "`after` is not supported on a transition yet",
+               transition.span);
+      }
       bool found = false;
       for (size_t i = 0; i < states.size(); ++i) {
         if (!ast_.Contains(states[i]) ||
@@ -1457,8 +1758,51 @@ TypeId Checker::CheckAssign(const Expr& expr) {
     }
   }
 
-  const TypeId value = Check(expr.rhs, target);
-  if (!Accepts(target, value)) {
+  // `a op= b` is `a = a op b` with `a` evaluated once, so its operands are
+  // held to what the operator asks of them (D246).
+  const bool compound = expr.op != TokenKind::kEq;
+  const bool coalesce = expr.op == TokenKind::kQuestionQuestionEq;
+  const TypeId wanted =
+      coalesce && types_->IsOptional(target) ? types_->ElementOf(target)
+                                             : target;
+  const TypeId value = Check(expr.rhs, wanted);
+  if (compound) {
+    const bool shift = expr.op == TokenKind::kShlEq ||
+                       expr.op == TokenKind::kShrEq;
+    const bool bits = shift || expr.op == TokenKind::kAmpEq ||
+                      expr.op == TokenKind::kPipeEq ||
+                      expr.op == TokenKind::kCaretEq;
+    if (types_->IsError(target) || types_->IsError(value)) {
+      // Already reported.
+    } else if (coalesce) {
+      if (!types_->IsOptional(target)) {
+        std::string message = "`?\?=` needs an optional on its left, found `";
+        message.append(Describe(target));
+        message.append("`");
+        Report(kBadOperand, std::move(message), expr.span);
+      } else if (!Accepts(wanted, value)) {
+        ReportMismatch(wanted, value, expr.span);
+      }
+    } else if (expr.op == TokenKind::kPlusEq && IsTextLike(target) &&
+               IsTextLike(value)) {
+      // Joined the way `a + b` is, and stored where `a = a + b` would.
+    } else if (!types_->IsNumeric(target) || !types_->IsNumeric(value) ||
+               (bits && (types_->IsFloatingPoint(target) ||
+                         types_->IsFloatingPoint(value)))) {
+      std::string message = "`";
+      message.append(TokenKindSpelling(expr.op));
+      message.append("` needs ");
+      message.append(bits ? "integers" : "numbers");
+      message.append(", found `");
+      message.append(Describe(target));
+      message.append("` and `");
+      message.append(Describe(value));
+      message.append("`");
+      Report(kBadOperand, std::move(message), expr.span);
+    } else if (!shift && !Accepts(target, value)) {
+      ReportMismatch(target, value, expr.span);
+    }
+  } else if (!Accepts(target, value)) {
     ReportMismatch(target, value, expr.span);
   }
   // A field, a global or an element outlives the call that assigned it;
@@ -1468,6 +1812,16 @@ TypeId Checker::CheckAssign(const Expr& expr) {
     const bool is_local =
         place.kind == ExprKind::kPath && IsLocalName(place.name);
     if (!is_local) {
+      // Storing `self` from its own `deinit` resurrects an object that is
+      // being freed; the runtime traps on it too, this is the early word
+      // for the plain case (D229).
+      if (in_deinit_ && ast_.Contains(expr.rhs) &&
+          ast_.Get(expr.rhs).kind == ExprKind::kSelf) {
+        Report(kSelfEscapesDeinit,
+               "`self` cannot be stored from its own `deinit`",
+               expr.span,
+               "the object is being freed; copy the fields you need");
+      }
       RefuseEscape(expr.rhs, "stored");
     }
   }
@@ -1480,9 +1834,20 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
   // without expectations until then.
   if (ast_.Contains(expr.lhs)) {
     const Expr& callee_expr = ast_.Get(expr.lhs);
-    if (callee_expr.kind == ExprKind::kPath) {
-      const Binding* binding = Lookup(callee_expr.name);
+    const bool qualified_callee = IsModuleQualified(callee_expr);
+    if (callee_expr.kind == ExprKind::kPath || qualified_callee) {
+      const Binding* binding =
+          qualified_callee
+              ? resolution_->FindQualified(ast_.Get(callee_expr.lhs).name,
+                                           callee_expr.name)
+              : Lookup(callee_expr.name);
+      if (!qualified_callee) {
+        CheckAmbiguous(callee_expr, binding);
+      }
       if (binding != nullptr && binding->kind == BindingKind::kType) {
+        if (qualified_callee) {
+          result_.qualified.push_back(expr.lhs);
+        }
         const TypeId type = Instantiate(id, expr, binding->type);
         CheckConstructor(expr, type);
         for (const ExprId argument : ast_.Get(expr.args)) {
@@ -1495,8 +1860,17 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
   }
 
   RecordCallEffects(expr.lhs, id);
+  CollectThreadArguments(expr);
 
+  const Expr* previous_callee = callee_path_;
+  callee_path_ = ast_.Contains(expr.lhs) ? &ast_.Get(expr.lhs) : nullptr;
+  callee_method_ = nullptr;
   const TypeId callee = Check(expr.lhs, TypeId{});
+  callee_path_ = previous_callee;
+  if (callee_method_ != nullptr) {
+    ChargeMember(callee_method_, spawned_ && id == started_);
+    callee_method_ = nullptr;
+  }
   const std::span<const ExprId> args = ast_.Get(expr.args);
 
   if (types_->KindOf(callee) != TypeKind::kFunction) {
@@ -1687,7 +2061,10 @@ void Checker::RecordCallEffects(ExprId callee, ExprId call) {
     return;
   }
 
-  const Binding* binding = Lookup(name);
+  const Binding* binding =
+      IsModuleQualified(expr)
+          ? resolution_->FindQualified(ast_.Get(expr.lhs).name, expr.name)
+          : Lookup(name);
   if (binding == nullptr || binding->item == Binding::kNoItem) {
     return;
   }
@@ -1713,24 +2090,32 @@ void Checker::RecordCallEffects(ExprId callee, ExprId call) {
   // why every other effect carries over. A sandboxed package cannot spawn
   // its way to the network.
   const bool drop_async = spawned_ && call == started_;
+  ChargeBinding(binding, drop_async);
+}
 
+void Checker::ChargeBinding(const Binding* binding, bool drop_async) {
+  NoteCall(binding->file, binding->item);
   if (const EffectRow* declared =
           resolution_->DeclaredRow(binding->file, binding->item);
       declared != nullptr) {
-    // A declared `uses unsafe` absorbs the obligation rather than
+    // A declared `uses unsafe` on a function WITH A BODY absorbs the
+    // obligation rather than
     // re-exporting it. That is the difference between `unsafe` and every
     // other effect: `io` and `net` are capabilities -- what the code needs
     // the outside world for, which a caller has to know about -- while
     // `unsafe` is an audit, and the declaration that states it is the one
     // taking responsibility. Without this a safe wrapper over an unsafe
     // primitive would be impossible, and `std.io.Print` would make every
-    // program that prints an unsafe one.
+    // program that prints an unsafe one. A bodiless primitive has nothing
+    // vouching for it -- its `uses unsafe` is the promise the caller must
+    // make, exactly like `extern` (D221).
     const EffectId unsafe_effect =
         types_->BuiltinEffectId(BuiltinEffect::kUnsafe);
     const EffectId async_effect =
         types_->BuiltinEffectId(BuiltinEffect::kAsync);
     for (EffectId effect : declared->effects()) {
-      if (effect == unsafe_effect) {
+      if (effect == unsafe_effect && binding->has_body &&
+          !binding->exposes) {
         continue;
       }
       if (drop_async && effect == async_effect) {
@@ -1749,6 +2134,22 @@ void Checker::RecordCallEffects(ExprId callee, ExprId call) {
     // which is one more reason an `offer`ed task states its effects.
     result_.spawned_callees.emplace_back(binding->file, binding->item);
   }
+}
+
+void Checker::ChargeMember(const Member* member, bool drop_async) {
+  if (member->file == Member::kNoSource || member->item == Member::kNoSource) {
+    return;
+  }
+  // Only what a method declares or the module-wide rows know: a method of
+  // an `extern` class is a C call, which the binding path charges as
+  // `unsafe`, and a bodiless ability method has nothing to charge.
+  Binding binding;
+  binding.name = member->name;
+  binding.kind = BindingKind::kFunction;
+  binding.item = member->item;
+  binding.file = member->file;
+  binding.has_body = true;
+  ChargeBinding(&binding, drop_async);
 }
 
 // `Vec3(x, y, z)` fills the type's fields in declaration order. A type with
@@ -2094,6 +2495,17 @@ TypeId Checker::CheckField(const Expr& expr) {
     // A type whose members are not known is declared in a file this one
     // cannot see. That is already reported as an unresolved import.
     return types_->error();
+  }
+
+  // A method named as a value reaches it as surely as calling it does; the
+  // callee of a call is charged by CheckCall, which knows about `spawn`
+  // (D222).
+  if (member->kind == MemberKind::kMethod) {
+    if (&expr == callee_path_) {
+      callee_method_ = member;
+    } else {
+      ChargeMember(member, false);
+    }
   }
 
   TypeId type = types_->Substitute(member->type, substitution);
@@ -2521,7 +2933,7 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       type = CheckUnary(expr, expected);
       break;
     case ExprKind::kBinary:
-      type = CheckBinary(expr);
+      type = CheckBinary(expr, expected);
       break;
     case ExprKind::kAssign:
       type = CheckAssign(expr);
@@ -2531,8 +2943,13 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       break;
 
     case ExprKind::kCast: {
-      const TypeId source = Check(expr.lhs, TypeId{});
       type = resolver_.Resolve(ast_, expr.type);
+      // A literal too big for `int` is read at the type it is cast to:
+      // `4294967297 as s64` is that number, not the `int` it would have been
+      // cut to first (D225).
+      const bool wide_literal =
+          types_->IsNumeric(type) && IsWideLiteral(expr.lhs);
+      const TypeId source = Check(expr.lhs, wide_literal ? type : TypeId{});
       // Bytes as text, and back. Both are a pointer and a length, so the
       // conversion costs nothing at run time -- but a `text` is valid
       // UTF-8 and a `[]u8` is not, so going that way is a promise the
@@ -2585,7 +3002,8 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       break;
     case ExprKind::kField:
     case ExprKind::kOptionalField:
-      type = CheckField(expr);
+      type = IsModuleQualified(expr) ? CheckQualified(id, expr)
+                                     : CheckField(expr);
       break;
 
     case ExprKind::kTry: {
@@ -2711,6 +3129,15 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       // read is noticed and recorded as a capture (D138).
       const size_t enclosing = HideLocals();
       closures_.push_back(id);
+      {
+        bool known = false;
+        for (const ClosureFacts& facts : closure_facts_) {
+          known |= facts.closure == id;
+        }
+        if (!known) {
+          closure_facts_.push_back({id, false, {}});
+        }
+      }
       std::vector<TypeId> params;
       size_t position = 0;
       for (ParamId param_id : ast_.Get(expr.params)) {
@@ -2798,6 +3225,15 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
   // asking afterwards gets the answer the context gave (D133).
   const TypeId produced = type;
   if (!(keep_open && !expected.is_valid()) && !pattern) {
+    if (!expected.is_valid() &&
+        types_->KindOf(type) == TypeKind::kIntLiteral &&
+        IsWideLiteral(id)) {
+      // The literal is about to become an `int` and would be cut to fit.
+      Report(kLiteralOutOfRange,
+             "the literal does not fit in `int`; give it a type with "
+             "`as s64` or an annotation",
+             expr.span);
+    }
     type = Adapt(type, expected, expr.span);
   }
   // An owned string handed where a borrowed one is wanted is a borrow, and
@@ -3143,6 +3579,15 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   const TypeId previous_return = return_type_;
   const bool previous_task = in_task_;
   in_task_ = HasFlag(item.flags, ItemFlags::kAsync);
+  const bool previous_unsafe = caller_unsafe_;
+  caller_unsafe_ = false;
+  for (TypeRefId effect : ast_.Get(item.effects)) {
+    const std::span<const Symbol> path = ast_.Get(ast_.Get(effect).path);
+    caller_unsafe_ |= !path.empty() &&
+                      interner_->Text(path.back()) == "unsafe";
+  }
+  const bool previous_deinit = in_deinit_;
+  in_deinit_ = item.kind == ItemKind::kDeinit;
   return_type_ = item.type.is_valid() ? resolver_.Resolve(ast_, item.type)
                                       : types_->void_type();
 
@@ -3209,6 +3654,8 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
 
   return_type_ = previous_return;
   in_task_ = previous_task;
+  caller_unsafe_ = previous_unsafe;
+  in_deinit_ = previous_deinit;
   resolver_.PopTypeParameters(pushed);
   PopScope();
 }
@@ -3418,14 +3865,55 @@ bool Checker::ReachesByValue(TypeId type, TypeId target, int depth) const {
       return ReachesByValue(types_->ElementOf(type), target, depth + 1);
 
     case TypeKind::kTuple:
-    case TypeKind::kInstance:
       for (TypeId argument : types_->ArgumentsOf(type)) {
-        if (argument == target ||
-            ReachesByValue(argument, target, depth + 1)) {
+        if (ReachesByValue(argument, target, depth + 1)) {
           return true;
         }
       }
       return false;
+
+    case TypeKind::kInstance: {
+      // `W<W<T>>` inside `W<T>` is the declaration again with a bigger
+      // argument, so the bases are compared, not the instances (D225).
+      const TypeId base = types_->Get(type).base;
+      const TypeId target_base = types_->KindOf(target) == TypeKind::kInstance
+                                     ? types_->Get(target).base
+                                     : target;
+      if (base == target_base) {
+        return true;
+      }
+      if (!resolution_->IsValueType(base)) {
+        return false;
+      }
+      // What the instance stores is the base's fields with the arguments
+      // put in; a class or a slice in there ends the walk as before.
+      const std::span<const TypeId> parameters =
+          resolution_->ParametersOf(base);
+      const std::vector<TypeId> arguments = types_->ArgumentsOf(type);
+      TypeStore::Substitution substitution;
+      for (size_t i = 0; i < parameters.size() && i < arguments.size(); ++i) {
+        substitution.emplace_back(parameters[i], arguments[i]);
+      }
+      bool is_enum = false;
+      for (const Member& member : resolution_->MembersOf(base)) {
+        is_enum |= member.kind == MemberKind::kVariant;
+        if (member.kind == MemberKind::kField &&
+            ReachesByValue(types_->Substitute(member.type, substitution),
+                           target, depth + 1)) {
+          return true;
+        }
+      }
+      // An enum's payloads are not in the member table, so what it holds is
+      // approximated by what it was given.
+      if (is_enum) {
+        for (TypeId argument : arguments) {
+          if (ReachesByValue(argument, target, depth + 1)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
 
     case TypeKind::kNamed:
       if (!resolution_->IsValueType(type)) {
@@ -3475,6 +3963,11 @@ void Checker::CheckBaseChain(const Item& item, TypeId type) {
 }
 
 void Checker::CheckSized(const Item& item, TypeId type) {
+  // A generic's `self` is an instance of its own parameters; the member
+  // table belongs to the declaration (D225).
+  if (type.is_valid() && types_->KindOf(type) == TypeKind::kInstance) {
+    type = types_->Get(type).base;
+  }
   if (!type.is_valid() || !resolution_->IsValueType(type)) {
     return;
   }
@@ -3681,6 +4174,7 @@ void Checker::CheckItem(ItemId id) {
         CheckBaseChain(item, self_type_);
         CheckSized(item, self_type_);
       }
+      bool reported_unsized = false;
       for (ItemId member : ast_.Get(item.members)) {
         if (item.kind == ItemKind::kClass && HasFlag(item.flags, ItemFlags::kExtern) && ast_.Contains(member) && ast_.Get(member).kind != ItemKind::kFunction) {
           std::string message = "an `extern class` has methods and nothing else; `";
@@ -3719,7 +4213,20 @@ void Checker::CheckItem(ItemId id) {
           for (ParamId carried : ast_.Get(ast_.Get(member).params)) {
             if (ast_.Contains(carried) &&
                 ast_.Get(carried).type.is_valid()) {
-              resolver_.Resolve(ast_, ast_.Get(carried).type);
+              const TypeId payload =
+                  resolver_.Resolve(ast_, ast_.Get(carried).type);
+              // A payload is stored inline like a field, so an enum that
+              // carries itself has no size either (D225).
+              if (!reported_unsized && item.kind == ItemKind::kEnum &&
+                  self_type_.is_valid() &&
+                  ReachesByValue(payload, self_type_, 0)) {
+                reported_unsized = true;
+                std::string message = "`";
+                message.append(interner_->Text(item.name));
+                message.append("` contains itself, so it has no size");
+                Report(kInfiniteType, std::move(message), item.name_span,
+                       "store it behind a `Box<T>`, a slice or a reference");
+              }
             }
           }
         }
@@ -3744,6 +4251,7 @@ TypedBody Checker::Run(ItemId item, uint32_t item_index) {
   at_module_level_ = true;
   CheckItem(item);
   PopScope();
+  SettleThreadClosures();
   result_.diagnostics = diagnostics_.diagnostics();
   return std::move(result_);
 }

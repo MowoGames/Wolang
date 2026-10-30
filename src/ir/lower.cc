@@ -20,6 +20,10 @@ namespace wolang {
 namespace ir {
 namespace {
 
+// How deep a type an instantiation may be named with (D225). Real programs
+// nest a handful of levels; polymorphic recursion nests one more per copy.
+constexpr uint32_t kMaxTypeNesting = 64;
+
 // What a name means while a body is being lowered: either a slot holding a
 // mutable binding, or a value directly.
 struct Local {
@@ -520,6 +524,19 @@ class Lowerer {
   // One specialization per instantiation, named after what it was
   // instantiated with: two call sites that inferred the same arguments
   // reach the same copy.
+  // True, and remembered for E0140, when |type| is the kind of nesting only
+  // polymorphic recursion makes (`F<[T]>` calling `F<[[T]]>`...). Each copy
+  // is a new function, so without a bound lowering never finishes (D225).
+  bool RunsAway(TypeId type, uint32_t item) {
+    if (!types_->NestsDeeperThan(type, kMaxTypeNesting)) {
+      return false;
+    }
+    if (module_->runaway_item == 0xFFFFFFFFu) {
+      module_->runaway_item = item == 0xFFFFFFFFu ? 0 : item;
+    }
+    return true;
+  }
+
   uint32_t Instantiate(ItemId item, ExprId call) {
     // The current file's view, for the same reason as above: a copy
     // queued now is lowered later, when the current file may differ.
@@ -548,7 +565,11 @@ class Lowerer {
       // Mapped through the substitution in force: a generic body calling
       // another generic passes its own parameters along, and by the time
       // this copy exists they stand for something.
-      const TypeId concrete = Erase(Apply((*arguments)[i]));
+      const TypeId applied = Apply((*arguments)[i]);
+      if (RunsAway(applied, binding->item)) {
+        return 0xFFFFFFFFu;
+      }
+      const TypeId concrete = Erase(applied);
       if (!concrete.is_valid() || types_->MentionsParameter(concrete)) {
         return 0xFFFFFFFFu;
       }
@@ -640,7 +661,11 @@ class Lowerer {
 
     TypeStore::Substitution substitution;
     for (size_t i = 0; i < parameters.size() && i < arguments.size(); ++i) {
-      const TypeId concrete = Erase(Apply(arguments[i]));
+      const TypeId applied = Apply(arguments[i]);
+      if (RunsAway(applied, member.item)) {
+        return 0xFFFFFFFFu;
+      }
+      const TypeId concrete = Erase(applied);
       if (!concrete.is_valid() || types_->MentionsParameter(concrete)) {
         return 0xFFFFFFFFu;
       }
@@ -1740,6 +1765,10 @@ class Lowerer {
 
     if (HasFlag(item.flags, ItemFlags::kExpressionBody)) {
       const InstId value = Value(item.body);
+      // `=> r.id` leaves the function like a `return` does: a by-value
+      // parameter that owns something is destroyed here, or it leaked
+      // whenever the callee was written as an expression (D229).
+      RunDeferred(0);
       if (types_->KindOf(return_type_) == TypeKind::kVoid) {
         builder.ReturnVoid();
       } else {
@@ -2341,7 +2370,7 @@ class Lowerer {
       return;
     }
     const TypeId type = Erase(raw);
-    if (HoldsCounted(type)) {
+    if (HoldsCounted(type) || HoldsOwned(type)) {
       builder_->Call(ValueDropFor(type), types_->void_type(), {value});
       return;
     }
@@ -2433,6 +2462,24 @@ class Lowerer {
       const uint32_t method = MethodIndex(type, *deinit);
       if (method != 0xFFFFFFFFu) {
         builder.Call(method, types_->void_type(), {self});
+        // A `deinit` that stored `self` raised the count from zero; freeing
+        // now would leave that reference dangling, so trap (D229).
+        const TypeId i32 = types_->Int(IntWidth::k32, /*is_signed=*/true);
+        const Symbol escaped = interner_->Intern("wolang_object_escaped");
+        const uint32_t check = DeclareExternal(
+            escaped, types_->Function({types_->u64()}, i32));
+        module_->functions[check].foreign_symbol = escaped;
+        const InstId raised =
+            builder.Call(check, i32, {AsDeclared(check, 0, self)});
+        const InstId zero = builder.ConstInt(i32, 0);
+        const InstId bad =
+            builder.Add(Opcode::kNe, types_->bool_type(), {raised, zero});
+        const BlockId trap = builder.AddBlock("deinit.escaped");
+        const BlockId go = builder.AddBlock("deinit.done");
+        builder.Branch(bad, trap, go);
+        builder.SetCurrent(trap);
+        builder.Unreachable();
+        builder.SetCurrent(go);
       }
     }
 
@@ -2674,6 +2721,50 @@ class Lowerer {
     return answer;
   }
 
+  // Whether a value of |raw| is itself a type with a `deinit`, or carries
+  // one in a field or a variant's payload (D233). The limits match the
+  // checker's `IsOwning`: only named types that are not generic instances
+  // and not classes, and not the owned string, so that lowering and flow
+  // agree on what a move is.
+  bool OwnsByDeinit(TypeId raw) {
+    const TypeId held = types_->StripWrappers(Erase(Apply(raw)));
+    if (types_->KindOf(held) != TypeKind::kNamed || types_->IsHandle(held)) {
+      return false;
+    }
+    return FindDestructor(held) != nullptr || HoldsOwned(held);
+  }
+
+  // Whether a struct or enum carries a value with a `deinit` without
+  // having one itself.
+  bool HoldsOwned(TypeId raw, int depth = 0) {
+    const TypeId held = types_->StripWrappers(Erase(Apply(raw)));
+    if (depth > 8 || types_->KindOf(held) != TypeKind::kNamed ||
+        types_->IsHandle(held) || resolution().IsAbility(held)) {
+      return false;
+    }
+    for (const Member& member : MembersAnywhere(held)) {
+      if (member.kind == MemberKind::kField) {
+        const TypeId field = types_->StripWrappers(Erase(Apply(member.type)));
+        if (types_->KindOf(field) == TypeKind::kNamed &&
+            !types_->IsHandle(field) &&
+            (FindDestructor(field) != nullptr || HoldsOwned(field, depth + 1))) {
+          return true;
+        }
+      } else if (member.kind == MemberKind::kVariant &&
+                 types_->KindOf(member.type) == TypeKind::kFunction) {
+        for (const TypeId carried : types_->ArgumentsOf(member.type)) {
+          const TypeId field = types_->StripWrappers(Erase(Apply(carried)));
+          if (types_->KindOf(field) == TypeKind::kNamed &&
+              !types_->IsHandle(field) &&
+              (FindDestructor(field) != nullptr || HoldsOwned(field, depth + 1))) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   // `[]Leaf$release`: lets go of every element of a slice whose storage is
   // about to be given back. Every slot counts, not only the ones a
   // container says it uses: storage starts as zeroes, which is an empty
@@ -2774,9 +2865,18 @@ class Lowerer {
       const TypeId erased = Erase(field.Type);
       if (Counts(erased)) {
         ReleaseValue(builder.Extract(erased, self, field.Index), erased);
+      } else if (OwnsByDeinit(erased)) {
+        // A value with a `deinit` inside this one goes with it (D233).
+        Destroy(builder.Extract(erased, self, field.Index), erased);
       }
     }
-    ForEachCarried(self, type, [&](InstId payload, TypeId field) { ReleaseValue(payload, field); });
+    ForEachCarried(self, type, [&](InstId payload, TypeId field) {
+      if (Counts(field)) {
+        ReleaseValue(payload, field);
+      } else {
+        Destroy(payload, field);
+      }
+    });
     builder.ReturnVoid();
 
     builder_ = outer;
@@ -2815,7 +2915,7 @@ class Lowerer {
     for (uint32_t index = 0; index < variants.size(); ++index) {
       bool counted = false;
       for (const TypeId field : variants[index]) {
-        counted = counted || Counts(field);
+        counted = counted || Counts(field) || OwnsByDeinit(field);
       }
       if (!counted) {
         continue;
@@ -2828,7 +2928,7 @@ class Lowerer {
       builder_->SetCurrent(carry);
       for (uint32_t position = 0; position < variants[index].size(); ++position) {
         const TypeId field = variants[index][position];
-        if (!Counts(field)) {
+        if (!Counts(field) && !OwnsByDeinit(field)) {
           continue;
         }
         const InstId payload = builder_->Add(Opcode::kVariantPayload, field, {value});
@@ -3012,7 +3112,8 @@ class Lowerer {
     if (IsCountedHandle(type)) {
       return false;
     }
-    return FindDestructor(Erase(Apply(type))) != nullptr;
+    return FindDestructor(Erase(Apply(type))) != nullptr ||
+           HoldsOwned(type);
   }
 
   // Whether a *binding* of |type| releases what it holds when its scope
@@ -3094,7 +3195,7 @@ class Lowerer {
         return LowerString(expr, type);
 
       case ExprKind::kPath:
-        return LowerPath(id, expr, type);
+        return LowerPath(id, expr, type, expr.name);
 
       case ExprKind::kCast: {
         // `as` is the only numeric conversion there is (D33), so it has to
@@ -3165,6 +3266,9 @@ class Lowerer {
         return self_.is_valid() ? self_ : builder_->Undef(type);
 
       case ExprKind::kField:
+        if (const Symbol named = QualifiedName(id, expr); named.is_valid()) {
+          return LowerPath(id, expr, type, named);
+        }
         return LowerField(id, expr, type);
       case ExprKind::kOptionalField:
         return LowerOptionalField(expr, type);
@@ -3229,7 +3333,10 @@ class Lowerer {
     if (parts.size() == 1 && ast().Contains(parts[0]) &&
         ast().Get(parts[0]).kind == ExprKind::kStringText) {
       const Expr& text = ast().Get(parts[0]);
-      return builder_->ConstString(type,
+      // Built at the text it is, not the `text?` a `return` asked for:
+      // the wrap that follows is Coerce's, and a literal already typed
+      // optional is taken for wrapped and left bare (D100).
+      return builder_->ConstString(Unwrapped(type),
                                    ast().string(text.aux));
     }
     // Interpolation builds a string at runtime, by turning each piece into
@@ -3245,6 +3352,7 @@ class Lowerer {
     // leak this closes was the whole of why a program that builds strings
     // in a loop grew (D133).
     bool result_is_fresh = false;
+    bool borrowed_piece = false;
     for (ExprId part : parts) {
       if (!ast().Contains(part)) {
         continue;
@@ -3268,6 +3376,7 @@ class Lowerer {
       if (!result.is_valid()) {
         result = text;
         result_is_fresh = text_is_fresh;
+        borrowed_piece = piece.kind != ExprKind::kStringText && !text_is_fresh;
         continue;
       }
       const InstId joined = ConcatText(result, text);
@@ -3280,6 +3389,12 @@ class Lowerer {
       result = joined;
       result_is_fresh = true;
       continue;
+    }
+    if (result.is_valid() && !result_is_fresh && borrowed_piece) {
+      // `"{name}"` alone is the text in `name` itself, and the new
+      // variable would free it a second time. A concatenation with the
+      // empty string is the copy (D231).
+      return ConcatText(result, builder_->ConstString(str, std::string()));
     }
     return result.is_valid() ? result
                              : builder_->ConstString(str, std::string());
@@ -3459,11 +3574,22 @@ class Lowerer {
       case TypeKind::kString:
         return value;
       case TypeKind::kInt:
+        // An unsigned value widened to s64 would print negative above
+        // 2^63, so it takes its own path (D224).
+        if (!types_->Get(Erase(type)).is_signed) {
+          return TextFromRuntime(
+              "wolang_text_from_uint",
+              {Widen(value, types_->Int(IntWidth::k64, false))});
+        }
         return TextFromRuntime("wolang_text_from_int",
                                {Widen(value, types_->Int(IntWidth::k64,
                                                          true))});
       case TypeKind::kFloat:
-        return TextFromRuntime("wolang_text_from_float",
+        // A 32-bit float prints its own shortest digits (D226).
+        return TextFromRuntime(types_->Get(Erase(type)).float_width ==
+                                       FloatWidth::k32
+                                   ? "wolang_text_from_float32"
+                                   : "wolang_text_from_float",
                                {Widen(value,
                                       types_->Float(FloatWidth::k64))});
       case TypeKind::kBool:
@@ -3475,15 +3601,37 @@ class Lowerer {
     }
   }
 
-  InstId LowerPath(ExprId id, const Expr& expr, TypeId type) {
-    const Local* local = Find(expr.name);
+  // The spelling `json.Parse` has in this file's scope, when the checker
+  // read the expression as a module's item rather than a field (D246).
+  bool IsQualifiedUse(ExprId id) const {
+    for (ExprId held : typed().qualified) {
+      if (held == id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Symbol QualifiedName(ExprId id, const Expr& field) const {
+    if (field.kind != ExprKind::kField || !IsQualifiedUse(id) ||
+        !ast().Contains(field.lhs)) {
+      return Symbol{};
+    }
+    const Binding* binding = resolution().FindQualified(
+        ast().Get(field.lhs).name, field.name);
+    return binding != nullptr ? binding->name : Symbol{};
+  }
+
+  InstId LowerPath(ExprId id, const Expr& expr, TypeId type,
+                   Symbol name) {
+    const Local* local = Find(name);
     if (local == nullptr) {
       // A field of the receiver, read from it.
-      if (const Place place = SelfPlace(expr.name); place.readable()) {
+      if (const Place place = SelfPlace(name); place.readable()) {
         return Coerce(ReadPlace(place), TypeAt(place), type);
       }
       // A function used as a value: a callback, a handler, a comparator.
-      if (const InstId function = FunctionValue(expr.name, type);
+      if (const InstId function = FunctionValue(name, type);
           function.is_valid()) {
         return function;
       }
@@ -3491,18 +3639,20 @@ class Lowerer {
       // `T!` carries when it failed that way (D90). One number per
       // declaration, so the test and the construction agree without
       // either side knowing about the other.
-      if (const Binding* tag = resolution().Find(expr.name);
+      if (const Binding* tag = resolution().Find(name);
           tag != nullptr && tag->kind == BindingKind::kErrorTag) {
-        return builder_->ConstInt(types_->u32(), expr.name.index + 1);
+        return builder_->ConstInt(
+            types_->u32(),
+            (tag->real_name.is_valid() ? tag->real_name : name).index + 1);
       }
       // A module-level `var`, read from its storage.
-      if (const TypeId held = GlobalType(expr.name); held.is_valid()) {
-        const InstId address = GlobalAddress(expr.name);
+      if (const TypeId held = GlobalType(name); held.is_valid()) {
+        const InstId address = GlobalAddress(name);
         return Coerce(builder_->Add(Opcode::kLoad, held, {address}), held,
                       type);
       }
       // A module-level constant, read through the function it became.
-      if (const InstId constant = ConstantValue(expr.name, type);
+      if (const InstId constant = ConstantValue(name, type);
           constant.is_valid()) {
         return constant;
       }
@@ -3512,7 +3662,7 @@ class Lowerer {
     // it, so the scope exit must not destroy it. The checker already
     // decided which uses are borrows and which are not (D87), so this
     // reads the same list rather than guessing again.
-    if (const InstId flag = FlagOf(expr.name);
+    if (const InstId flag = FlagOf(name);
         flag.is_valid() && borrow_depth_ == 0 && !IsBorrow(id)) {
       builder_->Add(Opcode::kStore, TypeId{},
                     {flag, builder_->ConstBool(false)});
@@ -3695,6 +3845,22 @@ class Lowerer {
       return builder_->IndexAddress(Erase(type), left, offset,
                                     builder_->ConstInt(word, ~uint64_t{0}));
     }
+    // Float `%` has no instruction in any tier; it is C's fmod, called
+    // through the runtime so all three answer alike (D224).
+    if (opcode == Opcode::kRem &&
+        types_->KindOf(Erase(TypeOf(expr.lhs))) == TypeKind::kFloat) {
+      const TypeId wide = types_->Float(FloatWidth::k64);
+      TypeId own = Erase(TypeOf(expr.lhs));
+      if (IsBareLiteral(expr.lhs) && !IsBareLiteral(expr.rhs) &&
+          types_->KindOf(Erase(TypeOf(expr.rhs))) == TypeKind::kFloat) {
+        own = Erase(TypeOf(expr.rhs));
+      }
+      const InstId result =
+          RuntimeCall("wolang_fmod", wide,
+                      {Widen(AsType(left, own), wide),
+                       Widen(AsType(right, own), wide)});
+      return Coerce(Widen(result, own), own, type);
+    }
     const bool compare = opcode >= Opcode::kEq && opcode <= Opcode::kGe;
     if (compare) {
       // Both sides of the same type: `byte == 48` where the literal kept
@@ -3827,8 +3993,16 @@ class Lowerer {
   // value is taken from a fresh optional and retained from a borrowed one,
   // and the fallback is held the same way. So nothing is left to release
   // where the two paths meet (D209).
-  InstId LowerCoalesce(const Expr& expr, TypeId type) {
+  InstId LowerCoalesce(const Expr& expr, TypeId expected) {
     const InstId optional = Value(expr.lhs);
+    // What is inside the optional, not what the context wants: `var o: u8?
+    // = (a ?? b)` records the `u8?` the variable has, and a join that
+    // takes that type is handed a bare `u8` (D231). The caller wraps the
+    // answer the way it does any value that fits a wider slot.
+    TypeId type = Erase(types_->ElementOf(TypeOf(expr.lhs)));
+    if (!type.is_valid()) {
+      type = expected;
+    }
     const bool counted = Counts(type);
     const bool taken = IsFreshHandle(optional);
     const InstId present = builder_->Add(
@@ -4841,7 +5015,93 @@ class Lowerer {
     return 0xFFFFFFFFu;
   }
 
+  // `a op= b` is `a = a op b` with the place worked out once: the index
+  // and the address are computed a single time and the same place is read
+  // and then written, so `xs[next()] += 1` calls `next` once. The operation
+  // is the binary operator's own instruction, so it traps the same way
+  // (D246).
+  InstId LowerCompoundAssign(const Expr& expr) {
+    const Place place = PlaceOf(expr.lhs);
+    const TypeId held = TypeAt(place);
+    if (!place.addressable() || !held.is_valid()) {
+      return InstId{};
+    }
+    const InstId old = ReadPlace(place);
+    if (expr.op == TokenKind::kQuestionQuestionEq) {
+      // The right side is evaluated only when the target is absent.
+      const InstId present = builder_->Add(
+          Opcode::kOptionalIsPresent, types_->bool_type(), {old});
+      const BlockId set = builder_->AddBlock("coalesce.set");
+      const BlockId after = builder_->AddBlock("coalesce.after");
+      builder_->Branch(present, after, set);
+      builder_->SetCurrent(set);
+      const InstId value = Value(expr.rhs);
+      WritePlace(place, Coerce(value, ValueType(value), held, expr.rhs));
+      builder_->Jump(after, {});
+      builder_->SetCurrent(after);
+      return InstId{};
+    }
+    const InstId right = Value(expr.rhs);
+    Opcode opcode = Opcode::kUndef;
+    switch (expr.op) {
+      case TokenKind::kPlusEq:
+        opcode = Opcode::kAdd;
+        break;
+      case TokenKind::kMinusEq:
+        opcode = Opcode::kSub;
+        break;
+      case TokenKind::kStarEq:
+        opcode = Opcode::kMul;
+        break;
+      case TokenKind::kSlashEq:
+        opcode = Opcode::kDiv;
+        break;
+      case TokenKind::kPercentEq:
+        opcode = Opcode::kRem;
+        break;
+      case TokenKind::kAmpEq:
+        opcode = Opcode::kBitAnd;
+        break;
+      case TokenKind::kPipeEq:
+        opcode = Opcode::kBitOr;
+        break;
+      case TokenKind::kCaretEq:
+        opcode = Opcode::kBitXor;
+        break;
+      case TokenKind::kShlEq:
+        opcode = Opcode::kShl;
+        break;
+      case TokenKind::kShrEq:
+        opcode = Opcode::kShr;
+        break;
+      default:
+        return InstId{};
+    }
+    InstId answer;
+    if (opcode == Opcode::kAdd && IsView(TypeOf(expr.lhs)) &&
+        IsView(TypeOf(expr.rhs))) {
+      answer = ConcatText(old, right);
+    } else if (opcode == Opcode::kRem &&
+               types_->KindOf(held) == TypeKind::kFloat) {
+      const TypeId wide = types_->Float(FloatWidth::k64);
+      answer = Coerce(
+          Widen(RuntimeCall("wolang_fmod", wide,
+                            {Widen(AsType(old, held), wide),
+                             Widen(AsType(right, held), wide)}),
+                held),
+          held, held);
+    } else {
+      answer = builder_->Add(opcode, held,
+                             {AsType(old, held), AsType(right, held)});
+    }
+    WritePlace(place, answer);
+    return InstId{};
+  }
+
   InstId LowerAssign(const Expr& expr) {
+    if (expr.op != TokenKind::kEq) {
+      return LowerCompoundAssign(expr);
+    }
     const InstId value = Value(expr.rhs);
     const Place place = PlaceOf(expr.lhs);
     // What goes into a place is of the place's type: `p = &xs[0]` makes
@@ -5098,9 +5358,16 @@ class Lowerer {
       return called;
     }
 
+    const Symbol qualified_callee =
+        ast().Contains(expr.lhs)
+            ? QualifiedName(expr.lhs, ast().Get(expr.lhs))
+            : Symbol{};
     if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath) {
-      const Symbol name = ast().Get(expr.lhs).name;
+        (ast().Get(expr.lhs).kind == ExprKind::kPath ||
+         qualified_callee.is_valid())) {
+      const Symbol name = qualified_callee.is_valid()
+                              ? qualified_callee
+                              : ast().Get(expr.lhs).name;
       const ItemId generic = FindGeneric(name);
       if (generic.is_valid()) {
         const uint32_t specialization = Instantiate(generic, id);
@@ -5125,7 +5392,10 @@ class Lowerer {
           return CallAs(specialization, type, std::move(arguments));
         }
       }
-      const uint32_t callee = IndexOfName(name);
+      // A module-level `var` of function type is storage, not the function
+      // of that name: calling it goes through the loaded value (D240).
+      const uint32_t callee =
+          GlobalType(name).is_valid() ? 0xFFFFFFFFu : IndexOfName(name);
       if (callee != 0xFFFFFFFFu) {
         return CallAs(callee, type, std::move(arguments));
       }
@@ -5166,7 +5436,8 @@ class Lowerer {
         // with "no body to run" (D100).
         if (binding->is_foreign &&
             !module_->functions[target].foreign_symbol.is_valid()) {
-          module_->functions[target].foreign_symbol = name;
+          module_->functions[target].foreign_symbol =
+              binding->real_name.is_valid() ? binding->real_name : name;
           module_->functions[target].type =
               ForeignSignature(module_->functions[target].type);
         }
@@ -5241,6 +5512,12 @@ class Lowerer {
   // signal's subscriber possible.
   InstId FunctionValue(Symbol name, TypeId type) {
     if (types_->KindOf(type) != TypeKind::kFunction) {
+      return InstId{};
+    }
+    // A module-level `var` of function type shares its name with the
+    // initializer that seeds it; that is storage to load, not a function
+    // to take the address of (D240).
+    if (GlobalType(name).is_valid()) {
       return InstId{};
     }
     uint32_t callee = IndexOfName(name);
@@ -5717,6 +5994,10 @@ class Lowerer {
       return InstId{};
     }
     const Expr& callee = ast().Get(expr.lhs);
+    // `json.Parse(x)` has no receiver: `json` is a module (D246).
+    if (IsQualifiedUse(expr.lhs)) {
+      return InstId{};
+    }
 
     TypeId owner;
     Symbol name;
@@ -6000,9 +6281,21 @@ class Lowerer {
   InstId LowerMatch(const Expr& expr, TypeId type) {
     const bool produces =
         type.is_valid() && types_->KindOf(type) != TypeKind::kVoid;
-    const InstId subject = Value(expr.lhs);
+    // Matching a name does not take what it holds: a payload an arm moves
+    // out is what moves it, through the name's own flag (D233).
+    Symbol subject_name;
+    if (ast().Get(expr.lhs).kind == ExprKind::kPath &&
+        FlagOf(ast().Get(expr.lhs).name).is_valid()) {
+      subject_name = ast().Get(expr.lhs).name;
+    }
+    const InstId subject = [&]() {
+      Borrowing borrow(subject_name.is_valid() ? this : nullptr);
+      return Value(expr.lhs);
+    }();
     HoldTemporary(subject);
     const TypeId subject_type = TypeOf(expr.lhs);
+    const InstId subject_flag =
+        subject_name.is_valid() ? FlagOf(subject_name) : InstId{};
 
     // Made when something needs it rather than up front: a `match` whose
     // every arm returns has nowhere to come back to, and a block nothing
@@ -6067,7 +6360,17 @@ class Lowerer {
 
       builder_->SetCurrent(arms[i].body);
       const size_t depth = locals_.size();
+      const size_t owners_before = owners_.size();
       BindArm(arm, subject, subject_type);
+      if (subject_flag.is_valid()) {
+        // A payload that owns something is the subject's own storage, so
+        // handing it on empties the subject's flag (D233).
+        for (size_t k = depth; k < locals_.size(); ++k) {
+          if (OwnsByDeinit(locals_[k].type)) {
+            owners_.push_back(Owner{locals_[k].name, subject_flag});
+          }
+        }
+      }
       if (produces) {
         const InstId value = Value(arm.body);
         if (!builder_->Terminated()) {
@@ -6080,6 +6383,9 @@ class Lowerer {
         }
       }
       PopLocals(depth);
+      if (owners_.size() > owners_before) {
+        owners_.resize(owners_before);
+      }
 
       if (otherwise.is_valid()) {
         builder_->SetCurrent(otherwise);
@@ -7135,7 +7441,7 @@ class Lowerer {
 
     // `continue` goes to the step rather than to the header, or the index
     // would never advance and the loop would not end.
-    loops_.push_back(LoopTarget{expr.name, exit, step, scope_depth_ + 1});
+    loops_.push_back(LoopTarget{expr.label, exit, step, scope_depth_ + 1});
     builder_->SetCurrent(body);
     const size_t depth = locals_.size();
     ++scope_depth_;
@@ -7241,7 +7547,7 @@ class Lowerer {
       builder_->Jump(body);
     }
 
-    loops_.push_back(LoopTarget{expr.name, exit, header,
+    loops_.push_back(LoopTarget{expr.label, exit, header,
                                 scope_depth_ + 1});
     builder_->SetCurrent(body);
     // Both forms keep the body in `rhs`; a `while` also has its condition

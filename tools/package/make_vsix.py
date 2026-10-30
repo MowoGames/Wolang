@@ -6,7 +6,7 @@ manifests in it. The usual way is `npx vsce package`, which wants npm, a
 network and a login; this wants Python, which the repository already
 needs for its other scripts (D175).
 
-    python3 tools/package/make_vsix.py            # build/wolang-0.1.0.vsix
+    python3 tools/package/make_vsix.py            # build/wolang-1.1.0.vsix
     python3 tools/package/make_vsix.py --out .    # somewhere else
 
 The extension is plain JavaScript with no dependencies, so there is

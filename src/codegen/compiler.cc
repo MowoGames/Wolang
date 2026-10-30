@@ -448,7 +448,23 @@ void CompiledModule::Impl::Compile() {
         EmitFunction(target_, interner_, types_, &file.layouts, file.module, function,
                      file.compilable, file.foreign, file.strings,
                      static_cast<uint32_t>(traps_.size()));
-    WOLANG_CHECK(compiled.compiled);
+    if (!compiled.compiled) {
+      // The probe above said yes and the real emit says no (it sees the
+      // real trap numbering). Calls between functions are patched only
+      // once all have a place, so half a module cannot be kept: give the
+      // whole tier up and leave everything to the interpreter, which is
+      // always correct, rather than aborting the compiler (D232).
+      for (Entry& undone : entries_) {
+        undone.compiled = false;
+        undone.reason = compiled.reason.empty() ? "could not be emitted"
+                                                : compiled.reason;
+      }
+      bytes_.clear();
+      traps_.clear();
+      compiled_count_ = 0;
+      skipped_count_ = static_cast<uint32_t>(entries_.size());
+      return;
+    }
 
     entry.compiled = true;
     entry.begin = base;
@@ -620,6 +636,14 @@ interp::Outcome CompiledModule::Impl::RunEntry(
     if (i < arguments.size()) {
       interp::Encode(types_, layouts, arguments[i], type,
              reinterpret_cast<uint8_t*>(&slots[i]));
+      // Generated code keeps a narrow signed integer sign-extended in its
+      // register, and Encode writes only its own bytes (D231).
+      const uint32_t bits = layouts->BitsOf(type);
+      if (layouts->IsSignedInteger(type) && bits < 64) {
+        const uint32_t shift = 64 - bits;
+        slots[i] = static_cast<uint64_t>(
+            static_cast<int64_t>(slots[i] << shift) >> shift);
+      }
     }
   }
 

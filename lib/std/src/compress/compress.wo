@@ -128,8 +128,16 @@ const kDistanceExtra: [30]int = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
 // The order the dynamic header gives the code-length code lengths in.
 const kOrder: [19]int = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
 
-/// Reads a deflate stream.
+/// Reads a deflate stream. There is no cap on the output, so a hostile
+/// stream can expand about a thousandfold; use `InflateLimited` on anything
+/// that came from outside (D227).
 offer fun Inflate(bytes: []u8) -> []u8! uses unsafe {
+  return InflateLimited(bytes, 2147483647)?
+}
+
+/// Reads a deflate stream, failing with `Malformed` once the output would
+/// pass `most` bytes -- the guard against a decompression bomb (D227).
+offer fun InflateLimited(bytes: []u8, most: int) -> []u8! uses unsafe {
   var bits = Bits(bytes, 0, 0, 0, true)
   var out = ListNew<u8>()
   loop {
@@ -146,7 +154,7 @@ offer fun Inflate(bytes: []u8) -> []u8! uses unsafe {
       }
       const length = bytes[bits.at] as int + (bytes[bits.at + 1] as int << 8)
       bits.at = bits.at + 4
-      if bits.at + length > bytes.len {
+      if bits.at + length > bytes.len || out.Len() + length > most {
         return Malformed
       }
       var i = 0
@@ -166,7 +174,7 @@ offer fun Inflate(bytes: []u8) -> []u8! uses unsafe {
         literals = built.literals
         distances = built.distances
       }
-      if !Block(&mut bits, &literals, &distances, &mut out) {
+      if !Block(&mut bits, &literals, &distances, &mut out, most) {
         return Malformed
       }
     } else {
@@ -191,13 +199,17 @@ fun Block(
     bits: &mut Bits,
     literals: &Codes,
     distances: &Codes,
-    out: &mut List<u8>) -> bool uses unsafe {
+    out: &mut List<u8>,
+    most: int) -> bool uses unsafe {
   loop {
     const symbol = Decode(bits, literals)
     if symbol < 0 || !bits.ok {
       return false
     }
     if symbol < 256 {
+      if out.Len() >= most {
+        return false
+      }
       out.Push(symbol as u8)
       continue
     }
@@ -216,7 +228,7 @@ fun Block(
     }
     const distance = kDistanceBase[distance_code] + bits.Take(
         kDistanceExtra[distance_code]) as int
-    if distance > out.Len() {
+    if distance > out.Len() || out.Len() + length > most {
       return false
     }
     // Copied one byte at a time *on purpose*: a run may overlap itself,
@@ -565,8 +577,14 @@ offer fun Gzip(bytes: []u8) -> []u8 uses unsafe {
   return out
 }
 
-/// Reads a gzip container.
+/// Reads a gzip container. Unlimited output; see `GunzipLimited` (D227).
 offer fun Gunzip(bytes: []u8) -> []u8! uses unsafe {
+  return GunzipLimited(bytes, 2147483647)?
+}
+
+/// Reads a gzip container, failing with `Malformed` once the output would
+/// pass `most` bytes (D227).
+offer fun GunzipLimited(bytes: []u8, most: int) -> []u8! uses unsafe {
   if bytes.len < 18 || bytes[0] != 31 || bytes[1] != 139 || bytes[2] != 8 {
     return Malformed
   }
@@ -595,11 +613,13 @@ offer fun Gunzip(bytes: []u8) -> []u8! uses unsafe {
   if flags / 2 % 2 == 1 {
     at = at + 2
   }
-  if at >= bytes.len {
+  // The trailer is eight bytes; a header that ate them is hostile, and a
+  // negative length would trap in Prefix (D227).
+  if at + 8 >= bytes.len {
     return Malformed
   }
   const body = Prefix<u8>(Suffix<u8>(bytes, at), bytes.len - at - 8)
-  return Inflate(body)?
+  return InflateLimited(body, most)?
 }
 
 /// The CRC-32 a gzip container carries, which is how a reader knows the
@@ -699,4 +719,63 @@ fun RefusesWhatIsNotAStream() -> bool uses unsafe {
     Malformed => refused = refused + 1
   }
   return refused == 2
+}
+
+@Test
+fun LimitsInflatedOutput() -> bool uses unsafe {
+  var source = ArrayNew<u8>(600)
+  var i = 0
+  while i < source.len {
+    source[i] = 97
+    i = i + 1
+  }
+  const packed = Deflate(source)
+  var refused = 0
+  match InflateLimited(packed, 100) {
+    Ok(_held) => refused = refused
+    Malformed => refused = refused + 1
+  }
+  match InflateLimited(packed, 600) {
+    Ok(back) => {
+      if back.len == 600 {
+        refused = refused + 1
+      }
+    }
+    Malformed => refused = refused
+  }
+  const gz = Gzip(source)
+  match GunzipLimited(gz, 100) {
+    Ok(_held) => refused = refused
+    Malformed => refused = refused + 1
+  }
+  match GunzipLimited(gz, 600) {
+    Ok(_back) => refused = refused + 1
+    Malformed => refused = refused
+  }
+  return refused == 4
+}
+
+@Test
+fun RefusesGzipHeaderThatEatsTheTrailer() -> bool uses unsafe {
+  // FEXTRA claims 60000 bytes the stream does not have.
+  var hostile = ArrayNew<u8>(24)
+  var i = 0
+  while i < 24 {
+    hostile[i] = 0
+    i = i + 1
+  }
+  hostile[0] = 31
+  hostile[1] = 139
+  hostile[2] = 8
+  hostile[3] = 4
+  hostile[10] = 96
+  hostile[11] = 234
+  match Gunzip(hostile) {
+    Ok(_held) => {
+      return false
+    }
+    Malformed => {
+      return true
+    }
+  }
 }

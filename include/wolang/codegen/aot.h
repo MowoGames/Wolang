@@ -20,6 +20,11 @@
 namespace wolang {
 namespace codegen {
 
+// What `<library>_abi_version()` answers: the embedding ABI the library
+// was built to match, kept equal to WOLANG_ABI_VERSION in wolang.h by a
+// test (D241).
+inline constexpr uint32_t kLibraryAbiVersion = (1u << 16) | 0u;
+
 // Ahead-of-time compilation: the same IR, through LLVM, into an object
 // file.
 //
@@ -49,7 +54,7 @@ struct AotOptions {
   // Not empty for a library a host links rather than a program: no
   // `main`, a `<library>_start` the host calls once before anything else,
   // and every function the |exported| files offer under the C name
-  // `<library>_<Name>` (D219).
+  // `<library>_<Name>` (D219), and a `<library>_abi_version` (D241).
   std::string library;
   std::vector<uint32_t> exported;
 };

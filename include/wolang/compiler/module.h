@@ -104,6 +104,9 @@ struct ResolvedImport {
   uint32_t ordinal = 0;
   // The module the path named, or an invalid id when there is no such module.
   ModuleId module;
+  // What the path's last segment is called here: `json` for `need std.json`,
+  // the qualifier of `json.Parse` (D246).
+  Symbol qualifier;
   // The names selected by `import a.b.{c, d}`; empty means the whole module.
   std::vector<Symbol> names;
   // Selected names the module does not declare.
@@ -114,6 +117,7 @@ struct ResolvedImport {
   friend bool operator==(const ResolvedImport& lhs,
                          const ResolvedImport& rhs) {
     return lhs.ordinal == rhs.ordinal && lhs.module == rhs.module &&
+           lhs.qualifier == rhs.qualifier &&
            lhs.names == rhs.names && lhs.missing == rhs.missing &&
            lhs.private_names == rhs.private_names;
   }

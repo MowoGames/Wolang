@@ -24,6 +24,27 @@
 extern "C" {
 #endif
 
+// --------------------------------------------------------------- version ---
+
+// What this header was written against: major in the high half, minor in
+// the low. A host compares it with `wolang_abi_version()` at load, since
+// the library it links may not be the one it compiled against (D241). A
+// different major is a different ABI; a larger minor only adds.
+#define WOLANG_ABI_VERSION ((1u << 16) | 0u)
+
+uint32_t wolang_abi_version(void);
+
+// How a call went. Zero is success; the codes are only ever added to, so a
+// host treats one it does not know as a failure.
+typedef enum WolangStatus {
+  kWolangOk = 0,
+  // The call could not be made or the load had errors;
+  // `wolang_vm_errors` says which.
+  kWolangError = 1,
+  // The program was running and trapped.
+  kWolangTrap = 2,
+} WolangStatus;
+
 // ---------------------------------------------------------------- values ---
 
 // What kind of thing a value is. A host passes and receives these;
@@ -48,14 +69,24 @@ typedef enum WolangKind {
   kWolangObject = 6,
 } WolangKind;
 
+// A kind, a reserved word, and one of the scalar or handle beside a text
+// and its length: 32 bytes, the same on every compiler (D241). The member
+// names are the ones the first header used, so host source compiles
+// unchanged. `kind` is a `uint32_t` holding a `WolangKind`, because the
+// size of an enum is the C compiler's choice. Kinds are only ever added:
+// a host must accept one it does not know. `reserved` is zero except in a
+// `kWolangObject`, where it is the program's id for the object's type.
 typedef struct WolangValue {
-  WolangKind kind;
-  int64_t integer;
-  double number;
-  int32_t boolean;
+  uint32_t kind;
+  uint32_t reserved;
+  union {
+    int64_t integer;
+    double number;
+    int32_t boolean;
+    void* handle;
+  };
   const char* text;
   uint64_t length;
-  void* handle;
 } WolangValue;
 
 // The five constructors, so a caller writes `wolang_int(7)` rather than a
@@ -74,6 +105,16 @@ WolangValue wolang_handle(void* object);
 typedef struct WolangVm WolangVm;
 
 WolangVm* wolang_vm_create(void);
+
+// Options for `wolang_vm_create_with`. A struct that will grow starts with
+// its own size, so a library can tell which fields a host knew about
+// (D241): set |size| to `sizeof(WolangVmOptions)`. Null when |size| is
+// not one this library understands.
+typedef struct WolangVmOptions {
+  uint32_t size;
+} WolangVmOptions;
+
+WolangVm* wolang_vm_create_with(const WolangVmOptions* options);
 void wolang_vm_destroy(WolangVm* vm);
 
 // Loads a package directory -- one with a `wolang.toml` in it -- or a
@@ -82,13 +123,13 @@ void wolang_vm_destroy(WolangVm* vm);
 //
 // A second call adds to what is loaded rather than replacing it, which is
 // how a host loads its own standard library and then a user's script.
-int32_t wolang_vm_load(WolangVm* vm, const char* path);
+WolangStatus wolang_vm_load(WolangVm* vm, const char* path);
 
 // Loads source text under a name of the host's choosing.
 //
 // The name is what diagnostics and backtraces will say, so it should look
 // like a path even when there is no file.
-int32_t wolang_vm_load_source(WolangVm* vm,
+WolangStatus wolang_vm_load_source(WolangVm* vm,
                               const char* name,
                               const char* source);
 
@@ -110,7 +151,7 @@ int32_t wolang_vm_ok(const WolangVm* vm);
 // The compiled form is used where there is one and the interpreter
 // otherwise -- the same arrangement `wolang run` has, and the reason a
 // host gets machine-code speed without asking for it.
-int32_t wolang_vm_call(WolangVm* vm,
+WolangStatus wolang_vm_call(WolangVm* vm,
                        const char* name,
                        const WolangValue* arguments,
                        int32_t count,
@@ -136,7 +177,7 @@ const char* wolang_vm_function_name(const WolangVm* vm, int32_t index);
 //
 // Must be called before the program is loaded, or at least before the
 // first call into it: the machine-code tier resolves symbols once.
-int32_t wolang_vm_bind(WolangVm* vm, const char* symbol, void* function);
+WolangStatus wolang_vm_bind(WolangVm* vm, const char* symbol, void* function);
 
 // The host's side of an `extern class`: what to do when a script takes a
 // reference to one of its objects, lets go of one, and whether an object
@@ -149,15 +190,15 @@ int32_t wolang_vm_bind(WolangVm* vm, const char* symbol, void* function);
 // A program's object in the host's hands: taken and let go of, read, and
 // asked to do something. A method is called by its name, `Hurt` rather
 // than `Enemy.Hurt`, with the object as `self`.
-int32_t wolang_vm_object_retain(WolangVm* vm, WolangValue object);
-int32_t wolang_vm_object_release(WolangVm* vm, WolangValue object);
-int32_t wolang_vm_object_call(WolangVm* vm,
+WolangStatus wolang_vm_object_retain(WolangVm* vm, WolangValue object);
+WolangStatus wolang_vm_object_release(WolangVm* vm, WolangValue object);
+WolangStatus wolang_vm_object_call(WolangVm* vm,
                            WolangValue object,
                            const char* method,
                            const WolangValue* arguments,
                            int32_t count,
                            WolangValue* out);
-int32_t wolang_vm_object_get(WolangVm* vm,
+WolangStatus wolang_vm_object_get(WolangVm* vm,
                           WolangValue object,
                           const char* field,
                           WolangValue* out);
@@ -165,7 +206,7 @@ int32_t wolang_vm_object_get(WolangVm* vm,
 typedef void (*WolangHostRetain)(void* object, void* user);
 typedef void (*WolangHostRelease)(void* object, void* user);
 typedef int32_t (*WolangHostAlive)(void* object, void* user);
-int32_t wolang_vm_register_class(WolangVm* vm,
+WolangStatus wolang_vm_register_class(WolangVm* vm,
                                  const char* name,
                                  WolangHostRetain retain,
                                  WolangHostRelease release,
@@ -188,7 +229,7 @@ typedef struct WolangFunction WolangFunction;
 WolangFunction* wolang_vm_function(WolangVm* vm, const char* name);
 
 // Calls |function|. The same answers as `wolang_vm_call`.
-int32_t wolang_call(WolangFunction* function,
+WolangStatus wolang_call(WolangFunction* function,
                     const WolangValue* arguments,
                     int32_t count,
                     WolangValue* out);
@@ -209,10 +250,10 @@ const char* wolang_function_doc(const WolangFunction* function);
 // What a host configures a script with: `var gravity: f32 = -9.8` in the
 // script, and the engine's own value written into it before the first
 // call. Zero on success.
-int32_t wolang_vm_get_global(WolangVm* vm,
+WolangStatus wolang_vm_get_global(WolangVm* vm,
                              const char* name,
                              WolangValue* out);
-int32_t wolang_vm_set_global(WolangVm* vm,
+WolangStatus wolang_vm_set_global(WolangVm* vm,
                              const char* name,
                              WolangValue value);
 
@@ -259,7 +300,7 @@ void wolang_vm_set_initialize(WolangVm* vm, int32_t initialize);
 // can narrow that and cannot widen it. It may not use `unsafe`, declare
 // `extern` (`E0705`) or link anything; it reaches the engine through the
 // packages loaded before it, which the host trusts (D217).
-int32_t wolang_vm_load_mod(WolangVm* vm, const char* path, const char* capabilities);
+WolangStatus wolang_vm_load_mod(WolangVm* vm, const char* path, const char* capabilities);
 
 // ------------------------------------------------------------- debugging ---
 
@@ -284,7 +325,7 @@ int32_t wolang_vm_debug_listen(WolangVm* vm, int32_t port);
 // fields keeps the fields that are still there; a `var` or a field whose
 // type changed starts from its new initializer, and `wolang_vm_notes`
 // says which. Function handles stay valid (D215).
-int32_t wolang_vm_reload(WolangVm* vm);
+WolangStatus wolang_vm_reload(WolangVm* vm);
 // What the last reload could not carry over: a `var` whose type changed,
 // a field whose type changed. One line each, empty when everything came
 // across.

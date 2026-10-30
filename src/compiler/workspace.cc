@@ -22,6 +22,8 @@ constexpr std::string_view kCyclicDependency = "E0059";
 // A dependency that could not be fetched (D141).
 constexpr std::string_view kUnfetchable = "E0061";
 constexpr std::string_view kUnreadablePackage = "E0060";
+// A dependency's version does not meet what a dependent wrote (D242).
+constexpr std::string_view kVersionMismatch = "E0053";
 
 namespace fs = std::filesystem;
 
@@ -114,7 +116,45 @@ class Loader {
 
   bool Load(const fs::path& directory, bool is_root);
 
+  // The version in the manifest of the package loaded from |directory|, or
+  // empty when there is none.
+  std::string VersionAt(const fs::path& directory) const {
+    const std::string key = Canonical(directory).string();
+    for (size_t i = 0; i < database_->package_count(); ++i) {
+      const Package* package =
+          database_->GetPackage(PackageId{static_cast<uint32_t>(i)});
+      if (package != nullptr && package->directory == key) {
+        return package->manifest.version;
+      }
+    }
+    return std::string();
+  }
+
  private:
+  // One copy of each package is loaded, so every requirement on it is
+  // checked against that copy and the build names the dependent that
+  // disagrees. Nothing is resolved (D242).
+  void CheckVersion(const std::string& dependent,
+                    const ManifestDependency& dependency,
+                    const fs::path& found_at) {
+    if (dependency.version_req.empty()) {
+      return;
+    }
+    const std::string version = VersionAt(found_at);
+    if (VersionSatisfies(dependency.version_req, version)) {
+      return;
+    }
+    std::string message = "`";
+    message.append(dependent);
+    message.append("` needs `");
+    message.append(dependency.name);
+    message.append("` ");
+    message.append(dependency.version_req);
+    message.append(", but the copy found is ");
+    message.append(version.empty() ? "unversioned" : version);
+    Report(kVersionMismatch, std::move(message));
+  }
+
   void Report(std::string_view code, std::string message) {
     // Filesystem problems have no position to point at.
     diagnostics_->Error(code, std::move(message)).Emit();
@@ -365,6 +405,7 @@ bool Loader::Load(const fs::path& directory, bool is_root) {
       }
       if (Exists(checkout / options_.manifest_name)) {
         Load(checkout, /*is_root=*/false);
+        CheckVersion(package_name, dependency, checkout);
       } else {
         std::string message = "dependency `";
         message.append(dependency.name);
@@ -374,6 +415,7 @@ bool Loader::Load(const fs::path& directory, bool is_root) {
       continue;
     }
     Load(canonical / dependency.path, /*is_root=*/false);
+    CheckVersion(package_name, dependency, canonical / dependency.path);
   }
 
   stack_.pop_back();
@@ -446,6 +488,8 @@ bool FetchDependencies(Database* database,
       text.append("\"\ncommit = \"");
       text.append(there ? loader.RevisionOf(checkout, dependency)
                         : std::string());
+      text.append("\"\nversion = \"");
+      text.append(there ? loader.VersionAt(checkout) : std::string());
       text.append("\"\npath = \"");
       text.append(checkout.string());
       text.append("\"\n");

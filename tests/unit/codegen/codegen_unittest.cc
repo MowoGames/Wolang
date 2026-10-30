@@ -3,6 +3,7 @@
 
 #include "wolang/codegen/compiler.h"
 
+#include <cstdio>
 #include <string>
 #include <string_view>
 
@@ -168,7 +169,9 @@ class Fixture {
   static bool Agree(const interp::Outcome& left,
                     const interp::Outcome& right) {
     if (!left.ok() || !right.ok()) {
-      return left.ok() == right.ok() && left.trap == right.trap;
+      // The text too: a trap reads the same in every tier (D226).
+      return left.ok() == right.ok() && left.trap == right.trap &&
+             left.message == right.message;
     }
     return Describe(left) == Describe(right);
   }
@@ -372,7 +375,7 @@ fun Compare(a: float, b: float) -> bool => a < b
                    "4.5");
   WOLANG_EXPECT_EQ(f.Run("Wide", {Fixture::Double(1.0),
                                   Fixture::Double(3.0)}),
-                   "0.333333");
+                   "0.3333333333333333");
   WOLANG_EXPECT_EQ(f.Run("Compare", {Fixture::Float(1.0),
                                      Fixture::Float(2.0)}),
                    "true");
@@ -399,6 +402,61 @@ fun Truncate(x: float) -> int => x as int
                    "the value does not fit the integer it was cast to");
   WOLANG_EXPECT_EQ(f.Run("ToFloat", {Fixture::Int(3)}), "3");
   WOLANG_EXPECT_EQ(f.Run("Truncate", {Fixture::Float(-2.75)}), "-2");
+}
+
+// Run fails the test itself when the tiers disagree (D226).
+WOLANG_TEST(CodegenTest, TrapsOnSignChangingCastsAt64Bits) {
+  Fixture f(R"(
+fun ToUnsigned(n: s64) -> u64 => n as u64
+
+fun ToSigned(n: u64) -> s64 => n as s64
+
+fun Promote(n: s32) -> u64 => n as u64
+)");
+  const char* kTrap =
+      "trap: overflow at @%s:%%1: "
+      "the value does not fit the integer it was cast to";
+  char text[160];
+  std::snprintf(text, sizeof(text), kTrap, "ToUnsigned");
+  WOLANG_EXPECT_EQ(f.Run("ToUnsigned", {Fixture::Wide(-1)}), text);
+  WOLANG_EXPECT_EQ(f.Run("ToUnsigned", {Fixture::Wide(7)}), "7");
+  std::snprintf(text, sizeof(text), kTrap, "ToSigned");
+  WOLANG_EXPECT_EQ(
+      f.Run("ToSigned",
+            {interp::Value::Int(~uint64_t{0}, IntWidth::k64, false)}),
+      text);
+  WOLANG_EXPECT_EQ(
+      f.Run("ToSigned", {interp::Value::Int(7, IntWidth::k64, false)}),
+      "7");
+  std::snprintf(text, sizeof(text), kTrap, "Promote");
+  WOLANG_EXPECT_EQ(f.Run("Promote", {Fixture::Int(-1)}), text);
+}
+
+WOLANG_TEST(CodegenTest, TrapTextIsTheSameInEveryTier) {
+  // Run compares the text of a trap between the interpreter and the
+  // machine code, so one case of each kind that used to differ is enough
+  // (D226): an index into a slice, whose length is a runtime value, a
+  // narrow negation, and a division.
+  Fixture f(R"(
+fun Pick(i: int) -> int {
+  var buf: [3]int
+  return Take(buf, i)
+}
+
+fun Take(data: []int, i: int) -> int => data[i]
+
+fun Negate(n: s8) -> s8 => -n
+
+fun Divide(a: int, b: int) -> int => a / b
+)");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(1)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(5)}),
+                   "trap: out of bounds at @Pick:%15: "
+                   "index is outside the length");
+  WOLANG_EXPECT_EQ(f.Run("Negate", {Fixture::Byte(-128)}),
+                   "trap: overflow at @Negate:%1: negation overflowed");
+  WOLANG_EXPECT_EQ(f.Run("Divide", {Fixture::Wide(1), Fixture::Wide(0)}),
+                   "trap: division by zero at @Divide:%2: divided by zero");
 }
 
 WOLANG_TEST(CodegenTest, RunsStructsThroughTheFrame) {
@@ -2544,6 +2602,153 @@ fun Nested() -> int {
   WOLANG_EXPECT_EQ(f.Run("Nested", {}), "30");
 }
 
+WOLANG_TEST(CodegenTest, AnInterpolationOfOneTextIsACopy) {
+  // Found by the generator (D231): `"{name}"` was `name` itself, so the two
+  // variables freed one allocation twice.
+  Fixture f(R"(
+fun Twice() -> int {
+  var tx = "seed"
+  var copy = "{tx}"
+  tx = "{tx}!"
+  return copy.len * 10 + tx.len
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Twice", {}), "45");
+}
+
+WOLANG_TEST(CodegenTest, CoalesceStoredInAnOptionalSlot) {
+  // Found by the generator (D231): the `??` took the optional type its
+  // context had, and its join was handed a bare value.
+  Fixture f(R"(
+fun Maybe(x: u8) -> u8? {
+  if x > 100 {
+    return null
+  }
+  return x
+}
+
+fun Kept(x: u8) -> int {
+  var o: u8? = (Maybe(x) ?? 7)
+  return (o ?? 0) as int
+}
+
+fun Small() -> int => Kept(5)
+fun Large() -> int => Kept(200)
+)");
+  WOLANG_EXPECT_EQ(f.Run("Small", {}), "5");
+  WOLANG_EXPECT_EQ(f.Run("Large", {}), "7");
+}
+
+WOLANG_TEST(CodegenTest, NarrowSignedResultsMayBeNegative) {
+  // Found by the generator (D231): the 32-bit operation behind an s8 or
+  // s16 `-`, `*` and negation leaves a negative result zero-extended, and
+  // the fit check compared it with the sign-extended form and trapped.
+  // The values come out of an array so that no pass folds them.
+  Fixture f(R"(
+fun Narrow() -> int {
+  var buf: [4]int
+  buf[0] = 5
+  buf[1] = 7
+  const a = buf[0] as s16
+  const b = buf[1] as s16
+  const c = buf[0] as s8
+  const d = buf[1] as s8
+  return (a - b) as int * 1000 + (-a) as int * 100 + (a * -b) as int +
+         (c - d) as int * 10 + (-c) as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Narrow", {}), "-2560");
+}
+
+WOLANG_TEST(CodegenTest, NarrowSignedDivisionByAPowerOfTwoRoundsToZero) {
+  // Found by the generator (D231): the rounding bias of `x / 2^k` was
+  // shifted by the type's width instead of the register's, so -1 / 2 in an
+  // s16 or s8 was -1.
+  Fixture f(R"(
+fun Halves() -> int {
+  var buf: [2]int
+  buf[0] = 0 - 1
+  buf[1] = 0 - 7
+  const a = buf[0] as s16
+  const b = buf[1] as s8
+  return (a / 2) as int * 1000 + (b / 4) as int * 100 +
+         (b % 4) as int * 10 + (a % 2) as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Halves", {}), "-131");
+}
+
+WOLANG_TEST(CodegenTest, APayloadReadStaysInItsArm) {
+  // Found by the generator (D231): the read of `Box`'s payload inside a
+  // loop was hoisted out of the match that guarded it, and a `Dot` has none.
+  Fixture f(R"(
+enum Shape {
+  Dot,
+  Box(h: u64),
+}
+
+fun Arms() -> int {
+  var x: u64 = 15
+  var total = 0
+  var i = 0
+  while i < 3 {
+    i = i + 1
+    total = total + ((match Shape.Dot { Shape.Dot => x, Shape.Box(h) => h }) & 15) as int
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Arms", {}), "45");
+}
+
+WOLANG_TEST(CodegenTest, FoldingAnUnsignedSumKeepsItsOverflowTrap) {
+  // Found by the generator (D231): the folder read the u32 4294967294 as
+  // -2, so the sum "fit" and the trap was folded away.
+  Fixture f(R"(
+fun Wraps() -> int {
+  var x: u32 = 2147483647
+  const y = (x + 4294967294) / 2
+  return (y & 3) as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Wraps", {}),
+                   "trap: overflow at @Wraps:%5: add overflowed");
+}
+
+WOLANG_TEST(CodegenTest, ASignedThirtyTwoBitProductStillTrapsOnOverflow) {
+  // The sign-extension that narrow `-` needs must not be applied to a
+  // multiply's 64-bit product (D231).
+  Fixture f(R"(
+fun Product() -> int {
+  var buf: [2]int
+  buf[0] = 0 - 2147483647
+  const x = buf[0]
+  const y = (~x) * x
+  buf[1] = y
+  return buf[1]
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Product", {}),
+                   "trap: overflow at @Product:%13: mul overflowed");
+}
+
+WOLANG_TEST(CodegenTest, AHugeUnsignedDoesNotCastToANarrowSigned) {
+  // Found by the generator (D231): `~20u64` has the bits of -21, and the
+  // fit check compared bits, so the cast to s16 kept the low half.
+  Fixture f(R"(
+fun Huge() -> int {
+  var buf: [2]u64
+  buf[0] = 20
+  const x = buf[0]
+  const y = (~x) as s16
+  return y as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Huge", {}),
+                   "trap: overflow at @Huge:%11: the value does not fit the "
+                   "integer it was cast to");
+}
+
 WOLANG_TEST(CodegenTest, ReleasesWhatObjectsHold) {
   Fixture f(R"(
 extern "C" fun wolang_objects_live() -> s64
@@ -2933,6 +3138,443 @@ fun Walks() -> int {
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Walks", {}), "11093");
+}
+
+// Literals wider than `int` keep their value in every tier (D225).
+WOLANG_TEST(CodegenTest, WideLiteralsKeepTheirValue) {
+  Fixture f(R"(
+fun Wide() -> int {
+  const g = 4294967297 as u64
+  const n = -4294967297 as s64
+  const c: s64 = -9223372036854775807 - 1
+  const e: s64 = 9223372036854775807 - 1
+  var r = 0
+  if g == 4294967297 { r = r + 1 }
+  if n == -4294967297 { r = r + 2 }
+  if c < 0 { r = r + 4 }
+  if e > 0 { r = r + 8 }
+  return r
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Wide", {}), "15");
+}
+
+// A recursive enum is E0117 in sema; the layout must still answer rather
+// than recurse until the stack ends if one gets past it (D225).
+WOLANG_TEST(CodegenTest, LayoutSurvivesARecursiveEnum) {
+  Database db;
+  const FileId file = db.AddFile("<test>", "enum E {\n  X(e: E)\n  Y\n}\n");
+  const CheckedFile* checked = db.Checked(file);
+  WOLANG_ASSERT(checked != nullptr);
+  const Binding* binding =
+      checked->resolution.Find(db.interner().Intern("E"));
+  WOLANG_ASSERT(binding != nullptr);
+  abi::LayoutStore layouts(db.types(), checked->resolution);
+  WOLANG_EXPECT(!layouts.IsSupported(binding->type));
+}
+
+WOLANG_TEST(CodegenTest, ADeinitThatKeepsSelfStopsEveryTier) {
+  // Storing `self` from inside its own `deinit` leaves a freed object
+  // referenced, so every tier stops at the same place (D229). Sema only
+  // sees the direct assignment; a call that stores it is the runtime's.
+  Fixture f(R"(
+var stash: Zombie? = null
+
+fun Keep(z: Zombie) {
+  stash = z
+}
+
+class Zombie {
+  var id: int = 0
+  deinit {
+    Keep(self)
+  }
+}
+
+fun Make() -> int {
+  const z = Zombie(1)
+  return z.id
+}
+
+class Fine {
+  var id: int = 0
+}
+
+fun MakeFine() -> int {
+  const z = Fine(2)
+  return z.id
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("MakeFine", {}), "2");
+  const std::string trapped = f.Run("Make", {});
+  WOLANG_EXPECT(trapped.starts_with("trap: unreachable at"));
+}
+
+WOLANG_TEST(CodegenTest, AnExpressionBodyDropsItsOwningParameter) {
+  // `=> r.id` left the function without the destroy a `return` runs, so a
+  // value handed in by move was never dropped (D229).
+  Fixture f(R"(
+var drops: int = 0
+
+struct Res {
+  var id: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun Once() -> int {
+  drops = 0
+  const r = Res(1)
+  const _x = Take(r)
+  return drops
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Once", {}), "1");
+}
+
+WOLANG_TEST(CodegenTest, ATextLiteralReturnedAsAnOptionalIsWrapped) {
+  // The literal was built typed `text?`, which Coerce took for already
+  // wrapped; the interpreter read none and the JIT read garbage (D100).
+  Fixture f(R"(
+fun Pick(n: int) -> text? {
+  if n > 1 {
+    return "found"
+  }
+  return null
+}
+
+fun Check(n: int) -> int {
+  const s = Pick(n) ?? "none"
+  if s == "found" {
+    return 1
+  }
+  return 0
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Check", {Fixture::Wide(3)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Check", {Fixture::Wide(0)}), "0");
+}
+
+WOLANG_TEST(CodegenTest, TextOrderingAgreesInEveryTier) {
+  // `<` on text calls wolang_text_compare; the interpreter needs the same
+  // intrinsic as the machine code (D226).
+  Fixture f(R"(
+fun Order(a: text, b: text) -> int {
+  var n = 0
+  if a < b { n = n + 1 }
+  if a >= b { n = n + 10 }
+  return n
+}
+
+fun Check() -> int => Order("a", "b") * 100 + Order("b", "a") + Order("a", "ab")
+)");
+  WOLANG_EXPECT_EQ(f.Run("Check", {}), "111");
+}
+
+WOLANG_TEST(CodegenTest, FloatLiteralArithmeticIsDoneAtTheTypeWanted) {
+  // `1.0 / 3.0` where an f64 is wanted was divided as the default float and
+  // widened (D225). A tree of integers alone stays integer arithmetic.
+  Fixture f(R"(
+fun Third() -> f64 {
+  return 1.0 / 3.0
+}
+
+fun Mixed() -> f64 => 2.0 / 3.0 + 1.0
+
+fun Whole() -> f64 => 7 / 2 as f64
+
+fun Single() -> f32 => 1.0 / 3.0
+)");
+  WOLANG_EXPECT_EQ(f.Run("Third", {}), "0.3333333333333333");
+  WOLANG_EXPECT_EQ(f.Run("Mixed", {}), "1.6666666666666665");
+}
+
+WOLANG_TEST(CodegenTest, AClosureReadingAnOwningValueLeavesItsDropToTheOwner) {
+  // The closure borrows; the function around it drops once (D233).
+  Fixture f(R"(
+var drops: int = 0
+
+struct Res {
+  var id: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Run() -> int {
+  drops = 0
+  {
+    const r = Res(3)
+    const g = || r.id
+    const _y = g()
+  }
+  return drops
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "1");
+}
+
+WOLANG_TEST(CodegenTest, AnEnumAndAStructDropWhatTheyCarry) {
+  // An enum whose payload no arm moves, and a struct holding a value with a
+  // `deinit`, ran no `deinit` at all; their end drops the carried value
+  // once, and an arm that moves the payload on drops it once too (D233).
+  Fixture f(R"(
+var drops: int = 0
+
+struct Res {
+  var id: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+struct Outer {
+  var r: Res
+}
+
+enum Wrap {
+  None
+  Has(r: Res)
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun Unmatched() -> int {
+  drops = 0
+  const _w = Wrap.Has(Res(1))
+  return 0
+}
+
+fun Left() -> int {
+  drops = 0
+  {
+    const _w = Wrap.Has(Res(1))
+  }
+  return drops
+}
+
+fun InStruct() -> int {
+  drops = 0
+  {
+    const _o = Outer(Res(1))
+  }
+  return drops
+}
+
+fun Moved() -> int {
+  drops = 0
+  {
+    const w = Wrap.Has(Res(1))
+    const _n = match w {
+      Wrap.Has(r) => Take(r),
+      Wrap.None => 0,
+    }
+  }
+  return drops
+}
+
+fun Borrowed() -> int {
+  drops = 0
+  {
+    const w = Wrap.Has(Res(1))
+    const _n = match w {
+      Wrap.Has(r) => r.id,
+      Wrap.None => 0,
+    }
+  }
+  return drops
+}
+
+fun Copied() -> int {
+  drops = 0
+  {
+    const r = Res(4)
+    const w = Wrap.Has(r)
+    const _c = w
+  }
+  return drops
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Left", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("InStruct", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Moved", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Borrowed", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Copied", {}), "1");
+}
+
+WOLANG_TEST(CodegenTest, CallThroughModuleVarOfFunctionTypeAgrees) {
+  // `saved(1)` resolved to the constant initializer `K$saved`, which
+  // takes no arguments, and reading `saved` took that function's address
+  // instead of loading the variable (D240).
+  Fixture f(R"(
+fun Inc(x: int) -> int => x + 1
+fun Twice(x: int) -> int => x * 2
+var saved: fun(int) -> int = Inc
+
+fun Check() -> int {
+  const first = saved(1)
+  saved = Twice
+  return first * 100 + saved(5)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Check", {}), "210");
+}
+
+WOLANG_TEST(CodegenTest, CompoundAssignmentOperatesOnItsTarget) {
+  // `i += 1` lowered as `i = 1`, so a loop on it never ended (D246).
+  Fixture f(R"(
+offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
+
+var total: int = 10
+
+struct Pair {
+  var a: int = 1
+  var b: int = 2
+}
+
+class Box {
+  var n: int = 5
+}
+
+struct Particle {
+  var x: float = 0.0
+  var life: int = 0
+}
+
+var calls: int = 0
+
+fun Next() -> int {
+  calls += 1
+  return 1
+}
+
+fun Bump(p: &mut int) {
+  *p += 4
+}
+
+fun Loop() -> int {
+  var i = 0
+  while i < 5 {
+    i += 1
+  }
+  return i
+}
+
+fun Locals() -> int {
+  var a = 10
+  a += 5
+  a -= 3
+  a *= 4
+  a /= 3
+  a %= 7
+  var b = 12
+  b &= 10
+  b |= 1
+  b ^= 3
+  b <<= 2
+  b >>= 1
+  return a * 1000 + b
+}
+
+fun Globals() -> int {
+  total += 5
+  total *= 2
+  return total
+}
+
+fun Fields() -> int {
+  var p = Pair(1, 2)
+  p.a += 10
+  p.b *= 7
+  const box = Box(5)
+  box.n -= 2
+  return p.a * 100 + p.b + box.n * 10000
+}
+
+fun Elements() -> int uses unsafe {
+  const xs = ArrayNew<int>(3)
+  xs[0] = 1
+  xs[1] = 2
+  xs[2] = 3
+  xs[Next()] += 40
+  xs[2] <<= 2
+  return xs[0] + xs[1] * 10 + xs[2] * 1000 + calls * 100000
+}
+
+fun ThroughReference() -> int {
+  var x = 3
+  Bump(&mut x)
+  return x
+}
+
+fun SoaFields() -> int uses unsafe {
+  const ps = SoaNew<Particle>(2)
+  ps[1].life += 7
+  ps[1].life += 7
+  ps[1].x += 1.5
+  return ps[1].life + (ps[1].x * 2.0) as int
+}
+
+fun Floats() -> float {
+  var f = 1.5
+  f += 2.0
+  f *= 2.0
+  f -= 1.0
+  f /= 2.0
+  return f
+}
+
+fun Joined() -> int {
+  var s = "ab"
+  s += "cd"
+  return s.length as int
+}
+
+fun Coalesced() -> int {
+  var empty: int? = null
+  empty ??= 9
+  var full: int? = 4
+  full ??= Next() + 50
+  return (empty ?? 0) * 10 + (full ?? 0) + calls * 1000
+}
+
+fun Overflow() -> int {
+  var a = 2147483647
+  a += 1
+  return a
+}
+
+fun DivideByZero(z: int) -> int {
+  var a = 4
+  a /= z
+  return a
+}
+
+fun ShiftTooFar(n: int) -> int {
+  var a = 1
+  a <<= n
+  return a
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Loop", {}), "5");
+  WOLANG_EXPECT_EQ(f.Run("Locals", {}), "2020");
+  WOLANG_EXPECT_EQ(f.Run("Globals", {}), "30");
+  WOLANG_EXPECT_EQ(f.Run("Fields", {}), "31114");
+  WOLANG_EXPECT_EQ(f.Run("Elements", {}), "112421");
+  WOLANG_EXPECT_EQ(f.Run("ThroughReference", {}), "7");
+  WOLANG_EXPECT_EQ(f.Run("SoaFields", {}), "17");
+  WOLANG_EXPECT_EQ(f.Run("Floats", {}), "3");
+  WOLANG_EXPECT_EQ(f.Run("Joined", {}), "4");
+  WOLANG_EXPECT_EQ(f.Run("Coalesced", {}), "94");
+  WOLANG_EXPECT(f.Run("Overflow", {}).find("trap:") == size_t{0});
+  WOLANG_EXPECT(f.Run("DivideByZero", {Fixture::Wide(0)}).find("trap:") ==
+                size_t{0});
+  WOLANG_EXPECT(f.Run("ShiftTooFar", {Fixture::Wide(70)}).find("trap:") ==
+                size_t{0});
 }
 
 }  // namespace

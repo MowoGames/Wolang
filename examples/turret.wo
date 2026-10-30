@@ -83,7 +83,7 @@ machine Door {
     always -> Open
   }
   state Open {
-    on Interact after 3s -> Closing
+    on Interact -> Closing
   }
   state Closing {
     enter {

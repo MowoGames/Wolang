@@ -144,6 +144,11 @@ class Gatherer:
             self.lines.append(line)
 
 
+def compiler_version():
+    text = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    return re.search(r"VERSION\s+(\d+\.\d+\.\d+)", text).group(1)
+
+
 def build(out):
     out.mkdir(parents=True, exist_ok=True)
     gatherer = Gatherer()
@@ -165,6 +170,10 @@ def build(out):
         "// in docs/embedding.md (D186).",
         "",
         "#define WOLANG_AMALGAMATION 1",
+        # The CMake build passes this on the command line (D248).
+        "#ifndef WOLANG_VERSION_STRING",
+        '#define WOLANG_VERSION_STRING "{}"'.format(compiler_version()),
+        "#endif",
         "#ifndef WOLANG_WITH_LLVM",
         "#define WOLANG_WITH_LLVM 0",
         "#endif",

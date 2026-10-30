@@ -27,14 +27,20 @@ static int host_add(int a, int b) {
 int main(int argc, char** argv) {
   const char* package = argc > 1 ? argv[1] : "examples/embed/script";
 
-  WolangVm* vm = wolang_vm_create();
+  // The library linked may not be the one this was compiled against (D241).
+  if ((wolang_abi_version() >> 16) != (WOLANG_ABI_VERSION >> 16)) {
+    fprintf(stderr, "wolang: built against another ABI\n");
+    return 1;
+  }
+  WolangVmOptions options = {sizeof(WolangVmOptions)};
+  WolangVm* vm = wolang_vm_create_with(&options);
 
   // Bound before the program is loaded, because the machine-code tier
   // resolves a symbol once -- when it compiles the call.
   wolang_vm_bind(vm, "host_log", (void*)&host_log);
   wolang_vm_bind(vm, "host_add", (void*)&host_add);
 
-  if (wolang_vm_load(vm, package) != 0) {
+  if (wolang_vm_load(vm, package) != kWolangOk) {
     fprintf(stderr, "%s", wolang_vm_errors(vm));
     wolang_vm_destroy(vm);
     return 1;

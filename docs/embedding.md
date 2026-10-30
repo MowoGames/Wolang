@@ -137,6 +137,37 @@ destroy: it reads `null` afterwards instead of a dangling pointer. An
 object passed into a call is lent for the length of it. A script cannot
 construct an `extern class` or give it fields (`E0139`).
 
+## The ABI keeps its shape
+
+`wolang.h` defines `WOLANG_ABI_VERSION` (major in the high 16 bits, minor in
+the low) and the library answers `wolang_abi_version()`. A host compares the
+two once at load, because the library it links is not always the one it was
+compiled against: a different major is a different ABI, a larger minor only
+adds (D241).
+
+```c
+if ((wolang_abi_version() >> 16) != (WOLANG_ABI_VERSION >> 16)) {
+  return 1;  /* built against another ABI */
+}
+WolangVmOptions options = {sizeof(WolangVmOptions)};
+WolangVm* vm = wolang_vm_create_with(&options);
+```
+
+- A `WolangValue` is 32 bytes: `kind` (a `uint32_t`), a reserved word, one
+  union of `integer`, `number`, `boolean` or `handle`, then `text` and
+  `length`. The member names are unchanged, so existing host code compiles.
+  The size does not depend on the C compiler's choice of enum size.
+- A library built with `wolang build --library actors` exports
+  `actors_abi_version()` the same way, answering the same number.
+- Kinds are only ever added; a host accepts a kind it does not know.
+- A struct that will grow starts with its size. `WolangVmOptions` is the
+  first; `wolang_vm_create_with` answers null for a size it does not know.
+  `wolang_vm_create()` still works and means the defaults.
+- Fallible calls answer a `WolangStatus`: `kWolangOk` (0), `kWolangError`
+  (the call could not be made; `wolang_vm_errors` says why) or
+  `kWolangTrap` (the program trapped). Code is only ever added, so treat an
+  unknown one as failure. `!= 0` still means "failed".
+
 ## What a call costs
 
 `benchmarks/actors` is a host ticking actors the way an engine does: a
