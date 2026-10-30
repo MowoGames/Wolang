@@ -169,7 +169,9 @@ class Fixture {
   static bool Agree(const interp::Outcome& left,
                     const interp::Outcome& right) {
     if (!left.ok() || !right.ok()) {
-      return left.ok() == right.ok() && left.trap == right.trap;
+      // The text too: a trap reads the same in every tier (D226).
+      return left.ok() == right.ok() && left.trap == right.trap &&
+             left.message == right.message;
     }
     return Describe(left) == Describe(right);
   }
@@ -428,6 +430,33 @@ fun Promote(n: s32) -> u64 => n as u64
       "7");
   std::snprintf(text, sizeof(text), kTrap, "Promote");
   WOLANG_EXPECT_EQ(f.Run("Promote", {Fixture::Int(-1)}), text);
+}
+
+WOLANG_TEST(CodegenTest, TrapTextIsTheSameInEveryTier) {
+  // Run compares the text of a trap between the interpreter and the
+  // machine code, so one case of each kind that used to differ is enough
+  // (D226): an index into a slice, whose length is a runtime value, a
+  // narrow negation, and a division.
+  Fixture f(R"(
+fun Pick(i: int) -> int {
+  var buf: [3]int
+  return Take(buf, i)
+}
+
+fun Take(data: []int, i: int) -> int => data[i]
+
+fun Negate(n: s8) -> s8 => -n
+
+fun Divide(a: int, b: int) -> int => a / b
+)");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(1)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(5)}),
+                   "trap: out of bounds at @Pick:%15: "
+                   "index is outside the length");
+  WOLANG_EXPECT_EQ(f.Run("Negate", {Fixture::Byte(-128)}),
+                   "trap: overflow at @Negate:%1: negation overflowed");
+  WOLANG_EXPECT_EQ(f.Run("Divide", {Fixture::Wide(1), Fixture::Wide(0)}),
+                   "trap: division by zero at @Divide:%2: divided by zero");
 }
 
 WOLANG_TEST(CodegenTest, RunsStructsThroughTheFrame) {

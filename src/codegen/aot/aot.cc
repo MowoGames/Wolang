@@ -1373,7 +1373,7 @@ void Translator::EmitArithmetic(ir::InstId id, const ir::Inst& inst) {
         return;
       }
       TrapIf(LLVMBuildICmp(b_, LLVMIntEQ, rhs, Const(0, type), "c"),
-             ir::TrapKind::kDivisionByZero, "division by zero");
+             ir::TrapKind::kDivisionByZero, "divided by zero");
       if (is_signed) {
         // The one division that overflows: the least value by -1.
         const uint32_t bits = LLVMGetIntTypeWidth(type);
@@ -1383,7 +1383,7 @@ void Translator::EmitArithmetic(ir::InstId id, const ir::Inst& inst) {
         LLVMValueRef minus_one = LLVMBuildICmp(
             b_, LLVMIntEQ, rhs, LLVMConstAllOnes(type), "c");
         TrapIf(LLVMBuildAnd(b_, is_least, minus_one, "c"),
-               ir::TrapKind::kOverflow, "division overflowed");
+               ir::TrapKind::kOverflow, "the quotient does not fit");
       }
       if (inst.opcode == ir::Opcode::kDiv) {
         Produce(id, is_signed ? LLVMBuildSDiv(b_, lhs, rhs, "d")
@@ -1435,7 +1435,8 @@ void Translator::EmitArithmetic(ir::InstId id, const ir::Inst& inst) {
           b_, LLVMIntrinsicGetType(ctx_, which, arguments, 1), intrinsic,
           pair, 2, "v");
       TrapIf(LLVMBuildExtractValue(b_, answer, 1, "f"),
-             ir::TrapKind::kOverflow, "arithmetic overflowed");
+             ir::TrapKind::kOverflow,
+             std::string(ir::OpcodeMnemonic(inst.opcode)) + " overflowed");
       Produce(id, LLVMBuildExtractValue(b_, answer, 0, "v"));
       return;
     }

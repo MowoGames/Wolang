@@ -1317,9 +1317,11 @@ class Interpreter {
         const uint64_t index = Operand(frame, inst, 0).integer();
         const uint64_t length = Operand(frame, inst, 1).integer();
         if (index >= length) {
+          // The length here is a runtime value a compiled tier cannot
+          // put in text it built while compiling, so neither does this
+          // one (D226).
           return TrapAt(outcome, TrapKind::kOutOfBounds, function, id,
-                "index is outside a length of " +
-                          std::to_string(length));
+                "index is outside the length");
         }
         return Value();
       }
@@ -1355,8 +1357,7 @@ class Interpreter {
         const uint64_t length = Operand(frame, inst, 2).integer();
         if (index.integer() >= length) {
           return TrapAt(outcome, TrapKind::kOutOfBounds, function, id,
-                "index is outside a length of " +
-                          std::to_string(length));
+                "index is outside the length");
         }
         if (base.kind() == Value::Kind::kSlot ||
             base.kind() == Value::Kind::kPlace) {

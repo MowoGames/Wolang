@@ -2793,7 +2793,9 @@ class FunctionEmitter {
     assembler_.Cmp(IWidth::k64, narrowed, raw);
     const Label trap = TrapLabel(
         ir::TrapKind::kOverflow, id,
-        std::string(ir::OpcodeMnemonic(opcode)) + " overflowed");
+        opcode == ir::Opcode::kNeg
+            ? std::string("negation overflowed")
+            : std::string(ir::OpcodeMnemonic(opcode)) + " overflowed");
     assembler_.Jcc(Condition::kNotEqual, trap);
     assembler_.Mov(IWidth::k64, destination, narrowed);
   }
