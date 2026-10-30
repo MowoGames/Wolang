@@ -33,6 +33,7 @@ import argparse
 import html
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -54,32 +55,37 @@ MAX_LINES = 15  # commit lines in one digest or push card; a release card shows 
 # on every engine push does not fill the channel.
 PROJECTS = {
     "mowogames/durak-online": {
-        "name": "UltimateDurak", "emoji": "🃏", "color": 0xE9C99A, "site": "https://ultimatedurak.com",
+        "name": "UltimateDurak", "emoji": "🃏", "site": "https://ultimatedurak.com",
         "releases": True,
         "baseline": {"ref": "release/1.6", "sha": "bd9373fe3b643fb498baf0d280368a7d632d29ed",
                      "version": "v1.6.150", "user": "igbi", "at": "2026-10-26T00:02:33Z"},
         "collapse": {"chore(docs): engine docs from MowoEngine": "Engine docs updated"},
     },
     "mowogames/mowoengine": {
-        "name": "Mowo Engine", "emoji": "🎮", "color": 0x5865F2, "site": "https://mowoengine.com",
+        "name": "Mowo Engine", "emoji": "🎮", "site": "https://mowoengine.com",
         "drop": ["Regenerate reference data from the code"],
     },
     "mowogames/mowoengine.com": {
-        "name": "mowoengine.com", "emoji": "🕸️", "color": 0x57F287, "site": "https://mowoengine.com",
+        "name": "mowoengine.com", "emoji": "🕸️", "site": "https://mowoengine.com",
         "collapse": {"chore(docs): engine docs from MowoEngine": "Engine docs updated",
                      "chore(docs): Wolang docs from Wolang": "Wolang docs updated"},
         "quiet": True,
     },
     "mowogames/mowogames-website": {
-        "name": "mowogames.com", "emoji": "🕸️", "color": 0x57F287, "site": "https://mowogames.com",
+        "name": "mowogames.com", "emoji": "🕸️", "site": "https://mowogames.com",
     },
     "mowogames/wolang": {
-        "name": "Wolang", "emoji": "🐺", "color": 0x99AAB5, "site": "https://github.com/MowoGames/Wolang",
+        "name": "Wolang", "emoji": "🐺", "site": "https://github.com/MowoGames/Wolang",
     },
     "mowogames/mowoprotection": {
-        "name": "MowoProtection", "emoji": "🛡️", "color": 0xED4245, "site": "https://github.com/MowoGames/MowoProtection",
+        "name": "MowoProtection", "emoji": "🛡️", "site": "https://github.com/MowoGames/MowoProtection",
     },
 }
+
+# A card's colour is what happened, the same in every project: green went live or was released,
+# blue is information (a push), amber needs a look (a digest with a rollback). Red is for
+# failures, which are the CI channel's (notify.py), so a changelog card is never red.
+GREEN, BLUE, AMBER = 0x57F287, 0x5865F2, 0xFEE75C
 
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
           "October", "November", "December"]
@@ -156,21 +162,55 @@ def changes(p, frm, to):
             commits = [github(f"/repos/{p['path']}/commits/{to}")]
     else:
         commits = [github(f"/repos/{p['path']}/commits/{to}")]
+    # The branch's own history is its first parents. A pull request merged with a merge commit is
+    # one line — its title, from the merge message — rather than every commit made on the way;
+    # any other merge (a «Merge branch 'dev'» pull) shows the commits it brought in.
+    by = {c["sha"]: c for c in commits}
+    mainline, s = [], to
+    while s in by:
+        mainline.append(s)
+        s = (by[s].get("parents") or [{}])[0].get("sha")
+    on_main, entries = set(mainline), []
+    for sha in reversed(mainline):
+        c = by[sha]
+        message = c["commit"]["message"].strip()
+        title = message.split("\n")[0].strip()
+        if len(c.get("parents", [])) < 2:
+            entries.append((title, sha, None))
+            continue
+        pr = re.match(r"Merge pull request #(\d+) from ", title)
+        if pr:
+            body = [ln.strip() for ln in message.split("\n")[1:] if ln.strip()]
+            entries.append((body[0] if body else title, sha, pr.group(1)))
+            continue
+        side, stack = [], [x["sha"] for x in c["parents"][1:]]
+        while stack:
+            x = stack.pop()
+            if x in by and x not in on_main and x not in side:
+                side.append(x)
+                stack += [q["sha"] for q in by[x].get("parents", [])]
+        for x in [k for k in by if k in side]:  # compare lists them oldest first
+            if len(by[x].get("parents", [])) < 2:
+                entries.append((by[x]["commit"]["message"].strip().split("\n")[0].strip(), x, None))
+
     lines, seen, collapsed = [], set(), []
-    for c in commits:
-        title = c["commit"]["message"].strip().split("\n")[0].strip()
-        if len(c.get("parents", [])) > 1 or title.startswith("Merge "):
+    for title, sha, pr in entries:
+        if title.startswith("Merge "):
             continue
         if any(title.startswith(d) for d in p.get("drop", [])):
             continue
         line = next((v for k, v in p.get("collapse", {}).items() if title.startswith(k)), None)
         if line:
-            if (line, None) not in collapsed:
-                collapsed.append((line, None))
+            if (line, None, None) not in collapsed:
+                collapsed.append((line, None, None))
             continue
+        # a squash merge says «Title (#12)»: the number becomes the link
+        squash = re.fullmatch(r"(.*\S)\s+\(#(\d+)\)", title)
+        if squash:
+            title, pr = squash.group(1), pr or squash.group(2)
         if title not in seen:
             seen.add(title)
-            lines.append((title, c["sha"]))
+            lines.append((title, sha, pr))
     return lines + collapsed, bool(lines)
 
 
@@ -208,15 +248,17 @@ def repo_url(p):
     return f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{p['path']}"
 
 
-def card(p, title, intro="", lines=(), limit=MAX_LINES, heading="", empty="", footer="", at=None, links=()):
+def card(p, title, intro="", lines=(), limit=MAX_LINES, heading="", empty="", footer="", at=None, links=(), color=GREEN,
+         who=""):
     lines = list(lines)
     row = [("Repository", repo_url(p)), *links]
     if os.environ.get("GITHUB_RUN_ID"):
         row.append(("Run", f"{repo_url(p)}/actions/runs/{os.environ['GITHUB_RUN_ID']}"))
-    return {"title": title, "url": p["site"], "color": p["color"], "intro": intro, "heading": heading if lines else "",
-            "lines": [(short(t), sha and f"{repo_url(p)}/commit/{sha}") for t, sha in lines[:limit]],
+    return {"title": title, "url": p["site"], "color": color, "intro": intro, "heading": heading if lines else "",
+            "lines": [(short(t), sha and f"{repo_url(p)}/commit/{sha}", pr and f"{repo_url(p)}/pull/{pr}")
+                      for t, sha, pr in lines[:limit]],
             "more": max(0, len(lines) - limit), "empty": "" if lines else empty, "links": row,
-            "footer": footer, "timestamp": at}
+            "footer": footer, "timestamp": at, "who": who if who and who != "—" else ""}
 
 
 def compare_link(p, frm, to):
@@ -239,8 +281,9 @@ def to_discord(c):
     intro = "".join(f"**{discord_md(t)}**" if b else discord_md(t) for t, b in bold_parts(c["intro"]))
     links = " · ".join(f"[{label}]({url})" for label, url in c["links"])
     body, size, more = [], len(intro) + len(links), c["more"]
-    for i, (t, url) in enumerate(c["lines"]):
-        line = f"• {discord_md(t)}" + (f" · [`{url.rsplit('/', 1)[1][:7]}`]({url})" if url else "")
+    for i, (t, url, pr) in enumerate(c["lines"]):
+        line = (f"• {discord_md(t)}" + (f" · [#{pr.rsplit('/', 1)[1]}]({pr})" if pr else "")
+                + (f" · [`{url.rsplit('/', 1)[1][:7]}`]({url})" if url else ""))
         # an embed's description holds 4096 characters; a line is never cut through its link
         if size + len(line) > 3600:
             more += len(c["lines"]) - i
@@ -256,6 +299,9 @@ def to_discord(c):
         em["footer"] = {"text": c["footer"][:2048]}
     if c["timestamp"]:
         em["timestamp"] = c["timestamp"]
+    if c.get("who"):
+        server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+        em["author"] = {"name": c["who"], "url": f"{server}/{c['who']}", "icon_url": f"{server}/{c['who']}.png?size=64"}
     return em
 
 
@@ -267,8 +313,9 @@ def to_telegram(c):
     if c["heading"]:
         out.append(f"\n<b>{e(c['heading'])}</b>")
     body, size = [], sum(len(x) for x in out)
-    for t, url in c["lines"]:
-        line = f"• {e(t)}" + (f' · <a href="{html.escape(url)}">{url.rsplit("/", 1)[1][:7]}</a>' if url else "")
+    for t, url, pr in c["lines"]:
+        line = (f"• {e(t)}" + (f' · <a href="{html.escape(pr)}">#{pr.rsplit("/", 1)[1]}</a>' if pr else "")
+                + (f' · <a href="{html.escape(url)}">{url.rsplit("/", 1)[1][:7]}</a>' if url else ""))
         if size + len(line) > 3500:
             c = {**c, "more": c["more"] + len(c["lines"]) - len(body)}
             break
@@ -378,7 +425,7 @@ def release_card(p, e):
     return card(p, f"🎉 {p['name']} {e['release']} is live", f"Version **{e['version']}** · {when(parse(e['at']))}",
                 lines, 25, "What's new", "No new commits.",
                 f"deployed by {e['user']} · changes: {len(lines)}" + (f" · was {e['prev_version']}" if e["prev_version"] else ""),
-                e["at"], compare_link(p, e["prev_sha"], e["sha"]))
+                e["at"], compare_link(p, e["prev_sha"], e["sha"]), who=e["user"])
 
 
 def digest_card(p, es, day):
@@ -398,6 +445,7 @@ def digest_card(p, es, day):
         title += f" · {last['version']}"
     users = sorted({e["user"] for e in es})
     return card(p, title, "\n".join(notes), lines, empty="" if notes else "Redeployed with no new commits.",
+                color=AMBER if notes else GREEN,
                 footer=f"{day.day} {MONTHS[day.month - 1]} · last 24 hours · deployments: {len(es)} · {', '.join(users)}",
                 links=compare_link(p, first["prev_sha"], last["sha"]))
 
@@ -429,7 +477,7 @@ def main():
         n = len(lines)
         post([card(p, f"{p['emoji']} {p['name']} · {branch}", f"{n} change{'s' if n != 1 else ''} · pushed by **{args.actor}**",
                    lines, footer=f"{branch} · {(before or '—')[:8]} → {args.after[:8]}", at=now.isoformat(),
-                   links=compare_link(p, before, args.after))], args.dry_run)
+                   links=compare_link(p, before, args.after), color=BLUE, who=args.actor)], args.dry_run)
         return
 
     if args.mode == "tag":
@@ -439,7 +487,7 @@ def main():
         post([card(p, f"🎉 {p['name']} {tag} released", f"Tagged by **{args.actor}** · {when(now)}", lines, 25,
                    f"Since {args.frm}" if args.frm else "", "First release." if not args.frm else "No new commits.",
                    f"changes: {len(lines)}", now.isoformat(),
-                   [("Release", f"{repo_url(p)}/releases/tag/{tag}"), *compare_link(p, args.frm, tag)])],
+                   [("Release", f"{repo_url(p)}/releases/tag/{tag}"), *compare_link(p, args.frm, tag)], who=args.actor)],
              args.dry_run, globally=True)
         return
 
@@ -451,12 +499,12 @@ def main():
         dep, prev = deps[-1], (deps[-2] if len(deps) > 1 else None)
         e = collect(p, dep, prev)
         if p.get("quiet") and not e["news"]:
-            print(f"{e['version']}: {', '.join(t for t, _ in e['changes']) or 'no new commits'}; not posted")
+            print(f"{e['version']}: {', '.join(t[0] for t in e['changes']) or 'no new commits'}; not posted")
             return
         post([card(p, f"{p['emoji']} {p['name']} is live", f"**{e['version']}** · deployed {when(parse(e['at']))}",
                    e["changes"], 25, "What's new", "Redeployed with no new commits.",
                    f"deployed by {e['user']}" + (f" · was {e['prev_version']}" if e["prev_version"] else ""), e["at"],
-                   compare_link(p, e["prev_sha"], e["sha"]))],
+                   compare_link(p, e["prev_sha"], e["sha"]), who=e["user"])],
              args.dry_run)
         return
 

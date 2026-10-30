@@ -85,9 +85,10 @@ Scopes that exist: `lexer`, `parser`, `sema`, `ir`, `codegen`, `interp`,
 The title is read by people as it is: every push to `alpha` posts the
 titles of its commits to the studio's changelog in Discord and Telegram,
 and a release tag posts everything since the previous one
-(`.github/changelog.py`). A failed `ci`, `docs` or `release` run is posted
-to the CI channel (`.github/notify.sh`), with every job of the run, its
-result and a link to its log.
+(`.github/changelog.py`); a pull request is one line with its title and
+a link. A failed `ci`, `docs` or `release` run is posted to the CI
+channel (`.github/notify.sh`) with the failed step and the end of its
+log, and the first green run after it says so.
 
 ## Where things are
 

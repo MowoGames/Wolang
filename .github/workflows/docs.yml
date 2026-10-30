@@ -127,13 +127,14 @@ jobs:
           done
           exit 1
 
-  # Discord #wolang-ci and the Telegram topic Wolang CI: the docs workflow failed on alpha. Green
-  # runs say nothing — that is noise.
+  # Discord #wolang-ci and the Telegram topic Wolang CI: the docs workflow failed on alpha.
+  # The first green run after a red one says so; other green runs say nothing — that is noise.
+  # A failure card names the failed step and quotes its log (notify.py, with actions: read).
   # Secrets DISCORD_WEBHOOK_URL and TELEGRAM_BOT_TOKEN; without them nothing is sent, and a
   # message that cannot be sent never fails the job (.github/notify.sh).
-  failed:
+  notify:
     needs: [docs-check, docs-publish]
-    if: failure() && github.event_name == 'push'
+    if: always() && github.event_name == 'push'
     runs-on: ubuntu-latest
     # actions: read lets notify.sh list the run's jobs with their results and links
     permissions:
@@ -150,8 +151,13 @@ jobs:
           TELEGRAM_THREAD_ID: "15"
           GITHUB_TOKEN: ${{ github.token }}
           COMMIT_TITLE: ${{ github.event.head_commit.message }}
+          RESULT: ${{ contains(needs.*.result, 'failure') && 'failure' || contains(needs.*.result, 'cancelled') && 'cancelled' || 'success' }}
         run: |
           . .github/notify.sh
-          notify "$NOTIFY_RED" "❌ Docs failed on $GITHUB_REF_NAME" "The documentation did not build or did not reach engine-docs and mowoengine.com — the run shows which.
+          if [ "$RESULT" = failure ]; then
+            notify "$NOTIFY_RED" "❌ Docs failed on $GITHUB_REF_NAME" "The documentation did not build or did not reach engine-docs and mowoengine.com — the run shows which.
 
           > ${COMMIT_TITLE%%$'\n'*}"
+          elif [ "$RESULT" = success ]; then
+            notify_fixed "✅ Docs are green again on $GITHUB_REF_NAME" "The run before this one failed; the docs built and were published."
+          fi
