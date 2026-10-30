@@ -2924,6 +2924,17 @@ back as the same number (a `float`/f32 gets its own shortest f32 digits),
 and every NaN prints `nan` whatever its sign bit, from one function used by
 the runtime and the interpreter.
 
+**D227. A reader of someone else's bytes bounds what they can make it
+do.** A document is input, and input decides how deep the parser recurses
+and how much it allocates. JSON stops at 128 levels of nesting, YAML and
+TOML at 64, a regex at 32 nested groups, 1000 repeats and a program of
+20000 steps; `InflateLimited` and `GunzipLimited` stop at the output size
+the caller names. Each limit answers the module's own error (`Malformed`,
+`BadPattern`) rather than trapping, because a trap in a server is the
+whole server. The depths are low because the interpreter recurses on the
+host's stack. YAML aliases share one handle, so a billion-laughs document
+reads in linear time and needs no cap.
+
 **D228. Reference roots and arena escapes are found by a conservative
 walk.** `E0121` no longer recognises only a bare `&name`: the root of a
 reference is the local reached through fields and indices (stopping at a
