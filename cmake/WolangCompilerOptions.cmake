@@ -40,8 +40,13 @@ function(wolang_configure_target target)
     endif()
     if(WOLANG_ENABLE_SANITIZERS)
       target_compile_options(${target} PRIVATE
-          -fsanitize=address,undefined -fno-omit-frame-pointer)
-      target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+          -fsanitize=${WOLANG_SANITIZER_LIST} -fno-omit-frame-pointer)
+      target_link_options(${target} PRIVATE -fsanitize=${WOLANG_SANITIZER_LIST})
+      # Without this UBSan prints and carries on, and CI stays green.
+      if(WOLANG_SANITIZER_LIST MATCHES "undefined")
+        target_compile_options(${target} PRIVATE
+            -fno-sanitize-recover=undefined)
+      endif()
     endif()
   endif()
 endfunction()

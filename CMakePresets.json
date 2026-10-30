@@ -33,6 +33,15 @@
       }
     },
     {
+      "name": "ubsan",
+      "displayName": "Debug + undefined-behaviour sanitizer only",
+      "inherits": "debug",
+      "cacheVariables": {
+        "WOLANG_ENABLE_SANITIZERS": "ON",
+        "WOLANG_SANITIZER_LIST": "undefined"
+      }
+    },
+    {
       "name": "x64",
       "displayName": "Debug, built for x86-64",
       "inherits": "debug",
@@ -76,6 +85,10 @@
       "configurePreset": "asan"
     },
     {
+      "name": "ubsan",
+      "configurePreset": "ubsan"
+    },
+    {
       "name": "x64",
       "configurePreset": "x64"
     },
@@ -99,6 +112,13 @@
     {
       "name": "asan",
       "configurePreset": "asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ubsan",
+      "configurePreset": "ubsan",
       "output": {
         "outputOnFailure": true
       }
