@@ -107,6 +107,8 @@ tests/            unit tests and the test harness
 docs/             specification, architecture, decisions, diagnostics
 ```
 
+Maintainers cut releases as described in [docs/releasing.md](docs/releasing.md).
+
 Start with [docs/architecture.md](docs/architecture.md) for how a program
 becomes a binary, and [STATUS.md](STATUS.md) for what is done and what is
 not.

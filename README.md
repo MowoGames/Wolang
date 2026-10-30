@@ -211,6 +211,7 @@ docs/             specification, architecture, decisions, diagnostics, style
 - [docs/tour.md](docs/tour.md) — the language in examples, start here
 - [docs/cookbook.md](docs/cookbook.md) — whole programs that do a thing
 - [docs/install.md](docs/install.md) — installing it, on each system
+- [docs/releasing.md](docs/releasing.md) — making a release
 - [docs/building.md](docs/building.md) — building it, on each system
 - [docs/stdlib.md](docs/stdlib.md) — the standard library, module by module
 - [docs/style.md](docs/style.md) — code and commit conventions

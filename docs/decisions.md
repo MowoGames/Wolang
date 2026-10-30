@@ -3118,3 +3118,19 @@ type's id in the reserved word, since the union holds the object. A C11
 translation unit asserts the layout in the test build. MowoEngine's
 generated glue calls through C functions and words (D218, D219), not values,
 so it does not change.
+**D248. A release is one tag push, and the version is written once.** The
+compiler's version lives in `project(VERSION)` in `CMakeLists.txt`; the
+driver, the language server and the embedding API take it from there at
+build time (`WOLANG_VERSION_STRING`), and `tools/package/bump_version.py`
+sets the only two other copies (the VS Code and Zed manifests), which
+`check_version.py` keeps equal in `wl docs` and CI. The embedding ABI
+version, when it exists, is separate. `release.yml` first checks the tag
+is `v<that version>` and that `CHANGELOG.md` has its section; builds every
+archive with the pinned LLVM 22 so `wolang build` works from a release;
+publishes with the changelog section as the notes; then installs the
+published release with `install.sh` and `install.ps1` on three systems.
+The installers refuse a download with no checksum line unless told
+`--no-verify`, fall back to the `/releases/latest` redirect when the API is
+rate limited, and read the archive's top directory instead of assuming
+it. `WOLANG_DOWNLOAD_BASE` points them at a local server, for
+`tools/package/test_install.sh` only.
