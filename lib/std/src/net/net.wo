@@ -25,6 +25,23 @@ extern "C" fun wolang_socket_close(socket: s64) -> s32 uses net
 extern "C" fun wolang_socket_reuse(socket: s64, on: s32) -> s32 uses net
 extern "C" fun wolang_socket_nodelay(socket: s64, on: s32) -> s32 uses net
 extern "C" fun wolang_socket_blocking(socket: s64, on: s32) -> s32 uses net
+extern "C" fun wolang_socket_port(socket: s64) -> s32 uses net
+extern "C" fun wolang_udp_open() -> s64 uses net
+extern "C" fun wolang_udp_bind(socket: s64, address: u32, port: u32) -> s32 uses net
+extern "C" fun wolang_udp_send_to(
+    socket: s64,
+    address: u32,
+    port: u32,
+    bytes: *u8,
+    count: s64) -> s64 uses net
+extern "C" fun wolang_udp_receive_from(
+    socket: s64,
+    bytes: *mut u8,
+    room: s64,
+    address: *mut u32,
+    port: *mut u32,
+    truncated: *mut s32) -> s64 uses net
+extern "C" fun wolang_udp_broadcast(socket: s64, on: s32) -> s32 uses net
 extern "C" fun wolang_resolve(host: *u8, length: u64, out: *mut u32) -> s32 uses net
 
 /// One connection, open until it is closed.
@@ -239,6 +256,134 @@ offer fun Accept(listener: Socket) -> Socket uses net, unsafe {
     return Socket(-1)
   }
   return Socket(taken as s32)
+}
+
+/// One datagram received: how many bytes landed in the caller's buffer,
+/// who sent it, and whether it was longer than the buffer (then the rest
+/// is gone, as UDP has no way to ask for it again).
+offer struct Datagram {
+  var count: int
+  var address: s64
+  var port: int
+  var truncated: bool
+}
+
+/// An unconnected datagram socket (D244). Its `fd` can be given to a
+/// poller like any other descriptor.
+offer class UdpSocket {
+  var fd: s32 = -1
+
+  fun IsOpen() -> bool {
+    return fd >= 0
+  }
+
+  /// The port the socket is bound to; how port 0 says which was picked.
+  /// -1 when closed.
+  fun LocalPort() -> int uses net, unsafe {
+    if fd < 0 {
+      return -1
+    }
+    return wolang_socket_port(fd as s64) as int
+  }
+
+  /// Sends `bytes` as one datagram to `address` (see `Resolve`) and
+  /// `port`. The bytes sent, or -1: closed socket, no bytes, or more than
+  /// 65507 (the most a datagram carries).
+  fun SendTo(address: s64, port: int, bytes: []u8) -> int uses net, unsafe {
+    if fd < 0 || bytes.len == 0 || port < 0 || port > 65535 {
+      return -1
+    }
+    return wolang_udp_send_to(
+        fd as s64,
+        address as u32,
+        port as u32,
+        &bytes[0],
+        bytes.len as s64) as int
+  }
+
+  /// Sends the bytes of `message`; see `SendTo`.
+  fun SendTextTo(address: s64, port: int, message: text) -> int uses net, unsafe {
+    return SendTo(address, port, Bytes(message))
+  }
+
+  /// Takes one datagram into `buffer`, never writing past its length. Null
+  /// when a non-blocking socket has nothing yet, or on an error; a
+  /// datagram longer than the buffer comes with `truncated` set.
+  fun ReceiveFrom(buffer: []u8) -> Datagram? uses net, unsafe {
+    if fd < 0 || buffer.len == 0 {
+      return null
+    }
+    var address: u32 = 0
+    var port: u32 = 0
+    var cut: s32 = 0
+    const got = wolang_udp_receive_from(
+        fd as s64,
+        &mut buffer[0],
+        buffer.len as s64,
+        &mut address,
+        &mut port,
+        &mut cut)
+    if got < 0 {
+      return null
+    }
+    return Datagram(got as int, address as s64, port as int, cut != 0)
+  }
+
+  /// Whether `ReceiveFrom` answers null at once (true) or waits (the
+  /// default).
+  fun SetNonBlocking(on: bool) uses net, unsafe {
+    if fd < 0 {
+      return
+    }
+    var value: s32 = 1
+    if on {
+      value = 0
+    }
+    const _set = wolang_socket_blocking(fd as s64, value)
+  }
+
+  /// Whether datagrams may be sent to the broadcast address.
+  fun SetBroadcast(on: bool) -> bool uses net, unsafe {
+    if fd < 0 {
+      return false
+    }
+    var value: s32 = 0
+    if on {
+      value = 1
+    }
+    return wolang_udp_broadcast(fd as s64, value) == 0
+  }
+
+  fun Close() uses net, unsafe {
+    if fd >= 0 {
+      const _closed = wolang_socket_close(fd as s64)
+      fd = -1
+    }
+  }
+}
+
+/// A UDP socket bound to `port` on every interface (0 picks a free one;
+/// ask `LocalPort`), or a closed one.
+offer fun BindUdp(port: int) -> UdpSocket uses net, unsafe {
+  return BindUdpOn(0, port)
+}
+
+/// Like `BindUdp` but on one local `address` (e.g. 127.0.0.1 from
+/// `ParseAddress`), so a test or a LAN-only game stays off other
+/// interfaces.
+offer fun BindUdpOn(address: s64, port: int) -> UdpSocket uses net, unsafe {
+  if port < 0 || port > 65535 {
+    return UdpSocket(-1)
+  }
+  const fd = wolang_udp_open()
+  if fd < 0 {
+    return UdpSocket(-1)
+  }
+  if wolang_udp_bind(fd, address as u32, port as u32) < 0 {
+    const _closed = wolang_socket_close(fd)
+    return UdpSocket(-1)
+  }
+  return UdpSocket(fd as s32)
 }
 
 // ------------------------------------------------------------- tests ---

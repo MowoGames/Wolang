@@ -61,6 +61,22 @@ int32_t wolang_socket_nodelay(int64_t socket, int32_t on);
 // Whether a call that would wait answers instead.
 int32_t wolang_socket_blocking(int64_t socket, int32_t on);
 
+// UDP (D244). A datagram socket, or -1; bound with `wolang_udp_bind`
+// (port 0 lets the system pick, `wolang_socket_port` says which).
+// Closing, blocking and the port reuse the TCP calls above.
+int64_t wolang_udp_open(void);
+int32_t wolang_udp_bind(int64_t socket, uint32_t address, uint32_t port);
+// How many bytes went, or -1 (also for an empty or over-65507-byte one).
+int64_t wolang_udp_send_to(int64_t socket, uint32_t address, uint32_t port,
+                           const uint8_t* bytes, int64_t count);
+// One datagram into |bytes|, at most |room| of it. Answers the bytes
+// stored, -2 when a non-blocking socket has nothing yet, -1 on an error.
+// |truncated| is set when the datagram was longer than |room|.
+int64_t wolang_udp_receive_from(int64_t socket, uint8_t* bytes,
+                                int64_t room, uint32_t* address,
+                                uint32_t* port, int32_t* truncated);
+int32_t wolang_udp_broadcast(int64_t socket, int32_t on);
+
 }  // extern "C"
 
 }  // namespace runtime

@@ -2997,3 +2997,16 @@ value held in a variable is not judged; the interpreter runs a spawned
 body inline (D97) so it never sees the race. Separately, the JIT driver
 now gives the whole tier up to the interpreter if an emit fails after the
 probe passed, instead of aborting the compiler.
+
+**D244. UDP in `std.net`.** Game networking wants datagrams, so the
+runtime gained `wolang_udp_open/bind/send_to/receive_from/broadcast`
+beside the TCP calls (`sockets.cc`, POSIX and Winsock in one file, D158),
+and `std.net` gained `UdpSocket`, `BindUdp`, `BindUdpOn` and `Datagram`.
+Every primitive is `uses net` on its extern (D217). Closing, blocking
+and the bound port reuse the TCP calls, and a UDP `fd` goes to the same
+poller as a TCP one. Receive never writes past the caller's buffer: a
+longer datagram is cut and `Datagram.truncated` is set (`MSG_TRUNC` via
+`recvmsg` on POSIX, `WSAEMSGSIZE` on Windows). A non-blocking socket with
+nothing to read answers null (runtime -2). Sends of zero bytes or more
+than 65507 are refused (-1). The Windows path is written to mirror the
+POSIX one but is not built or run here.

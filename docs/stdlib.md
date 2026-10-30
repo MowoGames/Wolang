@@ -468,6 +468,35 @@ fun main() uses io, net, unsafe {
 }
 ```
 
+UDP, for game networking (D244). A datagram is one message: it arrives whole
+or not at all, and a buffer that is too small cuts it and sets `truncated`.
+
+```wolang
+need std.io.{Print}
+need std.mem.{ArrayNew, Free}
+need std.net.{BindUdpOn, ParseAddress}
+
+fun main() uses io, net, unsafe {
+  const lo = ParseAddress("127.0.0.1") ?? 0
+  var server = BindUdpOn(lo, 0)          // port 0: the system picks
+  var client = BindUdpOn(lo, 0)
+  const _sent = client.SendTextTo(lo, server.LocalPort(), "ping")
+  var buffer = ArrayNew<u8>(512)
+  if const got = server.ReceiveFrom(buffer) {
+    Print("{got.count} bytes from port {got.port}, cut: {got.truncated}")
+  }
+  Free(buffer)
+  server.SetNonBlocking(true)            // ReceiveFrom now answers null
+  client.Close()                         // when nothing is waiting
+  server.Close()
+}
+```
+
+`BindUdp(port)` binds every interface; `SetBroadcast(true)` allows sending
+to the broadcast address. `SendTo` takes `[]u8`, answers the bytes sent or
+-1 (closed, empty, or over 65507 bytes). `UdpSocket.fd` can be watched by
+a poller like a TCP descriptor.
+
 ## std.process
 
 ```wolang
