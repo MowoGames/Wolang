@@ -77,6 +77,9 @@ constexpr std::string_view kUnreachableCode = "W0102";
 // unreachable row is a mistake somebody made while editing it.
 constexpr std::string_view kUnreachableState = "W0109";
 constexpr std::string_view kUnknownState = "E0206";
+// `after <delay>` parses and nothing reads it, so it used to fire at once
+// (D243).
+constexpr std::string_view kAfterNotSupported = "E0159";
 constexpr std::string_view kBadOperand = "E0108";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
 constexpr std::string_view kDimensionMismatch = "E1001";
@@ -1544,6 +1547,13 @@ void Checker::CheckMachine(const Item& item) {
         continue;
       }
       const Transition& transition = ast_.Get(transition_id);
+      if (transition.delay.is_valid()) {
+        // Reserved for a machine given time by a generated `Tick(dt)`;
+        // refuse it rather than run it as if there were no delay (D243).
+        Report(kAfterNotSupported,
+               "`after` is not supported on a transition yet",
+               transition.span);
+      }
       bool found = false;
       for (size_t i = 0; i < states.size(); ++i) {
         if (!ast_.Contains(states[i]) ||

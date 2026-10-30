@@ -785,8 +785,9 @@ over to whoever started it -- a sandboxed package cannot spawn its way to
 the network -- except `async`, because the spawner does not wait.
 
 Coroutines are stackless and scheduled by the host's tick groups or by the
-runtime's own scheduler. Concurrency is structured: a task belongs to the
-scope that spawned it and is cancelled with it.
+runtime's own scheduler. A spawned task runs to its end: nothing cancels
+it when the scope that started it exits. Stopping one early is a flag it
+reads (D243).
 
 ## 9. State machines — draft
 
@@ -797,11 +798,13 @@ machine Door {
     enter { wait animation.Play("Open") }
     always -> Open
   }
-  state Open { on Interact after 3s -> Closing }
+  state Open { on Interact -> Closing }
 }
 ```
 
 Checked for unreachable states and for transitions that can never fire.
+`on Event after 3s -> State` is reserved for a machine that is given time by
+a generated `Tick(dt)`; it is `E0159` until then (D243).
 
 ## 10. Reactive values — draft
 

@@ -3012,3 +3012,12 @@ longer datagram is cut and `Datagram.truncated` is set (`MSG_TRUNC` via
 nothing to read answers null (runtime -2). Sends of zero bytes or more
 than 65507 are refused (-1). The Windows path is written to mirror the
 POSIX one but is not built or run here.
+
+**D243. What a machine and a task do not do yet is refused, not ignored.**
+`on X after 3s` parsed and then fired at once (D71 said so; the compiler
+did not). It is now `E0159`, reported at the transition. The syntax stays
+reserved for a machine that is given time by a generated `Tick(dt)`. A
+`wait` in `enter` was already refused by `E0301`, since a block is not a
+task. Section 8 promised that a task is cancelled with the scope that
+spawned it, and nothing cancels a task. A spawned task runs to its end.
+Stopping one early is a flag it reads. The promise is struck from the spec.

@@ -2422,5 +2422,24 @@ fun Twice() -> int {
   WOLANG_EXPECT(!fine.HasCode("E0122"));
 }
 
+// `after` parsed and was then ignored, so the transition fired at once
+// (D243).
+WOLANG_TEST(TypeCheck, AfterOnATransitionIsRefused) {
+  Fixture f(R"(
+machine Door {
+  state Closed { on Interact -> Open }
+  state Open { on Interact after 3s -> Closed }
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0159"));
+  Fixture fine(R"(
+machine Door {
+  state Closed { on Interact -> Open }
+  state Open { on Interact -> Closed }
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0159"));
+}
+
 }  // namespace
 }  // namespace wolang
