@@ -3352,6 +3352,7 @@ class Lowerer {
     // leak this closes was the whole of why a program that builds strings
     // in a loop grew (D133).
     bool result_is_fresh = false;
+    bool borrowed_piece = false;
     for (ExprId part : parts) {
       if (!ast().Contains(part)) {
         continue;
@@ -3375,6 +3376,7 @@ class Lowerer {
       if (!result.is_valid()) {
         result = text;
         result_is_fresh = text_is_fresh;
+        borrowed_piece = piece.kind != ExprKind::kStringText && !text_is_fresh;
         continue;
       }
       const InstId joined = ConcatText(result, text);
@@ -3387,6 +3389,12 @@ class Lowerer {
       result = joined;
       result_is_fresh = true;
       continue;
+    }
+    if (result.is_valid() && !result_is_fresh && borrowed_piece) {
+      // `"{name}"` alone is the text in `name` itself, and the new
+      // variable would free it a second time. A concatenation with the
+      // empty string is the copy (D231).
+      return ConcatText(result, builder_->ConstString(str, std::string()));
     }
     return result.is_valid() ? result
                              : builder_->ConstString(str, std::string());
@@ -3985,8 +3993,16 @@ class Lowerer {
   // value is taken from a fresh optional and retained from a borrowed one,
   // and the fallback is held the same way. So nothing is left to release
   // where the two paths meet (D209).
-  InstId LowerCoalesce(const Expr& expr, TypeId type) {
+  InstId LowerCoalesce(const Expr& expr, TypeId expected) {
     const InstId optional = Value(expr.lhs);
+    // What is inside the optional, not what the context wants: `var o: u8?
+    // = (a ?? b)` records the `u8?` the variable has, and a join that
+    // takes that type is handed a bare `u8` (D231). The caller wraps the
+    // answer the way it does any value that fits a wider slot.
+    TypeId type = Erase(types_->ElementOf(TypeOf(expr.lhs)));
+    if (!type.is_valid()) {
+      type = expected;
+    }
     const bool counted = Counts(type);
     const bool taken = IsFreshHandle(optional);
     const InstId present = builder_->Add(

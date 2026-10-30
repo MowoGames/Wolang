@@ -109,6 +109,11 @@ bool IsPure(Opcode opcode) {
     case Opcode::kSoaAddress:
     case Opcode::kIndexCheck:
     case Opcode::kOptionalValue:
+    // Reading the payload of a variant that is not the arm's own is a
+    // trap in the interpreter, so it stays on the path that tested the
+    // tag: hoisted out of a loop it read `Shape.Dot`'s missing payload
+    // (D231).
+    case Opcode::kVariantPayload:
     case Opcode::kLoad:
     case Opcode::kUndef:
     // Does something, or is something.

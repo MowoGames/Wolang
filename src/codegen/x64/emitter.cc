@@ -652,11 +652,15 @@ class FunctionEmitter {
     // The bias that makes the shift round towards zero: the sign bit
     // smeared across the low `shift` bits.
     if (shift != 0) {
+      // Counted in the register's width, not the type's: an s16 lives
+      // sign-extended in 32 bits, and shifting out `16 - shift` of them
+      // left a bias of `2^17 - 1` and a quotient of -1 for -1 / 2 (D231).
+      const unsigned register_bits = width == IWidth::k64 ? 64 : 32;
       assembler_.Mov(IWidth::k64, temp, original);
       assembler_.SarImmediate(width, temp,
-                              static_cast<uint8_t>(bits - 1));
+                              static_cast<uint8_t>(register_bits - 1));
       assembler_.ShrImmediate(width, temp,
-                              static_cast<uint8_t>(bits - shift));
+                              static_cast<uint8_t>(register_bits - shift));
       assembler_.Add(width, work, temp);
       assembler_.SarImmediate(width, work,
                               static_cast<uint8_t>(shift));
@@ -2789,6 +2793,12 @@ class FunctionEmitter {
                  Register destination,
                  ir::Opcode opcode) {
     const Register narrowed = Scratch(2);
+    // The 32-bit operation zero-extended its result, and a negative one
+    // that fits is a sign-extended value: widen it the way the canonical
+    // form is before comparing, or `3s16 - 5s16` traps (D231).
+    if (layouts_.IsSignedInteger(type)) {
+      assembler_.Movsx(IWidth::k32, raw, raw);
+    }
     Canonicalize(raw, type, narrowed);
     assembler_.Cmp(IWidth::k64, narrowed, raw);
     const Label trap = TrapLabel(

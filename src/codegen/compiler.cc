@@ -636,6 +636,14 @@ interp::Outcome CompiledModule::Impl::RunEntry(
     if (i < arguments.size()) {
       interp::Encode(types_, layouts, arguments[i], type,
              reinterpret_cast<uint8_t*>(&slots[i]));
+      // Generated code keeps a narrow signed integer sign-extended in its
+      // register, and Encode writes only its own bytes (D231).
+      const uint32_t bits = layouts->BitsOf(type);
+      if (layouts->IsSignedInteger(type) && bits < 64) {
+        const uint32_t shift = 64 - bits;
+        slots[i] = static_cast<uint64_t>(
+            static_cast<int64_t>(slots[i] << shift) >> shift);
+      }
     }
   }
 

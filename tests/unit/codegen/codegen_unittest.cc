@@ -2602,6 +2602,105 @@ fun Nested() -> int {
   WOLANG_EXPECT_EQ(f.Run("Nested", {}), "30");
 }
 
+WOLANG_TEST(CodegenTest, AnInterpolationOfOneTextIsACopy) {
+  // Found by the generator (D231): `"{name}"` was `name` itself, so the two
+  // variables freed one allocation twice.
+  Fixture f(R"(
+fun Twice() -> int {
+  var tx = "seed"
+  var copy = "{tx}"
+  tx = "{tx}!"
+  return copy.len * 10 + tx.len
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Twice", {}), "45");
+}
+
+WOLANG_TEST(CodegenTest, CoalesceStoredInAnOptionalSlot) {
+  // Found by the generator (D231): the `??` took the optional type its
+  // context had, and its join was handed a bare value.
+  Fixture f(R"(
+fun Maybe(x: u8) -> u8? {
+  if x > 100 {
+    return null
+  }
+  return x
+}
+
+fun Kept(x: u8) -> int {
+  var o: u8? = (Maybe(x) ?? 7)
+  return (o ?? 0) as int
+}
+
+fun Small() -> int => Kept(5)
+fun Large() -> int => Kept(200)
+)");
+  WOLANG_EXPECT_EQ(f.Run("Small", {}), "5");
+  WOLANG_EXPECT_EQ(f.Run("Large", {}), "7");
+}
+
+WOLANG_TEST(CodegenTest, NarrowSignedResultsMayBeNegative) {
+  // Found by the generator (D231): the 32-bit operation behind an s8 or
+  // s16 `-`, `*` and negation leaves a negative result zero-extended, and
+  // the fit check compared it with the sign-extended form and trapped.
+  // The values come out of an array so that no pass folds them.
+  Fixture f(R"(
+fun Narrow() -> int {
+  var buf: [4]int
+  buf[0] = 5
+  buf[1] = 7
+  const a = buf[0] as s16
+  const b = buf[1] as s16
+  const c = buf[0] as s8
+  const d = buf[1] as s8
+  return (a - b) as int * 1000 + (-a) as int * 100 + (a * -b) as int +
+         (c - d) as int * 10 + (-c) as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Narrow", {}), "-2560");
+}
+
+WOLANG_TEST(CodegenTest, NarrowSignedDivisionByAPowerOfTwoRoundsToZero) {
+  // Found by the generator (D231): the rounding bias of `x / 2^k` was
+  // shifted by the type's width instead of the register's, so -1 / 2 in an
+  // s16 or s8 was -1.
+  Fixture f(R"(
+fun Halves() -> int {
+  var buf: [2]int
+  buf[0] = 0 - 1
+  buf[1] = 0 - 7
+  const a = buf[0] as s16
+  const b = buf[1] as s8
+  return (a / 2) as int * 1000 + (b / 4) as int * 100 +
+         (b % 4) as int * 10 + (a % 2) as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Halves", {}), "-131");
+}
+
+WOLANG_TEST(CodegenTest, APayloadReadStaysInItsArm) {
+  // Found by the generator (D231): the read of `Box`'s payload inside a
+  // loop was hoisted out of the match that guarded it, and a `Dot` has none.
+  Fixture f(R"(
+enum Shape {
+  Dot,
+  Box(h: u64),
+}
+
+fun Arms() -> int {
+  var x: u64 = 15
+  var total = 0
+  var i = 0
+  while i < 3 {
+    i = i + 1
+    total = total + ((match Shape.Dot { Shape.Dot => x, Shape.Box(h) => h }) & 15) as int
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Arms", {}), "45");
+}
+
 WOLANG_TEST(CodegenTest, ReleasesWhatObjectsHold) {
   Fixture f(R"(
 extern "C" fun wolang_objects_live() -> s64

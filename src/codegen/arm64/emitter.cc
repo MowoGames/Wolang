@@ -595,8 +595,11 @@ class FunctionEmitter {
       assembler_.Mov(width, biased, left);
     } else {
       const Register sign = Scratch(4);
-      assembler_.Asr(width, sign, left, bits - 1);
-      assembler_.Lsr(width, sign, sign, bits - shift);
+      // Counted in the register's width, not the type's: an s16 lives
+      // sign-extended in 32 bits (D231).
+      const unsigned register_bits = width == IWidth::k64 ? 64 : 32;
+      assembler_.Asr(width, sign, left, register_bits - 1);
+      assembler_.Lsr(width, sign, sign, register_bits - shift);
       assembler_.Add(width, biased, left, sign);
     }
     const Register quotient =
@@ -2868,6 +2871,12 @@ class FunctionEmitter {
                  Register destination,
                  ir::Opcode opcode) {
     const Register narrowed = Scratch(2);
+    // As on x64: the 32-bit operation zero-extended a negative result
+    // that fits, so widen it as the canonical form is before comparing
+    // (D231).
+    if (layouts_.IsSignedInteger(type)) {
+      assembler_.Sxtw(raw, raw);
+    }
     Canonicalize(raw, type, narrowed);
     assembler_.Cmp(IWidth::k64, narrowed, raw);
     const Label trap = TrapLabel(
