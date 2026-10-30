@@ -223,6 +223,8 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_socket_reuse)},
       {"wolang_socket_nodelay",
        reinterpret_cast<void*>(&wolang_socket_nodelay)},
+      {"wolang_socket_port",
+       reinterpret_cast<void*>(&wolang_socket_port)},
       {"wolang_udp_open",
        reinterpret_cast<void*>(&wolang_udp_open)},
       {"wolang_udp_bind",

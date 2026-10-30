@@ -429,3 +429,65 @@ fun TalksToItself() -> bool uses net, unsafe {
   listener.Close()
   return sent && heard == "hello" && answered && back == "world"
 }
+
+@Test
+fun UdpDeliversADatagram() -> bool uses net, unsafe {
+  const lo = ParseAddress("127.0.0.1") ?? 0
+  var a = BindUdpOn(lo, 0)
+  var b = BindUdpOn(lo, 0)
+  if !a.IsOpen() || !b.IsOpen() {
+    a.Close()
+    b.Close()
+    return false
+  }
+  const sent = a.SendTextTo(lo, b.LocalPort(), "ping")
+  var buffer = ArrayNew<u8>(64)
+  var ok = false
+  if const got = b.ReceiveFrom(buffer) {
+    ok = sent == 4 && got.count == 4 && got.port == a.LocalPort() && got.address == lo && !got.truncated && buffer[0] == 112 && buffer[3] == 103
+  }
+  Free(buffer)
+  a.Close()
+  b.Close()
+  return ok
+}
+
+@Test
+fun UdpReportsATruncatedDatagram() -> bool uses net, unsafe {
+  const lo = ParseAddress("127.0.0.1") ?? 0
+  var a = BindUdpOn(lo, 0)
+  var b = BindUdpOn(lo, 0)
+  const _sent = a.SendTextTo(lo, b.LocalPort(), "abcdefgh")
+  var buffer = ArrayNew<u8>(4)
+  var ok = false
+  if const got = b.ReceiveFrom(buffer) {
+    ok = got.count == 4 && got.truncated && buffer[3] == 100
+  }
+  Free(buffer)
+  a.Close()
+  b.Close()
+  return ok
+}
+
+@Test
+fun UdpNonBlockingReceiveAnswersNothingYet() -> bool uses net, unsafe {
+  var s = BindUdp(0)
+  if !s.IsOpen() {
+    return false
+  }
+  s.SetNonBlocking(true)
+  var buffer = ArrayNew<u8>(16)
+  const got = s.ReceiveFrom(buffer)
+  Free(buffer)
+  s.Close()
+  return got == null
+}
+
+@Test
+fun UdpRefusesAnEmptyOrClosedSend() -> bool uses net, unsafe {
+  const lo = ParseAddress("127.0.0.1") ?? 0
+  var s = BindUdpOn(lo, 0)
+  const empty = s.SendTextTo(lo, 9, "")
+  s.Close()
+  return empty == -1 && s.SendTextTo(lo, 9, "x") == -1 && !s.IsOpen()
+}
