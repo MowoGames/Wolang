@@ -696,6 +696,67 @@ offer fun Grab() -> int {
   std::filesystem::remove_all(prim);
 }
 
+WOLANG_TEST(EmbedTest, ASandboxedModCannotHideAnExternInsideAType) {
+  // The door check walked only top-level items, so an `extern` in a struct
+  // body or an `extend` got through (D217).
+  const char* const nested[] = {R"(
+struct Holder {
+  var n: int
+
+  extern "C" fun system(command: *u8) -> s32
+}
+
+offer fun Nothing() -> int {
+  return 0
+}
+)", R"(
+struct Holder {
+  var n: int
+}
+
+extend Holder {
+  extern "C" fun system(command: *u8) -> s32
+}
+
+offer fun Nothing() -> int {
+  return 0
+}
+)"};
+  int which = 0;
+  for (const char* source : nested) {
+    const std::filesystem::path root =
+        WritePackage("modnested" + std::to_string(which++), "", source);
+    WolangVm* vm = wolang_vm_create();
+    WOLANG_EXPECT(wolang_vm_load_mod(vm, root.string().c_str(), "io") != 0);
+    WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("E0705") !=
+                  std::string::npos);
+    wolang_vm_destroy(vm);
+    std::filesystem::remove_all(root);
+  }
+
+  // The twin: a plain method in the same places is fine.
+  const std::filesystem::path plain = WritePackage("modplain", "", R"(
+struct Holder {
+  var n: int
+
+  fun Get() -> int => n
+}
+
+extend Holder {
+  fun Twice() -> int => n * 2
+}
+
+offer fun Nothing() -> int {
+  return 0
+}
+)");
+  WolangVm* ok = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_mod(ok, plain.string().c_str(), "io"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(ok)), "");
+  wolang_vm_destroy(ok);
+  std::filesystem::remove_all(plain);
+}
+
 WOLANG_TEST(EmbedTest, CallsBackIntoTheHost) {
   WolangVm* vm = wolang_vm_create();
   WOLANG_EXPECT_EQ(

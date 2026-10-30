@@ -1051,8 +1051,20 @@ void Database::RegisterQueries() {
         // system() }` binds `wolang_system` -- even though calling it is
         // `unsafe` already (D217).
         if (sandboxed) {
-          for (ItemId id : ast.Get(ast.root())) {
-            if (!ast.Contains(id) || !HasFlag(ast.Get(id).flags, ItemFlags::kExtern)) {
+          // Nested too: an `extern fun` inside a struct or an `extend` binds
+          // a C symbol just as a top-level one does (D217).
+          std::vector<ItemId> pending(ast.Get(ast.root()).begin(),
+                                      ast.Get(ast.root()).end());
+          while (!pending.empty()) {
+            const ItemId id = pending.back();
+            pending.pop_back();
+            if (!ast.Contains(id)) {
+              continue;
+            }
+            if (!HasFlag(ast.Get(id).flags, ItemFlags::kExtern)) {
+              for (ItemId member : ast.Get(ast.Get(id).members)) {
+                pending.push_back(member);
+              }
               continue;
             }
             std::string message = "`";
