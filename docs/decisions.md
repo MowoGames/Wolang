@@ -2917,3 +2917,10 @@ finished. An instantiation whose argument nests past 64 levels is `E0140`.
 and a generic's own instance (`W<W<T>>` inside `W<T>` is the declaration
 again), and the layout's `IsSupported` is depth guarded for the case where
 sema misses one.
+
+An unsuffixed integer literal too wide for `int` is `E0109` where the
+default would be taken (D9: an error, not a silent wrap), and `<literal> as
+s64` reads the literal at the cast's type. The interpreter also measures the
+native stack, not only `Limits::depth`: a debug build's frames are large
+enough that a runaway `comptime` recursion crashed the compiler before 1024
+calls, and it now stops with the same depth trap.

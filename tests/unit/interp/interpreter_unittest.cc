@@ -547,6 +547,20 @@ WOLANG_TEST(ComptimeTest, AnEndlessEvaluationStopsBeingTheCompilersProblem) {
   WOLANG_EXPECT_EQ(diagnostics->front().code, "E0901");
 }
 
+// Limits::depth is 1024 calls, but a debug build's native frames are big
+// enough that the real stack ended first and the compiler crashed (D225).
+WOLANG_TEST(ComptimeTest, EndlessRecursionStopsBeforeTheNativeStackDoes) {
+  Database db;
+  const FileId file = db.AddFile(
+      "<test>",
+      "comptime fun R(n: int) -> int {\n  return R(n + 1) + 1\n}\n"
+      "comptime const X: int = R(0)\n");
+  const std::vector<Diagnostic>* diagnostics = db.Diagnostics(file);
+  WOLANG_ASSERT_NE(diagnostics, nullptr);
+  WOLANG_ASSERT(!diagnostics->empty());
+  WOLANG_EXPECT_EQ(diagnostics->front().code, "E0901");
+}
+
 WOLANG_TEST(ComptimeTest, AFunctionWithArgumentsIsLeftForItsCallSite) {
   // Evaluating one needs the arguments, which means the call site; nothing
   // is reported here rather than something wrong.

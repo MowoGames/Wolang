@@ -17,9 +17,58 @@
 #include <cstring>
 #include <utility>
 
+#if defined(__linux__)
+#include <pthread.h>
+#endif
+
 namespace wolang {
 namespace interp {
 namespace {
+
+// The native stack this thread may use, as [low, high); {0, 0} when it
+// cannot be found. Looked up once per thread: finding it reads the process
+// map. Limits::depth alone is not enough, because one interpreted call is
+// several native frames and a debug build's are large, so the real stack ran
+// out first and a runaway `comptime` recursion crashed `check` (D225).
+struct NativeStack {
+  uintptr_t low = 0;
+  uintptr_t high = 0;
+};
+
+NativeStack ThisThreadsStack() {
+  thread_local NativeStack cached;
+  thread_local bool known = false;
+  if (!known) {
+    known = true;
+#if defined(__linux__)
+    pthread_attr_t attributes;
+    if (pthread_getattr_np(pthread_self(), &attributes) == 0) {
+      void* address = nullptr;
+      size_t size = 0;
+      if (pthread_attr_getstack(&attributes, &address, &size) == 0) {
+        cached.low = reinterpret_cast<uintptr_t>(address);
+        cached.high = cached.low + size;
+      }
+      pthread_attr_destroy(&attributes);
+    }
+#endif
+  }
+  return cached;
+}
+
+// What is left unused when the interpreter gives up, for the frames the trap
+// itself and its callers need.
+constexpr uintptr_t kStackHeadroom = 512 * 1024;
+
+// True when the native stack is nearly spent. A scheduler task runs on a
+// stack of its own, which is outside the thread's, and is not measured.
+bool NativeStackNearlySpent() {
+  const NativeStack stack = ThisThreadsStack();
+  volatile char marker = 0;
+  const auto here = reinterpret_cast<uintptr_t>(&marker);
+  return stack.high != 0 && here >= stack.low && here < stack.high &&
+         here - stack.low < kStackHeadroom;
+}
 
 
 // One activation. Values are indexed by instruction, which is what makes
@@ -131,7 +180,7 @@ class Interpreter {
                   "@" + std::string(interner_.Text(function.name)),
                   "has no body to run");
     }
-    if (depth_ >= limits_.depth) {
+    if (depth_ >= limits_.depth || NativeStackNearlySpent()) {
       return Trap(outcome, TrapKind::kStepLimit,
                   "@" + std::string(interner_.Text(function.name)),
                   "call depth limit reached");
