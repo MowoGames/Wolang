@@ -4,9 +4,9 @@
 > below; if it disagrees with the code, the code is right and this file
 > needs fixing.
 
-**Date:** 2026-10-27
+**Date:** 2026-10-30
 **Waves are closed through the 11th**; after that the work was "a complete
-language" without waves, and everything below belongs to it (D119–D220).
+language" without waves, and everything below belongs to it (D119–D229).
 
 ## In short
 
@@ -23,8 +23,41 @@ that they do.
 | Cross targets | `--target`: Windows COFF, Linux ELF, WebAssembly, RISC-V |
 | std | 34 modules (see [docs/stdlib.md](docs/stdlib.md)) |
 | Packages | `http` (server and client), `db` (storage), `gfx` (window/GPU/sound), `tls`, `game`, `core` |
-| Tests | 692 unit tests + 184 library tests, a three-tier fuzzer, a check of every example in the docs |
+| Tests | 754 unit tests + 213 library tests, a three-tier fuzzer, a check of every example in the docs |
 | Server | 53,900 requests/s on one thread, 58,900 on eight |
+
+## Done since 27.10: the audit (D221–D229)
+
+An audit of the compiler, the runtime, the sandbox and the libraries that
+read other people's bytes, and the fixes for what it found.
+
+**Safety.** A bodiless `uses unsafe` primitive (`Free`, `ArrayNew`,
+`ViewFromRaw`) no longer absorbs `unsafe`, which closed a way for a
+sandboxed mod to reach raw memory (D221); naming a function as a value
+costs its effects (D222). A reference cannot leave through a field, an
+index, a call or a local array turned into a slice (`E0121`), and an
+object made in an `arena` cannot leave its block (`E0142`, D228). A
+`deinit` that keeps `self` traps in every tier (`E0145` for the plain
+case), and a move out of a `match` is a move (D229).
+
+**Servers and readers.** The HTTP server parses only the bytes that
+arrived (it used to read the previous client's), refuses a `Content-Length`
+that would overflow and any `Transfer-Encoding`, and closes slow and idle
+connections (D223). JSON, YAML, TOML and regex bound their depth, and
+`InflateLimited`/`GunzipLimited` bound their output (D227).
+
+**Tiers.** Labelled `break`/`continue` on range-`for` and `while` work;
+folding leaves 64-bit overflow and `MIN / -1` to trap; `u64` interpolates
+above 2^63; float `%` is `fmod` (D224). Sign-changing 64-bit casts trap in
+the compiled tiers, trap text is identical everywhere, floats print as the
+shortest round-trip text (D226). Every depth is bounded where it is made:
+long expression chains are `E0041`, runaway generics `E0140`, recursive
+enums `E0117`, a literal too wide for `int` is `E0109`, and the
+interpreter stops before the native stack runs out (D225).
+
+**CI.** AOT is built and fuzzed on every system, `lib/db` and `lib/tls`
+are tested, there is a UBSan job, and `fuzz --aot` fails without a back
+end instead of passing.
 
 ## Done since 15.10 (D191–D200)
 
