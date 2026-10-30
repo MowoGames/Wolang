@@ -515,8 +515,18 @@ class EditorConnection {
     wolang::runtime::wolang_socket_send(m_Socket, reinterpret_cast<const uint8_t*>(message.data()), static_cast<int64_t>(message.size()));
   }
 
-  // The next message called |name|, whatever came before it.
+  // The next message called |name|. What came before it is kept, not
+  // dropped: the host runs while the editor configures, so a `stopped`
+  // event can arrive ahead of the `configurationDone` it follows, and a
+  // later wait for it has to find it rather than block forever.
   wolang::lsp::Json WaitFor(const std::string& name) {
+    for (size_t i = 0; i < m_Skipped.size(); ++i) {
+      if (m_Skipped[i]["event"].AsString() == name || m_Skipped[i]["command"].AsString() == name) {
+        wolang::lsp::Json found = m_Skipped[i];
+        m_Skipped.erase(m_Skipped.begin() + static_cast<std::ptrdiff_t>(i));
+        return found;
+      }
+    }
     for (;;) {
       const size_t header = m_Pending.find("\r\n\r\n");
       if (header != std::string::npos) {
@@ -527,6 +537,7 @@ class EditorConnection {
           if (message["event"].AsString() == name || message["command"].AsString() == name) {
             return message;
           }
+          m_Skipped.push_back(message);
           continue;
         }
       }
@@ -543,6 +554,7 @@ class EditorConnection {
   int64_t m_Socket;
   int64_t m_Sequence = 0;
   std::string m_Pending;
+  std::vector<wolang::lsp::Json> m_Skipped;
 };
 
 WOLANG_TEST(EmbedTest, AnEditorAttachesAndStopsTheHostsCall) {
