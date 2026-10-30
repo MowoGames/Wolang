@@ -2024,7 +2024,7 @@ class Interpreter {
           const int64_t x = left.signed_integer();
           const int64_t y = right.signed_integer();
           // The one signed division that overflows.
-          if (y == -1 && !FitsSigned(-x, width)) {
+          if (y == -1 && !NegatedFits(x, width)) {
             return TrapAt(outcome, TrapKind::kOverflow, function, id,
                 "the quotient does not fit");
           }
@@ -2062,7 +2062,7 @@ class Interpreter {
       case ir::Opcode::kBitNot:
         return Value::Int(~a, width, is_signed);
       case ir::Opcode::kNeg: {
-        if (is_signed && !FitsSigned(-left.signed_integer(), width)) {
+        if (is_signed && !NegatedFits(left.signed_integer(), width)) {
           return TrapAt(outcome, TrapKind::kOverflow, function, id,
                 "negation overflowed");
         }
@@ -2228,6 +2228,15 @@ class Interpreter {
         return 64;
     }
     return 32;
+  }
+
+  // Whether -value fits. At 64 bits the negation itself would wrap (and
+  // INT64_MIN / -1 faults the host), so the one bad value is named (D224).
+  static bool NegatedFits(int64_t value, IntWidth width) {
+    if (BitsOfWidth(width) >= 64) {
+      return value != INT64_MIN;
+    }
+    return FitsSigned(-value, width);
   }
 
   static bool FitsSigned(int64_t value, IntWidth width) {

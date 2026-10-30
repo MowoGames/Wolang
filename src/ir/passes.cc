@@ -189,6 +189,21 @@ bool SameComputation(const Function& function,
   return true;
 }
 
+// Whether negating |raw| stays inside |type|. The most negative value has no
+// positive twin, so folding it would hide the overflow trap (D224).
+bool NegationFits(const TypeStore& types, TypeId type, uint64_t raw) {
+  if (!type.is_valid() || types.KindOf(type) != TypeKind::kInt) {
+    return true;
+  }
+  const uint32_t bits = WidthInBits(types.Get(type).int_width);
+  const uint64_t mask = bits >= 64 ? ~uint64_t{0} : (uint64_t{1} << bits) - 1;
+  raw &= mask;
+  if (!types.Get(type).is_signed) {
+    return raw == 0;
+  }
+  return raw != (uint64_t{1} << (bits - 1));
+}
+
 }  // namespace
 
 // ------------------------------------------------------ constant folding ---
@@ -253,34 +268,55 @@ bool FoldConstants(TypeStore* types, Function* function) {
                static_cast<uint64_t>(value) < (uint64_t{1} << bits);
       };
 
+      const int64_t signed_min =
+          bits >= 64 ? INT64_MIN : -(int64_t{1} << (bits - 1));
       bool folded = true;
       uint64_t value = 0;
       bool boolean = false;
       bool produces_bool = false;
       switch (inst.opcode) {
         case Opcode::kAdd:
-          folded = fits(sa + sb);
-          value = static_cast<uint64_t>(sa + sb);
-          break;
         case Opcode::kSub:
-          folded = fits(sa - sb);
-          value = static_cast<uint64_t>(sa - sb);
-          break;
         case Opcode::kMul: {
-          // Checked in a wider place than the result, so that an overflow
-          // is recognised rather than folded into its wrapped answer.
-          const __int128 wide = static_cast<__int128>(sa) * sb;
-          folded = wide == static_cast<__int128>(static_cast<int64_t>(wide)) &&
-                   fits(static_cast<int64_t>(wide));
-          value = static_cast<uint64_t>(static_cast<int64_t>(wide));
+          // 64-bit arithmetic is checked with the compiler's own overflow
+          // builtins, since there is no wider place to compute it in. A
+          // narrower one is computed in 64 bits and range-checked. Either
+          // way an overflow is left to trap at run time.
+          const bool add = inst.opcode == Opcode::kAdd;
+          const bool sub = inst.opcode == Opcode::kSub;
+          if (bits >= 64) {
+            bool overflow;
+            if (is_signed) {
+              int64_t r;
+              overflow = add   ? __builtin_add_overflow(sa, sb, &r)
+                         : sub ? __builtin_sub_overflow(sa, sb, &r)
+                               : __builtin_mul_overflow(sa, sb, &r);
+              value = static_cast<uint64_t>(r);
+            } else {
+              uint64_t r;
+              overflow = add   ? __builtin_add_overflow(a, b, &r)
+                         : sub ? __builtin_sub_overflow(a, b, &r)
+                               : __builtin_mul_overflow(a, b, &r);
+              value = r;
+            }
+            folded = !overflow;
+          } else {
+            const __int128 wide = add   ? static_cast<__int128>(sa) + sb
+                                  : sub ? static_cast<__int128>(sa) - sb
+                                        : static_cast<__int128>(sa) * sb;
+            folded = wide == static_cast<__int128>(static_cast<int64_t>(wide)) &&
+                     fits(static_cast<int64_t>(wide));
+            value = static_cast<uint64_t>(static_cast<int64_t>(wide));
+          }
           break;
         }
         case Opcode::kDiv:
           // Division by zero is a runtime fault, not something to fold into
           // a wrong answer at compile time. Nor is the one division that
-          // overflows: the most negative value over minus one.
+          // overflows: the most negative value over minus one, which would
+          // also fault inside the compiler itself.
           if (is_signed) {
-            folded = sb != 0 && !(sb == -1 && !fits(-sa));
+            folded = sb != 0 && !(sb == -1 && sa == signed_min);
             value = folded ? static_cast<uint64_t>(sa / sb) : 0;
           } else {
             folded = b != 0;
@@ -289,7 +325,7 @@ bool FoldConstants(TypeStore* types, Function* function) {
           break;
         case Opcode::kRem:
           if (is_signed) {
-            folded = sb != 0 && !(sb == -1 && !fits(-sa));
+            folded = sb != 0 && !(sb == -1 && sa == signed_min);
             value = folded ? static_cast<uint64_t>(sa % sb) : 0;
           } else {
             folded = b != 0;
@@ -361,7 +397,8 @@ bool FoldConstants(TypeStore* types, Function* function) {
       inst.payload.boolean = !only.payload.boolean;
       changed = true;
     } else if (inst.opcode == Opcode::kNeg &&
-               only.opcode == Opcode::kConstInt) {
+               only.opcode == Opcode::kConstInt &&
+               NegationFits(*types, inst.type, only.payload.integer)) {
       inst.opcode = Opcode::kConstInt;
       inst.operands_count = 0;
       inst.payload.integer = ~only.payload.integer + 1;

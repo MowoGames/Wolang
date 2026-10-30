@@ -166,6 +166,86 @@ fun ContinueWhile() -> int {
   WOLANG_EXPECT_EQ(f.Run("ContinueWhile"), "3");
 }
 
+WOLANG_TEST(InterpreterTest, ConstantFoldingLeavesOverflowToTrap) {
+  // Fixture::Run checks the optimized IR against the unoptimized one, so a
+  // fold into the wrapped value (or a crash inside the compiler on
+  // MIN / -1) shows up here (D224).
+  Fixture f(R"(
+fun AddS64() -> s64 {
+  const a: s64 = 9223372036854775807
+  const b: s64 = 1
+  return a + b
+}
+fun AddU64() -> u64 {
+  const a: u64 = 18446744073709551615
+  const b: u64 = 1
+  return a + b
+}
+fun SubU64() -> u64 {
+  const a: u64 = 0
+  const b: u64 = 1
+  return a - b
+}
+fun MulS64() -> s64 {
+  const a: s64 = 4611686018427387904
+  const b: s64 = 2
+  return a * b
+}
+fun MulU64() -> u64 {
+  const a: u64 = 4294967296
+  const b: u64 = 4294967296
+  return a * b
+}
+fun DivMin() -> s64 {
+  const m: s64 = -9223372036854775807
+  const a: s64 = m - 1
+  const b: s64 = -1
+  return a / b
+}
+fun RemMin() -> s64 {
+  const m: s64 = -9223372036854775807
+  const a: s64 = m - 1
+  const b: s64 = -1
+  return a % b
+}
+fun DivMin8() -> s8 {
+  const a: s8 = -128
+  const b: s8 = -1
+  return a / b
+}
+fun NegMin() -> s64 {
+  const m: s64 = -9223372036854775807
+  const a: s64 = m - 1
+  return -a
+}
+fun NegMin8() -> s8 {
+  const a: s8 = -128
+  return -a
+}
+fun FineDiv() -> s64 {
+  const a: s64 = -9223372036854775807
+  const b: s64 = -1
+  return a / b
+}
+fun FineNeg() -> s64 {
+  const a: s64 = -9223372036854775807
+  return -a
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("AddS64"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("AddU64"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("SubU64"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("MulS64"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("MulU64"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("DivMin"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("RemMin"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("DivMin8"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("NegMin"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("NegMin8"), "trap: overflow");
+  WOLANG_EXPECT_EQ(f.Run("FineDiv"), "9223372036854775807");
+  WOLANG_EXPECT_EQ(f.Run("FineNeg"), "9223372036854775807");
+}
+
 WOLANG_TEST(InterpreterTest, RunsRecursion) {
   Fixture f(R"(
 fun Fib(n: int) -> int {
