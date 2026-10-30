@@ -38,6 +38,12 @@ std::string TextOf(const WolangValue& value) {
 
 }  // namespace
 
+extern "C" uint32_t wolang_abi_c_check_size(void);
+
+static_assert(sizeof(WolangValue) == 32, "WolangValue is 32 bytes (D241)");
+static_assert(offsetof(WolangValue, integer) == 8, "payload at 8 (D241)");
+static_assert(sizeof(WolangValue::kind) == 4, "kind is 32 bits (D241)");
+
 WOLANG_TEST(EmbedTest, CallsAFunctionInLoadedSource) {
   WolangVm* vm = wolang_vm_create();
   const int32_t loaded = wolang_vm_load_source(vm, "script.wo", R"(
@@ -930,5 +936,49 @@ WOLANG_TEST(EmbedTest, ReloadsWhatItLoaded) {
   WolangValue answer = wolang_void();
   WOLANG_EXPECT_EQ(wolang_vm_call(vm, "N", nullptr, 0, &answer), 0);
   WOLANG_EXPECT_EQ(answer.integer, 1);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ReportsItsAbiVersion) {
+  WOLANG_EXPECT_EQ(wolang_abi_version(), WOLANG_ABI_VERSION);
+  WOLANG_EXPECT_EQ(wolang_abi_version() >> 16, 1u);
+}
+
+WOLANG_TEST(EmbedTest, ValueLayoutAgreesBetweenCAndCxx) {
+  WOLANG_EXPECT_EQ(wolang_abi_c_check_size(),
+                   static_cast<uint32_t>(sizeof(WolangValue)));
+}
+
+WOLANG_TEST(EmbedTest, CreatesWithOptionsOfAKnownSize) {
+  WolangVmOptions options;
+  std::memset(&options, 0, sizeof(options));
+  options.size = sizeof(options);
+  WolangVm* vm = wolang_vm_create_with(&options);
+  WOLANG_ASSERT(vm != nullptr);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, RefusesOptionsOfAnUnknownSize) {
+  WolangVmOptions options;
+  std::memset(&options, 0, sizeof(options));
+  options.size = 0;
+  WOLANG_EXPECT(wolang_vm_create_with(&options) == nullptr);
+  options.size = sizeof(options) + 8;
+  WOLANG_EXPECT(wolang_vm_create_with(&options) == nullptr);
+  WOLANG_EXPECT(wolang_vm_create_with(nullptr) == nullptr);
+}
+
+WOLANG_TEST(EmbedTest, CallsAnswerAStatus) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(
+                       vm, "s.wo",
+                       "offer fun Id(a: int) -> int => a\n"),
+                   kWolangOk);
+  WolangValue out = wolang_void();
+  WolangValue args[1] = {wolang_int(5)};
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Id", args, 1, &out), kWolangOk);
+  WOLANG_EXPECT_EQ(out.kind, static_cast<uint32_t>(kWolangInt));
+  WOLANG_EXPECT_EQ(out.integer, int64_t{5});
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Nope", nullptr, 0, &out), kWolangError);
   wolang_vm_destroy(vm);
 }

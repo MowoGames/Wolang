@@ -5,6 +5,16 @@ file(GLOB_RECURSE WOLANG_TEST_SOURCES CONFIGURE_DEPENDS
 
 add_executable(wolang_tests ${WOLANG_TEST_SOURCES})
 
+# The embedding header must stay C: one C11 translation unit includes it
+# and asserts the layout of a WolangValue (D241).
+enable_language(C)
+add_library(wolang_abi_c_check OBJECT unit/embed/abi_c_check.c)
+set_target_properties(wolang_abi_c_check PROPERTIES C_STANDARD 11
+    C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(wolang_abi_c_check PRIVATE
+    ${PROJECT_SOURCE_DIR}/include)
+target_sources(wolang_tests PRIVATE $<TARGET_OBJECTS:wolang_abi_c_check>)
+
 target_include_directories(wolang_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # Lets the whole-file tests find the bundled examples.
 target_compile_definitions(wolang_tests PRIVATE

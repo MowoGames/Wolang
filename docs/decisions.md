@@ -3101,3 +3101,20 @@ use is `E0143` (first still wins, so the rest checks). Not covered yet:
 qualified names in patterns, qualified assignment to another module's
 `var`, and ambiguity of bare type names in annotations. There is no
 `need x as y`; the qualifier is the last segment.
+
+**D241. The embedding ABI says its version and keeps its shape.**
+`wolang.h` gains `WOLANG_ABI_VERSION` (major<<16 | minor) and
+`wolang_abi_version()`, so a host checks at load what it was compiled
+against. A `WolangValue` is a kind, a reserved word and one union of the
+scalar or handle, beside a text and its length: 32 bytes where it was 56.
+The field names stay, so host source compiles unchanged. `kind` is a
+`uint32_t`, because an enum's size is the C compiler's choice. Kinds are only
+ever added, and a host must accept one it does not know. A struct that will
+grow starts with its size: `WolangVmOptions` for `wolang_vm_create_with`
+(which answers null for a size it does not know; `wolang_vm_create` stays).
+Calls answer a `WolangStatus` (`kWolangOk`, `kWolangError`, `kWolangTrap`)
+instead of "non zero", with the same 0 and 1. An object value keeps its
+type's id in the reserved word, since the union holds the object. A C11
+translation unit asserts the layout in the test build. MowoEngine's
+generated glue calls through C functions and words (D218, D219), not values,
+so it does not change.

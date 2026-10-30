@@ -595,16 +595,30 @@ WolangValue wolang_handle(void* object) {
   return value;
 }
 
-int32_t wolang_vm_register_class(WolangVm* vm, const char* name, WolangHostRetain retain, WolangHostRelease release, WolangHostAlive alive, void* user) {
+WolangStatus wolang_vm_register_class(WolangVm* vm, const char* name, WolangHostRetain retain, WolangHostRelease release, WolangHostAlive alive, void* user) {
   if (vm == nullptr || name == nullptr) {
-    return 1;
+    return kWolangError;
   }
   wolang::runtime::wolang_host_register(wolang::runtime::HostTag(name), retain, release, alive, user);
-  return 0;
+  return kWolangOk;
 }
 
 WolangVm* wolang_vm_create(void) {
   return new WolangVm();
+}
+
+// |options| says how much of it the host knows (D241): a struct from a
+// newer header than this library is refused rather than half read.
+WolangVm* wolang_vm_create_with(const WolangVmOptions* options) {
+  if (options == nullptr || options->size < sizeof(uint32_t) ||
+      options->size > sizeof(WolangVmOptions)) {
+    return nullptr;
+  }
+  return new WolangVm();
+}
+
+uint32_t wolang_abi_version(void) {
+  return WOLANG_ABI_VERSION;
 }
 
 void wolang_vm_destroy(WolangVm* vm) {
@@ -625,14 +639,14 @@ static wolang::PackageId PackageAt(WolangVm* vm, const std::string& directory) {
   return wolang::PackageId{};
 }
 
-int32_t wolang_vm_load_mod(WolangVm* vm, const char* path, const char* capabilities) {
+WolangStatus wolang_vm_load_mod(WolangVm* vm, const char* path, const char* capabilities) {
   const VmTurn turn(vm);
   if (vm == nullptr || path == nullptr || !wolang::IsPackageDirectory(path)) {
     if (vm != nullptr) {
       vm->errors = "wolang: a mod is a package directory\n";
       vm->ok = false;
     }
-    return 1;
+    return kWolangError;
   }
   std::vector<std::string> granted;
   std::string list = capabilities != nullptr ? capabilities : "";
@@ -651,10 +665,10 @@ int32_t wolang_vm_load_mod(WolangVm* vm, const char* path, const char* capabilit
   return wolang_vm_load(vm, path);
 }
 
-int32_t wolang_vm_load(WolangVm* vm, const char* path) {
+WolangStatus wolang_vm_load(WolangVm* vm, const char* path) {
   const VmTurn turn(vm);
   if (vm == nullptr || path == nullptr) {
-    return 1;
+    return kWolangError;
   }
   DiagnosticEngine loading;
   if (wolang::IsPackageDirectory(path)) {
@@ -664,7 +678,7 @@ int32_t wolang_vm_load(WolangVm* vm, const char* path) {
         vm->errors = "wolang: cannot load the package\n";
       }
       vm->ok = false;
-      return 1;
+      return kWolangError;
     }
     // A mod's grant is the host's, and it is applied before anything is
     // checked, every time the package is loaded -- a reload included.
@@ -700,22 +714,22 @@ int32_t wolang_vm_load(WolangVm* vm, const char* path) {
     if (!file.is_valid()) {
       vm->errors = error + "\n";
       vm->ok = false;
-      return 1;
+      return kWolangError;
     }
     vm->files.push_back(file);
     vm->own.push_back(file);
   }
   vm->loaded.push_back(WolangVm::Loaded{path, std::string(), false});
   Prepare(vm);
-  return vm->ok ? 0 : 1;
+  return vm->ok ? kWolangOk : kWolangError;
 }
 
-int32_t wolang_vm_load_source(WolangVm* vm,
+WolangStatus wolang_vm_load_source(WolangVm* vm,
                               const char* name,
                               const char* source) {
   const VmTurn turn(vm);
   if (vm == nullptr || source == nullptr) {
-    return 1;
+    return kWolangError;
   }
   const FileId file = vm->database.AddFile(
       name == nullptr ? "<host>" : name, source);
@@ -760,14 +774,14 @@ int32_t wolang_vm_load_source(WolangVm* vm,
   if (!file.is_valid()) {
     vm->errors = "wolang: cannot add the source\n";
     vm->ok = false;
-    return 1;
+    return kWolangError;
   }
   vm->files.push_back(file);
   vm->own.push_back(file);
   vm->loaded.push_back(WolangVm::Loaded{
       name == nullptr ? "<host>" : name, source, true});
   Prepare(vm);
-  return vm->ok ? 0 : 1;
+  return vm->ok ? kWolangOk : kWolangError;
 }
 
 const char* wolang_vm_errors(const WolangVm* vm) {
@@ -795,14 +809,14 @@ const char* wolang_vm_function_name(const WolangVm* vm, int32_t index) {
   return vm->callable[static_cast<size_t>(index)].name.c_str();
 }
 
-int32_t wolang_vm_bind(WolangVm* vm, const char* symbol, void* function) {
+WolangStatus wolang_vm_bind(WolangVm* vm, const char* symbol, void* function) {
   const VmTurn turn(vm);
   (void)vm;
   if (symbol == nullptr || function == nullptr) {
-    return 1;
+    return kWolangError;
   }
   wolang::runtime::RegisterSymbol(symbol, function);
-  return 0;
+  return kWolangOk;
 }
 
 void wolang_vm_set_args(WolangVm* vm,
@@ -826,7 +840,7 @@ static WolangValue ObjectOf(WolangVm* vm, uint64_t address, TypeId type) {
   }
   value.kind = kWolangObject;
   value.handle = reinterpret_cast<void*>(address);
-  value.integer = static_cast<int64_t>(types.StripWrappers(type).index);
+  value.reserved = types.StripWrappers(type).index;
   vm->answers.push_back(types.Describe(vm->database.interner(), types.StripWrappers(type)));
   value.text = vm->answers.back().c_str();
   value.length = vm->answers.back().size();
@@ -875,7 +889,7 @@ static wolang::interp::Outcome Debugged(WolangVm* vm, const Callable* entry, con
   return outcome;
 }
 
-static int32_t Invoke(WolangVm* vm, const Callable* entry, const std::vector<wolang::interp::Value>& boxed, WolangValue* out) {
+static WolangStatus Invoke(WolangVm* vm, const Callable* entry, const std::vector<wolang::interp::Value>& boxed, WolangValue* out) {
   wolang::interp::Outcome outcome;
   const std::shared_ptr<wolang::debug::DapSession> debugging = Attached(vm);
   // The compiled form where there is one, the interpreter otherwise:
@@ -923,7 +937,7 @@ static int32_t Invoke(WolangVm* vm, const Callable* entry, const std::vector<wol
     vm->errors = std::string("wolang: ") +
                  std::string(wolang::interp::TrapKindName(outcome.trap)) +
                  " at " + outcome.where + "\n";
-    return 1;
+    return kWolangTrap;
   }
   if (out != nullptr) {
     *out = Unboxed(vm, outcome.value);
@@ -933,7 +947,7 @@ static int32_t Invoke(WolangVm* vm, const Callable* entry, const std::vector<wol
       *out = ObjectOf(vm, outcome.value.integer(), returned);
     }
   }
-  return 0;
+  return kWolangOk;
 }
 
 // The members an object or a value of |type| stores, in the order its
@@ -980,43 +994,43 @@ static int32_t Destroyed(WolangVm* vm, void* object, const std::string& type) {
   return 0;
 }
 
-int32_t wolang_vm_object_retain(WolangVm* vm, WolangValue object) {
+WolangStatus wolang_vm_object_retain(WolangVm* vm, WolangValue object) {
   const VmTurn turn(vm);
   if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr) {
-    return 1;
+    return kWolangError;
   }
   wolang::runtime::wolang_object_retain(object.handle);
-  return 0;
+  return kWolangOk;
 }
 
-int32_t wolang_vm_object_release(WolangVm* vm, WolangValue object) {
+WolangStatus wolang_vm_object_release(WolangVm* vm, WolangValue object) {
   const VmTurn turn(vm);
   if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr) {
-    return 1;
+    return kWolangError;
   }
   if (wolang::runtime::wolang_object_release(object.handle) == 0) {
-    return 0;
+    return kWolangOk;
   }
 
-  return Destroyed(vm, object.handle, std::string(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length)));
+  return Destroyed(vm, object.handle, std::string(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length))) != 0 ? kWolangError : kWolangOk;
 }
 
-int32_t wolang_vm_object_call(WolangVm* vm, WolangValue object, const char* method, const WolangValue* arguments, int32_t count, WolangValue* out) {
+WolangStatus wolang_vm_object_call(WolangVm* vm, WolangValue object, const char* method, const WolangValue* arguments, int32_t count, WolangValue* out) {
   const VmTurn turn(vm);
   if (vm == nullptr || !vm->ok || object.kind != kWolangObject || object.handle == nullptr || method == nullptr) {
-    return 1;
+    return kWolangError;
   }
   const std::string type(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length));
   const Callable* entry = FindMember(vm, type + "." + method);
   if (entry == nullptr) {
     vm->errors = "wolang: `" + type + "` has no method called `" + method + "`\n";
-    return 1;
+    return kWolangError;
   }
 
   const std::vector<TypeId> params = vm->database.types().ArgumentsOf(entry->function->type);
   if (params.size() != static_cast<size_t>(count < 0 ? 0 : count) + 1) {
     vm->errors = "wolang: `" + entry->name + "` takes " + std::to_string(params.size() - 1) + " arguments\n";
-    return 1;
+    return kWolangError;
   }
   std::vector<wolang::interp::Value> boxed;
   boxed.push_back(wolang::interp::Value::Int(reinterpret_cast<uint64_t>(object.handle), wolang::IntWidth::k64, /*is_signed=*/false));
@@ -1026,17 +1040,17 @@ int32_t wolang_vm_object_call(WolangVm* vm, WolangValue object, const char* meth
   return Invoke(vm, entry, boxed, out);
 }
 
-int32_t wolang_vm_object_get(WolangVm* vm, WolangValue object, const char* field, WolangValue* out) {
+WolangStatus wolang_vm_object_get(WolangVm* vm, WolangValue object, const char* field, WolangValue* out) {
   const VmTurn turn(vm);
   if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr || field == nullptr || out == nullptr) {
-    return 1;
+    return kWolangError;
   }
   wolang::TypeStore& types = vm->database.types();
-  const TypeId type{static_cast<uint32_t>(object.integer)};
+  const TypeId type{object.reserved};
   const uint32_t file = types.Get(type).declaring_file;
   const CheckedFile* checked = vm->database.Checked(FileId{file});
   if (checked == nullptr) {
-    return 1;
+    return kWolangError;
   }
   const wolang::FileResolution& resolution = checked->resolution;
 
@@ -1052,7 +1066,7 @@ int32_t wolang_vm_object_get(WolangVm* vm, WolangValue object, const char* field
     const wolang::abi::Layout& layout = layouts.ObjectOf(type);
     const size_t index = i + (header ? 1 : 0);
     if (index >= layout.offsets.size()) {
-      return 1;
+      return kWolangError;
     }
     const auto* bytes = static_cast<const uint8_t*>(object.handle) + layout.offsets[index];
     const wolang::interp::Value value = wolang::interp::Decode(types, &layouts, bytes, stored[i]->type);
@@ -1060,29 +1074,29 @@ int32_t wolang_vm_object_get(WolangVm* vm, WolangValue object, const char* field
     if (types.IsHandle(stored[i]->type) && !types.IsOptional(stored[i]->type) && value.kind() == wolang::interp::Value::Kind::kInt) {
       *out = ObjectOf(vm, value.integer(), stored[i]->type);
     }
-    return 0;
+    return kWolangOk;
   }
   vm->errors = std::string("wolang: no field called `") + field + "`\n";
-  return 1;
+  return kWolangError;
 }
 
-int32_t wolang_vm_call(WolangVm* vm,
+WolangStatus wolang_vm_call(WolangVm* vm,
                        const char* name,
                        const WolangValue* arguments,
                        int32_t count,
                        WolangValue* out) {
   const VmTurn turn(vm);
   if (vm == nullptr) {
-    return 1;
+    return kWolangError;
   }
   if (!vm->ok) {
-    return 1;
+    return kWolangError;
   }
   const Callable* entry = Find(vm, name, count < 0 ? 0 : count);
   if (entry == nullptr) {
     vm->errors = std::string("wolang: no function called `") +
                  (name == nullptr ? "" : name) + "`\n";
-    return 1;
+    return kWolangError;
   }
 
   const std::vector<TypeId> params =
@@ -1097,7 +1111,7 @@ int32_t wolang_vm_call(WolangVm* vm,
   if (boxed.size() != params.size()) {
     vm->errors = std::string("wolang: `") + entry->name + "` takes " +
                  std::to_string(params.size()) + " arguments\n";
-    return 1;
+    return kWolangError;
   }
 
   return Invoke(vm, entry, boxed, out);
@@ -1291,12 +1305,12 @@ static WolangValue AnswerOf(WolangVm* vm, const Word& word, const uint8_t* bytes
   }
 }
 
-int32_t wolang_call(WolangFunction* function,
+WolangStatus wolang_call(WolangFunction* function,
                     const WolangValue* arguments,
                     int32_t count,
                     WolangValue* out) {
   if (function == nullptr || HandleOf(function)->vm == nullptr) {
-    return 1;
+    return kWolangError;
   }
   auto* handle = reinterpret_cast<FunctionHandle*>(function);
   WolangVm* vm = handle->vm;
@@ -1319,12 +1333,12 @@ int32_t wolang_call(WolangFunction* function,
       wolang::interp::Outcome trapped;
       if (!vm->compiled->CallPrepared(handle->prepared, slots, result, &trapped)) {
         vm->errors = std::string("wolang: ") + std::string(wolang::interp::TrapKindName(trapped.trap)) + " at " + trapped.where + "\n";
-        return 1;
+        return kWolangTrap;
       }
       if (out != nullptr) {
         *out = AnswerOf(vm, handle->result, result);
       }
-      return 0;
+      return kWolangOk;
     }
   }
   return wolang_vm_call(vm, handle->name.c_str(), arguments, count, out);
@@ -1417,14 +1431,14 @@ void* GlobalStorage(WolangVm* vm, const char* name, TypeId* type) {
 
 }  // namespace
 
-int32_t wolang_vm_get_global(WolangVm* vm,
+WolangStatus wolang_vm_get_global(WolangVm* vm,
                              const char* name,
                              WolangValue* out) {
   const VmTurn turn(vm);
   TypeId type;
   void* storage = GlobalStorage(vm, name, &type);
   if (storage == nullptr || out == nullptr) {
-    return 1;
+    return kWolangError;
   }
   const wolang::TypeStore& types = vm->database.types();
   switch (KindOf(types, type)) {
@@ -1434,25 +1448,25 @@ int32_t wolang_vm_get_global(WolangVm* vm,
                   std::min<size_t>(sizeof(held),
                                    BytesOfWidth(types.Get(type).int_width)));
       *out = wolang_int(held);
-      return 0;
+      return kWolangOk;
     }
     case kWolangFloat: {
       if (types.Get(type).float_width == wolang::FloatWidth::k32) {
         float held = 0;
         std::memcpy(&held, storage, sizeof(held));
         *out = wolang_float(held);
-        return 0;
+        return kWolangOk;
       }
       double held = 0;
       std::memcpy(&held, storage, sizeof(held));
       *out = wolang_float(held);
-      return 0;
+      return kWolangOk;
     }
     case kWolangBool: {
       uint8_t held = 0;
       std::memcpy(&held, storage, sizeof(held));
       *out = wolang_bool(held != 0);
-      return 0;
+      return kWolangOk;
     }
     case kWolangText: {
       // A string is where its bytes are and how many: copied out, for
@@ -1468,21 +1482,21 @@ int32_t wolang_vm_get_global(WolangVm* vm,
                                          static_cast<size_t>(length)));
       *out = wolang_text(vm->answers.back().c_str(),
                          vm->answers.back().size());
-      return 0;
+      return kWolangOk;
     }
     default:
-      return 1;
+      return kWolangError;
   }
 }
 
-int32_t wolang_vm_set_global(WolangVm* vm,
+WolangStatus wolang_vm_set_global(WolangVm* vm,
                              const char* name,
                              WolangValue value) {
   const VmTurn turn(vm);
   TypeId type;
   void* storage = GlobalStorage(vm, name, &type);
   if (storage == nullptr) {
-    return 1;
+    return kWolangError;
   }
   const wolang::TypeStore& types = vm->database.types();
   switch (KindOf(types, type)) {
@@ -1493,7 +1507,7 @@ int32_t wolang_vm_set_global(WolangVm* vm,
       std::memcpy(storage, &held,
                   std::min<size_t>(sizeof(held),
                                    BytesOfWidth(types.Get(type).int_width)));
-      return 0;
+      return kWolangOk;
     }
     case kWolangFloat: {
       const double held = value.kind == kWolangInt
@@ -1502,17 +1516,17 @@ int32_t wolang_vm_set_global(WolangVm* vm,
       if (types.Get(type).float_width == wolang::FloatWidth::k32) {
         const auto narrow = static_cast<float>(held);
         std::memcpy(storage, &narrow, sizeof(narrow));
-        return 0;
+        return kWolangOk;
       }
       std::memcpy(storage, &held, sizeof(held));
-      return 0;
+      return kWolangOk;
     }
     case kWolangBool: {
       const uint8_t held = value.kind == kWolangInt
                                ? (value.integer != 0 ? 1 : 0)
                                : (value.boolean != 0 ? 1 : 0);
       std::memcpy(storage, &held, sizeof(held));
-      return 0;
+      return kWolangOk;
     }
     case kWolangText: {
       // The host's bytes, borrowed: a global pointing at memory the host
@@ -1523,10 +1537,10 @@ int32_t wolang_vm_set_global(WolangVm* vm,
       std::memcpy(storage, &bytes, sizeof(bytes));
       std::memcpy(static_cast<uint8_t*>(storage) + 8, &length,
                   sizeof(length));
-      return 0;
+      return kWolangOk;
     }
     default:
-      return 1;
+      return kWolangError;
   }
 }
 
@@ -1820,10 +1834,10 @@ static void Carry(WolangVm* vm, Database& before, const std::vector<GlobalSlot>&
   }
 }
 
-int32_t wolang_vm_reload(WolangVm* vm) {
+WolangStatus wolang_vm_reload(WolangVm* vm) {
   const VmTurn turn(vm);
   if (vm == nullptr) {
-    return 1;
+    return kWolangError;
   }
   const std::vector<WolangVm::Loaded> again = vm->loaded;
   const std::vector<GlobalSlot> old = GlobalsOf(vm);
@@ -1870,7 +1884,7 @@ int32_t wolang_vm_reload(WolangVm* vm) {
   if (status == 0 && vm->ok) {
     Carry(vm, before, old);
   }
-  return status;
+  return status != 0 ? kWolangError : kWolangOk;
 }
 
 // One message from the editor's connection, framed the way DAP frames
