@@ -3143,6 +3143,7 @@ fun Single() -> f32 => 1.0 / 3.0
 )");
   WOLANG_EXPECT_EQ(f.Run("Third", {}), "0.3333333333333333");
   WOLANG_EXPECT_EQ(f.Run("Mixed", {}), "1.6666666666666665");
+}
 
 WOLANG_TEST(CodegenTest, AClosureReadingAnOwningValueLeavesItsDropToTheOwner) {
   // The closure borrows; the function around it drops once (D233).

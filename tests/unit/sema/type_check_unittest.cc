@@ -2439,6 +2439,7 @@ machine Door {
 }
 )");
   WOLANG_EXPECT(!fine.HasCode("E0159"));
+}
 
 WOLANG_TEST(TypeCheckTest, MovingAnOwningFieldOutOfItsOwnerIsE0149) {
   // `o` drops `r` when it ends; handing `r` on as well would drop it twice
