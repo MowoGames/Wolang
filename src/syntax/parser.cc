@@ -2071,6 +2071,12 @@ bool Parser::LooksLikeGenericCall() const {
         if (depth > 0) {
           break;
         }
+        // `>>` closing one open `<` is a shift, not two closers: in
+        // `a < (b >> (c))` the scan would otherwise take `a<(b>>(c))` as
+        // a generic call (D231).
+        if (depth < 0) {
+          return false;
+        }
         // Only a call can follow explicit generic arguments.
         return tokens_.At(i + 1).kind == TokenKind::kLeftParen;
       }

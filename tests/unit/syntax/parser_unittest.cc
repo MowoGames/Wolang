@@ -203,6 +203,14 @@ WOLANG_TEST(Parser, ComparisonIsNotMistakenForGenericArguments) {
   WOLANG_EXPECT(fixture.InitTree().find("(binary &&") == 0);
 }
 
+WOLANG_TEST(Parser, ShiftInsideAComparisonIsNotGenericArguments) {
+  // Found by the generator (D231): the scan counted the `>>` as two
+  // closers and saw `a<(b>>(c))` as a call with explicit arguments.
+  Fixture fixture("const x = a < ((b >> (c & 15)) * d)");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.InitTree().find("(binary <") == 0);
+}
+
 WOLANG_TEST(Parser, ExplicitGenericCall) {
   Fixture fixture("const x = World.Spawn<Projectile>(origin)");
   WOLANG_EXPECT(fixture.Codes().empty());
