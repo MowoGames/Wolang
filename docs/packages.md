@@ -45,8 +45,8 @@ math = "vendor/math"
 
 [lints]
 # Any diagnostic code, set to off, hint, perf, warning or error.
-W0105 = "off"
-P0101 = "error"
+W0101 = "off"
+W0102 = "error"
 
 [build]
 # "deny" forbids `unsafe` blocks anywhere in this package.
@@ -64,7 +64,8 @@ The format is a deliberately small subset of TOML: tables, string values and
 inline tables. A package manifest needs nothing more, and a small parser with
 precise diagnostics is worth more than a complete one with vague ones.
 
-Only path dependencies exist today. A registry is a later wave; a build script
+Dependencies are a path or a remote repository pinned by `rev` or `tag`
+(`wolang fetch` writes `wolang.lock`, D141). A registry is a later wave; a build script
 (`build.wo`, in the spirit of `build.rs`) becomes possible once the language is
 executable in wave 7. The manifest stays declarative data either way, so that
 any external tool — CI, a registry, a dependency bot — can read a package's
@@ -156,7 +157,7 @@ cache problem is ruled out.
 
 ```sh
 wolang check <paths>      # files or package directories
-wolang run <paths>        # run `main` through the interpreter
+wolang run <paths>        # run `main` on the JIT (`--interpret` for the interpreter)
 wolang test <paths>       # run every `@Test` function
 wolang modules <dir>      # print the package and module graph
 wolang fmt <files>        # print the formatted form
@@ -167,11 +168,12 @@ wolang ast <files>        # print the syntax tree
 wolang tokens <files>     # print the token stream
 ```
 
-`examples/package` is a working package to try these on, `lib/core` is the
-standard library's first module, and `wolang run examples/hello.wo` prints
+`examples/package` is a working package to try these on, `lib/std` is the
+standard library, and `wolang run examples/hello.wo` prints
 `hello, world`.
 
-`run` and `test` go through the interpreter, which is the reference
-semantics. `run` executes the program twice — once on the IR as lowering
-left it and once after the passes — and reports a difference as an internal
-error, because a difference there is a miscompile.
+`run` uses the JIT where the dev tier can take the program and the
+interpreter, which is the reference semantics, where it cannot;
+`--interpret` forces the interpreter. The differential check lives in
+`test`: every `@Test` runs in both tiers and a disagreement fails it,
+because a difference there is a miscompile.
