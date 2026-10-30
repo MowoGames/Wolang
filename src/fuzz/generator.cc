@@ -935,9 +935,8 @@ class Writer {
   void Declarations(int indent) {
     loops_.clear();
     for (Ty t : kAllTypes) {
-      if (IsFloat(t) && !options_.floats) {
-        continue;
-      }
+      // Floats are declared even when none are generated: a class field
+      // is an f64 and its constructor reads one.
       const std::string name = std::string("x_") + TyName(t);
       Line(indent, "var " + name + ": " + TyName(t) + " = " + Literal(t));
       scope_.push_back(Variable{name, VKind::kNum, t, true});
