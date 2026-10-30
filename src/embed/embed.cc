@@ -1575,6 +1575,9 @@ extern "C" int64_t WriteThroughHost(int32_t fd,
 
 }  // namespace
 
+// Inside the `extern "C"` block, and declared above with C++ linkage:
+// gcc gives an unnamed namespace here C linkage unless told otherwise.
+extern "C++" {
 namespace {
 
 void Written(const std::string& text) {
@@ -1586,6 +1589,7 @@ void Written(const std::string& text) {
 }
 
 }  // namespace
+}  // extern "C++"
 
 void wolang_vm_set_writer(WolangVm* vm, WolangWriter writer, void* user) {
   const VmTurn turn(vm);
