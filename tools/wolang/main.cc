@@ -928,7 +928,7 @@ int RunFetch(const Options& options) {
     }
   }
   std::fprintf(stdout, "%d fetched, written to %s\n", remote,
-               (std::filesystem::path(where) / "wolang.lock").c_str());
+               (std::filesystem::path(where) / "wolang.lock").string().c_str());
   return reported;
 }
 
@@ -1565,6 +1565,9 @@ int RunProgram(const Options& options) {
 // trapping and does not return `false`; anything else is a failure, with the
 // trap named.
 int RunTests(const Options& options) {
+  // A line at a time, so a test that brings the process down still leaves
+  // the names of the ones before it in a log that is a pipe.
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);
   Database database;
   DiagnosticEngine load_diagnostics;
   std::vector<FileId> files;
