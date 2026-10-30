@@ -298,6 +298,8 @@ class Parser {
 
   ExprId ParseExpression(Precedence min_precedence = Precedence::kAssign);
   ExprId ParseUnary();
+  // Reports E0041 and skips the rest of the expression (D225).
+  ExprId TreeTooDeep(size_t start);
   ExprId ParsePostfix(ExprId operand, size_t start);
   ExprId ParsePrimary();
   ExprId ParseIf();
@@ -343,6 +345,9 @@ class Parser {
   size_t pos_ = 0;
   uint32_t errors_ = 0;
   uint32_t depth_ = 0;
+  // Height of the expression tree being built, counting every left-chain
+  // link as well as every nested call (D225).
+  uint32_t tree_depth_ = 0;
   // Set after consuming the first half of a `>>` token that closed a nested
   // generic argument list.
   bool pending_angle_close_ = false;
@@ -359,6 +364,13 @@ class Parser {
 };
 
 constexpr uint32_t kMaxNesting = 192;
+
+// Longest root-to-leaf path an expression may have (D225). Left-associative
+// chains (`1+1+...`, `a.b().c()`, `else if`) and prefix chains are built by
+// loops, so kMaxNesting never sees them, yet every later pass (sema, lowering,
+// printer, formatter) walks the tree recursively. Bounding the height here
+// keeps all of them inside the native stack.
+constexpr uint32_t kMaxTreeDepth = 1024;
 
 Precedence TighterPrecedence(Precedence precedence) {
   return static_cast<Precedence>(static_cast<int>(precedence) + 1);
@@ -378,6 +390,24 @@ class ScopedFlag {
  private:
   bool* slot_;
   bool saved_;
+};
+
+// Adds to a depth counter and gives it all back on scope exit.
+class DepthCharge {
+ public:
+  explicit DepthCharge(uint32_t* depth) : depth_(depth) {}
+  ~DepthCharge() { *depth_ -= charged_; }
+  void Add() {
+    ++*depth_;
+    ++charged_;
+  }
+
+  DepthCharge(const DepthCharge&) = delete;
+  DepthCharge& operator=(const DepthCharge&) = delete;
+
+ private:
+  uint32_t* depth_;
+  uint32_t charged_ = 0;
 };
 
 class ScopedDepth {
@@ -1685,16 +1715,21 @@ ExprId Parser::MakeError(size_t start) {
   return ast_->Add(std::move(expr));
 }
 
+ExprId Parser::TreeTooDeep(size_t start) {
+  Report(kNestingTooDeep, "expression nests too deeply", CurrentSpan());
+  while (!AtEnd() && !At(TokenKind::kRightBrace) &&
+         !At(TokenKind::kSemicolon)) {
+    Advance();
+  }
+  return MakeError(start);
+}
+
 ExprId Parser::ParseExpression(Precedence min_precedence) {
   ScopedDepth depth(&depth_);
-  if (depth_ > kMaxNesting) {
-    const size_t start = pos_;
-    Report(kNestingTooDeep, "expression nests too deeply", CurrentSpan());
-    while (!AtEnd() && !At(TokenKind::kRightBrace) &&
-           !At(TokenKind::kSemicolon)) {
-      Advance();
-    }
-    return MakeError(start);
+  DepthCharge charge(&tree_depth_);
+  charge.Add();
+  if (depth_ > kMaxNesting || tree_depth_ > kMaxTreeDepth) {
+    return TreeTooDeep(pos_);
   }
 
   const size_t start = pos_;
@@ -1734,6 +1769,11 @@ ExprId Parser::ParseExpression(Precedence min_precedence) {
     }
 
     const TokenKind op = token.kind;
+    // Each link of a left chain sits one level above the last (D225).
+    charge.Add();
+    if (tree_depth_ > kMaxTreeDepth) {
+      return TreeTooDeep(start);
+    }
     Advance();
 
     if (op == TokenKind::kKwAs) {
@@ -1793,6 +1833,11 @@ ExprId Parser::ParseExpression(Precedence min_precedence) {
 ExprId Parser::ParseUnary() {
   const size_t start = pos_;
   const TokenKind kind = PeekKind();
+  DepthCharge charge(&tree_depth_);
+  charge.Add();
+  if (tree_depth_ > kMaxTreeDepth) {
+    return TreeTooDeep(start);
+  }
 
   switch (kind) {
     case TokenKind::kMinus:
@@ -1831,6 +1876,7 @@ ExprId Parser::ParseUnary() {
 }
 
 ExprId Parser::ParsePostfix(ExprId operand, size_t start) {
+  DepthCharge charge(&tree_depth_);
   for (;;) {
     const Token& token = Peek();
     const TokenKind kind = token.kind;
@@ -1840,6 +1886,15 @@ ExprId Parser::ParsePostfix(ExprId operand, size_t start) {
     if (token.starts_line() && kind != TokenKind::kDot &&
         kind != TokenKind::kQuestionDot) {
       return operand;
+    }
+
+    if (kind == TokenKind::kLeftParen || kind == TokenKind::kLeftBracket ||
+        kind == TokenKind::kDot || kind == TokenKind::kQuestionDot ||
+        kind == TokenKind::kQuestion) {
+      charge.Add();
+      if (tree_depth_ > kMaxTreeDepth) {
+        return TreeTooDeep(start);
+      }
     }
 
     switch (kind) {
@@ -1894,6 +1949,10 @@ ExprId Parser::ParsePostfix(ExprId operand, size_t start) {
       case TokenKind::kLess: {
         if (!LooksLikeGenericCall()) {
           return operand;
+        }
+        charge.Add();
+        if (tree_depth_ > kMaxTreeDepth) {
+          return TreeTooDeep(start);
         }
         const AstRange<TypeRefId> generic_args = ParseGenericArguments();
         if (!At(TokenKind::kLeftParen)) {
@@ -2040,6 +2099,11 @@ ExprId Parser::ParseConditionWithOptionalBinding(PatternId* pattern) {
 
 ExprId Parser::ParseIf() {
   const size_t start = pos_;
+  DepthCharge charge(&tree_depth_);
+  charge.Add();
+  if (tree_depth_ > kMaxTreeDepth) {
+    return TreeTooDeep(start);
+  }
   Advance();  // `if`
 
   Expr expr;

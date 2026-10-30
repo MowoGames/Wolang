@@ -79,7 +79,7 @@ character.
 | `E0036` | expected a transition | a stray name inside a `state` |
 | `E0037` | expected a unit definition | `unit m` with no dimension |
 | `E0040` | expected a line break between statements | `const a = 1 const b = 2` |
-| `E0041` | nesting too deep | hundreds of nested parentheses |
+| `E0041` | nesting too deep | hundreds of nested parentheses, or a chain of a thousand `+1` (D225) |
 | `E0042` | unknown type parameter in a `where` clause | `fun f<T>() where U: A {}` |
 | `E0043` | unexpected token after an expression | `"{a b}"` |
 | `E0044` | no enclosing loop carries that label | `break nowhere` |

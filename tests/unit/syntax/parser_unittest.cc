@@ -934,6 +934,53 @@ WOLANG_TEST(Parser, ReportsDeeplyNestedExpressions) {
   WOLANG_EXPECT(fixture.HasCode("E0041"));
 }
 
+// The chains below are built by loops, not recursion, so the paren limit never
+// sees them; the tree height limit does (D225).
+WOLANG_TEST(Parser, ReportsDeepBinaryChain) {
+  std::string code = "const x = 1";
+  for (int i = 0; i < 100000; ++i) {
+    code += "+1";
+  }
+  Fixture fixture(code);
+  WOLANG_EXPECT(fixture.HasCode("E0041"));
+}
+
+WOLANG_TEST(Parser, ReportsDeepPrefixChain) {
+  std::string code = "const x = ";
+  code.append(100000, '-');
+  code += "1";
+  Fixture fixture(code);
+  WOLANG_EXPECT(fixture.HasCode("E0041"));
+}
+
+WOLANG_TEST(Parser, ReportsDeepMethodChain) {
+  std::string code = "const x = a";
+  for (int i = 0; i < 100000; ++i) {
+    code += ".F()";
+  }
+  Fixture fixture(code);
+  WOLANG_EXPECT(fixture.HasCode("E0041"));
+}
+
+WOLANG_TEST(Parser, ReportsDeepElseIfChain) {
+  std::string code = "fun F() {\n if a { }";
+  for (int i = 0; i < 5000; ++i) {
+    code += " else if a { }";
+  }
+  code += "\n}\n";
+  Fixture fixture(code);
+  WOLANG_EXPECT(fixture.HasCode("E0041"));
+}
+
+WOLANG_TEST(Parser, AcceptsModerateBinaryChain) {
+  std::string code = "const x = 1";
+  for (int i = 0; i < 300; ++i) {
+    code += "+1";
+  }
+  Fixture fixture(code);
+  WOLANG_EXPECT(!fixture.HasCode("E0041"));
+}
+
 WOLANG_TEST(Parser, EmptyFileHasNoDeclarations) {
   Fixture fixture("");
   WOLANG_EXPECT(fixture.Codes().empty());
