@@ -168,6 +168,14 @@ jobs:
         if: matrix.preset == 'debug'
         run: python3 tools/package/check_docs.py
 
+      - name: Every place that states the version agrees
+        if: matrix.preset == 'debug'
+        run: python3 tools/package/check_version.py
+
+      - name: The installer installs a release (a fake one)
+        if: matrix.os == 'ubuntu-24.04' && matrix.preset == 'debug'
+        run: sh tools/package/test_install.sh build/${{ matrix.preset }}
+
       - name: The editor extension packages
         if: matrix.preset == 'debug'
         run: python3 tools/package/make_vsix.py
@@ -255,6 +263,7 @@ jobs:
             $(ls examples/*.wo | grep -v -e errors.wo -e recovery.wo)
           python tools/package/check_includes.py
           python tools/package/check_docs.py
+          python tools/package/check_version.py
       - name: The C host links against the DLL
         shell: bash
         run: |
