@@ -25,10 +25,17 @@ offer struct Limits {
   var most_head: int = 16384
   /// Whether a connection is kept open after an answer.
   var keep_alive: bool = true
+  /// Seconds a connection may take to deliver a request, counted from its
+  /// first byte (or from the accept, before it has sent any). What stops
+  /// a client that trickles one header byte at a time from holding a slot
+  /// for ever (D223).
+  var head_timeout: int = 10
+  /// Seconds a keep-alive connection may sit between requests.
+  var idle_timeout: int = 60
 }
 
 offer fun LimitsDefault() -> Limits {
-  return Limits(1048576, 16384, true)
+  return Limits(1048576, 16384, true, 10, 60)
 }
 
 /// Where one connection's bytes are kept.
@@ -39,6 +46,31 @@ offer struct Held {
   /// Set when the client said `Connection: close`, or when the server
   /// decided this one is done: the loop closes it after answering.
   var closing: bool = false
+  /// When the wait for the current request began, in monotonic seconds:
+  /// the accept, the end of the last answer, or the first byte of this
+  /// request, whichever is latest (D223).
+  var since: s64 = 0
+  /// Whether this connection has had a request answered. Until then it
+  /// owes the head deadline even with nothing sent.
+  var served: bool = false
+}
+
+/// Whether a connection that has waited since `since` has used up its
+/// time at `now`. Pure, so the rule is testable without a clock or a
+/// socket (D223).
+///
+/// A connection with part of a request in its buffer, or one that has not
+/// yet had any request answered, is on the short head deadline; one that
+/// is idle between keep-alive requests gets the long one.
+offer fun IsExpired(now: s64, since: s64, partial: bool, served: bool, limits: Limits) -> bool {
+  var allowed = limits.idle_timeout
+  if partial || !served {
+    allowed = limits.head_timeout
+  }
+  if allowed <= 0 {
+    return false
+  }
+  return now - since >= allowed as s64
 }
 
 /// A pool of connection buffers, one slot per connection held at once.
@@ -83,6 +115,8 @@ offer class Connections {
         slots[i].fd = fd
         slots[i].filled = 0
         slots[i].closing = false
+        slots[i].served = false
+        slots[i].since = 0
         return i
       }
       i = i + 1
@@ -99,6 +133,28 @@ offer class Connections {
       slots[slot].filled = 0
       slots[slot].closing = false
     }
+  }
+
+  /// Starts the slot's wait for a request at `now`.
+  fun Stamp(slot: int, now: s64) {
+    if slot >= 0 && slot < slots.len {
+      slots[slot].since = now
+    }
+  }
+
+  /// Notes that a request on this slot was answered.
+  fun MarkServed(slot: int) {
+    if slot >= 0 && slot < slots.len {
+      slots[slot].served = true
+    }
+  }
+
+  /// Whether the slot holds a connection that has waited too long.
+  fun TimedOut(slot: int, now: s64) -> bool {
+    if slot < 0 || slot >= slots.len || slots[slot].fd < 0 {
+      return false
+    }
+    return IsExpired(now, slots[slot].since, slots[slot].filled > 0, slots[slot].served, limits)
   }
 
   fun Fd(slot: int) -> int {
@@ -227,7 +283,7 @@ offer fun ConnectionsNew(most: int, limits: Limits) -> Connections uses unsafe {
   var empty = ArrayNew<u8>(0)
   var i = 0
   while i < most {
-    slots[i] = Held(-1, empty, 0, false)
+    slots[i] = Held(-1, empty, 0, false, 0, false)
     i = i + 1
   }
   return Connections(slots, limits)
@@ -465,4 +521,41 @@ fun KeepsWhatCameAfterARequest() -> bool uses io, net, unsafe {
   const reused = pool.Open(13)
   return slot == 0 && second == 1 && full == -1 && reused == 1 && pool.Fd(0) == 7 && pool.Find(
       13) == 1 && pool.Find(99) == -1
+}
+
+@Test
+fun ExpiresASlowHeaderAndAnIdleConnection() -> bool {
+  const limits = LimitsDefault()
+  // Mid-request for 10 s: out. Idle between requests for 10 s: fine, for
+  // 60 s: out. Never sent anything for 10 s: out (D223).
+  return IsExpired(10, 0, true, true, limits) && !IsExpired(9, 0, true, true, limits) && !IsExpired(
+      10,
+      0,
+      false,
+      true,
+      limits) && IsExpired(60, 0, false, true, limits) && IsExpired(
+      10,
+      0,
+      false,
+      false,
+      limits)
+}
+
+@Test
+fun ATimeoutOfZeroNeverExpires() -> bool {
+  var limits = LimitsDefault()
+  limits.head_timeout = 0
+  limits.idle_timeout = 0
+  return !IsExpired(100000, 0, true, false, limits)
+}
+
+@Test
+fun SlotsReportTheirOwnTimeout() -> bool uses io, net, unsafe {
+  var pool = ConnectionsNew(1, LimitsDefault())
+  const slot = pool.Open(7)
+  pool.Stamp(slot, 100)
+  const fresh = pool.TimedOut(slot, 105)
+  const stale = pool.TimedOut(slot, 111)
+  pool.MarkServed(slot)
+  return !fresh && stale && !pool.TimedOut(slot, 111) && pool.TimedOut(slot, 161)
 }

@@ -9,7 +9,7 @@
 need std.io.{Print}
 need std.mem.{BytesFromRaw}
 need std.text.{Bytes, BuilderNew, TextFromRaw}
-need std.time.{HttpDate, WallClock}
+need std.time.{HttpDate, Now, WallClock}
 
 // `socket.wo` is the same module -- a package's files link into one -- so
 // the floor it declares needs no import here.
@@ -551,6 +551,7 @@ offer fun Turn(
     }
     pool.Consume(slot, length)
     answered = answered + 1
+    pool.MarkServed(slot)
     if !ok {
       pool.SetClosing(slot, true)
       return 1
@@ -845,8 +846,25 @@ offer fun RunServerOn(
   }
   Print("http: listening, polled")
 
+  var swept: s64 = 0
   loop {
     const ready = poller.Wait(1000)
+    // Close what has waited too long. Once a second is enough, and a busy
+    // server must not pay for it on every wake (D223).
+    const moment = Now().seconds
+    if moment != swept {
+      swept = moment
+      var s = 0
+      while s < most {
+        if pool.TimedOut(s, moment) {
+          const stale = pool.Fd(s)
+          pool.Release(s)
+          const _forgotten = poller.Forget(stale)
+          const _closed = Close(stale as s32)
+        }
+        s = s + 1
+      }
+    }
     if ready <= 0 {
       continue
     }
@@ -864,6 +882,7 @@ offer fun RunServerOn(
           }
           const _client = SetNonBlocking(connection)
           const slot = pool.Open(connection as int)
+          pool.Stamp(slot, Now().seconds)
           if slot < 0 || !poller.Watch(connection) {
             // Nowhere to put it: refuse rather than hold a connection
             // whose bytes have no home. That is the server's back
@@ -889,7 +908,11 @@ offer fun RunServerOn(
       }
       // One turn per ready connection, so a client that keeps asking
       // does not hold the loop.
+      const before = pool.Filled(slot)
       const turn = Turn(&mut pool, slot, handle)
+      if turn > 0 || (before == 0 && pool.Filled(slot) > 0) {
+        pool.Stamp(slot, Now().seconds)
+      }
       if turn < 0 || pool.IsClosing(slot) {
         pool.Release(slot)
         const _forgotten = poller.Forget(fd)
