@@ -236,6 +236,8 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0159` | `after <delay>` on a machine transition: it parsed and then fired at once, so it is refused until a machine has a clock (D243) | `on Interact after 3s -> Closed` |
 
 | `E0149` | a value with a `deinit` taken out of a field of the struct or enum that owns it (D233) | `Take(o.r)` where `o: Outer` holds `r: Res` |
+
+| `E0149` | a value with a `deinit` taken out of a field of the struct or enum that owns it, or moved on from inside a closure that captured it (D233) | `Take(o.r)` where `o: Outer` holds `r: Res` |
 | `E0140` | a generic instantiates itself with ever bigger types | `fun F<T>(x: T) { F([x]) }` (D225) |
 | `E0121` | a reference would outlive what it points into (also through fields, indices, calls and a local array as a slice, D228) | `return &local.n` |
 | `E0142` | an object made inside `arena { }` is stored outside, returned or given out as the block's value (D228) | `kept = Leaf(1)` inside the block, `kept` declared outside |

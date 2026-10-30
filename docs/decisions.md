@@ -3065,3 +3065,10 @@ Matching a name reads it; an arm that hands its payload on is what moves
 the name (its flag is cleared through the payload). Taking an owning field
 out of the value that owns it (`Take(o.r)`) would drop it twice, so it is
 `E0149`; read through the field (`o.r.id`) instead, or move all of `o`.
+
+A closure borrows what it captures: the environment is a copy that cannot
+outlive the frame (D138), the function around it still drops the value,
+and a closure body that hands a captured `deinit` value on would drop it
+twice, so that is `E0149` too. Closure bodies are walked by the flow
+check for this (their params shadow captures); nothing they do changes
+the flow after the closure.

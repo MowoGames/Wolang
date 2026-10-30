@@ -58,6 +58,10 @@ struct Local {
   // The arena nesting this local's value was built in, or zero when it is
   // not known to come from one (D228).
   uint32_t arena = 0;
+  // A copy of an enclosing local made by the closure being walked: the
+  // original still owns it, so the closure may read it and not hand it on
+  // (D233).
+  bool captured = false;
 };
 
 class FlowChecker {
@@ -557,6 +561,18 @@ class FlowChecker {
     if (!IsOwning(typed_.TypeOf(id)) || IsBorrow(id)) {
       return;
     }
+    if (local->captured) {
+      if (!local->reported) {
+        local->reported = true;
+        diagnostics_->Error(kMoveOutOfField,
+                            "cannot move a captured value with a `deinit` "
+                            "out of a closure")
+            .Primary(ast_.Get(id).span, "the function around it owns it")
+            .Note("a closure borrows what it captures; read it, or move it "
+                  "outside the closure");
+      }
+      return;
+    }
     local->state = Liveness::kMoved;
   }
 
@@ -932,10 +948,28 @@ class FlowChecker {
         }
         return Flow::kFalls;
 
-      case ExprKind::kClosure:
-        // A closure body runs later, and whether it runs at all is not a
-        // question this walk can answer.
+      case ExprKind::kClosure: {
+        // The body runs later, and whether it runs at all is not a question
+        // this walk can answer, so nothing it does changes the flow after
+        // it. It is still walked for what it takes: an owning value it
+        // captured is the enclosing function's to drop, and handing it on
+        // from in here would drop it twice (D233).
+        const size_t depth = locals_.size();
+        const std::vector<Liveness> before = Written();
+        for (const Symbol captured : typed_.CapturesOf(id)) {
+          Local local{captured, depth_, Liveness::kLive, false};
+          local.captured = true;
+          locals_.push_back(local);
+        }
+        for (ParamId param_id : ast_.Get(expr.params)) {
+          locals_.push_back(Local{ast_.Get(param_id).name, depth_,
+                                  Liveness::kLive, false});
+        }
+        Expression(expr.lhs);
+        locals_.resize(depth);
+        Restore(before);
         return Flow::kFalls;
+      }
 
       default:
         return Flow::kFalls;

@@ -3144,6 +3144,31 @@ fun Single() -> f32 => 1.0 / 3.0
   WOLANG_EXPECT_EQ(f.Run("Third", {}), "0.3333333333333333");
   WOLANG_EXPECT_EQ(f.Run("Mixed", {}), "1.6666666666666665");
 
+WOLANG_TEST(CodegenTest, AClosureReadingAnOwningValueLeavesItsDropToTheOwner) {
+  // The closure borrows; the function around it drops once (D233).
+  Fixture f(R"(
+var drops: int = 0
+
+struct Res {
+  var id: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Run() -> int {
+  drops = 0
+  {
+    const r = Res(3)
+    const g = || r.id
+    const _y = g()
+  }
+  return drops
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "1");
+}
+
 WOLANG_TEST(CodegenTest, AnEnumAndAStructDropWhatTheyCarry) {
   // An enum whose payload no arm moves, and a struct holding a value with a
   // `deinit`, ran no `deinit` at all; their end drops the carried value

@@ -2482,6 +2482,46 @@ fun F() -> int {
   WOLANG_EXPECT(!fine.HasCode("E0149"));
 }
 
+WOLANG_TEST(TypeCheckTest, AClosureCannotMoveWhatItCaptured) {
+  // The capture is a copy of a view of the enclosing function's value,
+  // which still drops it; moving it on from the body drops it twice (D233).
+  Fixture fires(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun F() -> int {
+  const r = Res(1)
+  const f = || Take(r)
+  return f()
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0149"));
+
+  Fixture fine(R"(
+struct Res {
+  var id: int
+  deinit {
+  }
+}
+
+fun Take(r: Res) -> int => r.id
+
+fun F() -> int {
+  const r = Res(1)
+  const f = || r.id
+  const n = f()
+  return n + Take(r)
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0149"));
+  WOLANG_EXPECT(!fine.HasCode("E0122"));
+}
+
 WOLANG_TEST(TypeCheckTest, AnEnumHoldingAnOwningValueIsMovedAsAWhole) {
   Fixture fires(R"(
 struct Res {
