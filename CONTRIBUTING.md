@@ -82,6 +82,12 @@ Scopes that exist: `lexer`, `parser`, `sema`, `ir`, `codegen`, `interp`,
 `runtime`, `std`, `http`, `gfx`, `db`, `tls`, `lsp`, `editors`, `docs`,
 `ci`, `build`.
 
+The title is read by people as it is: every push to `alpha` posts the
+titles of its commits to the studio's changelog in Discord and Telegram,
+and a release tag posts everything since the previous one
+(`.github/changelog.py`). A failed `ci`, `docs` or `release` run is posted
+to the CI channel (`.github/notify.sh`).
+
 ## Where things are
 
 ```
