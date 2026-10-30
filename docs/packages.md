@@ -39,9 +39,8 @@ version = "0.2.1"
 source = "src"
 
 [dependencies]
-core = { path = "../core" }
-# The short form means the same thing:
-math = "vendor/math"
+core = { path = "../core", version = "^1.2" }
+math = { path = "vendor/math" }
 
 [lints]
 # Any diagnostic code, set to off, hint, perf, warning or error.
@@ -63,6 +62,13 @@ nothing.
 The format is a deliberately small subset of TOML: tables, string values and
 inline tables. A package manifest needs nothing more, and a small parser with
 precise diagnostics is worth more than a complete one with vague ones.
+
+A dependency may say which versions it accepts (D242): `version = "^1.2"`, in Cargo's
+grammar. `1.2` means `^1.2`; `~`, `=`, `>=`, `>`, `<=`, `<` and `*` work as they do there, and
+a comma is "and" (`">=1.2, <2"`; the manifest reader respects commas inside quotes).
+Nothing is resolved: the one copy found must satisfy the requirement, or the build reports
+`E0053` naming the package that asked. A bare string, `std = "1.2"`, is a version in every
+other manifest, so it is `E0053` until a registry exists; it is no longer read as a path.
 
 Dependencies are a path or a remote repository pinned by `rev` or `tag`
 (`wolang fetch` writes `wolang.lock`, D141). A registry is a later wave; a build script

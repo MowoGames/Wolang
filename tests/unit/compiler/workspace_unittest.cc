@@ -196,6 +196,40 @@ WOLANG_TEST(Workspace, AnEmptyGrantIsNotTheSameAsNoGrant) {
   WOLANG_EXPECT_EQ(shut.AllDiagnostics().size(), size_t{1});
 }
 
+WOLANG_TEST(Workspace, ChecksAVersionRequirementAgainstTheCopyFound) {
+  TempTree tree("version_req");
+  tree.Write("game/wolang.toml",
+             "[package]\nname = \"game\"\n"
+             "[dependencies]\ncore = { path = \"../core\", "
+             "version = \"^1.2\" }\n");
+  tree.Write("game/src/main.wo", "fun main() {}\n");
+  tree.Write("core/wolang.toml",
+             "[package]\nname = \"core\"\nversion = \"1.4.0\"\n");
+  tree.Write("core/src/log.wo", "offer fun Log() {}\n");
+
+  Database db;
+  DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(LoadPackage(&db, tree.path("game"), &diagnostics));
+  WOLANG_EXPECT(Codes(diagnostics).empty());
+}
+
+WOLANG_TEST(Workspace, ReportsADependencyThatDoesNotMeetItsRequirement) {
+  TempTree tree("version_req_bad");
+  tree.Write("game/wolang.toml",
+             "[package]\nname = \"game\"\n"
+             "[dependencies]\ncore = { path = \"../core\", "
+             "version = \"^2\" }\n");
+  tree.Write("game/src/main.wo", "fun main() {}\n");
+  tree.Write("core/wolang.toml",
+             "[package]\nname = \"core\"\nversion = \"1.4.0\"\n");
+  tree.Write("core/src/log.wo", "offer fun Log() {}\n");
+
+  Database db;
+  DiagnosticEngine diagnostics;
+  LoadPackage(&db, tree.path("game"), &diagnostics);
+  WOLANG_EXPECT_EQ(Codes(diagnostics), "E0053");
+}
+
 WOLANG_TEST(Workspace, ReportsCyclicPackageDependencies) {
   TempTree tree("cycle");
   tree.Write("a/wolang.toml",

@@ -27,6 +27,9 @@ struct ManifestDependency {
   // Where inside the checkout the package is, for a repository holding
   // several.
   std::string subdirectory;
+  // `version = "^1.2"`: which versions of the dependency are acceptable.
+  // Checked against the one copy found; nothing is resolved (D242).
+  std::string version_req;
 
   bool is_remote() const { return !git.empty(); }
 };
@@ -79,6 +82,18 @@ struct Manifest {
 Manifest ParseManifest(const SourceManager& sources,
                        FileId file,
                        DiagnosticEngine* diagnostics);
+
+// Cargo's requirement grammar: comparators joined by commas, each an
+// optional `^ ~ = >= <= > <` and a version of one to three numbers, or `*`.
+// A bare `1.2` means `^1.2` (D242).
+bool IsValidVersionReq(std::string_view requirement);
+
+// A version is one to three dot separated numbers: `1`, `0.2`, `1.2.3`.
+bool IsValidVersion(std::string_view version);
+
+// Whether |version| meets every comparator of |requirement|. False when
+// either is malformed.
+bool VersionSatisfies(std::string_view requirement, std::string_view version);
 
 }  // namespace wolang
 

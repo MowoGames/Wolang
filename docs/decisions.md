@@ -3021,3 +3021,14 @@ reserved for a machine that is given time by a generated `Tick(dt)`. A
 task. Section 8 promised that a task is cancelled with the scope that
 spawned it, and nothing cancels a task. A spawned task runs to its end.
 Stopping one early is a flag it reads. The promise is struck from the spec.
+
+**D242. A dependency can say which versions it accepts.**
+`std = { path = "..", version = "^1.2" }`, or with a repository. The grammar
+is Cargo's: `1.2` means `^1.2`; `~`, `=`, `>=`, `>`, `<=`, `<`, a comma for
+"and", `*`. There is no resolution: the one copy found must satisfy every
+requirement on it, or the build says which package asked and what it found
+(`E0053`). A bare string, `std = "1.2"`, is a version, which is what every
+other manifest means by it. It is an error until there is a registry,
+rather than a path as before. The inline-table reader no longer splits on a
+comma inside quotes. Pre-release ordering and ranges across a registry are
+deferred. The lock file records the version found for each fetched package.

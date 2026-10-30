@@ -47,7 +47,7 @@ WOLANG_TEST(Manifest, ReadsAFullManifest) {
       "\n"
       "[dependencies]\n"
       "core = { path = \"../core\" }\n"
-      "math = \"vendor/math\"\n"
+      "math = { path = \"vendor/math\" }\n"
       "\n"
       "[lints]\n"
       "W0105 = \"off\"\n"
@@ -103,7 +103,7 @@ WOLANG_TEST(Manifest, KeepsHashInsideAString) {
 }
 
 WOLANG_TEST(Manifest, ReportsAMissingPackageTable) {
-  Fixture fixture("[dependencies]\ncore = \"../core\"\n");
+  Fixture fixture("[dependencies]\ncore = { path = \"../core\" }\n");
   WOLANG_EXPECT_EQ(fixture.Codes(), "E0052");
   WOLANG_EXPECT(!fixture.manifest().is_valid());
 }
@@ -189,6 +189,51 @@ WOLANG_TEST(Manifest, RefusesARepositoryWithNoRevision) {
                         "engine = { git = \"https://e.com/e.git\" }\n")
                     .Codes()
                     .find("E0052") != std::string::npos);
+}
+
+WOLANG_TEST(Manifest, ReadsAVersionRequirementWithCommasInQuotes) {
+  // The inline table is split on commas, but not the ones in quotes (D242).
+  Fixture fixture("[package]\nname = \"p\"\n[dependencies]\n"
+                  "core = { path = \"../core\", version = \">=1.2, <2\" }\n");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_ASSERT_EQ(fixture.manifest().dependencies.size(), 1u);
+  WOLANG_EXPECT_EQ(fixture.manifest().dependencies[0].version_req,
+                   ">=1.2, <2");
+  WOLANG_EXPECT_EQ(fixture.manifest().dependencies[0].path, "../core");
+}
+
+WOLANG_TEST(Manifest, RefusesABadVersionRequirement) {
+  WOLANG_EXPECT(Fixture("[package]\nname = \"p\"\n[dependencies]\n"
+                        "core = { path = \"../core\", version = \"^x\" }\n")
+                    .Codes() == "E0053");
+}
+
+WOLANG_TEST(Manifest, RefusesABareStringDependency) {
+  // A bare string is a version everywhere else, and there is no registry
+  // (D242).
+  WOLANG_EXPECT(Fixture("[package]\nname = \"p\"\n[dependencies]\n"
+                        "core = \"1.2\"\n")
+                    .Codes() == "E0053");
+}
+
+WOLANG_TEST(Manifest, VersionRequirementsFollowCargo) {
+  using wolang::VersionSatisfies;
+  WOLANG_EXPECT(VersionSatisfies("^1.2", "1.9.0"));
+  WOLANG_EXPECT(VersionSatisfies("1.2", "1.2.5"));
+  WOLANG_EXPECT(!VersionSatisfies("^1.2", "2.0.0"));
+  WOLANG_EXPECT(!VersionSatisfies("^1.2", "1.1"));
+  WOLANG_EXPECT(VersionSatisfies("^0.2.3", "0.2.9"));
+  WOLANG_EXPECT(!VersionSatisfies("^0.2.3", "0.3.0"));
+  WOLANG_EXPECT(!VersionSatisfies("^0.0.3", "0.0.4"));
+  WOLANG_EXPECT(VersionSatisfies("~1.2", "1.2.9"));
+  WOLANG_EXPECT(!VersionSatisfies("~1.2", "1.3.0"));
+  WOLANG_EXPECT(VersionSatisfies("=1.2.3", "1.2.3"));
+  WOLANG_EXPECT(!VersionSatisfies("=1.2.3", "1.2.4"));
+  WOLANG_EXPECT(VersionSatisfies(">=1, <2", "1.5"));
+  WOLANG_EXPECT(!VersionSatisfies(">=1, <2", "2.0"));
+  WOLANG_EXPECT(VersionSatisfies("*", "0.0.1"));
+  WOLANG_EXPECT(!wolang::IsValidVersionReq(""));
+  WOLANG_EXPECT(!wolang::IsValidVersionReq(">=1,"));
 }
 
 WOLANG_TEST(Manifest, KeepsParsingAfterABadLine) {

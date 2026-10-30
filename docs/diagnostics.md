@@ -105,7 +105,7 @@ already produced one, so each broken spot yields one diagnostic.
 | `E0050` | manifest syntax error | a line without `=`, an unclosed table header |
 | `E0051` | unknown manifest key or table | `author = "me"` under `[package]` |
 | `E0052` | missing manifest key | no `[package]`, no `name`, a dependency without a path |
-| `E0053` | invalid manifest value | `name = p`, `unsafe = "maybe"`, an unknown severity |
+| `E0053` | invalid manifest value, a version requirement that is malformed or that the copy found does not meet, or a bare-string dependency (D242) | `name = p`, `version = "^x"`, `core = "1.2"` |
 | `E0054` | duplicate manifest key | `name` given twice in one table |
 | `E0055` | unresolved module | `need game.nowhere` |
 | `E0056` | a needed name is not declared | `need game.math.{Vec4}` when there is no `Vec4` |
