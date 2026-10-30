@@ -1,0 +1,20 @@
+// Two formats whose `Parse` is called the same thing, reached through their
+// module names in one program (D246).
+
+need std.doc.{AsInt, Get, Null}
+need std.json
+need std.toml
+
+@Test
+fun TwoModulesWithAParseAreToldApartByName() -> bool uses unsafe {
+  var seen = 0
+  match json.Parse("[1]") {
+    Ok(value) => seen = seen + AsInt(Get(value, "0") ?? Null(), 1)
+    _ => seen = seen + 100
+  }
+  match toml.Parse("a = 20") {
+    Ok(value) => seen = seen + AsInt(Get(value, "a") ?? Null(), 0)
+    _ => seen = seen + 1000
+  }
+  return seen == 21
+}

@@ -3195,7 +3195,7 @@ class Lowerer {
         return LowerString(expr, type);
 
       case ExprKind::kPath:
-        return LowerPath(id, expr, type);
+        return LowerPath(id, expr, type, expr.name);
 
       case ExprKind::kCast: {
         // `as` is the only numeric conversion there is (D33), so it has to
@@ -3266,6 +3266,9 @@ class Lowerer {
         return self_.is_valid() ? self_ : builder_->Undef(type);
 
       case ExprKind::kField:
+        if (const Symbol named = QualifiedName(id, expr); named.is_valid()) {
+          return LowerPath(id, expr, type, named);
+        }
         return LowerField(id, expr, type);
       case ExprKind::kOptionalField:
         return LowerOptionalField(expr, type);
@@ -3590,15 +3593,37 @@ class Lowerer {
     }
   }
 
-  InstId LowerPath(ExprId id, const Expr& expr, TypeId type) {
-    const Local* local = Find(expr.name);
+  // The spelling `json.Parse` has in this file's scope, when the checker
+  // read the expression as a module's item rather than a field (D246).
+  bool IsQualifiedUse(ExprId id) const {
+    for (ExprId held : typed().qualified) {
+      if (held == id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Symbol QualifiedName(ExprId id, const Expr& field) const {
+    if (field.kind != ExprKind::kField || !IsQualifiedUse(id) ||
+        !ast().Contains(field.lhs)) {
+      return Symbol{};
+    }
+    const Binding* binding = resolution().FindQualified(
+        ast().Get(field.lhs).name, field.name);
+    return binding != nullptr ? binding->name : Symbol{};
+  }
+
+  InstId LowerPath(ExprId id, const Expr& expr, TypeId type,
+                   Symbol name) {
+    const Local* local = Find(name);
     if (local == nullptr) {
       // A field of the receiver, read from it.
-      if (const Place place = SelfPlace(expr.name); place.readable()) {
+      if (const Place place = SelfPlace(name); place.readable()) {
         return Coerce(ReadPlace(place), TypeAt(place), type);
       }
       // A function used as a value: a callback, a handler, a comparator.
-      if (const InstId function = FunctionValue(expr.name, type);
+      if (const InstId function = FunctionValue(name, type);
           function.is_valid()) {
         return function;
       }
@@ -3606,18 +3631,20 @@ class Lowerer {
       // `T!` carries when it failed that way (D90). One number per
       // declaration, so the test and the construction agree without
       // either side knowing about the other.
-      if (const Binding* tag = resolution().Find(expr.name);
+      if (const Binding* tag = resolution().Find(name);
           tag != nullptr && tag->kind == BindingKind::kErrorTag) {
-        return builder_->ConstInt(types_->u32(), expr.name.index + 1);
+        return builder_->ConstInt(
+            types_->u32(),
+            (tag->real_name.is_valid() ? tag->real_name : name).index + 1);
       }
       // A module-level `var`, read from its storage.
-      if (const TypeId held = GlobalType(expr.name); held.is_valid()) {
-        const InstId address = GlobalAddress(expr.name);
+      if (const TypeId held = GlobalType(name); held.is_valid()) {
+        const InstId address = GlobalAddress(name);
         return Coerce(builder_->Add(Opcode::kLoad, held, {address}), held,
                       type);
       }
       // A module-level constant, read through the function it became.
-      if (const InstId constant = ConstantValue(expr.name, type);
+      if (const InstId constant = ConstantValue(name, type);
           constant.is_valid()) {
         return constant;
       }
@@ -3627,7 +3654,7 @@ class Lowerer {
     // it, so the scope exit must not destroy it. The checker already
     // decided which uses are borrows and which are not (D87), so this
     // reads the same list rather than guessing again.
-    if (const InstId flag = FlagOf(expr.name);
+    if (const InstId flag = FlagOf(name);
         flag.is_valid() && borrow_depth_ == 0 && !IsBorrow(id)) {
       builder_->Add(Opcode::kStore, TypeId{},
                     {flag, builder_->ConstBool(false)});
@@ -5315,9 +5342,16 @@ class Lowerer {
       return called;
     }
 
+    const Symbol qualified_callee =
+        ast().Contains(expr.lhs)
+            ? QualifiedName(expr.lhs, ast().Get(expr.lhs))
+            : Symbol{};
     if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath) {
-      const Symbol name = ast().Get(expr.lhs).name;
+        (ast().Get(expr.lhs).kind == ExprKind::kPath ||
+         qualified_callee.is_valid())) {
+      const Symbol name = qualified_callee.is_valid()
+                              ? qualified_callee
+                              : ast().Get(expr.lhs).name;
       const ItemId generic = FindGeneric(name);
       if (generic.is_valid()) {
         const uint32_t specialization = Instantiate(generic, id);
@@ -5386,7 +5420,8 @@ class Lowerer {
         // with "no body to run" (D100).
         if (binding->is_foreign &&
             !module_->functions[target].foreign_symbol.is_valid()) {
-          module_->functions[target].foreign_symbol = name;
+          module_->functions[target].foreign_symbol =
+              binding->real_name.is_valid() ? binding->real_name : name;
           module_->functions[target].type =
               ForeignSignature(module_->functions[target].type);
         }
@@ -5943,6 +5978,10 @@ class Lowerer {
       return InstId{};
     }
     const Expr& callee = ast().Get(expr.lhs);
+    // `json.Parse(x)` has no receiver: `json` is a module (D246).
+    if (IsQualifiedUse(expr.lhs)) {
+      return InstId{};
+    }
 
     TypeId owner;
     Symbol name;

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <span>
+#include <unordered_set>
 #include <utility>
 
 #include "wolang/interp/interpreter.h"
@@ -327,6 +328,7 @@ void Database::RegisterQueries() {
           ResolvedImport resolved;
           resolved.ordinal = ordinal++;
           resolved.module = FindModule(ImportPathText(interner_, ast, item));
+          resolved.qualifier = item.name;
 
           const ModuleScope* scope =
               resolved.module.is_valid()
@@ -438,6 +440,8 @@ void Database::RegisterQueries() {
         if (imports == nullptr) {
           return MakeComparableResult(std::move(result));
         }
+        // Names that came from an import rather than from this module.
+        std::unordered_set<uint32_t> imported;
         for (const ResolvedImport& import : imports->imports) {
           const Module* module = GetModule(import.module);
           if (module == nullptr) {
@@ -450,6 +454,21 @@ void Database::RegisterQueries() {
               continue;
             }
             for (const Binding& binding : names->first.scope) {
+              // Every public name is also reachable as `module.Name`,
+              // whatever the list selected (D246).
+              if (import.qualifier.is_valid() &&
+                  (binding.is_public ||
+                   binding.kind == BindingKind::kErrorTag)) {
+                Binding qualified = binding;
+                std::string spelled(interner_.Text(import.qualifier));
+                spelled.push_back('.');
+                spelled.append(interner_.Text(binding.name));
+                qualified.name = interner_.Intern(spelled);
+                qualified.real_name = binding.name;
+                result.first.qualified.push_back(
+                    FileResolution::Qualified{import.qualifier,
+                                              std::move(qualified)});
+              }
               // An import list selects names; a bare import brings the
               // module's whole public surface.
               if (!import.names.empty()) {
@@ -464,9 +483,27 @@ void Database::RegisterQueries() {
                   continue;
                 }
               }
+              // Two modules offering one name: the first stays, and using
+              // the bare name is an error rather than a silent pick (D246).
+              if (const Binding* held = result.first.Find(binding.name);
+                  held != nullptr && imported.count(binding.name.index) > 0 &&
+                  (held->file != binding.file || held->item != binding.item) &&
+                  (binding.is_public ||
+                   binding.kind == BindingKind::kErrorTag) &&
+                  !result.first.IsAmbiguous(binding.name)) {
+                result.first.ambiguous.push_back(binding.name);
+              }
+              const size_t before = result.first.scope.size();
               add(binding, /*public_only=*/true);
+              if (result.first.scope.size() != before) {
+                imported.insert(binding.name.index);
+              }
             }
             add_dimensions(names->first);
+          }
+          if (import.qualifier.is_valid() &&
+              !result.first.IsQualifier(import.qualifier)) {
+            result.first.qualifiers.push_back(import.qualifier);
           }
         }
         return MakeComparableResult(std::move(result));
@@ -609,6 +646,15 @@ void Database::RegisterQueries() {
             }
             binding.type = other.item_types[binding.item];
           }
+          for (FileResolution::Qualified& entry : resolution.qualified) {
+            Binding& binding = entry.binding;
+            if (binding.file != other_file || binding.type.is_valid() ||
+                binding.item == Binding::kNoItem ||
+                binding.item >= other.item_types.size()) {
+              continue;
+            }
+            binding.type = other.item_types[binding.item];
+          }
         };
 
         const ModuleId own_module = ModuleOf(file);
@@ -734,6 +780,9 @@ void Database::RegisterQueries() {
           result.body.borrows.insert(result.body.borrows.end(),
                                      body.borrows.begin(),
                                      body.borrows.end());
+          result.body.qualified.insert(result.body.qualified.end(),
+                                       body.qualified.begin(),
+                                       body.qualified.end());
           // What each closure takes with it (D138).
           result.body.captures.insert(result.body.captures.end(),
                                       body.captures.begin(),

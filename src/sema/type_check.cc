@@ -81,6 +81,8 @@ constexpr std::string_view kUnknownState = "E0206";
 // (D243).
 constexpr std::string_view kAfterNotSupported = "E0159";
 constexpr std::string_view kBadOperand = "E0108";
+constexpr std::string_view kAmbiguousName = "E0143";
+constexpr std::string_view kUnknownModuleItem = "E0144";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
 constexpr std::string_view kDimensionMismatch = "E1001";
 constexpr std::string_view kUnknownUnit = "E1002";
@@ -530,6 +532,11 @@ class Checker {
   bool IsLiteralTree(ExprId id) const;
   bool IsFloatLiteralTree(ExprId id, bool* has_float) const;
   TypeId CheckAssign(const Expr& expr);
+  // `module.Name` (D246).
+  bool IsModuleQualified(const Expr& field);
+  TypeId CheckQualified(ExprId id, const Expr& field);
+  TypeId CheckBinding(const Expr& expr, const Binding* binding);
+  void CheckAmbiguous(const Expr& use, const Binding* binding);
   void CheckMachine(const Item& item);
   ExprId RootOfPlace(ExprId id) const;
   const Member* SignalOperand(ExprId id) const;
@@ -628,6 +635,9 @@ class Checker {
   ExprId started_;
   // The path being called, which RecordCallEffects has already charged.
   const Expr* callee_path_ = nullptr;
+  // The use already reported as ambiguous, so a callee checked twice is
+  // reported once (D246).
+  const Expr* ambiguous_reported_ = nullptr;
   // The method a callee resolved to, left by CheckField for CheckCall to
   // charge once it knows whether the call is a `spawn` (D222).
   const Member* callee_method_ = nullptr;
@@ -1094,13 +1104,69 @@ TypeId Checker::CheckPath(const Expr& expr) {
     Report(kUnknownName, std::move(message), expr.span);
     return types_->error();
   }
+  CheckAmbiguous(expr, binding);
+  return CheckBinding(expr, binding);
+}
+
+// Two modules offered this name unqualified and the file used it bare, so
+// nothing says which one was meant (D246).
+void Checker::CheckAmbiguous(const Expr& use, const Binding* binding) {
+  if (binding == nullptr || binding->item == Binding::kNoItem ||
+      resolution_ == nullptr || !resolution_->IsAmbiguous(use.name) ||
+      &use == ambiguous_reported_) {
+    return;
+  }
+  ambiguous_reported_ = &use;
+  std::string message = "`";
+  message.append(interner_->Text(use.name));
+  message.append("` is offered by more than one module you need");
+  Report(kAmbiguousName, std::move(message), use.span,
+         "write it with its module, as in `json.Parse`");
+}
+
+bool Checker::IsModuleQualified(const Expr& field) {
+  if (field.kind != ExprKind::kField || !ast_.Contains(field.lhs) ||
+      resolution_ == nullptr) {
+    return false;
+  }
+  const Expr& base = ast_.Get(field.lhs);
+  // A local, a member of `self` or a declaration named like the module
+  // wins: `const json = Load()` must keep meaning the value.
+  return base.kind == ExprKind::kPath &&
+         resolution_->IsQualifier(base.name) && !IsLocalName(base.name) &&
+         SelfMember(base.name) == nullptr &&
+         resolution_->Find(base.name) == nullptr;
+}
+
+TypeId Checker::CheckQualified(ExprId id, const Expr& field) {
+  const Expr& base = ast_.Get(field.lhs);
+  const Binding* binding = resolution_->FindQualified(base.name, field.name);
+  if (binding == nullptr) {
+    std::string message = "module `";
+    message.append(interner_->Text(base.name));
+    message.append("` offers nothing named `");
+    message.append(interner_->Text(field.name));
+    message.append("`");
+    Report(kUnknownModuleItem, std::move(message), field.span,
+           "only names the module marks `offer` can be reached");
+    return types_->error();
+  }
+  result_.qualified.push_back(id);
+  // Counts as using the name for the unused-import check.
+  result_.used_names.push_back(binding->real_name);
+  return CheckBinding(field, binding);
+}
+
+TypeId Checker::CheckBinding(const Expr& expr, const Binding* binding) {
   if (binding->kind == BindingKind::kValue && binding->is_mutable &&
       binding->item != Binding::kNoItem) {
     NoteGlobalTouch();
   }
   if (binding->kind == BindingKind::kErrorTag) {
     // An error tag is a value of the error set it belongs to.
-    return types_->ErrorSet({binding->name});
+    return types_->ErrorSet({binding->real_name.is_valid()
+                                 ? binding->real_name
+                                 : binding->name});
   }
   // Naming a function as a value reaches it as surely as calling it does,
   // so it costs the same effects; the callee of a call is charged by
@@ -1768,9 +1834,20 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
   // without expectations until then.
   if (ast_.Contains(expr.lhs)) {
     const Expr& callee_expr = ast_.Get(expr.lhs);
-    if (callee_expr.kind == ExprKind::kPath) {
-      const Binding* binding = Lookup(callee_expr.name);
+    const bool qualified_callee = IsModuleQualified(callee_expr);
+    if (callee_expr.kind == ExprKind::kPath || qualified_callee) {
+      const Binding* binding =
+          qualified_callee
+              ? resolution_->FindQualified(ast_.Get(callee_expr.lhs).name,
+                                           callee_expr.name)
+              : Lookup(callee_expr.name);
+      if (!qualified_callee) {
+        CheckAmbiguous(callee_expr, binding);
+      }
       if (binding != nullptr && binding->kind == BindingKind::kType) {
+        if (qualified_callee) {
+          result_.qualified.push_back(expr.lhs);
+        }
         const TypeId type = Instantiate(id, expr, binding->type);
         CheckConstructor(expr, type);
         for (const ExprId argument : ast_.Get(expr.args)) {
@@ -1984,7 +2061,10 @@ void Checker::RecordCallEffects(ExprId callee, ExprId call) {
     return;
   }
 
-  const Binding* binding = Lookup(name);
+  const Binding* binding =
+      IsModuleQualified(expr)
+          ? resolution_->FindQualified(ast_.Get(expr.lhs).name, expr.name)
+          : Lookup(name);
   if (binding == nullptr || binding->item == Binding::kNoItem) {
     return;
   }
@@ -2922,7 +3002,8 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       break;
     case ExprKind::kField:
     case ExprKind::kOptionalField:
-      type = CheckField(expr);
+      type = IsModuleQualified(expr) ? CheckQualified(id, expr)
+                                     : CheckField(expr);
       break;
 
     case ExprKind::kTry: {

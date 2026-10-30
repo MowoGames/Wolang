@@ -3084,3 +3084,20 @@ absorbed by the body (the usual rule of D221), so calling `Bytes` is
 `unsafe` in the caller. The library already declared `uses unsafe` where
 it called `Bytes`. A real read-only slice type is the proper fix and is
 left for later.
+**D246. `module.Name` reaches what a module offers.** `need std.json`
+used to bind the module's own name as a nameless type, so `json.Parse(x)`
+typed as an error with no diagnostic and lowered to `undef`; a bare `need`
+also dumped the module's whole surface in unqualified, where the first of
+two `Parse`s silently won. Now every `need`, bare or with a list, makes its
+last path segment a qualifier: `json.Parse`, `json.Value`, `json.Corrupt`
+(function, type, constant, error tag; `json.Value.Num(1)` is the type then
+its variant). The resolver keeps these as `FileResolution::qualified`,
+bindings spelled `json.Parse` that point at the real declaration, so
+lowering and linking (by file and item) tell two `Parse`s apart. A local,
+a `self` member or a file-scope name called like the module wins; an
+unknown or non-`offer` name is `E0144`. Unqualified access is unchanged,
+but when two different modules offer one name and the file uses it bare the
+use is `E0143` (first still wins, so the rest checks). Not covered yet:
+qualified names in patterns, qualified assignment to another module's
+`var`, and ambiguity of bare type names in annotations. There is no
+`need x as y`; the qualifier is the last segment.

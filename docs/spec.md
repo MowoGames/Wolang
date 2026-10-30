@@ -71,6 +71,13 @@ where     while
 out of its module. `need` and `offer` are a matched pair: a module needs names
 from elsewhere and offers its own.
 
+A `need` also makes the last segment of its path a qualifier for everything
+that module offers, with or without a name list: after `need std.json`,
+`json.Parse(text)` is the module's function, which is how a program uses two
+modules that both offer `Parse`. A local or declaration of the same name
+takes precedence; a name the module does not offer is `E0144`, and a bare
+name that two needed modules both offer is `E0143` where it is used (D246).
+
 **Contextual keywords** are lexed as identifiers and only recognized by the
 parser where they introduce a declaration:
 

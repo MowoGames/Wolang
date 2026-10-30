@@ -190,6 +190,112 @@ fun Use() -> int {
                 std::string::npos);
 }
 
+WOLANG_TEST(ModuleScopeTest, AQualifiedNameReachesItsModulesItem) {
+  // `a.Parse` and `b.Parse` are two functions, and each is reached by its
+  // module's name (D246). Before, `a` bound to nothing and the call lowered
+  // to an undefined value without a word.
+  Fixture fixture;
+  const ModuleId a = fixture.AddModule("a");
+  fixture.AddFile(a, "a.wo", "offer fun Parse() -> int { return 1 }\n");
+  const ModuleId b = fixture.AddModule("b");
+  fixture.AddFile(b, "b.wo", "offer fun Parse() -> int { return 2 }\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId main = fixture.AddFile(app, "main.wo", R"(
+need a
+need b
+
+fun Use() -> int {
+  return a.Parse() * 10 + b.Parse()
+}
+)");
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+  const LoweredFile* lowered = fixture.db().Lowered(main);
+  WOLANG_ASSERT_NE(lowered, nullptr);
+  WOLANG_EXPECT_EQ(JoinProblems(lowered->problems), "");
+  const std::string text =
+      ir::PrintModule(fixture.db().interner(), fixture.db().types(),
+                      lowered->module);
+  WOLANG_EXPECT(text.find("@a.Parse") != std::string::npos);
+  WOLANG_EXPECT(text.find("@b.Parse") != std::string::npos);
+  WOLANG_EXPECT(text.find("undef") == std::string::npos);
+}
+
+WOLANG_TEST(ModuleScopeTest, AnUnknownQualifiedNameIsReported) {
+  Fixture fixture;
+  const ModuleId a = fixture.AddModule("a");
+  fixture.AddFile(a, "a.wo",
+                  "offer fun Parse() -> int { return 1 }\n"
+                  "fun Hidden() -> int { return 2 }\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId missing = fixture.AddFile(app, "m.wo", R"(
+need a
+
+fun Use() -> int {
+  return a.Nothing()
+}
+)");
+  WOLANG_EXPECT_EQ(fixture.Codes(missing), "E0144");
+  const ModuleId app2 = fixture.AddModule("app2");
+  const FileId hidden = fixture.AddFile(app2, "h.wo", R"(
+need a
+
+fun Use2() -> int {
+  return a.Hidden()
+}
+)");
+  WOLANG_EXPECT_EQ(fixture.Codes(hidden), "E0144");
+}
+
+WOLANG_TEST(ModuleScopeTest, AValueNamedLikeAModuleStillMeansTheValue) {
+  // The non-firing twin: a parameter called `a` is the value, not the module.
+  Fixture fixture;
+  const ModuleId a = fixture.AddModule("a");
+  fixture.AddFile(a, "a.wo", "offer fun Parse() -> int { return 1 }\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId main = fixture.AddFile(app, "main.wo", R"(
+need a
+
+struct Pair {
+  var Nothing: int = 0
+}
+
+fun Use(a: Pair) -> int {
+  return a.Nothing
+}
+)");
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, TwoModulesOfferingOneNameMakeTheBareNameAmbiguous) {
+  Fixture fixture;
+  const ModuleId a = fixture.AddModule("a");
+  fixture.AddFile(a, "a.wo", "offer fun Parse() -> int { return 1 }\n");
+  const ModuleId b = fixture.AddModule("b");
+  fixture.AddFile(b, "b.wo", "offer fun Parse() -> int { return 2 }\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId bare = fixture.AddFile(app, "bare.wo", R"(
+need a
+need b
+
+fun Use() -> int {
+  return Parse()
+}
+)");
+  WOLANG_EXPECT_EQ(fixture.Codes(bare), "E0143");
+
+  // Not ambiguous when the two are told apart by name.
+  const ModuleId app2 = fixture.AddModule("app2");
+  const FileId told = fixture.AddFile(app2, "told.wo", R"(
+need a
+need b
+
+fun Use() -> int {
+  return a.Parse() + b.Parse()
+}
+)");
+  WOLANG_EXPECT_EQ(fixture.Codes(told), "");
+}
+
 WOLANG_TEST(ModuleScopeTest, AMethodOnATypeTheCallerNeverImported) {
   // `Rows()` hands back a `Holder<int>`, and the caller never mentions
   // `Holder`. It should still be able to call a method on what it was

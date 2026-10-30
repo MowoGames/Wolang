@@ -24,6 +24,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0127`–`E0129` | systems and the access graph | all wave 11 |
 | `E0130` | a module-level declaration with no type written | wave 12 |
 | `E0137` | `weak` fields | D207 |
+| `E0143`, `E0144` | module-qualified names | D246 |
 | `E0145` | `self` stored from its own `deinit` | D229 |
 | `E0147`, `E0148` | what crosses a thread | D232 |
 | `E0159` | `after` on a machine transition | D243 |
@@ -230,6 +231,8 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0137` | `weak` on something that is not a `C?` field of a class | `weak var count: int` |
 | `E0138` | a `type` outside an ability with nothing after it | `type Count` |
 | `E0139` | an `extern class` constructed, or given something other than methods | `Actor()` |
+| `E0143` | a name two `need`ed modules both offer is used bare (D246) | `need json` and `need ini`, then `Parse(text)` |
+| `E0144` | `module.Name` where the module offers no such name, or does not offer it (D246) | `json.Nothing(x)` |
 | `E0145` | `self` stored into a field or global from its own `deinit` | `deinit { stash = self }` |
 | `E0147` | a function or closure given to a `@Thread` parameter (`Spawn`, `ParallelFor`) reads or writes a module-level `var`, directly or through a call, and the caller does not state `uses unsafe` (D232) | `Spawn(Work)` where `Work` pushes to a global list |
 | `E0148` | a closure that captures given to a `@Thread` parameter that has no environment to give it (`Spawn`; not `ParallelFor`), even under `uses unsafe` (D232) | `Spawn(\|\| { Print("{n}") })` |

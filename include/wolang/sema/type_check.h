@@ -59,6 +59,10 @@ struct TypedBody {
   // difference between a use that moves and a use that does not, and only
   // the checker knows which rule it applied.
   std::vector<ExprId> borrows;
+  // `module.Name` expressions that named a module's item rather than a
+  // member of a value (D246). Lowering reads this instead of redoing the
+  // shadowing rules.
+  std::vector<ExprId> qualified;
   // What each closure takes with it: the closure's expression, and the
   // names of the enclosing locals its body read. Lowering builds an
   // environment from them -- in the frame of the function that made the
