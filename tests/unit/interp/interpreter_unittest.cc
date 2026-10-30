@@ -710,6 +710,22 @@ offer fun Print(message: text) uses io
   WOLANG_EXPECT_EQ(f.Output(), "hello, world\n");
 }
 
+WOLANG_TEST(IntrinsicTest, AnUnsignedIntegerInterpolatesWithoutGoingNegative) {
+  // It used to be widened to s64 first, so 2^63 and up printed negative or
+  // trapped (D224).
+  ProgramFixture f(R"(
+fun main() uses io {
+  const big: u64 = 18446744073709551615
+  const small: u8 = 200
+  const neg: s64 = -5
+  Print("{big} {small} {neg}")
+}
+
+offer fun Print(message: text) uses io
+)");
+  WOLANG_EXPECT_EQ(f.Output(), "18446744073709551615 200 -5\n");
+}
+
 WOLANG_TEST(IntrinsicTest, ADeclarationThatIsNotAnIntrinsicTraps) {
   ProgramFixture f(R"(
 fun main() {

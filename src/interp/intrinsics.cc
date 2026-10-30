@@ -29,6 +29,7 @@ struct Entry {
 constexpr Entry kIntrinsics[] = {
     {"Print", Intrinsic::kPrint},
     {"wolang_text_from_int", Intrinsic::kTextFromInt},
+    {"wolang_text_from_uint", Intrinsic::kTextFromUint},
     {"wolang_text_from_float", Intrinsic::kTextFromFloat},
     {"wolang_text_from_bool", Intrinsic::kTextFromBool},
     {"wolang_text_concat", Intrinsic::kTextConcat},
@@ -93,6 +94,10 @@ Value CallIntrinsic(Intrinsic intrinsic,
     case Intrinsic::kTextFromInt:
       return Handle(runtime::wolang_text_from_int(
           arguments.empty() ? 0 : arguments[0].signed_integer()));
+
+    case Intrinsic::kTextFromUint:
+      return Handle(runtime::wolang_text_from_uint(
+          arguments.empty() ? 0 : arguments[0].integer()));
 
     case Intrinsic::kTextFromFloat:
       return Handle(runtime::wolang_text_from_float(

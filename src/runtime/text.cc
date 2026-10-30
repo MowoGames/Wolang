@@ -43,6 +43,13 @@ Text* wolang_text_from_int(int64_t value) {
   return Allocate(buffer, written > 0 ? static_cast<size_t>(written) : 0);
 }
 
+Text* wolang_text_from_uint(uint64_t value) {
+  char buffer[24] = {};
+  const int written = std::snprintf(buffer, sizeof(buffer), "%llu",
+                                    static_cast<unsigned long long>(value));
+  return Allocate(buffer, written > 0 ? static_cast<size_t>(written) : 0);
+}
+
 Text* wolang_text_from_float(double value) {
   // The shortest form that reads back as the same number, which is what a
   // printed float has to be for a test to be able to expect it.

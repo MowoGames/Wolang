@@ -3459,6 +3459,13 @@ class Lowerer {
       case TypeKind::kString:
         return value;
       case TypeKind::kInt:
+        // An unsigned value widened to s64 would print negative above
+        // 2^63, so it takes its own path (D224).
+        if (!types_->Get(Erase(type)).is_signed) {
+          return TextFromRuntime(
+              "wolang_text_from_uint",
+              {Widen(value, types_->Int(IntWidth::k64, false))});
+        }
         return TextFromRuntime("wolang_text_from_int",
                                {Widen(value, types_->Int(IntWidth::k64,
                                                          true))});

@@ -262,6 +262,8 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_global_address)},
       {"wolang_text_from_int",
        reinterpret_cast<void*>(&wolang_text_from_int)},
+      {"wolang_text_from_uint",
+       reinterpret_cast<void*>(&wolang_text_from_uint)},
       {"wolang_text_from_float",
        reinterpret_cast<void*>(&wolang_text_from_float)},
       {"wolang_text_from_bool",
