@@ -432,6 +432,27 @@ fun Promote(n: s32) -> u64 => n as u64
   WOLANG_EXPECT_EQ(f.Run("Promote", {Fixture::Int(-1)}), text);
 }
 
+WOLANG_TEST(CodegenTest, ANegativeFloatCastToANarrowUnsignedTraps) {
+  // Found by the fuzzer on arm64: `fcvtzu` clamps -2.5 to zero, which fits
+  // any unsigned type, so the cast returned 0 where the interpreter traps.
+  // Minus a half truncates to zero and is in range in every tier.
+  Fixture f(R"(
+fun ToByte(x: f64) -> int => (x as u8) as int
+
+fun ToWord(x: f64) -> int => (x as u32) as int
+)");
+  const char* kTrap =
+      "trap: overflow at @%s:%%1: "
+      "the value does not fit the integer it was cast to";
+  char text[160];
+  std::snprintf(text, sizeof(text), kTrap, "ToByte");
+  WOLANG_EXPECT_EQ(f.Run("ToByte", {Fixture::Double(-2.5)}), text);
+  WOLANG_EXPECT_EQ(f.Run("ToByte", {Fixture::Double(-0.5)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("ToByte", {Fixture::Double(200.5)}), "200");
+  std::snprintf(text, sizeof(text), kTrap, "ToWord");
+  WOLANG_EXPECT_EQ(f.Run("ToWord", {Fixture::Double(-1.0)}), text);
+}
+
 WOLANG_TEST(CodegenTest, TrapTextIsTheSameInEveryTier) {
   // Run compares the text of a trap between the interpreter and the
   // machine code, so one case of each kind that used to differ is enough

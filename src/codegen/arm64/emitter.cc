@@ -2453,14 +2453,18 @@ class FunctionEmitter {
     assembler_.FCmp(width, value, value);
     assembler_.BCond(Condition::kVs, trap);
 
+    const uint32_t bits = layouts_.BitsOf(to);
     const Register raw = Scratch(2);
-    if (is_signed) {
+    // A narrow target converts through the signed 64-bit form, unsigned or
+    // not: `fcvtzu` clamps a negative value to zero, which fits any
+    // unsigned type, so `-2.5 as u8` came out as 0 instead of a trap. The
+    // signed form keeps it -2, and the fit check below catches it (D226).
+    if (is_signed || bits < 64) {
       assembler_.Fcvtzs(IWidth::k64, raw, width, value);
     } else {
       assembler_.Fcvtzu(IWidth::k64, raw, width, value);
     }
 
-    const uint32_t bits = layouts_.BitsOf(to);
     if (bits >= 64) {
       // The conversion saturates rather than faulting, so a 64-bit target
       // has to have its range checked against the float itself. Both
