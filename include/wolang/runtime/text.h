@@ -29,6 +29,7 @@ extern "C" {
 
 Text* wolang_text_from_int(int64_t value);
 Text* wolang_text_from_uint(uint64_t value);
+double wolang_fmod(double left, double right);
 Text* wolang_text_from_float(double value);
 Text* wolang_text_from_bool(bool value);
 Text* wolang_text_concat(const uint8_t* left,

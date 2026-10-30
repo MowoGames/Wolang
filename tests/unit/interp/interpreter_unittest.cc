@@ -726,6 +726,21 @@ offer fun Print(message: text) uses io
   WOLANG_EXPECT_EQ(f.Output(), "18446744073709551615 200 -5\n");
 }
 
+WOLANG_TEST(IntrinsicTest, FloatRemainderFollowsFmod) {
+  // `%` on floats type checked but had no implementation in any tier (D224).
+  ProgramFixture f(R"(
+fun main() uses io {
+  const a: float = 5.5
+  const b: float = -5.5
+  const two: float = 2.0
+  Print("{a % two} {b % two} {a % -two}")
+}
+
+offer fun Print(message: text) uses io
+)");
+  WOLANG_EXPECT_EQ(f.Output(), "1.5 -1.5 1.5\n");
+}
+
 WOLANG_TEST(IntrinsicTest, ADeclarationThatIsNotAnIntrinsicTraps) {
   ProgramFixture f(R"(
 fun main() {

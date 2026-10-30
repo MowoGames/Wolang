@@ -3702,6 +3702,22 @@ class Lowerer {
       return builder_->IndexAddress(Erase(type), left, offset,
                                     builder_->ConstInt(word, ~uint64_t{0}));
     }
+    // Float `%` has no instruction in any tier; it is C's fmod, called
+    // through the runtime so all three answer alike (D224).
+    if (opcode == Opcode::kRem &&
+        types_->KindOf(Erase(TypeOf(expr.lhs))) == TypeKind::kFloat) {
+      const TypeId wide = types_->Float(FloatWidth::k64);
+      TypeId own = Erase(TypeOf(expr.lhs));
+      if (IsBareLiteral(expr.lhs) && !IsBareLiteral(expr.rhs) &&
+          types_->KindOf(Erase(TypeOf(expr.rhs))) == TypeKind::kFloat) {
+        own = Erase(TypeOf(expr.rhs));
+      }
+      const InstId result =
+          RuntimeCall("wolang_fmod", wide,
+                      {Widen(AsType(left, own), wide),
+                       Widen(AsType(right, own), wide)});
+      return Coerce(Widen(result, own), own, type);
+    }
     const bool compare = opcode >= Opcode::kEq && opcode <= Opcode::kGe;
     if (compare) {
       // Both sides of the same type: `byte == 48` where the literal kept

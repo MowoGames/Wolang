@@ -5,6 +5,7 @@
 
 #include "wolang/runtime/arena.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -48,6 +49,12 @@ Text* wolang_text_from_uint(uint64_t value) {
   const int written = std::snprintf(buffer, sizeof(buffer), "%llu",
                                     static_cast<unsigned long long>(value));
   return Allocate(buffer, written > 0 ? static_cast<size_t>(written) : 0);
+}
+
+// Float `%` (D224). C's fmod is the answer every tier has to give, so the
+// back ends call it rather than each growing an instruction for it.
+double wolang_fmod(double left, double right) {
+  return std::fmod(left, right);
 }
 
 Text* wolang_text_from_float(double value) {
