@@ -723,5 +723,32 @@ fun Use() -> int => Sign(3, 9)
   WOLANG_EXPECT(f.Function("Sign<s64>").find("call") == std::string::npos);
 }
 
+WOLANG_TEST(LowerTest, FreeReadsTheDataOfASliceAsAPointer) {
+  // The data half of a slice is a pointer (D238); `Free` once extracted it
+  // as a word and the verifier, rightly, refused every program importing
+  // std.list.
+  Fixture f(R"(
+offer fun Free<T>(items: []T) uses unsafe
+
+fun Release(items: []u8) uses unsafe {
+  Free(items)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+}
+
+WOLANG_TEST(LowerTest, ParallelForTakesItsThreadCountAtTheRuntimesWidth) {
+  // `int` is 64 bits (D238) and the runtime's thread count is 32: the
+  // argument has to be converted, not passed as it is.
+  Fixture f(R"(
+offer fun ParallelFor(count: int, threads: int, body: fun(int, int)) uses unsafe
+
+fun Run(threads: int) uses unsafe {
+  ParallelFor(8, threads, |a, b| { })
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+}
+
 }  // namespace
 }  // namespace wolang

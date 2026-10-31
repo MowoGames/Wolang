@@ -5406,7 +5406,12 @@ class Lowerer {
       if (types_->KindOf(slice) == TypeKind::kSlice && Counts(types_->ElementOf(slice))) {
         builder_->Call(SliceReleaseFor(slice), types_->void_type(), {arguments[0]});
       }
-      const InstId data = builder_->Extract(word, arguments[0], 0);
+      // The data of a slice is a pointer (D238); the runtime's parameter is
+      // declared as a word, which `AsDeclared` converts to.
+      const TypeId bytes = types_->Pointer(
+          types_->Int(IntWidth::k8, /*is_signed=*/false),
+          /*is_mutable=*/true);
+      const InstId data = builder_->Extract(bytes, arguments[0], 0);
       const Symbol name = interner_->Intern("wolang_object_free");
       const uint32_t free = DeclareExternal(
           name, types_->Function({word}, types_->void_type()));
@@ -5546,7 +5551,7 @@ class Lowerer {
       return builder_->Call(
           runtime, types_->void_type(),
           {code, environment, Widen(arguments[0], count),
-           Coerce(arguments[1], ValueType(arguments[1]), threads)});
+           Widen(arguments[1], threads)});
     }
 
     // `BytesFromRaw(data, length)` is not a call: a slice *is* a pointer
