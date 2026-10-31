@@ -202,7 +202,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 
 | Code | Message | Example |
 |---|---|---|
-| `E0101` | mismatched types | `const x: bool = 1` |
+| `E0101` | mismatched types | `const x: bool = 1`; an `int` is `s64`, so `xs.len` or an `int` passed to an `s32` parameter needs `as s32` |
 | `E0102` | wrong number of arguments | calling a two-parameter function with one |
 | `E0103` | no value with that name is in scope | `const x = nothing_here` |
 | `E0104` | a value that may be absent was used directly | `p.field` where `p: Pawn?` |
@@ -210,7 +210,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0106` | the callee is not callable | calling an integer |
 | `E0107` | the value cannot be indexed | `n[0]` where `n: int` |
 | `E0108` | an operator got the wrong kind of operand | `-s` where `s: text` |
-| `E0109` | the literal does not fit its type | `const x: u8 = 300` |
+| `E0109` | the literal does not fit its type | `const x: u8 = 300`; with no type, from 2^63 (`int` is `s64`) |
 | `E0110` | no type with that name is in scope | `fun f(a: Nothing)` |
 | `E0111` | the name is not a type | a function used in type position |
 | `E0112` | the type has no such member | `v.z` where `Vec3` has `x` and `y` |

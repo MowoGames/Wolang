@@ -41,8 +41,10 @@ constexpr BuiltinType kBuiltins[] = {
     {"text", TypeKind::kStr, IntWidth::k32, true, FloatWidth::k32},
     {"never", TypeKind::kNever, IntWidth::k32, true, FloatWidth::k32},
     // `int` and `float` are the widths gameplay code should reach for when it
-    // does not care, so they are aliases rather than separate types.
-    {"int", TypeKind::kInt, IntWidth::k32, true, FloatWidth::k32},
+    // does not care, so they are aliases rather than separate types. `int` is
+    // s64 so a length, an index or a hash is never capped at 2^31 (D238); C's
+    // `int` stays `s32` at an `extern` boundary.
+    {"int", TypeKind::kInt, IntWidth::k64, true, FloatWidth::k32},
     // `s` for signed, not `i` for integer: both halves of the table are
     // integers, and only one of them is signed.
     {"s8", TypeKind::kInt, IntWidth::k8, true, FloatWidth::k32},

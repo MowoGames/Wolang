@@ -377,7 +377,7 @@ the coroutine or actor rather than unwinding.
 
 | Category | Types |
 |---|---|
-| Integers | `int` (= `s32`), `s8 s16 s32 s64`, `u8 u16 u32 u64` |
+| Integers | `int` (= `s64`), `s8 s16 s32 s64`, `u8 u16 u32 u64` |
 | Floats | `float` (= `f32`), `f64` |
 | Other scalars | `bool`, `char` |
 | Strings | `Text` owning, `text` borrowed |
@@ -397,13 +397,14 @@ type from wave 13 onwards.
 ### 4.1 Integer literals
 
 An integer literal has arbitrary precision until it is used, and then takes
-the type the context expects, defaulting to `int`:
+the type the context expects, defaulting to `int` (`s64`, so a literal with
+no type fits up to 2^63 - 1; from 2^63 it is `E0109`):
 
 ```wolang
 const a = 1                 // int
 const b: u8 = 200           // the literal takes u8
-const big: s64 = 0xFFFFFFFFFFFF // fits, with no suffix
-const bad = 0xFFFFFFFFFFFF  // E0109: defaults to int, which it does not fit
+const big: u64 = 0x8000000000000000 // fits u64, with no suffix
+const bad = 0x8000000000000000 // E0109: defaults to int, which it does not fit
 comptime const c = 1 << 100 // exact, no overflow
 TakeU8(300)                 // E0101: does not fit in u8
 ```

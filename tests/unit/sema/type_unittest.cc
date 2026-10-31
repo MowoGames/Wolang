@@ -39,7 +39,8 @@ WOLANG_TEST(TypeStoreTest, EqualTypesGetTheSameId) {
   WOLANG_EXPECT_NE(store.Int(IntWidth::k32, true),
                    store.Int(IntWidth::k64, true));
   WOLANG_EXPECT_EQ(store.Float(FloatWidth::k32), store.default_float());
-  WOLANG_EXPECT_EQ(store.Int(IntWidth::k32, true), store.default_int());
+  WOLANG_EXPECT_EQ(store.Int(IntWidth::k64, true), store.default_int());
+  WOLANG_EXPECT_NE(store.Int(IntWidth::k32, true), store.default_int());
 
   const TypeId a = store.Optional(store.default_int());
   const TypeId b = store.Optional(store.default_int());
@@ -48,16 +49,16 @@ WOLANG_TEST(TypeStoreTest, EqualTypesGetTheSameId) {
 
 WOLANG_TEST(TypeStoreTest, StructuralTypesAreInternedByContents) {
   TypeStore store;
-  const TypeId i32 = store.default_int();
+  const TypeId wide = store.default_int();
   const TypeId f32 = store.default_float();
 
-  WOLANG_EXPECT_EQ(store.Tuple({i32, f32}), store.Tuple({i32, f32}));
-  WOLANG_EXPECT_NE(store.Tuple({i32, f32}), store.Tuple({f32, i32}));
-  WOLANG_EXPECT_EQ(store.Function({i32}, f32), store.Function({i32}, f32));
-  WOLANG_EXPECT_NE(store.Function({i32}, f32), store.Function({f32}, f32));
-  WOLANG_EXPECT_NE(store.Slice(i32, false), store.Slice(i32, true));
-  WOLANG_EXPECT_NE(store.Array(i32, 3, false), store.Array(i32, 4, false));
-  WOLANG_EXPECT_NE(store.Pointer(i32, false), store.Pointer(i32, true));
+  WOLANG_EXPECT_EQ(store.Tuple({wide, f32}), store.Tuple({wide, f32}));
+  WOLANG_EXPECT_NE(store.Tuple({wide, f32}), store.Tuple({f32, wide}));
+  WOLANG_EXPECT_EQ(store.Function({wide}, f32), store.Function({wide}, f32));
+  WOLANG_EXPECT_NE(store.Function({wide}, f32), store.Function({f32}, f32));
+  WOLANG_EXPECT_NE(store.Slice(wide, false), store.Slice(wide, true));
+  WOLANG_EXPECT_NE(store.Array(wide, 3, false), store.Array(wide, 4, false));
+  WOLANG_EXPECT_NE(store.Pointer(wide, false), store.Pointer(wide, true));
 }
 
 WOLANG_TEST(TypeStoreTest, NamedTypesAreIdentifiedByTheirDeclaration) {
@@ -89,19 +90,19 @@ WOLANG_TEST(TypeStoreTest, GenericInstanceWithoutArgumentsIsItsBase) {
 
 WOLANG_TEST(TypeStoreTest, AccessorsReturnWhatWasBuilt) {
   TypeStore store;
-  const TypeId i32 = store.default_int();
+  const TypeId wide = store.default_int();
   const TypeId f32 = store.default_float();
 
-  const TypeId tuple = store.Tuple({i32, f32, i32});
+  const TypeId tuple = store.Tuple({wide, f32, wide});
   const std::vector<TypeId> elements = store.ArgumentsOf(tuple);
   WOLANG_ASSERT_EQ(elements.size(), size_t{3});
-  WOLANG_EXPECT_EQ(elements[0], i32);
+  WOLANG_EXPECT_EQ(elements[0], wide);
   WOLANG_EXPECT_EQ(elements[1], f32);
 
-  WOLANG_EXPECT_EQ(store.ElementOf(store.Optional(i32)), i32);
+  WOLANG_EXPECT_EQ(store.ElementOf(store.Optional(wide)), wide);
   WOLANG_EXPECT_EQ(store.ElementOf(store.Slice(f32, false)), f32);
   WOLANG_EXPECT_EQ(store.ElementOf(store.Function({}, f32)), f32);
-  WOLANG_EXPECT(!store.ElementOf(i32).is_valid());
+  WOLANG_EXPECT(!store.ElementOf(wide).is_valid());
 }
 
 WOLANG_TEST(TypeStoreTest, ClassifiesNumbers) {
@@ -124,22 +125,22 @@ WOLANG_TEST(TypeStoreTest, ClassifiesNumbers) {
 
 WOLANG_TEST(TypeStoreTest, StripsOptionalAndFallibleLayers) {
   TypeStore store;
-  const TypeId i32 = store.default_int();
+  const TypeId wide = store.default_int();
   const TypeId errors = store.ErrorSet({});
-  const TypeId wrapped = store.Fallible(store.Optional(i32), errors);
-  WOLANG_EXPECT_EQ(store.StripWrappers(wrapped), i32);
-  WOLANG_EXPECT_EQ(store.StripWrappers(i32), i32);
+  const TypeId wrapped = store.Fallible(store.Optional(wide), errors);
+  WOLANG_EXPECT_EQ(store.StripWrappers(wrapped), wide);
+  WOLANG_EXPECT_EQ(store.StripWrappers(wide), wide);
 }
 
 WOLANG_TEST(TypeStoreTest, DescribesTypesTheWayTheyAreWritten) {
   TypeStore store;
   StringInterner interner;
-  const TypeId i32 = store.default_int();
+  const TypeId wide = store.default_int();
   const TypeId f32 = store.default_float();
   const TypeId pawn = store.Named(interner.Intern("Pawn"), 0, 0);
   const TypeId array = store.Named(interner.Intern("Array"), 0, 1);
 
-  WOLANG_EXPECT_EQ(store.Describe(interner, i32), "s32");
+  WOLANG_EXPECT_EQ(store.Describe(interner, wide), "s64");
   WOLANG_EXPECT_EQ(store.Describe(interner, f32), "f32");
   WOLANG_EXPECT_EQ(store.Describe(interner, store.Int(IntWidth::k8, false)),
                    "u8");
@@ -153,12 +154,12 @@ WOLANG_TEST(TypeStoreTest, DescribesTypesTheWayTheyAreWritten) {
                    "soa []Pawn");
   WOLANG_EXPECT_EQ(store.Describe(interner, store.Array(f32, 3, false)),
                    "[3]f32");
-  WOLANG_EXPECT_EQ(store.Describe(interner, store.Instance(array, {i32})),
-                   "Array<s32>");
-  WOLANG_EXPECT_EQ(store.Describe(interner, store.Tuple({i32, f32})),
-                   "(s32, f32)");
-  WOLANG_EXPECT_EQ(store.Describe(interner, store.Function({i32}, f32)),
-                   "fun(s32) -> f32");
+  WOLANG_EXPECT_EQ(store.Describe(interner, store.Instance(array, {wide})),
+                   "Array<s64>");
+  WOLANG_EXPECT_EQ(store.Describe(interner, store.Tuple({wide, f32})),
+                   "(s64, f32)");
+  WOLANG_EXPECT_EQ(store.Describe(interner, store.Function({wide}, f32)),
+                   "fun(s64) -> f32");
   WOLANG_EXPECT_EQ(
       store.Describe(interner, store.Function({}, store.void_type())),
       "fun()");
@@ -315,18 +316,18 @@ WOLANG_TEST(TypeStoreTest, UnifiesAndSubstitutesTypeParameters) {
   StringInterner interner;
   const TypeId t = store.Parameter(interner.Intern("T"), 0, 0);
   const TypeId u = store.Parameter(interner.Intern("U"), 0, 1);
-  const TypeId i32 = store.default_int();
+  const TypeId wide = store.default_int();
   const TypeId f32 = store.default_float();
 
   WOLANG_EXPECT(store.MentionsParameter(store.Slice(t, false)));
-  WOLANG_EXPECT(!store.MentionsParameter(store.Slice(i32, false)));
+  WOLANG_EXPECT(!store.MentionsParameter(store.Slice(wide, false)));
 
   TypeStore::Substitution substitution;
-  WOLANG_EXPECT(store.Unify(store.Slice(t, false), store.Slice(i32, false),
+  WOLANG_EXPECT(store.Unify(store.Slice(t, false), store.Slice(wide, false),
                             &substitution));
-  WOLANG_EXPECT_EQ(store.Substitute(t, substitution), i32);
+  WOLANG_EXPECT_EQ(store.Substitute(t, substitution), wide);
   WOLANG_EXPECT_EQ(store.Substitute(store.Optional(t), substitution),
-                   store.Optional(i32));
+                   store.Optional(wide));
 
   // A parameter already inferred cannot be inferred differently.
   WOLANG_EXPECT(!store.Unify(t, f32, &substitution));
@@ -334,13 +335,13 @@ WOLANG_TEST(TypeStoreTest, UnifiesAndSubstitutesTypeParameters) {
   // A second parameter is independent.
   WOLANG_EXPECT(store.Unify(u, f32, &substitution));
   WOLANG_EXPECT_EQ(store.Substitute(store.Tuple({t, u}), substitution),
-                   store.Tuple({i32, f32}));
+                   store.Tuple({wide, f32}));
 
   // Walking a type never follows a field its kind does not use: a tuple has
   // no element type, and reading one would be a zeroed id pointing at a real
   // type.
-  WOLANG_EXPECT(!store.MentionsParameter(store.Tuple({i32, f32})));
-  WOLANG_EXPECT(store.MentionsParameter(store.Tuple({i32, t})));
+  WOLANG_EXPECT(!store.MentionsParameter(store.Tuple({wide, f32})));
+  WOLANG_EXPECT(store.MentionsParameter(store.Tuple({wide, t})));
 }
 
 }  // namespace

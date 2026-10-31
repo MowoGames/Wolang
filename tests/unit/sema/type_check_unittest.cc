@@ -194,7 +194,7 @@ WOLANG_TEST(TypeCheck, IntegerLiteralsTakeTheirContextsType) {
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   // Without an expectation a literal settles on `int`.
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s64");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "u8");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "s64");
   // An integer literal in a float context is fine.
@@ -212,19 +212,61 @@ WOLANG_TEST(TypeCheck, ReportsALiteralThatDoesNotFit) {
 }
 
 WOLANG_TEST(TypeCheck, AWideLiteralWithNoTypeIsNotCutToInt) {
-  // Settling on `int` used to wrap 4294967297 to 1 without a word (D225).
-  WOLANG_EXPECT(Fixture("fun f() { const x = 4294967297 }").HasCode("E0109"));
-  WOLANG_EXPECT(Fixture("fun f() { const x = -4294967297 }").HasCode("E0109"));
-  // The same number with a type to land in is fine.
-  WOLANG_EXPECT(!Fixture("fun f() { const x: s64 = 4294967297 }")
+  // `int` is s64 (D238), so the edge is 2^63; it used to wrap 4294967297 to
+  // 1 without a word (D225).
+  WOLANG_EXPECT(Fixture("fun f() { const x = 9223372036854775808 }")
+                    .HasCode("E0109"));
+  WOLANG_EXPECT(Fixture("fun f() { const x = -9223372036854775809 }")
+                    .HasCode("E0109"));
+  WOLANG_EXPECT(!Fixture("fun f() { const x = 4294967297 }").HasCode("E0109"));
+  WOLANG_EXPECT(!Fixture("fun f() { const x = 2147483648 }").HasCode("E0109"));
+  WOLANG_EXPECT(!Fixture("fun f() { const x = -9223372036854775808 }")
+                     .HasCode("E0109"));
+  WOLANG_EXPECT(!Fixture("fun f() { const x: u64 = 9223372036854775808 }")
                      .HasCode("E0109"));
   WOLANG_EXPECT(!Fixture("fun f() { const x = 4294967297 as s64 }")
                      .HasCode("E0109"));
   WOLANG_EXPECT(!Fixture("fun f() { const x = 4294967297 as u64 }")
                      .HasCode("E0109"));
-  WOLANG_EXPECT(!Fixture("fun f() { const x = -2147483648 }")
-                     .HasCode("E0109"));
-  WOLANG_EXPECT(Fixture("fun f() { const x = 2147483648 }").HasCode("E0109"));
+}
+
+WOLANG_TEST(TypeCheck, LenIsInt) {
+  // A length is `int`, which is s64 (D238).
+  WOLANG_EXPECT(Fixture("fun f(xs: []int) { const n: s64 = xs.len }")
+                    .Codes()
+                    .empty());
+  WOLANG_EXPECT(Fixture("fun f(xs: []int) { const n: s32 = xs.len }")
+                    .HasCode("E0101"));
+  WOLANG_EXPECT(Fixture("fun f(t: text) { const n: s64 = t.len }")
+                    .Codes()
+                    .empty());
+  WOLANG_EXPECT(Fixture("fun f(t: text) { const n: s32 = t.len }")
+                    .HasCode("E0101"));
+  WOLANG_EXPECT(Fixture("fun f(a: [3]int) { const n: s64 = a.len }")
+                    .Codes()
+                    .empty());
+  WOLANG_EXPECT(Fixture("fun f(a: [3]int) { const n: s32 = a.len }")
+                    .HasCode("E0101"));
+}
+
+WOLANG_TEST(TypeCheck, AnIntDoesNotReachAnS32ExternParameter) {
+  // C's `int` is `s32`, so the width is spelled at the boundary (D238).
+  const std::string declaration = "extern \"C\" fun abs(n: s32) -> s32\n";
+  WOLANG_EXPECT(Fixture(declaration + "fun f(x: int) { const y = abs(x) }")
+                    .HasCode("E0101"));
+  WOLANG_EXPECT(
+      Fixture(declaration + "fun f(x: int) { const y = abs(x as s32) }")
+          .Codes()
+          .empty());
+}
+
+WOLANG_TEST(TypeCheck, ALiteralBelowTheS32RangeDoesNotFitAnS32) {
+  // `int` grew, `s32` did not: the old boundary still holds for it (D238).
+  WOLANG_EXPECT(Fixture("fun f() { const x: s32 = -2147483649 }")
+                    .HasCode("E0109"));
+  WOLANG_EXPECT(Fixture("fun f() { const x: s32 = -2147483648 }")
+                    .Codes()
+                    .empty());
 }
 
 WOLANG_TEST(TypeCheck, LiteralArithmeticTakesTheContextsType) {
@@ -288,10 +330,10 @@ WOLANG_TEST(TypeCheck, ChecksOperators) {
       "  const e = !flag\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s64");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "bool");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "bool");
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("d"), "s32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("d"), "s64");
 
   WOLANG_EXPECT(Fixture("fun f(s: text) { const a = s + 1 }").HasCode("E0108"));
   WOLANG_EXPECT(Fixture("fun f(s: text) { const a = -s }").HasCode("E0108"));
@@ -326,7 +368,7 @@ WOLANG_TEST(TypeCheck, ParametersAndLocalsAreInScope) {
       "  const c = b\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "s32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "s64");
 }
 
 WOLANG_TEST(TypeCheck, ALocalDoesNotEscapeItsBlock) {
@@ -453,7 +495,7 @@ WOLANG_TEST(TypeCheck, NullCoalescingRemovesOneLayer) {
       "  const a = count ?? 0\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s64");
 
   WOLANG_EXPECT(
       Fixture("fun f(n: int) { const a = n ?? 0 }").HasCode("E0108"));
@@ -620,7 +662,7 @@ WOLANG_TEST(TypeCheck, ArrayLiteralsTakeTheirElementType) {
       "  const c = [1.5, 2.5]\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "[3]s32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "[3]s64");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "[2]u8");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("c"), "[2]f32");
 
@@ -660,7 +702,7 @@ WOLANG_TEST(TypeCheck, TuplesCheckElementwise) {
       "  const b: (u8, bool) = (2, false)\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "(s32, bool)");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "(s64, bool)");
   WOLANG_EXPECT_EQ(fixture.TypeOfInit("b"), "(u8, bool)");
 }
 
@@ -682,7 +724,7 @@ WOLANG_TEST(TypeCheck, IfElseChainsAgree) {
       "  const a = if flag { 1 } else { 2 }\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s32");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s64");
 
   WOLANG_EXPECT(
       Fixture("fun f(flag: bool) { const a = if flag { 1 } else { true } }")
@@ -999,7 +1041,7 @@ fun use(xs: []int, ys: []float) {
   const b = First(ys)
 }
 )");
-  WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "s32");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "s64");
   WOLANG_EXPECT_EQ(f.TypeOfInit("b"), "f32");
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
@@ -1023,7 +1065,7 @@ fun use() uses unsafe {
   const c = Zero<float>(4)
 }
 )");
-  WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "[]s32");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("a"), "[]s64");
   WOLANG_EXPECT_EQ(f.TypeOfInit("b"), "[]f32");
   WOLANG_EXPECT_EQ(f.TypeOfInit("c"), "soa []f32");
   WOLANG_EXPECT_EQ(f.Codes(), "");
@@ -1047,9 +1089,9 @@ fun use() {
   const field = inferred.item
 }
 )");
-  WOLANG_EXPECT_EQ(f.TypeOfInit("written"), "Box<s32>");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("written"), "Box<s64>");
   WOLANG_EXPECT_EQ(f.TypeOfInit("inferred"), "Box<f32>");
-  WOLANG_EXPECT_EQ(f.TypeOfInit("handle"), "Holder<s32>");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("handle"), "Holder<s64>");
   WOLANG_EXPECT_EQ(f.TypeOfInit("field"), "f32");
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
@@ -1080,7 +1122,7 @@ fun use() {
   const p = Pair(1, true)
 }
 )");
-  WOLANG_EXPECT_EQ(f.TypeOfInit("p"), "(s32, bool)");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("p"), "(s64, bool)");
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
@@ -1108,7 +1150,7 @@ fun use(xs: []int) {
 }
 )");
   WOLANG_EXPECT(f.HasCode("E0101"));
-  WOLANG_EXPECT(f.Messages().find("expected `bool`, found `s32`") !=
+  WOLANG_EXPECT(f.Messages().find("expected `bool`, found `s64`") !=
                 std::string::npos);
 }
 
@@ -1779,7 +1821,7 @@ fun use(h: Holder<int>) {
   const missing = h.nothing
 }
 )");
-  WOLANG_EXPECT_EQ(f.TypeOfInit("good"), "s32");
+  WOLANG_EXPECT_EQ(f.TypeOfInit("good"), "s64");
   WOLANG_EXPECT(f.HasCode("E0101"));
   WOLANG_EXPECT(f.HasCode("E0112"));
 }

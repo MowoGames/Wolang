@@ -805,7 +805,7 @@ WOLANG_TEST(EmbedTest, SaysWhatIsWrongWithAProgram) {
   WOLANG_EXPECT(wolang_vm_ok(vm) == 0);
   // The same diagnostic the command line gives, rendered without colour.
   const std::string errors(wolang_vm_errors(vm));
-  WOLANG_EXPECT(errors.find("expected `s32`") != std::string::npos);
+  WOLANG_EXPECT(errors.find("expected `s64`") != std::string::npos);
   WOLANG_EXPECT(errors.find("broken.wo") != std::string::npos);
 
   // And a call into a program with errors is refused rather than run.

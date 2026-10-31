@@ -184,9 +184,9 @@ fun Use() -> int {
                       lowered->module);
   // The copy is here, with a body, and so is the method of the instance
   // it returns.
-  WOLANG_EXPECT(text.find("fun @Wrap<s32>") != std::string::npos);
-  WOLANG_EXPECT(text.find("fun @Holder<s32>.Item") != std::string::npos);
-  WOLANG_EXPECT(text.find("fun @Wrap<s32>(s32) -> Holder<s32>\n") ==
+  WOLANG_EXPECT(text.find("fun @Wrap<s64>") != std::string::npos);
+  WOLANG_EXPECT(text.find("fun @Holder<s64>.Item") != std::string::npos);
+  WOLANG_EXPECT(text.find("fun @Wrap<s64>(s64) -> Holder<s64>\n") ==
                 std::string::npos);
 }
 
@@ -345,7 +345,7 @@ fun Use() -> int {
                       lowered->module);
   // The method is a call, not an undefined value.
   WOLANG_EXPECT(text.find("undef : <error>") == std::string::npos);
-  WOLANG_EXPECT(text.find("Holder<s32>.Item") != std::string::npos);
+  WOLANG_EXPECT(text.find("Holder<s64>.Item") != std::string::npos);
 }
 
 WOLANG_TEST(ModuleScopeTest, ResolvesImportsBetweenModules) {

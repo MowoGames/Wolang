@@ -348,8 +348,9 @@ offer fun ParseRequest(everything: []u8, received: int) -> Request uses unsafe {
 
 /// The number `value` spells, or zero. Stops at the first byte that is
 /// not a digit, which is what a `Content-Length` with anything after it
-/// deserves. More than nine digits is `-1`: `int` is 32 bits, so the
-/// product would trap (D223).
+/// deserves. More than nine digits is `-1`. Nine digits is this parser's own cap,
+/// not the width of `int` (64 bits, D238); it keeps `total * 10` far from
+/// overflow (D223).
 offer fun ParseInt(value: text) -> int uses unsafe {
   const bytes = Bytes(value)
   var total = 0
@@ -376,7 +377,8 @@ offer fun ParseInt(value: text) -> int uses unsafe {
 /// The number a `Content-Length` spells, or `-1` when it spells anything
 /// else: no digits, or garbage such as `5, 10`. Spaces and tabs around
 /// the digits are allowed. A run of more than nine digits is a length, but
-/// no server's: it answers the largest `int`, which every limit refuses
+/// no server's: it answers 2147483647, the largest `s32` and a cap this
+/// parser keeps although `int` is 64 bits (D238), which every limit refuses
 /// with 413 rather than the 400 that garbage gets (D223).
 offer fun ParseLength(value: text) -> int uses unsafe {
   const bytes = Bytes(value)
@@ -872,7 +874,8 @@ offer fun RunServerOn(
     while i < ready {
       const fd = poller.At(i)
       i = i + 1
-      if fd == listener {
+      // `At` answers an `int`; the listener is the C descriptor (D238).
+      if fd == listener as int {
         // Everything waiting to be accepted, not just one: the listener
         // reports readable once per turn however many arrived.
         loop {

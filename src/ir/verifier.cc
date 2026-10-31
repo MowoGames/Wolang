@@ -425,6 +425,41 @@ class Verifier {
         }
         break;
 
+      case Opcode::kExtract:
+      case Opcode::kInsert: {
+        // A text or slice is a pointer and a 64-bit length (D238); reading
+        // the length at 32 bits was the bug that capped `.len` at 2^31.
+        // Other aggregates are not checked here.
+        const bool extracting = inst.opcode == Opcode::kExtract;
+        if (!arity(extracting ? 1 : 2)) {
+          break;
+        }
+        const TypeKind aggregate_kind = types_.KindOf(type_of(0));
+        if (aggregate_kind != TypeKind::kStr &&
+            aggregate_kind != TypeKind::kSlice) {
+          break;
+        }
+        // Only two fields exist, so a third is a lowering bug.
+        if (inst.field > 1) {
+          Fail(At(id) + " reads field " + std::to_string(inst.field) +
+               " of a text or slice, which has two");
+          break;
+        }
+        const TypeId field_type = extracting ? inst.type : type_of(1);
+        if (inst.field == 1 &&
+            (types_.KindOf(field_type) != TypeKind::kInt ||
+             types_.Get(field_type).int_width != IntWidth::k64)) {
+          Fail(At(id) + " reads the length of a text or slice that is not "
+                        "a 64-bit integer");
+        }
+        if (inst.field == 0 &&
+            types_.KindOf(field_type) != TypeKind::kPointer) {
+          Fail(At(id) + " reads the data of a text or slice that is not a "
+                        "pointer");
+        }
+        break;
+      }
+
       default:
         break;
     }

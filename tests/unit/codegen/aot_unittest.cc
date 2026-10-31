@@ -262,6 +262,39 @@ fun main() uses unsafe {
   WOLANG_EXPECT(said.find("exit 70") != std::string::npos);
 }
 
+WOLANG_TEST(AotTest, IntIsSixtyFourBits) {
+  if (!Links()) {
+    return;
+  }
+  // 2^31 is a value of `int` (D238); 2^31 / 2^30 is 2.
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+fun main() uses unsafe {
+  var a = 2147483647
+  a += 1
+  exit((a / 1073741824) as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 2");
+}
+
+WOLANG_TEST(AotTest, ASignedThirtyTwoBitSumStillTraps) {
+  if (!Links()) {
+    return;
+  }
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+fun main() uses unsafe {
+  var a: s32 = 2147483647
+  a += 1
+  exit(a)
+}
+)");
+  WOLANG_EXPECT(program.Output().find("overflow") != std::string::npos);
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

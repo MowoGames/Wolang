@@ -31,7 +31,7 @@ string is interpolation.
 need std.io.{Print}
 
 fun main() uses io {
-  const fixed = 42            // an int, worked out from the value
+  const fixed = 42            // an int (64 bits, D238), worked out from the value
   var counter = 0             // `var` may change, `const` may not
   counter = counter + fixed
 

@@ -107,9 +107,10 @@ fun Has(data: []u8, at: int, count: int) -> bool {
   return at >= 0 && count >= 0 && at <= data.len && count <= data.len - at
 }
 
-/// A big-endian 32-bit field. `int` is 32 bits here, so anything at or
-/// above 2^31 answers 2^31 - 1: every length and size check refuses it
-/// the same way, and no multiply can overflow on the way (D245).
+/// A big-endian 32-bit field. Anything at or above 2^31 answers 2^31 - 1
+/// so every length and size check refuses it the same way (D245). `int` is
+/// 64 bits (D238), and `SizeOk` bounds each side by `kMaxSide` before any
+/// product is formed, so `width * height * 4` stays far below 2^63.
 fun Be32(data: []u8, at: int) -> int {
   if data[at] >= 128 {
     return 2147483647

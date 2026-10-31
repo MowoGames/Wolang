@@ -225,6 +225,10 @@ class Fixture {
   }
 
   static interp::Value Int(int64_t value) {
+    return interp::Value::Int(static_cast<uint64_t>(value), IntWidth::k64,
+                              true);
+  }
+  static interp::Value S32(int64_t value) {
     return interp::Value::Int(static_cast<uint64_t>(value), IntWidth::k32,
                               true);
   }
@@ -359,6 +363,10 @@ fun Shift(a: int, b: int) -> int => a << b
                                       Fixture::Byte(27)}),
                    "127");
   WOLANG_EXPECT_EQ(f.Run("Shift", {Fixture::Int(1), Fixture::Int(40)}),
+                   "1099511627776");
+  WOLANG_EXPECT_EQ(f.Run("Shift", {Fixture::Int(1), Fixture::Int(62)}),
+                   "4611686018427387904");
+  WOLANG_EXPECT_EQ(f.Run("Shift", {Fixture::Int(1), Fixture::Int(70)}),
                    "trap: overflow at @Shift:%2: "
                    "shifted by more than the width");
 }
@@ -395,9 +403,9 @@ fun ToFloat(n: int) -> float => n as float
 
 fun Truncate(x: float) -> int => x as int
 )");
-  WOLANG_EXPECT_EQ(f.Run("Widen", {Fixture::Int(-5)}), "-5");
-  WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::Int(200)}), "200");
-  WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::Int(300)}),
+  WOLANG_EXPECT_EQ(f.Run("Widen", {Fixture::S32(-5)}), "-5");
+  WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::S32(200)}), "200");
+  WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::S32(300)}),
                    "trap: overflow at @Narrow:%1: "
                    "the value does not fit the integer it was cast to");
   WOLANG_EXPECT_EQ(f.Run("ToFloat", {Fixture::Int(3)}), "3");
@@ -429,7 +437,7 @@ fun Promote(n: s32) -> u64 => n as u64
       f.Run("ToSigned", {interp::Value::Int(7, IntWidth::k64, false)}),
       "7");
   std::snprintf(text, sizeof(text), kTrap, "Promote");
-  WOLANG_EXPECT_EQ(f.Run("Promote", {Fixture::Int(-1)}), text);
+  WOLANG_EXPECT_EQ(f.Run("Promote", {Fixture::S32(-1)}), text);
 }
 
 WOLANG_TEST(CodegenTest, ANegativeFloatCastToANarrowUnsignedTraps) {
@@ -889,7 +897,7 @@ fun PickFloat(a: float, b: float) -> float => Larger(a, b)
   WOLANG_EXPECT_EQ(f.Run("PickFloat", {Fixture::Float(2.5),
                                        Fixture::Float(1.5)}),
                    "2.5");
-  WOLANG_EXPECT_EQ(f.Skipped("Larger<s32>"), "");
+  WOLANG_EXPECT_EQ(f.Skipped("Larger<s64>"), "");
   WOLANG_EXPECT_EQ(f.Skipped("Larger<f32>"), "");
 }
 
@@ -903,7 +911,7 @@ extern "C" fun abs(n: s32) -> s32
 
 extern "C" fun fabs(x: f64) -> f64
 
-fun Magnitude(n: int) -> int => abs(n)
+fun Magnitude(n: int) -> int => abs(n as s32) as int
 
 fun Distance(x: f64) -> f64 => fabs(x)
 )");
@@ -916,7 +924,7 @@ WOLANG_TEST(CodegenTest, SaysWhenAForeignSymbolIsMissing) {
   Fixture f(R"(
 extern "C" fun NotInAnyLibrary(n: s32) -> s32
 
-fun Try(n: int) -> int => NotInAnyLibrary(n)
+fun Try(n: int) -> int => NotInAnyLibrary(n as s32) as int
 )");
   WOLANG_EXPECT_EQ(f.Skipped("Try"),
                    "calls something this tier cannot compile");
@@ -935,10 +943,10 @@ extern "C" fun free(block: *s32)
 
 fun RoundTrip(n: int) -> int {
   const block = malloc(4)
-  *block = n + 1
+  *block = (n + 1) as s32
   const read = *block
   free(block)
-  return read
+  return read as int
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("RoundTrip", {Fixture::Int(41)}), "42");
@@ -1031,8 +1039,8 @@ extern "C" fun free(block: *s32)
 fun Scoped(n: int) -> int {
   const block = malloc(4)
   defer free(block)
-  *block = n + 1
-  return *block
+  *block = (n + 1) as s32
+  return *block as int
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Scoped", {Fixture::Int(41)}), "42");
@@ -2786,8 +2794,8 @@ WOLANG_TEST(CodegenTest, ASignedThirtyTwoBitProductStillTrapsOnOverflow) {
   // The sign-extension that narrow `-` needs must not be applied to a
   // multiply's 64-bit product (D231).
   Fixture f(R"(
-fun Product() -> int {
-  var buf: [2]int
+fun Product() -> s32 {
+  var buf: [2]s32
   buf[0] = 0 - 2147483647
   const x = buf[0]
   const y = (~x) * x
@@ -2797,6 +2805,35 @@ fun Product() -> int {
 )");
   WOLANG_EXPECT_EQ(f.Run("Product", {}),
                    "trap: overflow at @Product:%13: mul overflowed");
+}
+
+WOLANG_TEST(CodegenTest, IntIsSixtyFourBitsInEveryTier) {
+  // `int` is s64 (D238): 2^31 is a value, not an overflow, while s32 and the
+  // top of s64 still trap.
+  Fixture f(R"(
+fun Grows() -> int {
+  var a = 2147483647
+  a += 1
+  return a
+}
+
+fun Narrow() -> s32 {
+  var a: s32 = 2147483647
+  a += 1
+  return a
+}
+
+fun Top() -> int {
+  var a = 9223372036854775807
+  a += 1
+  return a
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Grows", {}), "2147483648");
+  WOLANG_EXPECT_EQ(f.Run("Narrow", {}),
+                   "trap: overflow at @Narrow:%5: add overflowed");
+  WOLANG_EXPECT_EQ(f.Run("Top", {}),
+                   "trap: overflow at @Top:%5: add overflowed");
 }
 
 WOLANG_TEST(CodegenTest, AHugeUnsignedDoesNotCastToANarrowSigned) {
@@ -3671,8 +3708,8 @@ fun Coalesced() -> int {
   return (empty ?? 0) * 10 + (full ?? 0) + calls * 1000
 }
 
-fun Overflow() -> int {
-  var a = 2147483647
+fun Overflow() -> s32 {
+  var a: s32 = 2147483647
   a += 1
   return a
 }

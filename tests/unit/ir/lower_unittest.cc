@@ -80,7 +80,7 @@ WOLANG_TEST(LowerTest, LowersArithmetic) {
   Fixture f("fun Add(a: int, b: int) -> int {\n  return a + b\n}\n");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   WOLANG_EXPECT_EQ(f.Function("Add"),
-                   "fun @Add(%0: s32, %1: s32) -> s32 {\n"
+                   "fun @Add(%0: s64, %1: s64) -> s64 {\n"
                    "^0:  // entry\n"
                    "  %2 = add %0, %1\n"
                    "  ret %2\n"
@@ -98,7 +98,7 @@ fun Max(a: int, b: int) -> int {
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   WOLANG_EXPECT_EQ(f.Function("Max"),
-                   "fun @Max(%0: s32, %1: s32) -> s32 {\n"
+                   "fun @Max(%0: s64, %1: s64) -> s64 {\n"
                    "^0:  // entry\n"
                    "  %2 = gt %0, %1\n"
                    "  br %2 ^1 ^2\n"
@@ -138,7 +138,7 @@ fun Count(n: int) -> int {
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   const std::string body = f.Function("Count");
-  WOLANG_EXPECT(body.find("alloca : s32") != std::string::npos);
+  WOLANG_EXPECT(body.find("alloca : s64") != std::string::npos);
   WOLANG_EXPECT(body.find("store") != std::string::npos);
   WOLANG_EXPECT(body.find("load") != std::string::npos);
 }
@@ -427,8 +427,8 @@ fun UseFloat() -> float => Identity(1.5)
   WOLANG_EXPECT_EQ(f.Problems(), "");
   // Two call sites with the same argument share one copy; a different
   // argument gets its own.
-  WOLANG_EXPECT_EQ(f.Function("Identity<s32>"),
-                   "fun @Identity<s32>(%0: s32) -> s32 {\n"
+  WOLANG_EXPECT_EQ(f.Function("Identity<s64>"),
+                   "fun @Identity<s64>(%0: s64) -> s64 {\n"
                    "^0:  // entry\n"
                    "  ret %0\n"
                    "}\n");
@@ -452,11 +452,11 @@ fun Twice<T>(value: T) -> T => Identity(Identity(value))
 fun Use() -> int => Twice(3)
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
-  WOLANG_EXPECT_EQ(f.Function("Twice<s32>"),
-                   "fun @Twice<s32>(%0: s32) -> s32 {\n"
+  WOLANG_EXPECT_EQ(f.Function("Twice<s64>"),
+                   "fun @Twice<s64>(%0: s64) -> s64 {\n"
                    "^0:  // entry\n"
-                   "  %1 = call @Identity<s32>, %0\n"
-                   "  %2 = call @Identity<s32>, %1\n"
+                   "  %1 = call @Identity<s64>, %0\n"
+                   "  %2 = call @Identity<s64>, %1\n"
                    "  ret %2\n"
                    "}\n");
 }

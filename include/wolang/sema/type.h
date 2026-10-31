@@ -265,9 +265,9 @@ class TypeStore {
   TypeId Int(IntWidth width, bool is_signed);
   TypeId Float(FloatWidth width);
 
-  // `int` is `i32` and `float` is `f32`; the aliases exist so gameplay code
+  // `int` is `s64` and `float` is `f32` (D238); the aliases exist so gameplay code
   // does not have to spell a width it does not care about.
-  TypeId default_int() { return Int(IntWidth::k32, true); }
+  TypeId default_int() { return Int(IntWidth::k64, true); }
   TypeId default_float() { return Float(FloatWidth::k32); }
 
   // ------------------------------------------------------- constructors --

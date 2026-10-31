@@ -4,6 +4,20 @@ What changed in each release, newest first. The decision behind a change
 is cited as `(D<n>)` and written up in [docs/decisions.md](docs/decisions.md);
 how a release is made is in [docs/releasing.md](docs/releasing.md).
 
+## 1.2.0
+
+### Changed
+
+- `int` is `s64` on every target and in every tier; `float` stays `f32`.
+  A length, an index and a hash are `int`, so `.len` no longer stops at
+  2^31 (D238). C's `int` is still `s32` in `extern` signatures: write
+  `as s32` where an `int` reaches one. An integer literal with no type
+  now settles on `s64`, so `E0109` fires from 2^63.
+- `std.hash.TextHash` keeps 63 bits of the hash now instead of 31, so a
+  text key lands in a different slot than before; `std.map.IntHash` keeps
+  its 31-bit value for every key that fit 32 bits and no longer traps for
+  a larger one.
+
 ## 1.1.0
 
 The first public release after an audit of the compiler, the runtime, the

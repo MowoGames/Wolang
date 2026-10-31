@@ -4,6 +4,9 @@ Thirty-four modules, all written in Wolang over a floor of about sixty C
 calls. This is what each one is for, what it gives you, and what it does
 not. Every example here compiles.
 
+A length, an index and a hash are `int`, which is `s64` (D238): `.len` on a
+text, slice or list is an `int`, and a collection is not capped at 2^31.
+
 How to read a signature: `uses unsafe` on a standard library function
 means *it* takes the responsibility, not you — `std.math.Sqrt`-style
 wrappers over a C call. The one exception is `std.text.Bytes`: it hands
