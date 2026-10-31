@@ -1580,7 +1580,13 @@ int RunProgram(const Options& options) {
 int RunTests(const Options& options) {
   // A line at a time, so a test that brings the process down still leaves
   // the names of the ones before it in a log that is a pipe.
-  std::setvbuf(stdout, nullptr, _IOLBF, 0);
+  // Windows has no line buffering (`_IOLBF` is full buffering there) and
+  // asserts on a size below two, so it gets no buffering at all.
+#if defined(_WIN32)
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+#else
+  std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
+#endif
   Database database;
   DiagnosticEngine load_diagnostics;
   std::vector<FileId> files;
