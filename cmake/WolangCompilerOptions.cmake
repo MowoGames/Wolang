@@ -25,6 +25,13 @@ function(wolang_configure_target target)
     if(WOLANG_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE /WX)
     endif()
+    # The main thread's stack is a megabyte here and eight on Linux and
+    # macOS; the interpreter recurses on it, and stops short when it runs
+    # low (D225), so a program that runs elsewhere stopped here.
+    get_target_property(kind ${target} TYPE)
+    if(kind STREQUAL "EXECUTABLE")
+      target_link_options(${target} PRIVATE /STACK:8388608)
+    endif()
   else()
     target_compile_options(${target} PRIVATE
         -Wall
