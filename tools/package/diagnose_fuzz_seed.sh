@@ -8,6 +8,9 @@ W="$1"
 here="$(dirname "$0")"
 work="$(mktemp -d)"
 limit() { timeout -k 5 "$@"; }
+echo "== fuzz, stage by stage"
+WOLANG_FUZZ_TRACE=1 limit 120 "$W" fuzz "$here/diag/seed8.wo"
+echo "fuzz rc $?"
 echo "== asm (compile only)"
 limit 120 "$W" asm --raw "$here/diag/seed8.wo" > "$work/asm.txt" 2>&1
 echo "asm rc $?"

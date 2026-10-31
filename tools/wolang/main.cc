@@ -2092,6 +2092,17 @@ int RunFuzz(const Options& options) {
       continue;
     }
 
+    // Each stage named on stderr as it starts, when asked: a program that
+    // hangs on one system and not another says where.
+    const bool trace = std::getenv("WOLANG_FUZZ_TRACE") != nullptr;
+    const auto stage = [&](const char* what) {
+      if (trace) {
+        std::fprintf(stderr, "seed %llu: %s\n",
+                     static_cast<unsigned long long>(seed), what);
+        std::fflush(stderr);
+      }
+    };
+    stage("interpreting the unoptimized code");
     const Symbol probe = database.interner().Intern("Probe");
     abi::LayoutStore layouts(database.types(), checked_file->resolution);
     database.ShareMembers(&layouts);
@@ -2105,6 +2116,7 @@ int RunFuzz(const Options& options) {
     if (!reference.ok() && reference.trap == ir::TrapKind::kStepLimit) {
       continue;
     }
+    stage("interpreting the optimized code");
     const interp::Outcome optimized = interp::RunNamed(
         database.interner(), database.types(), lowered->module, probe, {}, {},
         nullptr, foreign.get(), &layouts);
@@ -2132,13 +2144,16 @@ int RunFuzz(const Options& options) {
     if (!codegen::IsSupportedTarget()) {
       continue;
     }
+    stage("compiling");
     std::unique_ptr<codegen::CompiledModule> compiled =
         codegen::Compile(database.interner(), database.types(),
                          checked_file->resolution, lowered->module);
     if (compiled == nullptr || !compiled->Contains(probe)) {
       continue;
     }
+    stage("running the machine code");
     const interp::Outcome machine = compiled->Run(probe, {});
+    stage("done");
     if (describe(machine) != describe(reference)) {
       std::fprintf(stdout,
                    "[ failed ] seed %llu: the code generator disagrees: "
