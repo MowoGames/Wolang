@@ -124,6 +124,20 @@ enum class MemberKind : uint8_t {
 // Everything else -- a method, a variant, a signal -- is code or a tag.
 bool HasStorage(MemberKind kind);
 
+// Which operator an `@Operator` ability lends its one method to (D239). Kept
+// on the method's member so a use of `+` finds the ability by what it says
+// and not by a name two libraries might spell alike.
+enum class OperatorKind : uint8_t {
+  kNone,
+  kPlus,
+  kMinus,
+  kTimes,
+  kDivide,
+  kNegate,
+  kEquals,
+  kCompare,
+};
+
 // One name declared inside a named type. Member tables are part of the file
 // resolution that produced them rather than of the type store, so that
 // changing a field's type invalidates everything that reads it.
@@ -154,6 +168,8 @@ struct Member {
   bool is_override = false;
   // Fields: `weak var`, which does not keep the object alive.
   bool is_weak = false;
+  // Methods of an `@Operator` ability: the operator this one answers.
+  OperatorKind operator_kind = OperatorKind::kNone;
   // Derived fields: which fields the expression reads, as indices into the
   // same table. A write to any of them is what makes the value stale, and
   // the list is here because the writer may be in another file.
@@ -168,6 +184,7 @@ struct Member {
            lhs.is_virtual == rhs.is_virtual &&
            lhs.is_override == rhs.is_override &&
            lhs.is_weak == rhs.is_weak &&
+           lhs.operator_kind == rhs.operator_kind &&
            lhs.depends_on == rhs.depends_on;
   }
 };

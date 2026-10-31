@@ -33,6 +33,10 @@ constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadWeak = "E0137";
 constexpr std::string_view kTypeWithoutTarget = "E0138";
+// An ability that takes `Self` used as the type of a value (D239).
+constexpr std::string_view kSelfAbilityValue = "E0157";
+// An `@Operator` ability whose one method is not an operator's shape.
+constexpr std::string_view kBadOperatorAbility = "E0160";
 constexpr std::string_view kSelfEscapesDeinit = "E0145";
 // A closure that captures, started on another thread (D232). E0147, the
 // module-level `var` it may not reach, is reported by the module walk.
@@ -141,7 +145,8 @@ class Checker {
         resolution_(resolution),
         ast_(ast),
         resolver_(types, interner, resolution, &diagnostics_),
-        item_indices_(item_indices) {
+        item_indices_(item_indices),
+        self_name_(interner->Lookup("Self")) {
     result_.expr_types.assign(ast.expr_count(), TypeId{});
     // A name in type position counts as a use just as much as one in
     // expression position.
@@ -527,11 +532,11 @@ class Checker {
   TypeId Check(ExprId id, TypeId expected, bool keep_open = false);
   TypeId CheckLiteral(const Expr& expr, TypeId expected);
   TypeId CheckPath(const Expr& expr);
-  TypeId CheckUnary(const Expr& expr, TypeId expected);
-  TypeId CheckBinary(const Expr& expr, TypeId expected);
+  TypeId CheckUnary(ExprId id, const Expr& expr, TypeId expected);
+  TypeId CheckBinary(ExprId id, const Expr& expr, TypeId expected);
   bool IsLiteralTree(ExprId id) const;
   bool IsFloatLiteralTree(ExprId id, bool* has_float) const;
-  TypeId CheckAssign(const Expr& expr);
+  TypeId CheckAssign(ExprId id, const Expr& expr);
   // `module.Name` (D246).
   bool IsModuleQualified(const Expr& field);
   TypeId CheckQualified(ExprId id, const Expr& field);
@@ -549,6 +554,19 @@ class Checker {
   // for `C.Walker` the bound `type Walker: Iterator` declared (D212).
   std::vector<TypeId> BoundsOf(TypeId type);
   const Member* MemberThroughBounds(TypeId receiver, Symbol name, TypeId* ability);
+  // The method of an `@Operator` ability that answers |kind| for |operand|:
+  // the implementation's for a concrete type, the ability's own for a type
+  // parameter bounded by it (D239). Null for anything with the built-in
+  // operator or none.
+  const Member* OperatorMethod(TypeId operand, OperatorKind kind, TypeId* ability);
+  // Settles `left op right` as a call to that method, recording it for
+  // lowering. False when no ability lends the operator.
+  bool CheckOperator(ExprId id, const Expr& expr, OperatorKind kind, TypeId left, TypeId right, TypeId* result);
+  // The ability that takes `Self` somewhere inside |type|, or an invalid id.
+  TypeId SelfAbilityIn(TypeId type, int depth);
+  void RefuseSelfAbilityValue(TypeId type, SourceSpan span);
+  void CheckOperatorAbility(const Item& item, TypeId ability);
+  bool MentionsSelf(TypeId type, TypeId ability);
   // An ability's signature as it reads on |receiver|: its own `Item`
   // becomes `receiver.Item`.
   TypeId AsSelf(TypeId type, TypeId ability, TypeId receiver);
@@ -651,6 +669,8 @@ class Checker {
   TypeId return_type_;
   // The type whose members are in scope, inside a method.
   TypeId self_type_;
+  // The interned `Self`, invalid when no source mentions it (D239).
+  Symbol self_name_;
   // Codes suppressed by an enclosing `@allow`, innermost last.
   std::vector<std::string> allowed_;
   // Nesting depth of loops, so `break` outside one can be reported.
@@ -1178,7 +1198,7 @@ TypeId Checker::CheckBinding(const Expr& expr, const Binding* binding) {
   return binding->type.is_valid() ? binding->type : types_->error();
 }
 
-TypeId Checker::CheckUnary(const Expr& expr, TypeId expected) {
+TypeId Checker::CheckUnary(ExprId id, const Expr& expr, TypeId expected) {
   // The expectation reaches the operand only where the operator preserves
   // the type. `*p` and `&x` change it, so passing the context's type down
   // would check the pointer against what the pointee has to be -- which
@@ -1204,6 +1224,10 @@ TypeId Checker::CheckUnary(const Expr& expr, TypeId expected) {
   switch (expr.op) {
     case TokenKind::kMinus:
       if (!types_->IsNumeric(operand) && !types_->IsError(operand)) {
+        TypeId lent;
+        if (CheckOperator(id, expr, OperatorKind::kNegate, operand, TypeId{}, &lent)) {
+          return lent;
+        }
         std::string message = "`-` needs a number, found `";
         message.append(Describe(operand));
         message.append("`");
@@ -1296,7 +1320,7 @@ bool Checker::IsFloatLiteralTree(ExprId id, bool* has_float) const {
   }
 }
 
-TypeId Checker::CheckBinary(const Expr& expr, TypeId expected) {
+TypeId Checker::CheckBinary(ExprId id, const Expr& expr, TypeId expected) {
   // `-9223372036854775807 - 1` where an `s64` is wanted: the literals are
   // read at that type from the start. Left open they were folded as `int`
   // and cut to 32 bits (D225).
@@ -1357,6 +1381,40 @@ TypeId Checker::CheckBinary(const Expr& expr, TypeId expected) {
   }
   const TypeId right =
       Check(expr.rhs, right_expectation, /*keep_open=*/true);
+
+  // A type that implements an `@Operator` ability lends the operator to its
+  // method; anything else keeps the built-in meaning (D239).
+  OperatorKind lent_kind = OperatorKind::kNone;
+  switch (expr.op) {
+    case TokenKind::kPlus:
+      lent_kind = OperatorKind::kPlus;
+      break;
+    case TokenKind::kMinus:
+      lent_kind = OperatorKind::kMinus;
+      break;
+    case TokenKind::kStar:
+      lent_kind = OperatorKind::kTimes;
+      break;
+    case TokenKind::kSlash:
+      lent_kind = OperatorKind::kDivide;
+      break;
+    case TokenKind::kEqEq:
+    case TokenKind::kBangEq:
+      lent_kind = OperatorKind::kEquals;
+      break;
+    case TokenKind::kLess:
+    case TokenKind::kLessEq:
+    case TokenKind::kGreater:
+    case TokenKind::kGreaterEq:
+      lent_kind = OperatorKind::kCompare;
+      break;
+    default:
+      break;
+  }
+  TypeId lent_result;
+  if (lent_kind != OperatorKind::kNone && CheckOperator(id, expr, lent_kind, left, right, &lent_result)) {
+    return lent_result;
+  }
 
   switch (expr.op) {
     case TokenKind::kAmpAmp:
@@ -1672,7 +1730,7 @@ void Checker::CheckMachine(const Item& item) {
   self_type_ = previous_self;
 }
 
-TypeId Checker::CheckAssign(const Expr& expr) {
+TypeId Checker::CheckAssign(ExprId id, const Expr& expr) {
   const TypeId target = Check(expr.lhs, TypeId{});
 
   // Only a name, a field or an element can be assigned to, and a `let`
@@ -1766,6 +1824,24 @@ TypeId Checker::CheckAssign(const Expr& expr) {
       coalesce && types_->IsOptional(target) ? types_->ElementOf(target)
                                              : target;
   const TypeId value = Check(expr.rhs, wanted);
+  OperatorKind compound_kind = OperatorKind::kNone;
+  TypeId lent_result;
+  switch (expr.op) {
+    case TokenKind::kPlusEq:
+      compound_kind = OperatorKind::kPlus;
+      break;
+    case TokenKind::kMinusEq:
+      compound_kind = OperatorKind::kMinus;
+      break;
+    case TokenKind::kStarEq:
+      compound_kind = OperatorKind::kTimes;
+      break;
+    case TokenKind::kSlashEq:
+      compound_kind = OperatorKind::kDivide;
+      break;
+    default:
+      break;
+  }
   if (compound) {
     const bool shift = expr.op == TokenKind::kShlEq ||
                        expr.op == TokenKind::kShrEq;
@@ -1786,6 +1862,11 @@ TypeId Checker::CheckAssign(const Expr& expr) {
     } else if (expr.op == TokenKind::kPlusEq && IsTextLike(target) &&
                IsTextLike(value)) {
       // Joined the way `a + b` is, and stored where `a = a + b` would.
+    } else if (compound_kind != OperatorKind::kNone && CheckOperator(id, expr, compound_kind, target, value, &lent_result)) {
+      // `a += b` on a type with `Plus` is `a = a.Plus(b)` (D239).
+      if (!Accepts(target, lent_result)) {
+        ReportMismatch(target, lent_result, expr.span);
+      }
     } else if (!types_->IsNumeric(target) || !types_->IsNumeric(value) ||
                (bits && (types_->IsFloatingPoint(target) ||
                          types_->IsFloatingPoint(value)))) {
@@ -2330,6 +2411,12 @@ TypeId Checker::AsSelf(TypeId type, TypeId ability, TypeId receiver) {
 
 TypeId Checker::Normalize(TypeId type) {
   return types_->AnswerProjections(type, [&](TypeId owner, Symbol name) {
+    // A projection named `Self` whose owner is not an ability is its owner
+    // (D239): that is what `Self` of an ability means once it is used on a
+    // type, or on a type parameter bounded by it.
+    if (self_name_.is_valid() && name == self_name_ && !resolution_->IsAbility(owner)) {
+      return owner;
+    }
     const TypeKind kind = types_->KindOf(owner);
     if (kind == TypeKind::kNamed || kind == TypeKind::kInstance) {
       const Member* answer = resolution_->FindMember(owner, name);
@@ -2339,6 +2426,101 @@ TypeId Checker::Normalize(TypeId type) {
     }
     return types_->Projection(owner, name);
   });
+}
+
+static std::string_view OperatorMethodName(OperatorKind kind) {
+  switch (kind) {
+    case OperatorKind::kPlus:
+      return "Plus";
+    case OperatorKind::kMinus:
+      return "Minus";
+    case OperatorKind::kTimes:
+      return "Times";
+    case OperatorKind::kDivide:
+      return "Divide";
+    case OperatorKind::kNegate:
+      return "Negate";
+    case OperatorKind::kEquals:
+      return "Equals";
+    case OperatorKind::kCompare:
+      return "Compare";
+    case OperatorKind::kNone:
+      break;
+  }
+  return "";
+}
+
+const Member* Checker::OperatorMethod(TypeId operand, OperatorKind kind, TypeId* ability) {
+  if (kind == OperatorKind::kNone || !operand.is_valid()) {
+    return nullptr;
+  }
+  const Symbol method = interner_->Lookup(OperatorMethodName(kind));
+  if (!method.is_valid()) {
+    return nullptr;
+  }
+
+  const TypeKind operand_kind = types_->KindOf(operand);
+  if (operand_kind == TypeKind::kParameter || operand_kind == TypeKind::kProjection) {
+    TypeId through;
+    const Member* member = MemberThroughBounds(operand, method, &through);
+    if (member == nullptr || member->operator_kind != kind) {
+      return nullptr;
+    }
+    *ability = through;
+    return member;
+  }
+  if (operand_kind != TypeKind::kNamed && operand_kind != TypeKind::kInstance) {
+    return nullptr;
+  }
+
+  const TypeId found = resolution_->FindOperatorAbility(operand, kind);
+  if (!found.is_valid()) {
+    return nullptr;
+  }
+  *ability = found;
+  const Member* member = resolution_->FindMember(operand, method);
+  return member != nullptr ? member : resolution_->FindInheritedMember(operand, method);
+}
+
+bool Checker::CheckOperator(ExprId id, const Expr& expr, OperatorKind kind, TypeId left, TypeId right, TypeId* result) {
+  TypeId ability;
+  const Member* method = OperatorMethod(left, kind, &ability);
+  if (method == nullptr || method->kind != MemberKind::kMethod) {
+    return false;
+  }
+
+  const TypeKind left_kind = types_->KindOf(left);
+  const bool bounded = left_kind == TypeKind::kParameter || left_kind == TypeKind::kProjection;
+  const TypeId signature = Normalize(bounded ? AsSelf(method->type, ability, left) : method->type);
+  const size_t arity = kind == OperatorKind::kNegate ? 0 : 1;
+  if (types_->KindOf(signature) != TypeKind::kFunction || types_->ArgumentsOf(signature).size() != arity) {
+    return false;
+  }
+
+  TypedBody::OperatorCall call;
+  call.expr = id;
+  call.kind = kind;
+  call.receiver = left;
+  call.file = method->file;
+  call.item = method->item;
+  call.slot = method->slot;
+  call.ability = ability;
+  result_.operator_calls.push_back(call);
+  ChargeMember(method, false);
+
+  if (arity == 1) {
+    TypeId wanted = types_->ArgumentsOf(signature)[0];
+    if (types_->KindOf(wanted) == TypeKind::kReference) {
+      wanted = types_->ElementOf(wanted);
+    }
+    if (!Accepts(wanted, right)) {
+      ReportMismatch(wanted, right, expr.span);
+    }
+  }
+
+  const bool comparison = kind == OperatorKind::kEquals || kind == OperatorKind::kCompare;
+  *result = comparison ? types_->bool_type() : types_->ElementOf(signature);
+  return true;
 }
 
 TypeId Checker::CheckField(const Expr& expr) {
@@ -2930,13 +3112,13 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       break;
 
     case ExprKind::kUnary:
-      type = CheckUnary(expr, expected);
+      type = CheckUnary(id, expr, expected);
       break;
     case ExprKind::kBinary:
-      type = CheckBinary(expr, expected);
+      type = CheckBinary(id, expr, expected);
       break;
     case ExprKind::kAssign:
-      type = CheckAssign(expr);
+      type = CheckAssign(id, expr);
       break;
     case ExprKind::kRange:
       type = CheckRange(expr);
@@ -3372,6 +3554,9 @@ void Checker::CheckStmt(StmtId id) {
       const TypeId declared = stmt.type.is_valid()
                                   ? resolver_.Resolve(ast_, stmt.type)
                                   : TypeId{};
+      if (stmt.type.is_valid()) {
+        RefuseSelfAbilityValue(declared, ast_.Get(stmt.type).span);
+      }
       TypeId value = declared;
       if (stmt.expr.is_valid()) {
         wait_allowed_ = true;
@@ -3560,6 +3745,9 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
     const TypeId type = param.type.is_valid()
                             ? resolver_.Resolve(ast_, param.type)
                             : types_->error();
+    if (param.type.is_valid()) {
+      RefuseSelfAbilityValue(type, ast_.Get(param.type).span);
+    }
     if (is_foreign) {
       CheckForeignType(type, param.span, /*is_result=*/false);
     }
@@ -3590,6 +3778,9 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   in_deinit_ = item.kind == ItemKind::kDeinit;
   return_type_ = item.type.is_valid() ? resolver_.Resolve(ast_, item.type)
                                       : types_->void_type();
+  if (item.type.is_valid()) {
+    RefuseSelfAbilityValue(return_type_, ast_.Get(item.type).span);
+  }
 
   // Every type parameter has to appear in the signature.
   //
@@ -3709,6 +3900,9 @@ void Checker::CheckBinding(const Item& item) {
   const TypeId declared = item.type.is_valid()
                               ? resolver_.Resolve(ast_, item.type)
                               : TypeId{};
+  if (item.type.is_valid()) {
+    RefuseSelfAbilityValue(declared, ast_.Get(item.type).span);
+  }
 
   // A declaration at module level has to say its type.
   //
@@ -3987,6 +4181,124 @@ void Checker::CheckSized(const Item& item, TypeId type) {
   }
 }
 
+bool Checker::MentionsSelf(TypeId type, TypeId ability) {
+  if (!self_name_.is_valid() || !types_->MentionsProjection(type)) {
+    return false;
+  }
+  bool mentions = false;
+  types_->AnswerProjections(type, [&](TypeId owner, Symbol name) {
+    mentions |= owner == ability && name == self_name_;
+    return types_->Projection(owner, name);
+  });
+  return mentions;
+}
+
+// An ability whose method names `Self` cannot be the type of a value: a value
+// of an ability is a pair of data and table, and nothing in the pair says what
+// the other operand of `Equals` is (D239). A bound is not a value, so the
+// positions that resolve a bound never come through here.
+TypeId Checker::SelfAbilityIn(TypeId type, int depth) {
+  if (!type.is_valid() || depth > 8) {
+    return TypeId{};
+  }
+  switch (types_->KindOf(type)) {
+    case TypeKind::kNamed:
+      return resolution_->IsAbility(type) && resolution_->TakesSelf(type) ? type : TypeId{};
+    case TypeKind::kInstance: {
+      const TypeId base = SelfAbilityIn(types_->Get(type).base, depth + 1);
+      if (base.is_valid()) {
+        return base;
+      }
+      break;
+    }
+    case TypeKind::kOptional:
+    case TypeKind::kFallible:
+    case TypeKind::kSlice:
+    case TypeKind::kArray:
+    case TypeKind::kPointer:
+    case TypeKind::kReference:
+      return SelfAbilityIn(types_->ElementOf(type), depth + 1);
+    case TypeKind::kFunction: {
+      const TypeId result = SelfAbilityIn(types_->ElementOf(type), depth + 1);
+      if (result.is_valid()) {
+        return result;
+      }
+      break;
+    }
+    default:
+      return TypeId{};
+  }
+  for (const TypeId argument : types_->ArgumentsOf(type)) {
+    if (const TypeId found = SelfAbilityIn(argument, depth + 1); found.is_valid()) {
+      return found;
+    }
+  }
+  return TypeId{};
+}
+
+void Checker::RefuseSelfAbilityValue(TypeId type, SourceSpan span) {
+  const TypeId ability = SelfAbilityIn(type, 0);
+  if (!ability.is_valid()) {
+    return;
+  }
+  std::string message = "`";
+  message.append(Describe(ability));
+  message.append("` takes `Self`, so it cannot be the type of a value");
+  Report(kSelfAbilityValue, std::move(message), span, "use it as a bound: `<T: Ability>` (D239)");
+}
+
+// `@Operator` lends an ability's one method to an operator, so the method has
+// to be one of the seven and have the shape the operator can call (D239).
+void Checker::CheckOperatorAbility(const Item& item, TypeId ability) {
+  bool marked = false;
+  for (AttributeId attribute_id : ast_.Get(item.attributes)) {
+    marked |= interner_->Text(ast_.Get(attribute_id).name) == "Operator";
+  }
+  if (!marked || !ability.is_valid()) {
+    return;
+  }
+
+  const Member* method = nullptr;
+  size_t others = 0;
+  for (const Member& member : resolution_->MembersOf(ability)) {
+    if (member.kind == MemberKind::kMethod && method == nullptr) {
+      method = &member;
+    } else {
+      ++others;
+    }
+  }
+
+  bool shaped = method != nullptr && others == 0 && method->operator_kind != OperatorKind::kNone && types_->KindOf(method->type) == TypeKind::kFunction;
+  if (shaped) {
+    // Source that never says `Self` cannot have the shape of one.
+    const TypeId self = self_name_.is_valid() ? types_->Projection(ability, self_name_) : TypeId{};
+    const std::vector<TypeId> params = types_->ArgumentsOf(method->type);
+    const TypeId result = types_->ElementOf(method->type);
+    switch (method->operator_kind) {
+      case OperatorKind::kNegate:
+        shaped = params.empty() && result == self;
+        break;
+      case OperatorKind::kEquals:
+        shaped = params.size() == 1 && params[0] == types_->Reference(self, false) && result == types_->bool_type();
+        break;
+      case OperatorKind::kCompare:
+        shaped = params.size() == 1 && params[0] == types_->Reference(self, false) && result == types_->default_int();
+        break;
+      default:
+        shaped = params.size() == 1 && params[0] == self && result == self;
+        break;
+    }
+  }
+  if (shaped) {
+    return;
+  }
+
+  std::string message = "`@Operator` on `";
+  message.append(interner_->Text(item.name));
+  message.append("` needs one method shaped like an operator");
+  Report(kBadOperatorAbility, std::move(message), item.name_span, "`Plus`, `Minus`, `Times`, `Divide` take `other: Self` and give `Self`; `Negate()` gives `Self`; `Equals(other: &Self) -> bool`; `Compare(other: &Self) -> int` (D239)");
+}
+
 // `extend T as Ability` promises that T has every method the ability declares.
 // The methods may come from T's own declaration or from any extension of it,
 // which is why this works from the member table rather than from this block.
@@ -4006,6 +4318,26 @@ void Checker::CheckAbilityConformance(const Item& item, TypeId target) {
     }
     const Member* found = resolution_->FindMember(target, required.name);
     if (found != nullptr && found->kind == required.kind && (required.kind == MemberKind::kMethod || found->type.is_valid())) {
+      // A method that names `Self` has to say it for the implementing type:
+      // `Plus(other: Self) -> Self` is `fun(Vec3) -> Vec3` on a `Vec3` (D239).
+      if (required.kind == MemberKind::kMethod && MentionsSelf(required.type, ability) && !types_->IsError(found->type)) {
+        const TypeId expected = Normalize(AsSelf(required.type, ability, target));
+        const TypeId given = Normalize(found->type);
+        if (expected != given) {
+          std::string message = "`";
+          message.append(Describe(target));
+          message.append(".");
+          message.append(interner_->Text(required.name));
+          message.append("` is `");
+          message.append(Describe(given));
+          message.append("` but `");
+          message.append(Describe(ability));
+          message.append("` needs `");
+          message.append(Describe(expected));
+          message.append("`");
+          Report(kMissingAbilityMethod, std::move(message), item.name_span);
+        }
+      }
       continue;
     }
     if (!missing.empty()) {
@@ -4144,7 +4476,7 @@ void Checker::CheckItem(ItemId id) {
       // A generic type's parameters stay in scope for its members: the `T`
       // of `struct Holder<T>` is what the type of its `value` field names,
       // and what a method's signature names too.
-      const size_t pushed = PushGenerics(item, IndexOf(id));
+      size_t pushed = PushGenerics(item, IndexOf(id));
 
       // Inside a type's members, `self` is that type.
       const TypeId previous_self = self_type_;
@@ -4173,6 +4505,20 @@ void Checker::CheckItem(ItemId id) {
         }
         CheckBaseChain(item, self_type_);
         CheckSized(item, self_type_);
+      }
+      // `Self` is the type here, or for an ability the type that will
+      // implement it (D239).
+      if (self_name_.is_valid() && self_type_.is_valid() && item.kind != ItemKind::kAbility) {
+        resolver_.PushTypeParameter(self_name_, self_type_);
+        ++pushed;
+      }
+      if (item.kind == ItemKind::kAbility) {
+        const Binding* declared = Lookup(item.name);
+        if (declared != nullptr && declared->type.is_valid() && self_name_.is_valid()) {
+          resolver_.PushTypeParameter(self_name_, types_->Projection(declared->type, self_name_));
+          ++pushed;
+        }
+        CheckOperatorAbility(item, declared != nullptr ? declared->type : TypeId{});
       }
       bool reported_unsized = false;
       for (ItemId member : ast_.Get(item.members)) {

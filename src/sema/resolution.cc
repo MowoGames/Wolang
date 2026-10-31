@@ -19,6 +19,8 @@ constexpr std::string_view kUnknownDimension = "E0114";
 constexpr std::string_view kBadUnitFactor = "E0115";
 constexpr std::string_view kBadDimensionProduct = "E0116";
 constexpr std::string_view kCyclicDimension = "E0118";
+// `Self` where there is no type for it to be (D239).
+constexpr std::string_view kSelfOutside = "E0156";
 
 // The names the language provides without any declaration. Spelled out here
 // rather than injected as a synthetic module, because they have no
@@ -108,6 +110,41 @@ BindingKind BindingKindOf(ItemKind kind) {
 
 }  // namespace
 
+// The operator a method name stands for in an `@Operator` ability (D239).
+static OperatorKind OperatorNamed(std::string_view name) {
+  if (name == "Plus") {
+    return OperatorKind::kPlus;
+  }
+  if (name == "Minus") {
+    return OperatorKind::kMinus;
+  }
+  if (name == "Times") {
+    return OperatorKind::kTimes;
+  }
+  if (name == "Divide") {
+    return OperatorKind::kDivide;
+  }
+  if (name == "Negate") {
+    return OperatorKind::kNegate;
+  }
+  if (name == "Equals") {
+    return OperatorKind::kEquals;
+  }
+  if (name == "Compare") {
+    return OperatorKind::kCompare;
+  }
+  return OperatorKind::kNone;
+}
+
+static bool HasAttribute(const Ast& ast, const StringInterner& interner, const Item& item, std::string_view name) {
+  for (AttributeId attribute_id : ast.Get(item.attributes)) {
+    if (interner.Text(ast.Get(attribute_id).name) == name) {
+      return true;
+    }
+  }
+  return false;
+}
+
 Dimensions FileResolution::ProductOf(DimensionId dimension) const {
   for (const auto& [id, product] : dimension_products) {
     if (id == dimension) {
@@ -177,6 +214,7 @@ std::span<const Member> FileResolution::MembersOf(TypeId type) const {
   built.type = type;
   built.is_value = declared->is_value;
   built.is_ability = declared->is_ability;
+  built.takes_self = declared->takes_self;
   built.parameters = declared->parameters;
   built.members = declared->members;
   for (Member& member : built.members) {
@@ -263,9 +301,67 @@ const Member* FileResolution::FindInheritedMember(TypeId type,
   return nullptr;
 }
 
+OperatorKind FileResolution::OperatorOf(TypeId ability) const {
+  for (const Member& member : MembersOf(ability)) {
+    if (member.kind == MemberKind::kMethod && member.operator_kind != OperatorKind::kNone) {
+      return member.operator_kind;
+    }
+  }
+  return OperatorKind::kNone;
+}
+
+bool FileResolution::TakesSelf(TypeId ability) const {
+  for (const TypeMembers& table : type_members) {
+    if (table.type == ability) {
+      return table.takes_self;
+    }
+  }
+  return false;
+}
+
+TypeId FileResolution::FindOperatorAbility(TypeId type, OperatorKind kind) const {
+  if (!type.is_valid() || kind == OperatorKind::kNone) {
+    return TypeId{};
+  }
+  TypeId current = type;
+  if (types != nullptr && types->KindOf(current) == TypeKind::kInstance) {
+    current = types->Get(current).base;
+  }
+  for (size_t depth = 0; depth <= relations.size() && current.is_valid(); ++depth) {
+    for (TypeId ability : AbilitiesOf(current)) {
+      if (OperatorOf(ability) == kind) {
+        return ability;
+      }
+    }
+    current = BaseOf(current);
+  }
+  return TypeId{};
+}
+
 bool FileResolution::Satisfies(TypeId type, TypeId bound) const {
   if (!type.is_valid() || !bound.is_valid()) {
     return true;
+  }
+
+  // A number, a `bool`, a `char` and a `text` have the operators built in,
+  // so they meet the abilities that lend those operators (D239).
+  if (types != nullptr) {
+    const OperatorKind lent = OperatorOf(bound);
+    const TypeKind kind = types->KindOf(type);
+    if (lent != OperatorKind::kNone) {
+      const bool number = kind == TypeKind::kInt || kind == TypeKind::kFloat || kind == TypeKind::kIntLiteral || kind == TypeKind::kFloatLiteral;
+      const bool comparison = lent == OperatorKind::kEquals || lent == OperatorKind::kCompare;
+      const bool negatable = lent != OperatorKind::kNegate || kind == TypeKind::kFloat || kind == TypeKind::kFloatLiteral || (kind == TypeKind::kInt && types->Get(type).is_signed);
+      if (number && negatable) {
+        return true;
+      }
+      if ((kind == TypeKind::kBool || kind == TypeKind::kChar) && comparison) {
+        return true;
+      }
+      if ((kind == TypeKind::kStr || kind == TypeKind::kString) && lent == OperatorKind::kEquals) {
+        return true;
+      }
+    }
   }
 
   // `ListWalk<int>` satisfies what `extend ListWalk<T> as ...` declared.
@@ -727,6 +823,12 @@ TypeId TypeResolver::ResolvePath(const Ast& ast, const TypeRef& type) {
 
   const Binding* binding =
       resolution_ == nullptr ? nullptr : resolution_->Find(name);
+  if (binding == nullptr && interner_->Text(name) == "Self") {
+    diagnostics_->Error(kSelfOutside, "`Self` is the implementing type, and there is none here")
+        .Primary(type.span)
+        .Note("use it inside an ability, an `extend` or a type's own body (D239)");
+    return types_->error();
+  }
   if (binding == nullptr) {
     std::string message = "no type named `";
     message.append(interner_->Text(name));
@@ -1228,12 +1330,14 @@ void ResolveSignatures(TypeStore* types,
     std::reverse(owners.begin(), owners.end());
 
     size_t pushed = 0;
+    const Symbol self_name = interner->Lookup("Self");
     for (uint32_t owner : owners) {
       const ItemId owner_id = ResolveItem(ast, owner);
       if (!ast.Contains(owner_id)) {
         continue;
       }
       uint32_t position = 0;
+      std::vector<TypeId> own_parameters;
       for (GenericParamId generic_id : ast.Get(ast.Get(owner_id).generics)) {
         const GenericParam& generic = ast.Get(generic_id);
         std::vector<TypeId> bounds;
@@ -1243,8 +1347,30 @@ void ResolveSignatures(TypeStore* types,
         resolver.PushTypeParameter(
             generic.name,
             types->Parameter(generic.name, owner, position, bounds));
+        own_parameters.push_back(types->Parameter(generic.name, owner, position));
         ++position;
         ++pushed;
+      }
+      // `Self` is the type that implements the ability (a projection like
+      // `Item`, D212), or the type whose body or `extend` this is (D239).
+      if (self_name.is_valid()) {
+        const ItemKind owner_kind = tree.entries[owner].kind;
+        TypeId self;
+        if (owner_kind == ItemKind::kAbility) {
+          self = resolution->item_types[owner].is_valid() ? types->Projection(resolution->item_types[owner], self_name) : TypeId{};
+        } else if (owner_kind == ItemKind::kExtend) {
+          const Item& extend = ast.Get(owner_id);
+          self = extend.target_type.is_valid() ? resolver.Resolve(ast, extend.target_type) : TypeId{};
+        } else if (owner_kind == ItemKind::kClass || owner_kind == ItemKind::kStruct || owner_kind == ItemKind::kEnum || owner_kind == ItemKind::kComponent || owner_kind == ItemKind::kTag || owner_kind == ItemKind::kMachine) {
+          self = resolution->item_types[owner];
+          if (self.is_valid() && !own_parameters.empty()) {
+            self = types->Instance(self, own_parameters);
+          }
+        }
+        if (self.is_valid()) {
+          resolver.PushTypeParameter(self_name, self);
+          ++pushed;
+        }
       }
       // Inside an ability, `Item` is the associated type of whatever
       // implements it: a projection of the ability itself, which a use
@@ -1368,6 +1494,10 @@ void ResolveSignatures(TypeStore* types,
   // type it extends, which is what makes `extend` additive.
   const auto members_of = [&](uint32_t index) {
     std::vector<Member> members;
+    // `@Operator` on an ability lends its one method to an operator, by the
+    // method's name (D239).
+    const ItemId owner_item = ResolveItem(ast, index);
+    const bool lends_operator = tree.entries[index].kind == ItemKind::kAbility && ast.Contains(owner_item) && HasAttribute(ast, *interner, ast.Get(owner_item), "Operator");
     for (uint32_t child = 0; child < tree.entries.size(); ++child) {
       const ItemTreeEntry& member_entry = tree.entries[child];
       if (member_entry.parent != index || !member_entry.name.is_valid()) {
@@ -1386,6 +1516,9 @@ void ResolveSignatures(TypeStore* types,
       switch (member_entry.kind) {
         case ItemKind::kFunction:
           member.kind = MemberKind::kMethod;
+          if (lends_operator) {
+            member.operator_kind = OperatorNamed(interner->Text(member_entry.name));
+          }
           break;
         case ItemKind::kVariant:
           member.kind = MemberKind::kVariant;
@@ -1501,6 +1634,21 @@ void ResolveSignatures(TypeStore* types,
     table.is_value = entry.kind != ItemKind::kClass &&
                      entry.kind != ItemKind::kAbility;
     table.is_ability = entry.kind == ItemKind::kAbility;
+    // A method that names `Self` makes the ability unusable as a value type:
+    // a pair of data and table cannot say what `other` is (D239).
+    if (table.is_ability) {
+      const Symbol self_name = interner->Lookup("Self");
+      for (const Member& member : table.members) {
+        bool names_self = false;
+        if (self_name.is_valid() && member.kind == MemberKind::kMethod && types->MentionsProjection(member.type)) {
+          types->AnswerProjections(member.type, [&](TypeId owner, Symbol name) {
+            names_self |= owner == table.type && name == self_name;
+            return types->Projection(owner, name);
+          });
+        }
+        table.takes_self |= names_self;
+      }
+    }
     // The declaration's own parameters, interned against it, so that a field
     // of `Holder<int>` can be worked out by substitution.
     const ItemId owner_id = ResolveItem(ast, index);

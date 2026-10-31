@@ -89,6 +89,34 @@ struct TypedBody {
   // the generic itself.
   std::vector<std::pair<ExprId, std::vector<TypeId>>> instantiations;
 
+  // An operator the checker settled as a call (D239): `a + b` on a `Vec3`
+  // is `a.Plus(b)`. Lowering reads this instead of redoing the lookup, so
+  // it sees an ordinary call and the tiers have nothing new to agree on.
+  struct OperatorCall {
+    ExprId expr;
+    OperatorKind kind = OperatorKind::kNone;
+    // The type of the left operand, as the checker saw it. A type parameter
+    // inside a generic body, which monomorphization replaces.
+    TypeId receiver;
+    // The method that answers: the implementation's when the operand is
+    // concrete, the ability's own when it is a type parameter.
+    uint32_t file = Member::kNoSource;
+    uint32_t item = Member::kNoSource;
+    uint32_t slot = 0;
+    TypeId ability;
+  };
+  std::vector<OperatorCall> operator_calls;
+
+  // The operator call recorded for |id|, or null when it is the built-in one.
+  const OperatorCall* OperatorOf(ExprId id) const {
+    for (const OperatorCall& call : operator_calls) {
+      if (call.expr == id) {
+        return &call;
+      }
+    }
+    return nullptr;
+  }
+
   // The item tree index of the declaration this body belongs to, so that a
   // caller elsewhere can be matched to it.
   uint32_t item_index = 0xFFFFFFFFu;

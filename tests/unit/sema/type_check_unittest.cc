@@ -2645,5 +2645,192 @@ fun F() {
   WOLANG_EXPECT(fires.HasCode("E0122"));
 }
 
+// D239: an operator is an ability, and `Self` is the type that implements it.
+// The abilities are declared inline because a sema test has no imports.
+static constexpr const char kOpsPrelude[] = R"(
+@Operator
+ability Add {
+  fun Plus(other: Self) -> Self
+}
+
+@Operator
+ability Eq {
+  fun Equals(other: &Self) -> bool
+}
+
+@Operator
+ability Neg {
+  fun Negate() -> Self
+}
+
+ability Hash {
+  fun Hash() -> u64
+}
+
+struct Vec3 {
+  var x: float
+  var y: float
+}
+)";
+
+WOLANG_TEST(TypeCheck, AnOperatorOnAStructCallsItsAbilityMethod) {
+  Fixture f(std::string(kOpsPrelude) + R"(
+extend Vec3 as Add {
+  fun Plus(other: Self) -> Self => Vec3(x + other.x, y + other.y)
+}
+
+extend Vec3 as Neg {
+  fun Negate() -> Self => Vec3(-x, -y)
+}
+
+extend Vec3 as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x
+}
+
+fun Use(a: Vec3, b: Vec3) -> Vec3 {
+  var c = a + b
+  c += b
+  const same = a == b
+  const other = a != b
+  return -c
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AnOperatorRecordsTheCallForLowering) {
+  Fixture f(std::string(kOpsPrelude) + R"(
+extend Vec3 as Add {
+  fun Plus(other: Self) -> Self => Vec3(x + other.x, y + other.y)
+}
+
+fun Use(a: Vec3, b: Vec3) -> Vec3 => a + b
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+  const CheckedFile* checked = f.db().Checked(f.file());
+  WOLANG_ASSERT(checked != nullptr);
+  size_t recorded = 0;
+  for (const TypedBody& body : checked->items) {
+    for (const TypedBody::OperatorCall& call : body.operator_calls) {
+      recorded += call.kind == OperatorKind::kPlus && body.OperatorOf(call.expr) != nullptr;
+    }
+  }
+  WOLANG_EXPECT_EQ(recorded, size_t{1});
+}
+
+WOLANG_TEST(TypeCheck, AnOperatorWorksThroughABound) {
+  Fixture f(std::string(kOpsPrelude) + R"(
+fun Twice<T: Add>(a: T) -> T => a + a
+
+fun Same<T: Eq>(a: T, b: T) -> bool => a == b
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, NumbersMeetAnOperatorBound) {
+  Fixture f(std::string(kOpsPrelude) + R"(
+fun Twice<T: Add>(a: T) -> T => a + a
+
+fun Use() -> int => Twice(4)
+
+fun Cmp() -> bool => Same(1.5, 2.5)
+
+fun Same<T: Eq>(a: T, b: T) -> bool => a == b
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AnOperatorNeedsItsAbilityNotJustTheMethod) {
+  Fixture f(std::string(kOpsPrelude) + R"(
+extend Vec3 {
+  fun Plus(other: Vec3) -> Vec3 => Vec3(x + other.x, y + other.y)
+}
+
+fun Use(a: Vec3, b: Vec3) -> Vec3 => a + b
+)");
+  WOLANG_EXPECT(f.HasCode("E0108"));
+}
+
+WOLANG_TEST(TypeCheck, SelfOutsideATypeIsReported) {
+  Fixture fires(R"(
+fun Free(x: Self) -> int => 1
+)");
+  WOLANG_EXPECT(fires.HasCode("E0156"));
+
+  Fixture twin(R"(
+struct Box {
+  var n: int
+}
+
+extend Box {
+  fun Copy() -> Self => Box(n)
+}
+
+struct Cell {
+  var n: int
+  fun Next() -> Self => Cell(n + 1)
+}
+)");
+  WOLANG_EXPECT_EQ(twin.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AnAbilityThatTakesSelfIsNotAValueType) {
+  Fixture fires(std::string(kOpsPrelude) + R"(
+fun Make(a: Vec3) {
+  const e: Eq = a
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0157"));
+
+  Fixture param(std::string(kOpsPrelude) + R"(
+fun Take(e: Eq) {}
+)");
+  WOLANG_EXPECT(param.HasCode("E0157"));
+
+  Fixture twin(std::string(kOpsPrelude) + R"(
+fun Bound<T: Eq>(a: T, b: T) -> bool => a == b
+
+fun Dynamic(h: Hash) {}
+)");
+  WOLANG_EXPECT(!twin.HasCode("E0157"));
+}
+
+WOLANG_TEST(TypeCheck, AnImplementationHasToHaveTheShapeOfSelf) {
+  Fixture fires(std::string(kOpsPrelude) + R"(
+extend Vec3 as Add {
+  fun Plus(other: float) -> Self => Vec3(x, y)
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0402"));
+
+  Fixture twin(std::string(kOpsPrelude) + R"(
+extend Vec3 as Add {
+  fun Plus(other: Vec3) -> Vec3 => Vec3(x + other.x, y + other.y)
+}
+)");
+  WOLANG_EXPECT_EQ(twin.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AnOperatorAbilityHasOneOperatorShapedMethod) {
+  Fixture fires(R"(
+@Operator
+ability Odd {
+  fun Frob(other: Self) -> Self
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0160"));
+
+  Fixture wrong_shape(R"(
+@Operator
+ability Odd {
+  fun Plus(other: int) -> int
+}
+)");
+  WOLANG_EXPECT(wrong_shape.HasCode("E0160"));
+
+  Fixture twin{std::string(kOpsPrelude)};
+  WOLANG_EXPECT_EQ(twin.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang

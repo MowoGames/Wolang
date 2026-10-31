@@ -783,6 +783,10 @@ void Database::RegisterQueries() {
           result.body.qualified.insert(result.body.qualified.end(),
                                        body.qualified.begin(),
                                        body.qualified.end());
+          // Operators the checker settled as calls (D239).
+          result.body.operator_calls.insert(result.body.operator_calls.end(),
+                                            body.operator_calls.begin(),
+                                            body.operator_calls.end());
           // What each closure takes with it (D138).
           result.body.captures.insert(result.body.captures.end(),
                                       body.captures.begin(),

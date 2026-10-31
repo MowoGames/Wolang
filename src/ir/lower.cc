@@ -3229,11 +3229,11 @@ class Lowerer {
       }
 
       case ExprKind::kUnary:
-        return LowerUnary(expr, type);
+        return LowerUnary(id, expr, type);
       case ExprKind::kBinary:
         return LowerBinary(id, expr, type);
       case ExprKind::kAssign:
-        return LowerAssign(expr);
+        return LowerAssign(id, expr);
 
       case ExprKind::kArrayLiteral: {
         std::vector<InstId> elements;
@@ -3725,7 +3725,13 @@ class Lowerer {
     return false;
   }
 
-  InstId LowerUnary(const Expr& expr, TypeId type) {
+  InstId LowerUnary(ExprId id, const Expr& expr, TypeId type) {
+    // The checker settled this as a call to an `@Operator` ability's method
+    // (D239); lowering that call is the next step, and until then the value
+    // is undefined rather than a built-in operation on a struct.
+    if (typed().OperatorOf(id) != nullptr) {
+      return builder_->Undef(type);
+    }
     const InstId operand = Value(expr.lhs);
     // What arithmetic produces is what it was given, not what the context
     // wanted: `-total` where an `int?` is expected is a negation of an
@@ -3771,6 +3777,10 @@ class Lowerer {
   }
 
   InstId LowerBinaryInner(ExprId id, const Expr& expr, TypeId type) {
+    // An `@Operator` call is not lowered yet (D239); see LowerUnary.
+    if (typed().OperatorOf(id) != nullptr) {
+      return builder_->Undef(type);
+    }
     // `&&` and `||` do not evaluate their right side unless they have to, so
     // they are control flow rather than operations.
     if (expr.op == TokenKind::kAmpAmp || expr.op == TokenKind::kPipePipe) {
@@ -5098,7 +5108,11 @@ class Lowerer {
     return InstId{};
   }
 
-  InstId LowerAssign(const Expr& expr) {
+  InstId LowerAssign(ExprId id, const Expr& expr) {
+    // An `@Operator` call is not lowered yet (D239); see LowerUnary.
+    if (typed().OperatorOf(id) != nullptr) {
+      return InstId{};
+    }
     if (expr.op != TokenKind::kEq) {
       return LowerCompoundAssign(expr);
     }

@@ -3208,3 +3208,20 @@ between wasm32 and x86-64, and one answer on every target is the rule this proje
 boundaries keep their widths: C's `int` is `s32` in `extern` and in bindings, and a stored format
 writes an explicit width. `float` stays `f32`: that is the GPU's width, and a different question.
 A tag is `u32` wherever it is read; `int` names a width the program chose, never a layout's.
+
+**D239. An ability can name the type that implements it, and an operator is an
+ability.** `Self` in an ability is the implementing type: a projection like
+`Item` (D212), so the machinery that rewrites `Item` onto its owner rewrites
+`Self`, and every monomorphised copy is concrete. A projection named `Self`
+whose owner is not an ability is its owner. Inside `extend T` or a type's own
+body `Self` is `T`. Anywhere else it is `E0156`. An ability that takes or
+returns `Self` cannot be a value type (`E0157`): a pair of data and table
+cannot say what `other` is. An ability marked `@Operator` lends its one method
+to an operator: `Plus +, Minus -, Times *, Divide /, Negate -x, Equals == !=,
+Compare < <= > >=`; a malformed one is `E0160`. `std.ops` offers `Add, Sub,
+Mul, Div, Neg, Eq, Ord` and `Hash`. `a + b` on a `Vec3` is the call
+`a.Plus(b)`, decided in the checker, so lowering sees an ordinary call and the
+tiers have nothing new to agree on. The ability is required, not just the
+method's name: relaxing that later breaks nothing, and tightening it would.
+Numbers meet every operator ability, `bool` and `char` meet `Equals` and
+`Compare`, and `text` meets `Equals`, so a bound like `<T: Add>` takes `int`.

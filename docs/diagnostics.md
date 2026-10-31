@@ -27,7 +27,9 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0143`, `E0144` | module-qualified names | D246 |
 | `E0145` | `self` stored from its own `deinit` | D229 |
 | `E0147`, `E0148` | what crosses a thread | D232 |
+| `E0156`, `E0157` | `Self` outside a type, an ability that takes `Self` used as a value | D239 |
 | `E0159` | `after` on a machine transition | D243 |
+| `E0160` | an `@Operator` ability that is not one operator-shaped method | D239 |
 
 | `E0149` | an owning field moved out of the value that holds it | D233 |
 | `E0201` | pattern matching | implemented (wave 4) |
@@ -237,6 +239,9 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0147` | a function or closure given to a `@Thread` parameter (`Spawn`, `ParallelFor`) reads or writes a module-level `var`, directly or through a call, and the caller does not state `uses unsafe` (D232) | `Spawn(Work)` where `Work` pushes to a global list |
 | `E0148` | a closure that captures given to a `@Thread` parameter that has no environment to give it (`Spawn`; not `ParallelFor`), even under `uses unsafe` (D232) | `Spawn(\|\| { Print("{n}") })` |
 | `E0159` | `after <delay>` on a machine transition: it parsed and then fired at once, so it is refused until a machine has a clock (D243) | `on Interact after 3s -> Closed` |
+| `E0156` | `Self` where there is no type for it to be: outside an ability, an `extend` and a type's own body (D239) | `fun F(x: Self)` |
+| `E0157` | an ability whose method names `Self` used as the type of a value; use it as a bound instead (D239) | `const e: Eq = a`, `fun F(e: Eq)` |
+| `E0160` | an `@Operator` ability that is not exactly one method named `Plus`, `Minus`, `Times`, `Divide`, `Negate`, `Equals` or `Compare` with that operator's shape (D239) | `@Operator ability A { fun Frob(o: Self) -> Self }` |
 
 | `E0149` | a value with a `deinit` taken out of a field of the struct or enum that owns it (D233) | `Take(o.r)` where `o: Outer` holds `r: Res` |
 

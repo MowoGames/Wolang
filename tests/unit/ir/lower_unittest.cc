@@ -586,5 +586,28 @@ fun main() -> int {
 )"), "");
 }
 
+// D239: an operator the checker settled as an `@Operator` call is not lowered
+// yet, but it must not become a built-in `add` of two structs.
+WOLANG_TEST(LowerTest, AnOperatorCallIsNotABuiltInOperationOnStructs) {
+  Fixture f(R"(
+@Operator
+ability Add {
+  fun Plus(other: Self) -> Self
+}
+
+struct V {
+  var x: int
+}
+
+extend V as Add {
+  fun Plus(other: Self) -> Self => V(x + other.x)
+}
+
+fun Sum(a: V, b: V) -> V => a + b
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Function("Sum").find(" = add ") == std::string::npos);
+}
+
 }  // namespace
 }  // namespace wolang

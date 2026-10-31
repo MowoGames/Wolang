@@ -111,6 +111,8 @@ struct TypeMembers {
   // a pair -- what it points at and which class that is -- so that a call
   // on it can find the body (D86).
   bool is_ability = false;
+  // An ability one of whose methods names `Self` (D239).
+  bool takes_self = false;
   // The declaration's own type parameters, in order. Needed to work out what
   // a field of `Holder<int>` is: zip these with the instance's arguments.
   std::vector<TypeId> parameters;
@@ -118,6 +120,7 @@ struct TypeMembers {
   friend bool operator==(const TypeMembers& lhs, const TypeMembers& rhs) {
     return lhs.type == rhs.type && lhs.members == rhs.members &&
            lhs.is_value == rhs.is_value && lhs.is_ability == rhs.is_ability &&
+           lhs.takes_self == rhs.takes_self &&
            lhs.parameters == rhs.parameters;
   }
 };
@@ -254,6 +257,18 @@ struct FileResolution {
   // True when |type| may be used where |bound| is required: it is that type,
   // derives from it, or implements it as an ability.
   bool Satisfies(TypeId type, TypeId bound) const;
+
+  // The operator an `@Operator` ability lends its method to, or kNone for
+  // any other type (D239).
+  OperatorKind OperatorOf(TypeId ability) const;
+
+  // The `@Operator` ability |type| implements for |kind|, or an invalid id.
+  // Looks through a generic instance to its declaration and up the base chain.
+  TypeId FindOperatorAbility(TypeId type, OperatorKind kind) const;
+
+  // True when a method of |ability| names `Self`, so a value of the ability
+  // could not say what its `other` is (D239).
+  bool TakesSelf(TypeId ability) const;
 
   // The product a dimension stands for, or the empty product.
   Dimensions ProductOf(DimensionId dimension) const;
