@@ -539,6 +539,10 @@ Known gaps found on the way, for 1.2.0:
 - Qualified names do not work in patterns, as intrinsic callees or as the
   target of an assignment to another module's var (D246).
 - There is no read-only slice; `Bytes` is `unsafe` instead (D233).
+- An install built with the AOT back end names LLVM's component
+  libraries in its CMake package and its embedding library, so a host
+  linking it needs that LLVM too; the embedding package should be built
+  without it, or link LLVM privately.
 - The blocking `Serve`/`ServeWith` HTTP path has no deadline; only the
   polled `RunServerOn` does.
 - Written but never compiled or run here: the Windows paths of UDP and

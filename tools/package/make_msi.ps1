@@ -12,7 +12,7 @@
 
   WiX 5 comes from dotnet:
 
-      dotnet tool install --global wix
+      dotnet tool install --global wix --version 6.0.2
 
 .PARAMETER Build
   The build directory to install from. Default build\windows.
@@ -41,7 +41,7 @@ if (-not $Version) {
 
 if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
   Write-Host 'wix is not on the PATH. Install it with:' -ForegroundColor Yellow
-  Write-Host '  dotnet tool install --global wix'
+  Write-Host '  dotnet tool install --global wix --version 6.0.2'
   exit 1
 }
 

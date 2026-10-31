@@ -16,6 +16,7 @@ std::vector<TestCase>& MutableTests() {
 }
 
 int g_current_failures = 0;
+bool g_verbose = false;
 
 std::string FullName(const TestCase& test_case) {
   std::string name(test_case.suite);
@@ -40,7 +41,10 @@ void ReportFailure(std::string_view file, int line, std::string message) {
                file.data(), line, message.c_str());
 }
 
+bool Verbose() { return g_verbose; }
+
 int RunAll(std::string_view filter, bool verbose) {
+  g_verbose = verbose;
   const std::vector<TestCase>& tests = MutableTests();
   int selected = 0;
   int failed = 0;

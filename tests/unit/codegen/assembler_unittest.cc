@@ -36,12 +36,15 @@ WOLANG_TEST(AssemblerTest, EncodesWhatASystemAssemblerWould) {
   a.Lsl(k64, R::kX0, R::kX1, 3);
   a.Sxtb(k64, R::kX0, R::kX1);
   a.Cset(k64, R::kX3, Condition::kEq);
+  a.Neg(k32, R::kX9, R::kX10);
+  a.Neg(k64, R::kX0, R::kX1);
   a.Ret();
 
   const std::vector<uint32_t> expected = {
       0xd2824680, 0xaa0503e4, 0x8b020020, 0x0b020020, 0x6b0b0149,
       0x91044420, 0x9b027c20, 0x9ac20c20, 0x9b427c20, 0xaa2a03e9,
-      0xd37df020, 0x93401c20, 0x9a9f17e3, 0xd65f03c0,
+      0xd37df020, 0x93401c20, 0x9a9f17e3, 0x4b0a03e9, 0xcb0103e0,
+      0xd65f03c0,
   };
   WOLANG_EXPECT_EQ(a.words().size(), expected.size());
   for (size_t i = 0; i < expected.size() && i < a.words().size(); ++i) {

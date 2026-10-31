@@ -38,7 +38,8 @@
       "inherits": "debug",
       "cacheVariables": {
         "WOLANG_ENABLE_SANITIZERS": "ON",
-        "WOLANG_SANITIZER_LIST": "undefined"
+        "WOLANG_SANITIZER_LIST": "undefined",
+        "WOLANG_WITH_LLVM": "OFF"
       }
     },
     {

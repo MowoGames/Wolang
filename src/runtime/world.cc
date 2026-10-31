@@ -112,7 +112,7 @@ struct Cursor {
   }
 };
 
-std::mutex& Lock() {
+std::mutex& WorldLock() {
   static std::mutex lock;
   return lock;
 }
@@ -140,7 +140,7 @@ std::vector<Cursor*>& Cursors() {
 }
 
 World* Find(uint64_t handle) {
-  const std::lock_guard<std::mutex> held(Lock());
+  const std::lock_guard<std::mutex> held(WorldLock());
   if (handle == 0 || handle > Worlds().size()) {
     return nullptr;
   }
@@ -158,13 +158,13 @@ Cursor* FindCursor(uint64_t handle) {
 
 extern "C" uint64_t wolang_world_create(void) {
   auto* world = new World();
-  const std::lock_guard<std::mutex> held(Lock());
+  const std::lock_guard<std::mutex> held(WorldLock());
   Worlds().push_back(world);
   return Worlds().size();
 }
 
 extern "C" void wolang_world_destroy(uint64_t handle) {
-  const std::lock_guard<std::mutex> held(Lock());
+  const std::lock_guard<std::mutex> held(WorldLock());
   if (handle == 0 || handle > Worlds().size()) {
     return;
   }

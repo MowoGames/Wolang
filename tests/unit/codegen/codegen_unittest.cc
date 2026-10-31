@@ -432,6 +432,27 @@ fun Promote(n: s32) -> u64 => n as u64
   WOLANG_EXPECT_EQ(f.Run("Promote", {Fixture::Int(-1)}), text);
 }
 
+WOLANG_TEST(CodegenTest, ANegativeFloatCastToANarrowUnsignedTraps) {
+  // Found by the fuzzer on arm64: `fcvtzu` clamps -2.5 to zero, which fits
+  // any unsigned type, so the cast returned 0 where the interpreter traps.
+  // Minus a half truncates to zero and is in range in every tier.
+  Fixture f(R"(
+fun ToByte(x: f64) -> int => (x as u8) as int
+
+fun ToWord(x: f64) -> int => (x as u32) as int
+)");
+  const char* kTrap =
+      "trap: overflow at @%s:%%1: "
+      "the value does not fit the integer it was cast to";
+  char text[160];
+  std::snprintf(text, sizeof(text), kTrap, "ToByte");
+  WOLANG_EXPECT_EQ(f.Run("ToByte", {Fixture::Double(-2.5)}), text);
+  WOLANG_EXPECT_EQ(f.Run("ToByte", {Fixture::Double(-0.5)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("ToByte", {Fixture::Double(200.5)}), "200");
+  std::snprintf(text, sizeof(text), kTrap, "ToWord");
+  WOLANG_EXPECT_EQ(f.Run("ToWord", {Fixture::Double(-1.0)}), text);
+}
+
 WOLANG_TEST(CodegenTest, TrapTextIsTheSameInEveryTier) {
   // Run compares the text of a trap between the interpreter and the
   // machine code, so one case of each kind that used to differ is enough
@@ -3256,6 +3277,68 @@ fun Check(n: int) -> int {
 )");
   WOLANG_EXPECT_EQ(f.Run("Check", {Fixture::Wide(3)}), "1");
   WOLANG_EXPECT_EQ(f.Run("Check", {Fixture::Wide(0)}), "0");
+}
+
+WOLANG_TEST(CodegenTest, AnErrorWithAWidePayloadKeepsTheCallersRegisters) {
+  // An error of a `T!` whose `T` is an aggregate was built with an integer
+  // constant as its payload. The back ends gave that constant no register
+  // and no spill slot, and storing it wrote just below the spill area --
+  // over a saved register, which the caller's loop was keeping a tag in
+  // (D249). Found on arm64; x64 wrote the same way into its own frame.
+  Fixture f(R"(
+error Broken
+
+struct Wide {
+  var a: int
+  var b: int
+  var c: int
+}
+
+fun Make(n: int, d: int, e: int, g: int, h: int) -> Wide! {
+  // Enough live at once that every register the callee may use is saved.
+  const p = n + d
+  const q = p * 2 + e
+  const r = q * 3 + g
+  const s = r * 5 + h
+  const t = s * 7 + p
+  const u = t * 11 + q
+  const v = u * 13 + r
+  const w = v * 17 + s
+  if n > 0 && p + q + r + s + t + u + v + w != 0 {
+    return Broken
+  }
+  return Wide(d, e, g + h + p + q + r + s + t + u + v + w - (p + q + r + s + t + u + v + w))
+}
+
+fun Refusals() -> int {
+  var refused = 0
+  var i = 0
+  // Nine values live across the call, so the caller holds one in every
+  // callee-saved register the pool has.
+  const a = 1
+  const b = 2
+  const c = 3
+  const d = 4
+  const e = 5
+  const g = 6
+  const h = 7
+  const k = 8
+  const m = 9
+  while i < 3 {
+    match Make(1, i, i, i, i) {
+      Ok(_w) => refused = refused
+      Broken => refused = refused + a + b + c + d + e + g + h + k + m - 44
+    }
+    i = i + 1
+  }
+  match Make(0, 1, 2, 3, 4) {
+    Ok(w) => refused = refused * 100 + w.c
+    Broken => refused = -1
+  }
+  return refused
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Refusals", {}), "307");
 }
 
 WOLANG_TEST(CodegenTest, TextOrderingAgreesInEveryTier) {

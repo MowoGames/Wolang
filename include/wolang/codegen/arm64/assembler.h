@@ -107,6 +107,9 @@ class Assembler {
 
   void Add(Width width, Register rd, Register rn, Register rm);
   void Sub(Width width, Register rd, Register rn, Register rm);
+  // `rd = 0 - rm`: the zero register as the first operand, which `Sub`
+  // refuses because it cannot tell it from the stack pointer.
+  void Neg(Width width, Register rd, Register rm);
   // The flag-setting forms, which is how overflow is detected.
   void Adds(Width width, Register rd, Register rn, Register rm);
   void Subs(Width width, Register rd, Register rn, Register rm);

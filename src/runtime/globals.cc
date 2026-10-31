@@ -30,7 +30,7 @@ static GlobalSpace& ProcessSpace() {
 
 static thread_local GlobalSpace* sm_Current = nullptr;
 
-static GlobalSpace& Current() {
+static GlobalSpace& CurrentGlobals() {
   return sm_Current != nullptr ? *sm_Current : ProcessSpace();
 }
 
@@ -42,7 +42,7 @@ static void Clear(GlobalSpace& space) {
 }
 
 extern "C" void* wolang_global_address(uint64_t token, uint64_t size) {
-  GlobalSpace& space = Current();
+  GlobalSpace& space = CurrentGlobals();
   for (const GlobalEntry& entry : space.Entries) {
     if (entry.token == token) {
       return entry.storage;
@@ -57,7 +57,7 @@ extern "C" void* wolang_global_address(uint64_t token, uint64_t size) {
 }
 
 extern "C" void wolang_global_reset(void) {
-  Clear(Current());
+  Clear(CurrentGlobals());
 }
 
 GlobalSpace* GlobalSpaceCreate() {

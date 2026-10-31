@@ -3,6 +3,7 @@
 
 #include "wolang/fuzz/generator.h"
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,8 @@ std::string Describe(const interp::Outcome& outcome) {
 
 // Runs one generated program through every tier and reports the first
 // disagreement, or an empty string when they all agree.
+constexpr uint64_t kProgramsHash = 10817296423599508191ull;
+
 std::string CompareTiers(uint64_t seed, bool traps) {
   fuzz::Options options;
   options.seed = seed;
@@ -98,6 +101,29 @@ std::string CompareTiers(uint64_t seed, bool traps) {
   return {};
 }
 
+WOLANG_TEST(FuzzTest, ASeedWritesTheSameProgramOnEverySystem) {
+  // A seed names a program only if every system writes the same one. The
+  // operands of `+` are evaluated in an order C++ leaves open, and
+  // clang-cl takes them right to left, so the generator draws once per
+  // statement (D231); this pins the programs so that a draw slipping back
+  // into an expression fails here rather than as a different program on
+  // one machine. The number is FNV-1a over seeds 1 to 20.
+  uint64_t hash = 14695981039346656037ull;
+  for (uint64_t seed = 1; seed <= 20; ++seed) {
+    if (test::Verbose()) {
+      std::fprintf(stdout, "  seed %llu\n",
+                   static_cast<unsigned long long>(seed));
+      std::fflush(stdout);
+    }
+    fuzz::Options options;
+    options.seed = seed;
+    for (const char c : fuzz::Generate(options)) {
+      hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ull;
+    }
+  }
+  WOLANG_EXPECT_EQ(hash, kProgramsHash);
+}
+
 WOLANG_TEST(FuzzTest, TheTiersAgreeOnGeneratedPrograms) {
   // A fixed range of seeds rather than a random one: a test that fails
   // only sometimes is a test nobody trusts, and the seeds are cheap
@@ -106,6 +132,12 @@ WOLANG_TEST(FuzzTest, TheTiersAgreeOnGeneratedPrograms) {
   // `wolang fuzz --count 10000` is what goes wide when something is
   // suspected. The seeds here are the regression net.
   for (uint64_t seed = 1; seed <= 80; ++seed) {
+    // Named before it runs, so one that never finishes says which it was.
+    if (test::Verbose()) {
+      std::fprintf(stdout, "  seed %llu\n",
+                   static_cast<unsigned long long>(seed));
+      std::fflush(stdout);
+    }
     const std::string disagreement = CompareTiers(seed, /*traps=*/true);
     WOLANG_EXPECT_EQ(disagreement, "");
   }
@@ -115,6 +147,11 @@ WOLANG_TEST(FuzzTest, TheTiersAgreeWithoutTraps) {
   // The same again with nothing that can trap, so that a disagreement
   // about a *value* is not hidden behind one about a trap.
   for (uint64_t seed = 1; seed <= 80; ++seed) {
+    if (test::Verbose()) {
+      std::fprintf(stdout, "  seed %llu\n",
+                   static_cast<unsigned long long>(seed + 1000));
+      std::fflush(stdout);
+    }
     const std::string disagreement = CompareTiers(seed + 1000, false);
     WOLANG_EXPECT_EQ(disagreement, "");
   }
