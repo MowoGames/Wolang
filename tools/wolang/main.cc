@@ -73,6 +73,19 @@
 #include "wolang/syntax/lexer.h"
 #include "wolang/syntax/parser.h"
 
+#if defined(_WIN32)
+#include <crtdbg.h>
+#include <stdlib.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+// Old 16-bit pointer qualifiers, defined as nothing, that eat the name of
+// any variable spelled like them.
+#undef near
+#undef far
+#endif
+
 namespace wolang {
 namespace {
 
@@ -3246,6 +3259,25 @@ int Run(int argc, char** argv) {
 }  // namespace
 }  // namespace wolang
 
+namespace {
+
+// A failed check in the debug runtime, or a crash, says so on stderr and
+// ends the process. Left to itself Windows opens a dialog and waits for a
+// click, which on a build machine is a run that never finishes.
+void ReportFailuresInsteadOfAsking() {
+#if defined(_WIN32)
+  ::SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+  _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+  _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+  _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+#endif
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
+  ReportFailuresInsteadOfAsking();
   return wolang::Run(argc, argv);
 }
