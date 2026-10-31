@@ -3185,3 +3185,16 @@ pointer an optimised host kept its result in. The constant's area is now
 zeroed with the frame's slots and never written, AOT makes it LLVM's null
 of the type, and asking for the spill offset of a value with none is a
 check failure instead of a write into the frame.
+
+**D250. The compiler will be self-hosted in stages, after 1.2.0.** D2 said the
+compiler stays C++20 and self-hosting is not a goal. That held while the
+language was moving; 1.2.0 lands the last breaking decisions (D235-D240), and
+a compiler is the largest program anyone will write in Wolang, so writing it
+there finds what the language and `std` lack faster than any benchmark. The
+C++ compiler is not replaced: it stays as the bootstrap, as Rust's did, and
+the runtime, the platform layer, the interpreter, the JIT emitters and the
+LSP stay C++ longest. Work goes stage by stage as in
+[docs/plans/self-hosting.md](plans/self-hosting.md), each stage checked by
+giving the new and the old part the same input and requiring the same output.
+Nothing is self-hosted inside 1.2.0 except the groundwork: `std` that a
+compiler needs, and the IR reader.

@@ -307,7 +307,7 @@ These are the ones that shape everything else.
 6. **A unit suffix on a number is just a symbol**; Sema resolves it.
 7. **The standard library is in Wolang** over a thin C++ platform layer;
    intrinsics lower straight into the IR. `core` is possible from wave 7.
-8. **The compiler will not be self-hosted.** The compiler is C++20.
+8. **The compiler will be self-hosted in stages, after 1.2.0** (D250, superseding D2). The C++ compiler stays as the bootstrap.
 9. **Chromium code style everywhere**, no exceptions and no RTTI; commits
    are Conventional Commits, one line, no body and no co-authored trailer.
 10. **arm64 before x64** for the dev codegen.
@@ -522,8 +522,8 @@ and offered functions state their sets (D235), `unsafe fun` (D236),
 allocation checked by `@Hot` (D237), `Self` and operator abilities
 (D239), escaping closures with `keep` (D240, F1–F2; F0 is in). Then the
 libraries that need them: `math` (vectors with operators), `font`,
-`audio`, `gpu`, an immediate-mode `ui`, `app`. Self-hosting is a later
-plan: [docs/plans/self-hosting.md](docs/plans/self-hosting.md).
+`audio`, `gpu`, an immediate-mode `ui`, `app`. The plan is [docs/plans/1.2.0.md](docs/plans/1.2.0.md); self-hosting follows it (D250,
+[docs/plans/self-hosting.md](docs/plans/self-hosting.md)).
 
 Known gaps found on the way, for 1.2.0:
 
