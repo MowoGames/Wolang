@@ -4,6 +4,7 @@
 #include "wolang/fuzz/generator.h"
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -243,7 +244,12 @@ class Writer {
 
   // ------------------------------------------------------------- reading --
 
-  const Variable* PickVariable(VKind kind, bool need_mutable) {
+  // A copy, not a pointer into the scope: generating the code around a
+  // use can declare a variable (a match binds its payload), the scope can
+  // grow and move, and a pointer read after that is a pointer into freed
+  // memory. Which happened on Windows only, where the operands of `+` are
+  // evaluated right to left and the vector grows at a different size.
+  std::optional<Variable> PickVariable(VKind kind, bool need_mutable) {
     std::vector<const Variable*> candidates;
     for (const Variable& variable : scope_) {
       if (variable.kind == kind && (!need_mutable || variable.is_mutable)) {
@@ -251,9 +257,9 @@ class Writer {
       }
     }
     if (candidates.empty()) {
-      return nullptr;
+      return std::nullopt;
     }
-    return candidates[Below(static_cast<uint32_t>(candidates.size()))];
+    return *candidates[Below(static_cast<uint32_t>(candidates.size()))];
   }
 
   // A variable of type |t|. The preamble declares one of every type, so
@@ -269,7 +275,7 @@ class Writer {
   }
 
   std::string ClassVar() {
-    const Variable* cell = PickVariable(VKind::kClass, false);
+    const std::optional<Variable> cell = PickVariable(VKind::kClass, false);
     return cell->name;
   }
 
@@ -373,7 +379,7 @@ class Writer {
       options.push_back("pair.a");
       options.push_back(ClassVar() + ".n");
       options.push_back("buf[" + Index(depth) + "]");
-      if (const Variable* slice = PickVariable(VKind::kSlice, false)) {
+      if (const std::optional<Variable> slice = PickVariable(VKind::kSlice, false)) {
         options.push_back(slice->name + "[" + SliceIndex(depth) + "]");
       }
     }
@@ -566,7 +572,7 @@ class Writer {
 
   // `??` over an optional, and a match over a `T!`.
   std::string Optional(Ty t, int depth) {
-    if (const Variable* opt = PickVariable(VKind::kOpt, false)) {
+    if (const std::optional<Variable> opt = PickVariable(VKind::kOpt, false)) {
       if (opt->ty == t && Chance(60)) {
         return "(" + opt->name + " ?? " + Expression(t, depth - 1, false) +
                ")";
@@ -768,15 +774,15 @@ class Writer {
     if (choice < 30) {
       // Assigning to something already there, which is what makes a slot
       // worth promoting and a block parameter worth inserting.
-      if (const Variable* target = PickVariable(VKind::kNum, true)) {
+      if (const std::optional<Variable> target = PickVariable(VKind::kNum, true)) {
         Line(indent, target->name + " = " +
                          Expression(target->ty, depth, false));
         return;
       }
     }
     if (choice < 35) {
-      const Variable* text = PickVariable(VKind::kText, true);
-      if (Chance(50) && text != nullptr) {
+      const std::optional<Variable> text = PickVariable(VKind::kText, true);
+      if (Chance(50) && text.has_value()) {
         Line(indent, text->name + " = " + Text(depth));
       } else {
         const std::string name = Fresh("t");
@@ -794,7 +800,7 @@ class Writer {
       return;
     }
     if (choice < 51) {
-      const Variable* shape = PickVariable(VKind::kShape, true);
+      const std::optional<Variable> shape = PickVariable(VKind::kShape, true);
       Line(indent, shape->name + " = " + ShapeValue(depth));
       return;
     }
@@ -842,8 +848,8 @@ class Writer {
   }
 
   void OptionalStatement(int indent, int depth) {
-    const Variable* opt = PickVariable(VKind::kOpt, true);
-    if (opt != nullptr && Chance(60)) {
+    const std::optional<Variable> opt = PickVariable(VKind::kOpt, true);
+    if (opt.has_value() && Chance(60)) {
       if (Chance(30)) {
         Line(indent, opt->name + " = null");
       } else if (Chance(50)) {
@@ -877,9 +883,9 @@ class Writer {
   // Allocation, aliasing and writes through either name: the reference
   // counts are what these are for.
   void ClassStatement(int indent, int depth) {
-    const Variable* target = PickVariable(VKind::kClass, true);
+    const std::optional<Variable> target = PickVariable(VKind::kClass, true);
     const uint32_t choice = Below(5);
-    if (choice == 0 || target == nullptr) {
+    if (choice == 0 || !target.has_value()) {
       const std::string name = Fresh("c");
       Line(indent, "var " + name + " = " + NewCell(depth));
       scope_.push_back(Variable{name, VKind::kClass, Ty::kS32, true});
@@ -906,8 +912,8 @@ class Writer {
   // A view of two elements of `buf`, whose start was computed, and then a
   // write through the view.
   void SliceStatement(int indent, int depth) {
-    const Variable* slice = PickVariable(VKind::kSlice, false);
-    if (slice != nullptr && Chance(40)) {
+    const std::optional<Variable> slice = PickVariable(VKind::kSlice, false);
+    if (slice.has_value() && Chance(40)) {
       const std::string at = SliceIndex(depth);
       const std::string value = Expression(Ty::kS32, depth, false);
       Line(indent, slice->name + "[" + at + "] = " + value);
