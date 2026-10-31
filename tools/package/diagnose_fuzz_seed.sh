@@ -1,32 +1,14 @@
 #!/bin/sh
-# diagnose_fuzz_seed.sh <wolang>: where fuzz seed 8 hangs. The program is
-# checked in (generated on Linux), so nothing has to run to get it; each
-# step has a hard time limit and says how it ended. `asm` only compiles,
-# so it tells a hang in the compiler from one in the code it made.
-# A diagnostic for CI on a system nobody here can run; it never fails.
-W="$1"
-here="$(dirname "$0")"
-work="$(mktemp -d)"
+# diagnose_fuzz_seed.sh <build dir>: how generating fuzz seed 8 ends on a
+# system nobody here can run. The exit code says which kind of end it is
+# (3 an abort, 0xC0000005 an access violation, 0xC0000409 a fast fail,
+# 0xC00000FD a stack overflow). It never fails the job.
+B="$1"
 limit() { timeout -k 5 "$@"; }
-echo "== fuzz, stage by stage"
-WOLANG_FUZZ_TRACE=1 limit 120 "$W" fuzz "$here/diag/seed8.wo"
-echo "fuzz rc $?"
-echo "== fuzz on seed 8 as clang-cl generated it (operands right to left)"
-WOLANG_FUZZ_TRACE=1 limit 120 "$W" fuzz "$here/diag/seed8_right_to_left.wo"
-echo "fuzz rc $?"
-echo "== asm (compile only)"
-limit 120 "$W" asm --raw "$here/diag/seed8.wo" > "$work/asm.txt" 2>&1
-echo "asm rc $?"
-awk '/^@(f0|f1|f2|Body|Probe):/{p=1} /^@/&&!/^@(f0|f1|f2|Body|Probe):/{p=0} p' "$work/asm.txt"
-for entry in "f1()" "f2(3)" "Body()" "Probe()"; do
-  name="$(echo "$entry" | sed 's/(.*//')"
-  { cat "$here/diag/seed8.wo"
-    printf '\nfun main() uses unsafe {\n  const _r = %s\n}\n' "$entry"
-  } > "$work/$name.wo"
-  limit 60 "$W" run --interpret "$work/$name.wo" > /dev/null 2>&1
-  i=$?
-  limit 60 "$W" run "$work/$name.wo" > /dev/null 2>&1
-  j=$?
-  echo "$entry: interpreter rc $i, compiled rc $j"
-done
+limit 120 "$B/tests/wolang_tests.exe" --filter FuzzTest.ASeedWrites --verbose
+code=$?
+printf 'wolang_tests exit %d (0x%X)\n' "$code" "$code"
+limit 120 "$B/tools/wolang/wolang.exe" fuzz --seed 8 --count 1
+code=$?
+printf 'wolang fuzz --seed 8 exit %d (0x%X)\n' "$code" "$code"
 exit 0

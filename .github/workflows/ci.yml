@@ -230,7 +230,7 @@ jobs:
       - name: Diagnose fuzz seed 8
         shell: bash
         continue-on-error: true
-        run: sh tools/package/diagnose_fuzz_seed.sh build/windows/tools/wolang/wolang.exe
+        run: sh tools/package/diagnose_fuzz_seed.sh build/windows
       # A suite at a time, each with a time limit: a test that hangs here
       # fails and names itself, where the whole-suite entry ran into the
       # job's hour and said nothing. Twenty minutes, because the fuzz
