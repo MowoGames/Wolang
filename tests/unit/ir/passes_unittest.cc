@@ -389,6 +389,66 @@ fun Sum(bodies: soa []Body, at: int) -> float {
   WOLANG_EXPECT(optimized.find("index.check") != std::string::npos);
 }
 
+WOLANG_TEST(PassTest, KeepsACastThatCanTrapWhenItsResultIsUnused) {
+  // `as` traps when the value does not fit (D33), and a trap is an outcome
+  // the program can observe: the fuzzer found the passes deleting an unused
+  // `x as u16` that the reference tier traps on.
+  Fixture f(R"(
+fun Narrow(x: f64, y: s64) -> int {
+  const _ = (x as u16)
+  const _ = (y as s32)
+  return 1
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string optimized = f.Optimized("Narrow");
+  const auto count = [](const std::string& body, std::string_view what) {
+    size_t total = 0;
+    for (size_t at = body.find(what); at != std::string::npos;
+         at = body.find(what, at + 1)) {
+      ++total;
+    }
+    return total;
+  };
+  WOLANG_EXPECT_EQ(count(optimized, "cast"), size_t{2});
+}
+
+WOLANG_TEST(PassTest, DropsAnUnusedCastThatCannotTrap) {
+  // The twin: widening keeps every value, so nothing is lost by removing it.
+  Fixture f(R"(
+fun Widen(x: s32, y: u8) -> int {
+  const _ = (x as s64)
+  const _ = (y as u32)
+  return 1
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Optimized("Widen").find("cast") == std::string::npos);
+}
+
+WOLANG_TEST(PassTest, LeavesATrappingCastOnTheBranchThatRunsIt) {
+  // Moved to the preheader, `x as u8` would trap in a program whose loop
+  // never takes the branch (D33).
+  Fixture f(R"(
+fun Guarded(x: int, n: int) -> int {
+  var i = 0
+  var total = 0
+  while i < n {
+    if i > 100 {
+      total = total + (x as u8) as int
+    }
+    i = i + 1
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string optimized = f.Optimized("Guarded");
+  const size_t loop = optimized.find("// loop.header");
+  WOLANG_EXPECT(loop != std::string::npos);
+  WOLANG_EXPECT(optimized.find("cast") > loop);
+}
+
 WOLANG_TEST(PassTest, EveryPassLeavesTheFunctionVerifiable) {
   // The exit criterion of the wave, as a test rather than a promise.
   Fixture f(R"(
