@@ -17,6 +17,9 @@ how a release is made is in [docs/releasing.md](docs/releasing.md).
   text key lands in a different slot than before; `std.map.IntHash` keeps
   its 31-bit value for every key that fit 32 bits and no longer traps for
   a larger one.
+- The differential fuzzer writes `int` and `s32` as different types and
+  draws values at 2^31, 2^32 and the 64-bit edges, so a tier that narrows
+  `int` back to 32 bits is caught (D238).
 
 ## 1.1.0
 

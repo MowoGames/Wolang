@@ -517,8 +517,8 @@ These are the ones that shape everything else.
 
 **Next: 1.2.0.** The breaking language decisions designed in
 [docs/plans/pre-1.0.md](docs/plans/pre-1.0.md) and not yet built: `int`
-is 64 bits (D238: D1 and D2 are in; D3, the 32-bit masks in `std.map`/`std.hash`,
-the 2^31 capacity checks and the fuzzer's int domain, is not), errors carry data
+is 64 bits (D238, all three steps are in: the fuzzer now writes `int` and a real
+`s32` apart, with values at 2^31 and 2^32), errors carry data
 and offered functions state their sets (D235), `unsafe fun` (D236),
 allocation checked by `@Hot` (D237), `Self` and operator abilities
 (D239), escaping closures with `keep` (D240, F1–F2; F0 is in). Then the

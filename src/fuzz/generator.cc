@@ -47,6 +47,7 @@ enum class Ty {
   kS16,
   kS32,
   kS64,
+  kInt,
   kU8,
   kU16,
   kU32,
@@ -55,13 +56,18 @@ enum class Ty {
   kF64,
 };
 
-constexpr Ty kAllTypes[] = {Ty::kS8,  Ty::kS16, Ty::kS32, Ty::kS64, Ty::kU8,
-                            Ty::kU16, Ty::kU32, Ty::kU64, Ty::kF32, Ty::kF64};
-constexpr Ty kIntTypes[] = {Ty::kS8,  Ty::kS16, Ty::kS32, Ty::kS64,
-                            Ty::kU8,  Ty::kU16, Ty::kU32, Ty::kU64};
+// `int` is its own type, s64 in width (D238): a program must be able to mix
+// it with a real s32, and neither may print as the other.
+constexpr Ty kAllTypes[] = {Ty::kS8,  Ty::kS16, Ty::kS32, Ty::kS64, Ty::kInt,
+                            Ty::kU8,  Ty::kU16, Ty::kU32, Ty::kU64, Ty::kF32,
+                            Ty::kF64};
+constexpr uint32_t kIntTypeCount = 9;
+constexpr Ty kIntTypes[kIntTypeCount] = {
+    Ty::kS8, Ty::kS16, Ty::kS32, Ty::kS64, Ty::kInt,
+    Ty::kU8, Ty::kU16, Ty::kU32, Ty::kU64};
 // The types that get a `Maybe` and a `Check` helper.
-constexpr Ty kHelperTypes[] = {Ty::kS8, Ty::kS32, Ty::kS64, Ty::kU8,
-                               Ty::kU64};
+constexpr Ty kHelperTypes[] = {Ty::kS8, Ty::kS32, Ty::kS64, Ty::kInt,
+                               Ty::kU8, Ty::kU64};
 
 const char* TyName(Ty t) {
   switch (t) {
@@ -70,9 +76,11 @@ const char* TyName(Ty t) {
     case Ty::kS16:
       return "s16";
     case Ty::kS32:
-      return "int";
+      return "s32";
     case Ty::kS64:
       return "s64";
+    case Ty::kInt:
+      return "int";
     case Ty::kU8:
       return "u8";
     case Ty::kU16:
@@ -92,7 +100,8 @@ const char* TyName(Ty t) {
 bool IsFloat(Ty t) { return t == Ty::kF32 || t == Ty::kF64; }
 
 bool IsSigned(Ty t) {
-  return t == Ty::kS8 || t == Ty::kS16 || t == Ty::kS32 || t == Ty::kS64;
+  return t == Ty::kS8 || t == Ty::kS16 || t == Ty::kS32 || t == Ty::kS64 ||
+         t == Ty::kInt;
 }
 
 int Bits(Ty t) {
@@ -118,7 +127,7 @@ enum class VKind { kNum, kText, kClass, kOpt, kShape, kSlice };
 struct Variable {
   std::string name;
   VKind kind = VKind::kNum;
-  Ty ty = Ty::kS32;
+  Ty ty = Ty::kInt;
   bool is_mutable = false;
 };
 
@@ -126,7 +135,7 @@ struct Callable {
   std::string name;
   std::vector<Ty> parameters;
   bool takes_cell = false;
-  Ty result = Ty::kS32;
+  Ty result = Ty::kInt;
 };
 
 struct Loop {
@@ -160,15 +169,15 @@ class Writer {
 
   Ty RandomType() {
     if (!options_.floats) {
-      return kIntTypes[Below(8)];
+      return kIntTypes[Below(kIntTypeCount)];
     }
     // Floats are two of ten but are worth more than a fifth of the
     // arithmetic, since `%` and the casts live there.
     return Chance(25) ? (Chance(50) ? Ty::kF32 : Ty::kF64)
-                      : kIntTypes[Below(8)];
+                      : kIntTypes[Below(kIntTypeCount)];
   }
 
-  Ty RandomInt() { return kIntTypes[Below(8)]; }
+  Ty RandomInt() { return kIntTypes[Below(kIntTypeCount)]; }
 
   std::string Fresh(const char* stem) {
     return stem + std::to_string(next_name_++);
@@ -190,6 +199,27 @@ class Writer {
   std::string Boundary(Ty t) {
     const int bits = Bits(t);
     const uint64_t all = bits == 64 ? ~0ull : ((1ull << bits) - 1);
+    if (bits >= 32 && Chance(25)) {
+      // The edges of the old 32-bit int and of the 64-bit one (D238): a
+      // value one step either side of 2^31 and 2^32 must not change width
+      // in any tier.
+      static const char* const kEdges[] = {
+          "2147483647", "2147483648", "4294967295", "4294967296",
+          "4294967297", "(-2147483647 - 1)", "(-2147483648 - 1)",
+          "(-4294967296)"};
+      const uint32_t pick = Below(bits == 32 ? 3 : 8);
+      const std::string edge = kEdges[pick];
+      if (bits == 32 && pick == 1) {
+        return IsSigned(t) ? "2147483646" : edge;
+      }
+      if (bits == 32 && pick == 2) {
+        return IsSigned(t) ? "(-2147483647)" : edge;
+      }
+      if (!IsSigned(t) && edge[0] == '(') {
+        return "4294967295";
+      }
+      return edge;
+    }
     if (IsSigned(t)) {
       const uint64_t max = all >> 1;
       switch (Below(7)) {
@@ -375,7 +405,7 @@ class Writer {
   // may have written through another name.
   std::string Member(Ty t, int depth) {
     std::vector<std::string> options;
-    if (t == Ty::kS32) {
+    if (t == Ty::kInt) {
       options.push_back("pair.a");
       options.push_back(ClassVar() + ".n");
       options.push_back("buf[" + Index(depth) + "]");
@@ -419,7 +449,7 @@ class Writer {
   std::string Cast(Ty t, int depth) {
     Ty from = RandomType();
     if (from == t) {
-      from = t == Ty::kS32 ? Ty::kU8 : Ty::kS32;
+      from = t == Ty::kInt ? Ty::kU8 : Ty::kInt;
     }
     const std::string suffix = std::string(" as ") + TyName(t) + ")";
     if (IsFloat(t) || (IsFloat(from) && IsFloat(t))) {
@@ -536,7 +566,7 @@ class Writer {
       case 0:
         return "Shape.Dot";
       case 1:
-        return "Shape.Circle(" + Expression(Ty::kS32, depth - 1, false) + ")";
+        return "Shape.Circle(" + Expression(Ty::kInt, depth - 1, false) + ")";
       case 2: {
         const std::string w = Expression(Ty::kS8, depth - 1, false);
         const std::string h = Expression(Ty::kU64, depth - 1, false);
@@ -558,7 +588,7 @@ class Writer {
     std::string text = "(match " + subject + " { ";
     text += "Shape.Dot => " + Expression(t, depth - 1, true) + ", ";
     const size_t before = scope_.size();
-    scope_.push_back(Variable{r, VKind::kNum, Ty::kS32, false});
+    scope_.push_back(Variable{r, VKind::kNum, Ty::kInt, false});
     text += "Shape.Circle(" + r + ") => " +
             Expression(t, depth - 1, true) + ", ";
     scope_.resize(before);
@@ -721,12 +751,12 @@ class Writer {
     switch (Below(3)) {
       case 0: {
         std::string bound = Chance(30) && !loops_.empty()
-                                ? "(" + Expression(Ty::kS32, 1, true) +
+                                ? "(" + Expression(Ty::kInt, 1, true) +
                                       " & 3)"
                                 : std::to_string(rounds);
         Line(indent, head + "for " + counter + " in 0" +
                          (Chance(30) ? "..=" : "..") + bound + " {");
-        scope_.push_back(Variable{counter, VKind::kNum, Ty::kS32, false});
+        scope_.push_back(Variable{counter, VKind::kNum, Ty::kInt, false});
         Body(indent + 1, depth);
         Line(indent, "}");
         break;
@@ -787,7 +817,7 @@ class Writer {
       } else {
         const std::string name = Fresh("t");
         Line(indent, "var " + name + " = " + Text(depth));
-        scope_.push_back(Variable{name, VKind::kText, Ty::kS32, true});
+        scope_.push_back(Variable{name, VKind::kText, Ty::kInt, true});
       }
       return;
     }
@@ -812,17 +842,17 @@ class Writer {
       // Into the buffer, so that a store through an element address is in
       // the mix as well as a read.
       const std::string at = Index(depth);
-      const std::string value = Expression(Ty::kS32, depth, false);
+      const std::string value = Expression(Ty::kInt, depth, false);
       Line(indent, "buf[" + at + "] = " + value);
       return;
     }
     if (choice < 63) {
       if (Chance(50)) {
-        Line(indent, "pair.a = " + Expression(Ty::kS32, depth, false));
+        Line(indent, "pair.a = " + Expression(Ty::kInt, depth, false));
       } else if (options_.floats) {
         Line(indent, "pair.b = " + Expression(Ty::kF32, depth, false));
       } else {
-        Line(indent, "pair.a = " + Expression(Ty::kS32, depth, false));
+        Line(indent, "pair.a = " + Expression(Ty::kInt, depth, false));
       }
       return;
     }
@@ -874,7 +904,7 @@ class Writer {
   }
 
   std::string NewCell(int depth) {
-    const std::string n = Expression(Ty::kS32, depth, false);
+    const std::string n = Expression(Ty::kInt, depth, false);
     const std::string big = Expression(Ty::kU64, depth, false);
     const std::string f = Expression(Ty::kF64, depth, false);
     return "Cell(" + n + ", " + big + ", " + f + ")";
@@ -888,7 +918,7 @@ class Writer {
     if (choice == 0 || !target.has_value()) {
       const std::string name = Fresh("c");
       Line(indent, "var " + name + " = " + NewCell(depth));
-      scope_.push_back(Variable{name, VKind::kClass, Ty::kS32, true});
+      scope_.push_back(Variable{name, VKind::kClass, Ty::kInt, true});
       return;
     }
     if (choice == 1) {
@@ -901,7 +931,7 @@ class Writer {
     }
     const std::string cell = ClassVar();
     if (choice == 3) {
-      Line(indent, cell + ".n = " + Expression(Ty::kS32, depth, false));
+      Line(indent, cell + ".n = " + Expression(Ty::kInt, depth, false));
     } else if (Chance(50)) {
       Line(indent, cell + ".big = " + Expression(Ty::kU64, depth, false));
     } else {
@@ -915,7 +945,7 @@ class Writer {
     const std::optional<Variable> slice = PickVariable(VKind::kSlice, false);
     if (slice.has_value() && Chance(40)) {
       const std::string at = SliceIndex(depth);
-      const std::string value = Expression(Ty::kS32, depth, false);
+      const std::string value = Expression(Ty::kInt, depth, false);
       Line(indent, slice->name + "[" + at + "] = " + value);
       return;
     }
@@ -925,8 +955,8 @@ class Writer {
                      Expression(RandomInt(), depth, true) + " & 3) as int" +
                      " & 1");
     Line(indent, "var " + name + " = buf[" + start + ".." + start + " + 2]");
-    scope_.push_back(Variable{start, VKind::kNum, Ty::kS32, false});
-    scope_.push_back(Variable{name, VKind::kSlice, Ty::kS32, false});
+    scope_.push_back(Variable{start, VKind::kNum, Ty::kInt, false});
+    scope_.push_back(Variable{name, VKind::kSlice, Ty::kInt, false});
   }
 
   // --------------------------------------------------------- declarations --
@@ -975,14 +1005,14 @@ class Writer {
     }
     Line(indent, "var pair = Pair(5, 1.5)");
     Line(indent, "var tx = \"seed{1}\"");
-    scope_.push_back(Variable{"tx", VKind::kText, Ty::kS32, true});
+    scope_.push_back(Variable{"tx", VKind::kText, Ty::kInt, true});
     Line(indent, "var sh0: Shape = Shape.Circle(3)");
-    scope_.push_back(Variable{"sh0", VKind::kShape, Ty::kS32, true});
+    scope_.push_back(Variable{"sh0", VKind::kShape, Ty::kInt, true});
     Line(indent, "var c0 = Cell(1, 2, 0.5)");
     Line(indent, "var c1 = Cell(3, 4, 1.5)");
     Line(indent, "var c2 = c0");
     for (const char* name : {"c0", "c1", "c2"}) {
-      scope_.push_back(Variable{name, VKind::kClass, Ty::kS32, true});
+      scope_.push_back(Variable{name, VKind::kClass, Ty::kInt, true});
     }
   }
 
@@ -1013,7 +1043,7 @@ class Writer {
 
     Declarations(1);
     if (callable.takes_cell) {
-      scope_.push_back(Variable{"pc", VKind::kClass, Ty::kS32, false});
+      scope_.push_back(Variable{"pc", VKind::kClass, Ty::kInt, false});
     }
     const int statements =
         1 + static_cast<int>(Below(static_cast<uint32_t>(options_.statements)));
@@ -1087,7 +1117,7 @@ class Writer {
       mix("(if pair.b < 100.0 && pair.b > -100.0 { pair.b as int } else "
           "{ 0 })");
     }
-    mix(Expression(Ty::kS32, options_.depth, false) + " & 127");
+    mix(Expression(Ty::kInt, options_.depth, false) + " & 127");
     Line(1, "return acc");
     Line(0, "}\n");
     out_.append(

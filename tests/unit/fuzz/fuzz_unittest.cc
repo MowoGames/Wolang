@@ -31,7 +31,7 @@ std::string Describe(const interp::Outcome& outcome) {
 
 // Runs one generated program through every tier and reports the first
 // disagreement, or an empty string when they all agree.
-constexpr uint64_t kProgramsHash = 10817296423599508191ull;
+constexpr uint64_t kProgramsHash = 16080946868117334101ull;
 
 std::string CompareTiers(uint64_t seed, bool traps) {
   fuzz::Options options;
@@ -210,6 +210,25 @@ WOLANG_TEST(FuzzTest, GeneratedProgramsUseTheWholeLanguageSurface) {
         "Cell(", ".len", "wolang_objects_live", "..="}) {
     WOLANG_EXPECT(all.find(needle) != std::string::npos);
   }
+}
+
+WOLANG_TEST(FuzzTest, IntAndS32AreDistinctTypesNearTheirEdges) {
+  // int is s64 (D238) and s32 is a width of its own: both are declared, and
+  // values at 2^31 and 2^32 are written, so a tier that narrows `int` back
+  // to 32 bits disagrees with the others.
+  std::string all;
+  for (uint64_t seed = 1; seed <= 60; ++seed) {
+    fuzz::Options options;
+    options.seed = seed;
+    all += fuzz::Generate(options);
+  }
+  for (const char* needle :
+       {"var x_int: int", "var x_s32: s32", "as s32", "2147483648",
+        "4294967296", "(-2147483647 - 1)", "Maybe_s32", "Maybe_int"}) {
+    WOLANG_EXPECT(all.find(needle) != std::string::npos);
+  }
+  WOLANG_EXPECT(all.find("var x_s32: int") == std::string::npos);
+  WOLANG_EXPECT(all.find("var x_int: s32") == std::string::npos);
 }
 
 WOLANG_TEST(FuzzTest, ASeedNamesOneProgram) {
