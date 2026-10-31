@@ -9,3 +9,5 @@
 - Test harness: per-check failures go to stderr, `[   failed ]` lines to stdout (buffered), so
   in a combined log they are not adjacent. `wl test` lists them separately. (2026-10-30)
 - Clean debug build ~40 s on 4 cores; full unit suite (716 tests) a few seconds. (2026-10-30)
+- On Windows `wl` defaults to the `debug` preset (plain clang), which fails with `-Wdeprecated-declarations` on `getenv`/`fopen`; use `WL_PRESET=windows` (clang-cl, defines `_CRT_SECURE_NO_WARNINGS`). (2026-10-31)
+- Struct values are built positionally, `Paint(Colour.Blue, -1)`; `Paint { a: .. }` fails to compile and the fixture only says "is not in the module". (2026-10-31)

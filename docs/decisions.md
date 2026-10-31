@@ -3198,3 +3198,13 @@ LSP stay C++ longest. Work goes stage by stage as in
 giving the new and the old part the same input and requiring the same output.
 Nothing is self-hosted inside 1.2.0 except the groundwork: `std` that a
 compiler needs, and the IR reader.
+
+
+**D238. `int` is `s64`.** A length, an index and a hash are `int`, and `int` was 32
+bits, so a collection, a file read into memory or a hash table stopped at 2^31. Making only `len`
+wider would break every `var i = 0 ... i < xs.len`, because there are no mixed-width operations (D33).
+Making `int` wider breaks almost nothing written in the language. A word-sized `isize` would differ
+between wasm32 and x86-64, and one answer on every target is the rule this project keeps. The
+boundaries keep their widths: C's `int` is `s32` in `extern` and in bindings, and a stored format
+writes an explicit width. `float` stays `f32`: that is the GPU's width, and a different question.
+A tag is `u32` wherever it is read; `int` names a width the program chose, never a layout's.

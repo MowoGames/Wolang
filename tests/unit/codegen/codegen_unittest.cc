@@ -721,6 +721,52 @@ fun Probe() -> int {
   WOLANG_EXPECT_EQ(f.Run("Probe"), "12");
 }
 
+WOLANG_TEST(CodegenTest, MatchReadsOnlyTheTag) {
+  // A tag is u32 wherever it is read (D238): `match` must not read the
+  // word beside it, which here is an s32 of -1 and a payload.
+  Fixture f(R"(
+enum Colour {
+  Red,
+  Green,
+  Blue,
+}
+
+enum Shape {
+  Dot,
+  Box(h: u64),
+}
+
+struct Paint {
+  var colour: Colour
+  var after: s32
+}
+
+fun Rank(colour: Colour) -> int {
+  return match colour {
+    Colour.Red => 0,
+    Colour.Green => 1,
+    Colour.Blue => 2,
+  }
+}
+
+fun Size(shape: Shape) -> int {
+  return match shape {
+    Shape.Dot => 0,
+    Shape.Box(h) => h as int,
+  }
+}
+
+fun Probe() -> int {
+  var paint = Paint(Colour.Blue, -1)
+  var shapes: [2]Shape
+  shapes[0] = Shape.Box(7)
+  shapes[1] = Shape.Dot
+  return Rank(paint.colour) * 100 + Size(shapes[0]) * 10 + Size(shapes[1]) + paint.after as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Probe"), "269");
+}
+
 WOLANG_TEST(CodegenTest, RunsAGenericMethod) {
   // A method with type parameters of its own, on a type that has none:
   // one copy per set of arguments, and the closure's parameter types come

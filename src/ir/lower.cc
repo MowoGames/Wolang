@@ -6512,11 +6512,11 @@ class Lowerer {
           return FallibleTest(pattern, subject);
         }
         // A variant is identified by the tag the enum stores first. Reading
-        // it as a field keeps the layout decision in one place.
-        const InstId tag = builder_->Extract(types_->default_int(), subject,
-                                             0);
+        // it as a field keeps the layout decision in one place. The tag is
+        // u32 wherever it is read, never `int` (D238).
+        const InstId tag = builder_->Extract(types_->u32(), subject, 0);
         const InstId expected = builder_->ConstInt(
-            types_->default_int(), VariantIndex(subject_type, pattern));
+            types_->u32(), VariantIndex(subject_type, pattern));
         return builder_->Add(Opcode::kEq, types_->bool_type(),
                              {tag, expected});
       }
