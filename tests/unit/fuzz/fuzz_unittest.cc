@@ -31,6 +31,8 @@ std::string Describe(const interp::Outcome& outcome) {
 
 // Runs one generated program through every tier and reports the first
 // disagreement, or an empty string when they all agree.
+constexpr uint64_t kProgramsHash = 10817296423599508191ull;
+
 std::string CompareTiers(uint64_t seed, bool traps) {
   fuzz::Options options;
   options.seed = seed;
@@ -97,6 +99,24 @@ std::string CompareTiers(uint64_t seed, bool traps) {
            ", machine code said " + Describe(machine) + "\n" + source;
   }
   return {};
+}
+
+WOLANG_TEST(FuzzTest, ASeedWritesTheSameProgramOnEverySystem) {
+  // A seed names a program only if every system writes the same one. The
+  // operands of `+` are evaluated in an order C++ leaves open, and
+  // clang-cl takes them right to left, so the generator draws once per
+  // statement (D231); this pins the programs so that a draw slipping back
+  // into an expression fails here rather than as a different program on
+  // one machine. The number is FNV-1a over seeds 1 to 20.
+  uint64_t hash = 14695981039346656037ull;
+  for (uint64_t seed = 1; seed <= 20; ++seed) {
+    fuzz::Options options;
+    options.seed = seed;
+    for (const char c : fuzz::Generate(options)) {
+      hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ull;
+    }
+  }
+  WOLANG_EXPECT_EQ(hash, kProgramsHash);
 }
 
 WOLANG_TEST(FuzzTest, TheTiersAgreeOnGeneratedPrograms) {

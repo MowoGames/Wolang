@@ -356,9 +356,13 @@ class Writer {
     if (!braces_ok_) {
       return "";
     }
-    return "(if " + Comparison(depth - 1) + " { " +
-           Expression(t, depth - 1, true) + " } else { " +
-           Expression(t, depth - 1, true) + " })";
+    // One draw per statement, in this order: the operands of `+` are
+    // evaluated in an order the language leaves open, and clang-cl takes
+    // them right to left, so a seed wrote another program there (D231).
+    const std::string test = Comparison(depth - 1);
+    const std::string yes = Expression(t, depth - 1, true);
+    const std::string no = Expression(t, depth - 1, true);
+    return "(if " + test + " { " + yes + " } else { " + no + " })";
   }
 
   // A field, an element or a slice element: storage that something else
@@ -527,9 +531,11 @@ class Writer {
         return "Shape.Dot";
       case 1:
         return "Shape.Circle(" + Expression(Ty::kS32, depth - 1, false) + ")";
-      case 2:
-        return "Shape.Box(" + Expression(Ty::kS8, depth - 1, false) + ", " +
-               Expression(Ty::kU64, depth - 1, false) + ")";
+      case 2: {
+        const std::string w = Expression(Ty::kS8, depth - 1, false);
+        const std::string h = Expression(Ty::kU64, depth - 1, false);
+        return "Shape.Box(" + w + ", " + h + ")";
+      }
       default:
         return PickVariable(VKind::kShape, false)->name;
     }
@@ -575,14 +581,16 @@ class Writer {
     }
     const std::string name = TyName(t);
     if (!braces_ok_ || Chance(50)) {
-      return "(Maybe_" + name + "(" + Expression(t, depth - 1, false) +
-             ") ?? " + Expression(t, depth - 1, false) + ")";
+      const std::string held = Expression(t, depth - 1, false);
+      const std::string fallback = Expression(t, depth - 1, false);
+      return "(Maybe_" + name + "(" + held + ") ?? " + fallback + ")";
     }
     const std::string v = Fresh("v");
-    return "(match Check_" + name + "(" + Expression(t, depth - 1, false) +
-           ") { Ok(" + v + ") => " + v + ", Bad => " +
-           Expression(t, depth - 1, false) + ", Worse => " +
-           Expression(t, depth - 1, false) + " })";
+    const std::string checked = Expression(t, depth - 1, false);
+    const std::string bad = Expression(t, depth - 1, false);
+    const std::string worse = Expression(t, depth - 1, false);
+    return "(match Check_" + name + "(" + checked + ") { Ok(" + v + ") => " +
+           v + ", Bad => " + bad + ", Worse => " + worse + " })";
   }
 
   // A number made from a text's length, so that building one is observed.
@@ -607,7 +615,9 @@ class Writer {
   // rejected. Its length is read instead.
   std::string Text(int depth) {
     if (depth > 0 && Chance(35)) {
-      return "(" + Text(depth - 1) + " + " + Text(depth - 1) + ")";
+      const std::string left = Text(depth - 1);
+      const std::string right = Text(depth - 1);
+      return "(" + left + " + " + right + ")";
     }
     return Interpolation(depth);
   }
@@ -622,8 +632,9 @@ class Writer {
     const uint32_t parts = 1 + Below(2);
     for (uint32_t i = 0; i < parts; ++i) {
       const Ty t = RandomType();
-      text += std::string(1, static_cast<char>('a' + Below(26))) + "{" +
-              Expression(t, depth > 1 ? 1 : 0, true) + "}";
+      const char letter = static_cast<char>('a' + Below(26));
+      const std::string value = Expression(t, depth > 1 ? 1 : 0, true);
+      text += std::string(1, letter) + "{" + value + "}";
     }
     braces_ok_ = saved;
     return text + "\"";
@@ -633,19 +644,26 @@ class Writer {
 
   std::string Comparison(int depth) {
     if (depth > 0 && Chance(20)) {
-      return "(" + Comparison(depth - 1) + (Chance(50) ? " && " : " || ") +
-             Comparison(depth - 1) + ")";
+      const std::string left = Comparison(depth - 1);
+      const char* const join = Chance(50) ? " && " : " || ";
+      const std::string right = Comparison(depth - 1);
+      return "(" + left + join + right + ")";
     }
     if (depth > 0 && Chance(8)) {
       return "!(" + Comparison(depth - 1) + ")";
     }
     if (braces_ok_ && Chance(8)) {
-      return Text(1) + (Chance(50) ? " == " : " != ") + Text(1);
+      const std::string left = Text(1);
+      const char* const op = Chance(50) ? " == " : " != ";
+      const std::string right = Text(1);
+      return left + op + right;
     }
     static const char* const kOps[] = {"<", "<=", ">", ">=", "==", "!="};
     const Ty t = RandomType();
-    return Expression(t, depth, true) + " " + kOps[Below(6)] + " " +
-           Expression(t, depth, false);
+    const std::string left = Expression(t, depth, true);
+    const char* const op = kOps[Below(6)];
+    const std::string right = Expression(t, depth, false);
+    return left + " " + op + " " + right;
   }
 
   // ---------------------------------------------------------- statements --
@@ -787,8 +805,9 @@ class Writer {
     if (choice < 60) {
       // Into the buffer, so that a store through an element address is in
       // the mix as well as a read.
-      Line(indent, "buf[" + Index(depth) + "] = " +
-                       Expression(Ty::kS32, depth, false));
+      const std::string at = Index(depth);
+      const std::string value = Expression(Ty::kS32, depth, false);
+      Line(indent, "buf[" + at + "] = " + value);
       return;
     }
     if (choice < 63) {
@@ -849,9 +868,10 @@ class Writer {
   }
 
   std::string NewCell(int depth) {
-    return "Cell(" + Expression(Ty::kS32, depth, false) + ", " +
-           Expression(Ty::kU64, depth, false) + ", " +
-           Expression(Ty::kF64, depth, false) + ")";
+    const std::string n = Expression(Ty::kS32, depth, false);
+    const std::string big = Expression(Ty::kU64, depth, false);
+    const std::string f = Expression(Ty::kF64, depth, false);
+    return "Cell(" + n + ", " + big + ", " + f + ")";
   }
 
   // Allocation, aliasing and writes through either name: the reference
@@ -888,8 +908,9 @@ class Writer {
   void SliceStatement(int indent, int depth) {
     const Variable* slice = PickVariable(VKind::kSlice, false);
     if (slice != nullptr && Chance(40)) {
-      Line(indent, slice->name + "[" + SliceIndex(depth) + "] = " +
-                       Expression(Ty::kS32, depth, false));
+      const std::string at = SliceIndex(depth);
+      const std::string value = Expression(Ty::kS32, depth, false);
+      Line(indent, slice->name + "[" + at + "] = " + value);
       return;
     }
     const std::string start = Fresh("k");
