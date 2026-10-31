@@ -110,6 +110,11 @@ WOLANG_TEST(FuzzTest, ASeedWritesTheSameProgramOnEverySystem) {
   // one machine. The number is FNV-1a over seeds 1 to 20.
   uint64_t hash = 14695981039346656037ull;
   for (uint64_t seed = 1; seed <= 20; ++seed) {
+    if (test::Verbose()) {
+      std::fprintf(stdout, "  seed %llu\n",
+                   static_cast<unsigned long long>(seed));
+      std::fflush(stdout);
+    }
     fuzz::Options options;
     options.seed = seed;
     for (const char c : fuzz::Generate(options)) {
