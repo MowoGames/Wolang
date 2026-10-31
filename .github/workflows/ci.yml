@@ -225,8 +225,11 @@ jobs:
         run: cmake --preset windows
       - name: Build
         run: cmake --build --preset windows -j
+      # A suite at a time, each with a time limit: a test that hangs here
+      # fails in minutes and names itself, where the whole-suite entry
+      # ran into the job's hour and said nothing.
       - name: Unit tests
-        run: ctest --preset windows
+        run: ctest --preset windows -E "^unit$" --timeout 300 --output-on-failure
       - name: Library tests
         shell: bash
         run: |
