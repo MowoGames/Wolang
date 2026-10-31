@@ -47,6 +47,10 @@ void ReportFailure(std::string_view file, int line, std::string message);
 // number of failed tests.
 int RunAll(std::string_view filter, bool verbose);
 
+// Whether the run was asked to name what it does, for a test that loops
+// over many cases and wants to say which one it is on.
+bool Verbose();
+
 struct Registrar {
   Registrar(std::string_view suite,
             std::string_view name,

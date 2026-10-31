@@ -3,6 +3,7 @@
 
 #include "wolang/fuzz/generator.h"
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -106,6 +107,12 @@ WOLANG_TEST(FuzzTest, TheTiersAgreeOnGeneratedPrograms) {
   // `wolang fuzz --count 10000` is what goes wide when something is
   // suspected. The seeds here are the regression net.
   for (uint64_t seed = 1; seed <= 80; ++seed) {
+    // Named before it runs, so one that never finishes says which it was.
+    if (test::Verbose()) {
+      std::fprintf(stdout, "  seed %llu\n",
+                   static_cast<unsigned long long>(seed));
+      std::fflush(stdout);
+    }
     const std::string disagreement = CompareTiers(seed, /*traps=*/true);
     WOLANG_EXPECT_EQ(disagreement, "");
   }
@@ -115,6 +122,11 @@ WOLANG_TEST(FuzzTest, TheTiersAgreeWithoutTraps) {
   // The same again with nothing that can trap, so that a disagreement
   // about a *value* is not hidden behind one about a trap.
   for (uint64_t seed = 1; seed <= 80; ++seed) {
+    if (test::Verbose()) {
+      std::fprintf(stdout, "  seed %llu\n",
+                   static_cast<unsigned long long>(seed + 1000));
+      std::fflush(stdout);
+    }
     const std::string disagreement = CompareTiers(seed + 1000, false);
     WOLANG_EXPECT_EQ(disagreement, "");
   }
