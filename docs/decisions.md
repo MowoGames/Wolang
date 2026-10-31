@@ -3172,3 +3172,16 @@ trap text as well as trap kind. Operations that can trap are rare (6%)
 so most programs run to a value. A unit test checks that every generated
 program type checks, so a generator bug is not mistaken for a compiler
 bug, and `wolang fuzz <file>` replays one program for minimising.
+
+**D249. An integer constant of an aggregate type is that type's zero.**
+An error of a `T!` is built with an integer `0` as its payload, because a
+failed `T!` has no value and nothing may read one without matching first.
+When `T` is an aggregate -- a slice, a text, a struct -- the back ends
+gave that constant an area but emitted it as an integer, through a spill
+slot it was never given. `kNowhere * 8` wraps to just below the spill area,
+which is the last saved register, so returning an error overwrote a
+register the caller was keeping: on arm64 a loop's tag, on x86-64 the
+pointer an optimised host kept its result in. The constant's area is now
+zeroed with the frame's slots and never written, AOT makes it LLVM's null
+of the type, and asking for the spill offset of a value with none is a
+check failure instead of a write into the frame.

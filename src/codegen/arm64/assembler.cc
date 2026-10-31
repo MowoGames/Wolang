@@ -209,6 +209,9 @@ void Assembler::Sub(Width width, Register rd, Register rn, Register rm) {
   WOLANG_CHECK(rd != Register::kSp && rn != Register::kSp);
   Emit(ShiftedRegister(0x4B000000u, width, rd, rn, rm));
 }
+void Assembler::Neg(Width width, Register rd, Register rm) {
+  Emit(ShiftedRegister(0x4B000000u, width, rd, Register::kZr, rm));
+}
 void Assembler::Adds(Width width, Register rd, Register rn, Register rm) {
   Emit(ShiftedRegister(0x2B000000u, width, rd, rn, rm));
 }

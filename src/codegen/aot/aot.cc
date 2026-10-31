@@ -317,6 +317,11 @@ class Translator {
   // ---------------------------------------------------------- emission ---
 
   LLVMValueRef Const(uint64_t bits, LLVMTypeRef type) {
+    // An integer constant of a wider type is that type's zero: an error's
+    // payload (D249). `LLVMConstInt` only takes integers.
+    if (LLVMGetTypeKind(type) != LLVMIntegerTypeKind) {
+      return LLVMConstNull(type);
+    }
     return LLVMConstInt(type, bits, /*SignExtend=*/false);
   }
   LLVMValueRef Const64(uint64_t bits) { return Const(bits, I64()); }

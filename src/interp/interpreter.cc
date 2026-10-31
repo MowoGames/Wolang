@@ -17,8 +17,16 @@
 #include <cstring>
 #include <utility>
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 #include <pthread.h>
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 namespace wolang {
@@ -54,6 +62,19 @@ NativeStack ThisThreadsStack() {
       }
       pthread_attr_destroy(&attributes);
     }
+#elif defined(__APPLE__)
+    // The address is the top of the stack on this system, not the bottom.
+    pthread_t self = pthread_self();
+    cached.high = reinterpret_cast<uintptr_t>(pthread_get_stackaddr_np(self));
+    cached.low = cached.high - pthread_get_stacksize_np(self);
+#elif defined(_WIN32)
+    // A main thread's stack is a megabyte here, so the recursion that a
+    // Linux stack absorbs overflows this one first (D225).
+    ULONG_PTR low = 0;
+    ULONG_PTR high = 0;
+    ::GetCurrentThreadStackLimits(&low, &high);
+    cached.low = static_cast<uintptr_t>(low);
+    cached.high = static_cast<uintptr_t>(high);
 #endif
   }
   return cached;

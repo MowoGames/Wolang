@@ -11,4 +11,4 @@ std = { path = "../std" }
 # program on another machine finds.
 [link]
 libraries = "wolang_platform"
-paths = "../../build/debug/platform, ../../build/release/platform, ../../build/x64/platform, ../../build/asan/platform, ../../build/windows/platform, /usr/local/lib, /usr/lib, /opt/homebrew/lib"
+paths = "../../build/debug/platform, ../../build/release/platform, ../../build/x64/platform, ../../build/asan/platform, ../../build/ubsan/platform, ../../build/windows/platform, /usr/local/lib, /usr/lib, /opt/homebrew/lib"

@@ -106,7 +106,8 @@ was unsound or silently wrong:
 
 - `wolang --version` reports the version the project was built as: it is
   written once, in `CMakeLists.txt` (D248).
-- Releases come from one tag push: five platform archives, a Windows
+- Releases come from one tag push: Linux x86-64 and arm64 and Windows
+  x86-64 archives (macOS builds from source for now), a Windows
   installer, the editor extension and a `SHA256SUMS`, built with the
   LLVM back end so `wolang build` works. `install.sh` and `install.ps1`
   verify the checksum and refuse to install without one (D248).

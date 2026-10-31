@@ -28,7 +28,7 @@ static std::vector<HostClass>& Classes() {
   return sm_Classes;
 }
 
-static HostClass Find(uint64_t tag) {
+static HostClass FindHostClass(uint64_t tag) {
   const std::lock_guard<std::mutex> held(Lock());
   for (const HostClass& entry : Classes()) {
     if (entry.Tag == tag) {
@@ -53,7 +53,7 @@ extern "C" void wolang_host_retain(uint64_t tag, void* object) {
   if (object == nullptr) {
     return;
   }
-  const HostClass entry = Find(tag);
+  const HostClass entry = FindHostClass(tag);
   if (entry.Retain != nullptr) {
     entry.Retain(object, entry.User);
   }
@@ -63,7 +63,7 @@ extern "C" void wolang_host_release(uint64_t tag, void* object) {
   if (object == nullptr) {
     return;
   }
-  const HostClass entry = Find(tag);
+  const HostClass entry = FindHostClass(tag);
   if (entry.Release != nullptr) {
     entry.Release(object, entry.User);
   }
@@ -73,7 +73,7 @@ extern "C" int32_t wolang_host_upgrade(uint64_t tag, void* object) {
   if (object == nullptr) {
     return 0;
   }
-  const HostClass entry = Find(tag);
+  const HostClass entry = FindHostClass(tag);
   if (entry.Alive != nullptr && entry.Alive(object, entry.User) == 0) {
     return 0;
   }

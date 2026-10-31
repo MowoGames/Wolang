@@ -57,7 +57,7 @@ static const VectorType* VectorNamed(const std::string& name) {
   return nullptr;
 }
 
-static std::string Trim(std::string_view text) {
+static std::string TrimText(std::string_view text) {
   const size_t begin = text.find_first_not_of(" \t");
   if (begin == std::string_view::npos) {
     return std::string();
@@ -172,12 +172,12 @@ class Generator {
   }
 
   Shape ShapeOf(const std::string& spelled) const {
-    std::string text = Trim(spelled);
+    std::string text = TrimText(spelled);
     if (text.rfind("const ", 0) == 0) {
-      text = Trim(text.substr(6));
+      text = TrimText(text.substr(6));
     }
     if (!text.empty() && text.back() == '&') {
-      text = Trim(text.substr(0, text.size() - 1));
+      text = TrimText(text.substr(0, text.size() - 1));
     }
 
     Shape shape;
@@ -186,8 +186,8 @@ class Generator {
       return shape;
     }
     if (!text.empty() && text.back() == '*') {
-      const std::string pointee = Trim(text.substr(0, text.size() - 1));
-      const auto known = m_Known.find(pointee.rfind("const ", 0) == 0 ? Trim(pointee.substr(6)) : pointee);
+      const std::string pointee = TrimText(text.substr(0, text.size() - 1));
+      const auto known = m_Known.find(pointee.rfind("const ", 0) == 0 ? TrimText(pointee.substr(6)) : pointee);
       if (known != m_Known.end()) {
         shape.kind = Shape::Kind::kObject;
         shape.wolang = known->second->name;

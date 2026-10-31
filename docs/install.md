@@ -2,10 +2,20 @@
 
 ## The one-line way
 
-**macOS and Linux**
+**Linux**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/MowoGames/Wolang/alpha/install.sh | sh
+```
+
+**macOS**
+
+Releases carry no macOS archive for now (the project's CI has no macOS
+runners), so the script builds it from source. That needs the Xcode
+command line tools and CMake:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MowoGames/Wolang/alpha/install.sh | sh -s -- --from-source
 ```
 
 **Windows**
@@ -83,8 +93,8 @@ PowerShell takes the same as named parameters:
 ## Building the installer yourself
 
 ```powershell
-dotnet tool install --global wix
-wix extension add -g WixToolset.UI.wixext
+dotnet tool install --global wix --version 6.0.2
+wix extension add -g WixToolset.UI.wixext/6.0.2
 cmake --preset windows -DCMAKE_BUILD_TYPE=Release
 cmake --build --preset windows -j
 pwsh tools/package/make_msi.ps1 -Build build/windows
@@ -99,11 +109,11 @@ them:
 
 ```sh
 v=1.1.0
-curl -fLO "https://github.com/MowoGames/Wolang/releases/download/v$v/wolang-macos-arm64.tar.gz"
+curl -fLO "https://github.com/MowoGames/Wolang/releases/download/v$v/wolang-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/MowoGames/Wolang/releases/download/v$v/SHA256SUMS"
-shasum -a 256 -c SHA256SUMS --ignore-missing    # sha256sum -c on Linux
-tar -xzf wolang-macos-arm64.tar.gz
-export PATH="$PWD/wolang-macos-arm64/bin:$PATH"
+sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf wolang-linux-x86_64.tar.gz
+export PATH="$PWD/wolang-linux-x86_64/bin:$PATH"
 ```
 
 What is in the archive:
@@ -147,8 +157,8 @@ supported too; see [editors/README.md](../editors/README.md).
 
 | | Built | Tested in CI |
 |---|---|---|
-| macOS arm64 | yes | yes |
-| macOS x86-64 | yes | — |
+| macOS arm64 | from source | — (no macOS runners) |
+| macOS x86-64 | from source | — |
 | Linux x86-64 | yes | yes |
 | Linux arm64 | yes | yes |
 | Windows x86-64 | yes | yes |

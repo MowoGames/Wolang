@@ -44,5 +44,7 @@ list(REMOVE_DUPLICATES WOLANG_SUITES)
 list(SORT WOLANG_SUITES)
 
 foreach(suite ${WOLANG_SUITES})
-  add_test(NAME unit.${suite} COMMAND wolang_tests --filter ${suite})
+  # Verbose: each test is named before it runs, so a suite that hangs
+  # until ctest kills it says which test it was in.
+  add_test(NAME unit.${suite} COMMAND wolang_tests --filter ${suite} --verbose)
 endforeach()

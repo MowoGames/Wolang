@@ -73,6 +73,19 @@
 #include "wolang/syntax/lexer.h"
 #include "wolang/syntax/parser.h"
 
+#if defined(_WIN32)
+#include <crtdbg.h>
+#include <stdlib.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+// Old 16-bit pointer qualifiers, defined as nothing, that eat the name of
+// any variable spelled like them.
+#undef near
+#undef far
+#endif
+
 namespace wolang {
 namespace {
 
@@ -928,7 +941,7 @@ int RunFetch(const Options& options) {
     }
   }
   std::fprintf(stdout, "%d fetched, written to %s\n", remote,
-               (std::filesystem::path(where) / "wolang.lock").c_str());
+               (std::filesystem::path(where) / "wolang.lock").string().c_str());
   return reported;
 }
 
@@ -1565,6 +1578,15 @@ int RunProgram(const Options& options) {
 // trapping and does not return `false`; anything else is a failure, with the
 // trap named.
 int RunTests(const Options& options) {
+  // A line at a time, so a test that brings the process down still leaves
+  // the names of the ones before it in a log that is a pipe.
+  // Windows has no line buffering (`_IOLBF` is full buffering there) and
+  // asserts on a size below two, so it gets no buffering at all.
+#if defined(_WIN32)
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+#else
+  std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
+#endif
   Database database;
   DiagnosticEngine load_diagnostics;
   std::vector<FileId> files;
@@ -2089,6 +2111,17 @@ int RunFuzz(const Options& options) {
       continue;
     }
 
+    // Each stage named on stderr as it starts, when asked: a program that
+    // hangs on one system and not another says where.
+    const bool trace = std::getenv("WOLANG_FUZZ_TRACE") != nullptr;
+    const auto stage = [&](const char* what) {
+      if (trace) {
+        std::fprintf(stderr, "seed %llu: %s\n",
+                     static_cast<unsigned long long>(seed), what);
+        std::fflush(stderr);
+      }
+    };
+    stage("interpreting the unoptimized code");
     const Symbol probe = database.interner().Intern("Probe");
     abi::LayoutStore layouts(database.types(), checked_file->resolution);
     database.ShareMembers(&layouts);
@@ -2102,6 +2135,7 @@ int RunFuzz(const Options& options) {
     if (!reference.ok() && reference.trap == ir::TrapKind::kStepLimit) {
       continue;
     }
+    stage("interpreting the optimized code");
     const interp::Outcome optimized = interp::RunNamed(
         database.interner(), database.types(), lowered->module, probe, {}, {},
         nullptr, foreign.get(), &layouts);
@@ -2129,13 +2163,16 @@ int RunFuzz(const Options& options) {
     if (!codegen::IsSupportedTarget()) {
       continue;
     }
+    stage("compiling");
     std::unique_ptr<codegen::CompiledModule> compiled =
         codegen::Compile(database.interner(), database.types(),
                          checked_file->resolution, lowered->module);
     if (compiled == nullptr || !compiled->Contains(probe)) {
       continue;
     }
+    stage("running the machine code");
     const interp::Outcome machine = compiled->Run(probe, {});
+    stage("done");
     if (describe(machine) != describe(reference)) {
       std::fprintf(stdout,
                    "[ failed ] seed %llu: the code generator disagrees: "
@@ -3228,6 +3265,25 @@ int Run(int argc, char** argv) {
 }  // namespace
 }  // namespace wolang
 
+namespace {
+
+// A failed check in the debug runtime, or a crash, says so on stderr and
+// ends the process. Left to itself Windows opens a dialog and waits for a
+// click, which on a build machine is a run that never finishes.
+void ReportFailuresInsteadOfAsking() {
+#if defined(_WIN32)
+  ::SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+  _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+  _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+  _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+  _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+#endif
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
+  ReportFailuresInsteadOfAsking();
   return wolang::Run(argc, argv);
 }
