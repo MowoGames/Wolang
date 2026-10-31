@@ -3727,10 +3727,15 @@ class Lowerer {
 
   InstId LowerUnary(ExprId id, const Expr& expr, TypeId type) {
     // The checker settled this as a call to an `@Operator` ability's method
-    // (D239); lowering that call is the next step, and until then the value
-    // is undefined rather than a built-in operation on a struct.
-    if (typed().OperatorOf(id) != nullptr) {
-      return builder_->Undef(type);
+    // (D239); a number keeps its opcode.
+    if (expr.op == TokenKind::kMinus && UsesOperatorCall(id, expr.lhs)) {
+      InstId receiver;
+      {
+        const Borrowing borrowing(this);
+        receiver = Value(expr.lhs);
+      }
+      const InstId called = LowerOperatorCall(id, expr.op, Erase(TypeOf(expr.lhs)), receiver, ExprId{}, type, /*binary=*/false);
+      return called.is_valid() ? called : builder_->Undef(type);
     }
     const InstId operand = Value(expr.lhs);
     // What arithmetic produces is what it was given, not what the context
@@ -3762,6 +3767,185 @@ class Lowerer {
     }
   }
 
+  static std::string_view OperatorMethodName(OperatorKind kind) {
+    switch (kind) {
+      case OperatorKind::kPlus:
+        return "Plus";
+      case OperatorKind::kMinus:
+        return "Minus";
+      case OperatorKind::kTimes:
+        return "Times";
+      case OperatorKind::kDivide:
+        return "Divide";
+      case OperatorKind::kNegate:
+        return "Negate";
+      case OperatorKind::kEquals:
+        return "Equals";
+      case OperatorKind::kCompare:
+        return "Compare";
+      case OperatorKind::kNone:
+        break;
+    }
+    return "";
+  }
+
+  // A number, a `bool`, a `char` or a string: what the opcodes already
+  // answer for, and so what an operator ability is not called on (D239).
+  bool IsPrimitiveOperand(TypeId type) {
+    switch (types_->KindOf(type)) {
+      case TypeKind::kBool:
+      case TypeKind::kChar:
+      case TypeKind::kInt:
+      case TypeKind::kFloat:
+      case TypeKind::kIntLiteral:
+      case TypeKind::kFloatLiteral:
+      case TypeKind::kString:
+      case TypeKind::kStr:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // Whether |id| is an operator the checker made a call of, on an operand
+  // that is not a primitive: primitives keep today's opcodes, so a generic
+  // `Max<int>` copy has no call in it (D239).
+  bool UsesOperatorCall(ExprId id, ExprId operand) {
+    return typed().OperatorOf(id) != nullptr &&
+           !IsPrimitiveOperand(Erase(TypeOf(operand)));
+  }
+
+  // The operator at |id| as the call the checker said it was. The receiver
+  // is borrowed; the right operand is an address when the parameter is
+  // `&Self`. `!=` is `Equals` and then a not; `<` and friends compare what
+  // `Compare` answers with zero (D239).
+  InstId LowerOperatorCall(ExprId id, TokenKind op, TypeId owner, InstId receiver, ExprId rhs, TypeId type, bool binary) {
+    const TypedBody::OperatorCall* call = typed().OperatorOf(id);
+    const Symbol name = interner_->Intern(OperatorMethodName(call->kind));
+    const Member* member = resolution().FindMember(owner, name);
+    if (member == nullptr) {
+      member = resolution().FindInheritedMember(owner, name);
+    }
+    if (member == nullptr || member->kind != MemberKind::kMethod || !receiver.is_valid()) {
+      return InstId{};
+    }
+
+    const auto hold = [&](InstId value) {
+      if (binary) {
+        if (IsFreshHandle(value)) {
+          m_Temporaries.emplace_back(value, ValueType(value));
+        }
+      } else {
+        HoldTemporary(value);
+      }
+    };
+    hold(receiver);
+
+    std::vector<InstId> arguments;
+    if (ast().Contains(rhs)) {
+      const std::vector<TypeId> params = types_->ArgumentsOf(member->type);
+      InstId value;
+      {
+        const Borrowing borrowing(this);
+        value = Value(rhs);
+      }
+      hold(value);
+      if (!params.empty() && types_->KindOf(params[0]) == TypeKind::kReference) {
+        value = Address(rhs, value);
+      } else if (!params.empty() && IsPrimitiveOperand(Erase(params[0]))) {
+        value = Coerce(value, TypeOf(rhs), Erase(params[0]), rhs);
+      }
+      arguments.push_back(value);
+    }
+
+    const bool compare = call->kind == OperatorKind::kCompare;
+    const InstId result = CallMethodOn(owner, name, receiver, &arguments, compare ? types_->default_int() : type, id);
+    if (!result.is_valid()) {
+      return result;
+    }
+
+    if (call->kind == OperatorKind::kEquals) {
+      return op == TokenKind::kBangEq ? builder_->Add(Opcode::kLogicalNot, types_->bool_type(), {result}) : result;
+    }
+    if (compare) {
+      return builder_->Add(BinaryOpcode(op), types_->bool_type(), {result, builder_->ConstInt(ValueType(result), 0)});
+    }
+
+    return result;
+  }
+
+  // `a.Plus(b)` and the rest on a number: the opcode its operator is.
+  // `Compare` is -1, 0 or 1 by two branches: the interpreter does not cast
+  // a `bool` to an integer, so `(a > b) - (a < b)` would not agree (D239).
+  InstId LowerPrimitiveOperator(Symbol name, InstId receiver, const std::vector<InstId>& arguments) {
+    const std::string_view text = interner_->Text(name);
+    const TypeId held = ValueType(receiver);
+    if (!held.is_valid()) {
+      return InstId{};
+    }
+
+    InstId right = arguments.empty() ? InstId{} : arguments[0];
+    if (right.is_valid() && types_->KindOf(ValueType(right)) == TypeKind::kPointer) {
+      right = builder_->Add(Opcode::kLoad, Erase(types_->ElementOf(ValueType(right))), {right});
+    }
+
+    if (text == "Negate" && !right.is_valid()) {
+      return builder_->Add(Opcode::kNeg, held, {receiver});
+    }
+    if (!right.is_valid()) {
+      return InstId{};
+    }
+    right = AsType(right, held);
+
+    Opcode opcode = Opcode::kUndef;
+    if (text == "Plus") {
+      opcode = Opcode::kAdd;
+    } else if (text == "Minus") {
+      opcode = Opcode::kSub;
+    } else if (text == "Times") {
+      opcode = Opcode::kMul;
+    } else if (text == "Divide") {
+      opcode = Opcode::kDiv;
+    }
+    if (opcode != Opcode::kUndef) {
+      return builder_->Add(opcode, held, {receiver, right});
+    }
+
+    if (text == "Equals") {
+      if (IsView(held)) {
+        return TextEqual(receiver, right);
+      }
+      return builder_->Add(Opcode::kEq, types_->bool_type(), {receiver, right});
+    }
+    if (text == "Compare" && !IsView(held)) {
+      const TypeId order = types_->default_int();
+      const BlockId greater = builder_->AddBlock("compare.greater");
+      const BlockId rest = builder_->AddBlock("compare.rest");
+      const BlockId less = builder_->AddBlock("compare.less");
+      const BlockId equal = builder_->AddBlock("compare.equal");
+      const BlockId join = builder_->AddBlock("compare.join");
+      const InstId result = builder_->AddParam(join, order);
+      builder_->Branch(builder_->Add(Opcode::kGt, types_->bool_type(), {receiver, right}), greater, rest);
+
+      builder_->SetCurrent(greater);
+      builder_->Jump(join, {builder_->ConstInt(order, 1)});
+
+      builder_->SetCurrent(rest);
+      builder_->Branch(builder_->Add(Opcode::kLt, types_->bool_type(), {receiver, right}), less, equal);
+
+      builder_->SetCurrent(less);
+      builder_->Jump(join, {builder_->ConstInt(order, static_cast<uint64_t>(-1))});
+
+      builder_->SetCurrent(equal);
+      builder_->Jump(join, {builder_->ConstInt(order, 0)});
+
+      builder_->SetCurrent(join);
+      return result;
+    }
+
+    return InstId{};
+  }
+
   // An operand made only to be compared -- `tracker.seen != null` reads a
   // weak field into a reference of its own -- is let go once the answer is
   // in (D213).
@@ -3777,9 +3961,16 @@ class Lowerer {
   }
 
   InstId LowerBinaryInner(ExprId id, const Expr& expr, TypeId type) {
-    // An `@Operator` call is not lowered yet (D239); see LowerUnary.
-    if (typed().OperatorOf(id) != nullptr) {
-      return builder_->Undef(type);
+    // An `@Operator` call (D239); a number keeps its opcode, which is what
+    // keeps `Max<int>` free of calls.
+    if (UsesOperatorCall(id, expr.lhs)) {
+      InstId receiver;
+      {
+        const Borrowing borrowing(this);
+        receiver = Value(expr.lhs);
+      }
+      const InstId called = LowerOperatorCall(id, expr.op, Erase(TypeOf(expr.lhs)), receiver, expr.rhs, type, /*binary=*/true);
+      return called.is_valid() ? called : builder_->Undef(type);
     }
     // `&&` and `||` do not evaluate their right side unless they have to, so
     // they are control flow rather than operations.
@@ -5030,7 +5221,7 @@ class Lowerer {
   // and then written, so `xs[next()] += 1` calls `next` once. The operation
   // is the binary operator's own instruction, so it traps the same way
   // (D246).
-  InstId LowerCompoundAssign(const Expr& expr) {
+  InstId LowerCompoundAssign(ExprId id, const Expr& expr) {
     const Place place = PlaceOf(expr.lhs);
     const TypeId held = TypeAt(place);
     if (!place.addressable() || !held.is_valid()) {
@@ -5049,6 +5240,12 @@ class Lowerer {
       WritePlace(place, Coerce(value, ValueType(value), held, expr.rhs));
       builder_->Jump(after, {});
       builder_->SetCurrent(after);
+      return InstId{};
+    }
+    // `a += b` on a type with `Plus` is `a = a.Plus(b)` (D239).
+    if (UsesOperatorCall(id, expr.lhs)) {
+      const InstId called = LowerOperatorCall(id, expr.op, Erase(TypeOf(expr.lhs)), old, expr.rhs, held, /*binary=*/false);
+      WritePlace(place, called);
       return InstId{};
     }
     const InstId right = Value(expr.rhs);
@@ -5109,12 +5306,8 @@ class Lowerer {
   }
 
   InstId LowerAssign(ExprId id, const Expr& expr) {
-    // An `@Operator` call is not lowered yet (D239); see LowerUnary.
-    if (typed().OperatorOf(id) != nullptr) {
-      return InstId{};
-    }
     if (expr.op != TokenKind::kEq) {
-      return LowerCompoundAssign(expr);
+      return LowerCompoundAssign(id, expr);
     }
     const InstId value = Value(expr.rhs);
     const Place place = PlaceOf(expr.lhs);
@@ -6036,6 +6229,25 @@ class Lowerer {
       return InstId{};
     }
 
+    // `a.Compare(&b)` on a number, reached through a bound like `T: Ord`
+    // with `T` = `int`: a number has no such method, and the opcodes are
+    // what its operator was always going to be (D239).
+    if (IsPrimitiveOperand(owner) &&
+        resolution().FindMember(owner, name) == nullptr) {
+      return LowerPrimitiveOperator(name, receiver, *arguments);
+    }
+    return CallMethodOn(owner, name, receiver, arguments, type, id);
+  }
+
+  // The call of |name| on |receiver|, once both are known. A written call
+  // and an operator the checker settled as one (D239) end up here, so the
+  // tiers see one shape for both.
+  InstId CallMethodOn(TypeId owner,
+                      Symbol name,
+                      InstId receiver,
+                      std::vector<InstId>* arguments,
+                      TypeId type,
+                      ExprId id) {
     // A method on a reference is the method of what it refers to (D109).
     //
     // A reference is a pointer by the time it gets here (see `Erase`).

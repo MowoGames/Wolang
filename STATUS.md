@@ -4,7 +4,7 @@
 > below; if it disagrees with the code, the code is right and this file
 > needs fixing.
 
-**Date:** 2026-10-30
+**Date:** 2026-10-31
 **Waves are closed through the 11th**; after that the work was "a complete
 language" without waves, and everything below belongs to it (D119–D248). **Released as 1.1.0.**
 
@@ -21,9 +21,9 @@ that they do.
 | Tiers | interpreter (the reference), arm64/x64 dev tier for `run`, LLVM for `build` |
 | Platforms | macOS arm64/x86-64, Linux x86-64/arm64, Windows x86-64 (clang-cl) |
 | Cross targets | `--target`: Windows COFF, Linux ELF, WebAssembly, RISC-V |
-| std | 34 modules (see [docs/stdlib.md](docs/stdlib.md)) |
+| std | 35 modules (see [docs/stdlib.md](docs/stdlib.md)) |
 | Packages | `http` (server and client), `db` (storage), `gfx` (window/GPU/sound/gamepads), `image` (PNG/QOI/BMP), `tls`, `game`, `core` |
-| Tests | 810 unit tests + 263 library tests, a three-tier fuzzer, a check of every example in the docs |
+| Tests | 834 unit tests + 263 library tests, a three-tier fuzzer, a check of every example in the docs |
 | Server | 53,900 requests/s on one thread, 58,900 on eight |
 
 ## Done since 27.10: the audit and 1.1.0 (D221–D248)
@@ -520,8 +520,8 @@ These are the ones that shape everything else.
 is 64 bits (D238, all three steps are in: the fuzzer now writes `int` and a real
 `s32` apart, with values at 2^31 and 2^32), errors carry data
 and offered functions state their sets (D235), `unsafe fun` (D236),
-allocation checked by `@Hot` (D237), `Self` and operator abilities
-(D239), escaping closures with `keep` (D240, F1–F2; F0 is in). Then the
+allocation checked by `@Hot` (D237), escaping closures with `keep` (D240, F1–F2; F0 is in). `Self` and operator abilities are in (D239):
+`a + b` on a struct is a call to `std.ops.Add`, in all three tiers. Then the
 libraries that need them: `math` (vectors with operators), `font`,
 `audio`, `gpu`, an immediate-mode `ui`, `app`. The plan is [docs/plans/1.2.0.md](docs/plans/1.2.0.md); self-hosting follows it (D250,
 [docs/plans/self-hosting.md](docs/plans/self-hosting.md)).

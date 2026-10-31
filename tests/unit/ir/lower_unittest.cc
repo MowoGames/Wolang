@@ -609,5 +609,119 @@ fun Sum(a: V, b: V) -> V => a + b
   WOLANG_EXPECT(f.Function("Sum").find(" = add ") == std::string::npos);
 }
 
+static constexpr const char kOperatorPrelude[] = R"(
+@Operator
+ability Add {
+  fun Plus(other: Self) -> Self
+}
+
+@Operator
+ability Sub {
+  fun Minus(other: Self) -> Self
+}
+
+@Operator
+ability Mul {
+  fun Times(other: Self) -> Self
+}
+
+@Operator
+ability Div {
+  fun Divide(other: Self) -> Self
+}
+
+@Operator
+ability Neg {
+  fun Negate() -> Self
+}
+
+@Operator
+ability Eq {
+  fun Equals(other: &Self) -> bool
+}
+
+@Operator
+ability Ord {
+  fun Compare(other: &Self) -> int
+}
+
+struct V {
+  var x: int
+  var y: int
+}
+
+extend V as Add {
+  fun Plus(other: Self) -> Self => V(x + other.x, y + other.y)
+}
+
+extend V as Sub {
+  fun Minus(other: Self) -> Self => V(x - other.x, y - other.y)
+}
+
+extend V as Mul {
+  fun Times(other: Self) -> Self => V(x * other.x, y * other.y)
+}
+
+extend V as Div {
+  fun Divide(other: Self) -> Self => V(x / other.x, y / other.y)
+}
+
+extend V as Neg {
+  fun Negate() -> Self => V(-x, -y)
+}
+
+extend V as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x && y == other.y
+}
+
+extend V as Ord {
+  fun Compare(other: &Self) -> int => x - other.x
+}
+
+class Money {
+  var cents: int
+}
+
+extend Money as Add {
+  fun Plus(other: Self) -> Self => Money(cents + other.cents)
+}
+
+extend Money as Eq {
+  fun Equals(other: &Self) -> bool => cents == other.cents
+}
+
+fun Max<T: Ord>(a: T, b: T) -> T {
+  if a >= b {
+    return a
+  }
+  return b
+}
+
+fun Sign<T: Ord>(a: T, b: T) -> int => a.Compare(&b)
+)";
+
+// D239: a number keeps its opcodes, so `Max<int>` has no call in it, and a
+// struct operator is a call rather than an opcode.
+WOLANG_TEST(LowerTest, AGenericOperatorOnAnIntIsAnOpcodeNotACall) {
+  Fixture f(std::string(kOperatorPrelude) + R"(
+fun Use() -> int => Max(3, 9)
+
+fun UseStruct() -> int => Max(V(1, 0), V(2, 0)).x
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string ints = f.Function("Max<s64>");
+  WOLANG_EXPECT(ints.find("call") == std::string::npos);
+  WOLANG_EXPECT(ints.find(" = ge ") != std::string::npos);
+  WOLANG_EXPECT(f.Function("Max<V>").find("call") != std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AMethodCallOfAnOperatorOnAnIntIsOpcodes) {
+  Fixture f(std::string(kOperatorPrelude) + R"(
+fun Use() -> int => Sign(3, 9)
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Function("Sign<s64>").find("call") == std::string::npos);
+}
+
 }  // namespace
 }  // namespace wolang

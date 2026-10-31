@@ -3743,6 +3743,168 @@ fun ShiftTooFar(n: int) -> int {
                 size_t{0});
 }
 
+static constexpr const char kOperatorPrelude[] = R"(
+@Operator
+ability Add {
+  fun Plus(other: Self) -> Self
+}
+
+@Operator
+ability Sub {
+  fun Minus(other: Self) -> Self
+}
+
+@Operator
+ability Mul {
+  fun Times(other: Self) -> Self
+}
+
+@Operator
+ability Div {
+  fun Divide(other: Self) -> Self
+}
+
+@Operator
+ability Neg {
+  fun Negate() -> Self
+}
+
+@Operator
+ability Eq {
+  fun Equals(other: &Self) -> bool
+}
+
+@Operator
+ability Ord {
+  fun Compare(other: &Self) -> int
+}
+
+struct V {
+  var x: int
+  var y: int
+}
+
+extend V as Add {
+  fun Plus(other: Self) -> Self => V(x + other.x, y + other.y)
+}
+
+extend V as Sub {
+  fun Minus(other: Self) -> Self => V(x - other.x, y - other.y)
+}
+
+extend V as Mul {
+  fun Times(other: Self) -> Self => V(x * other.x, y * other.y)
+}
+
+extend V as Div {
+  fun Divide(other: Self) -> Self => V(x / other.x, y / other.y)
+}
+
+extend V as Neg {
+  fun Negate() -> Self => V(-x, -y)
+}
+
+extend V as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x && y == other.y
+}
+
+extend V as Ord {
+  fun Compare(other: &Self) -> int => x - other.x
+}
+
+class Money {
+  var cents: int
+}
+
+extend Money as Add {
+  fun Plus(other: Self) -> Self => Money(cents + other.cents)
+}
+
+extend Money as Eq {
+  fun Equals(other: &Self) -> bool => cents == other.cents
+}
+
+fun Max<T: Ord>(a: T, b: T) -> T {
+  if a >= b {
+    return a
+  }
+  return b
+}
+
+fun Sign<T: Ord>(a: T, b: T) -> int => a.Compare(&b)
+)";
+
+// D239: an operator on a type of your own is a call, and every tier agrees on
+// its answer.
+WOLANG_TEST(CodegenTest, OperatorsOnStructsAreCallsInEveryTier) {
+  Fixture f(std::string(kOperatorPrelude) + R"(
+fun Arithmetic() -> int {
+  const a = V(12, 30)
+  const b = V(3, 5)
+  const sum = a + b
+  const less = a - b
+  const more = a * b
+  const part = a / b
+  const flipped = -a
+  return sum.x + sum.y * 10 + less.x * 100 + more.y + part.x + flipped.y
+}
+
+fun Equal() -> int {
+  const a = V(1, 2)
+  const b = V(1, 2)
+  const c = V(1, 3)
+  var n = 0
+  if a == b { n += 1 }
+  if a != c { n += 10 }
+  if a == c { n += 100 }
+  if a != b { n += 1000 }
+  return n
+}
+
+fun Ordered() -> int {
+  const small = V(1, 0)
+  const big = V(2, 0)
+  var n = 0
+  if small < big { n += 1 }
+  if small <= big { n += 2 }
+  if big > small { n += 4 }
+  if big >= small { n += 8 }
+  if small > big { n += 16 }
+  if big <= small { n += 32 }
+  if small <= V(1, 5) { n += 64 }
+  return n
+}
+
+fun InPlace() -> int {
+  var total = V(1, 1)
+  total += V(2, 3)
+  total -= V(1, 1)
+  return total.x * 10 + total.y
+}
+
+fun Classes() -> int {
+  const a = Money(250)
+  const b = Money(175)
+  var total = a + b
+  total += Money(5)
+  var n = total.cents
+  if a != b { n += 1000 }
+  return n + a.cents - 250
+}
+
+fun Generic() -> int {
+  const big = Max(V(1, 0), V(4, 0))
+  return big.x * 100 + Max(3, 9) * 10 + Sign(2, 7) + Sign(7, 2) * 5 + Sign(4, 4)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Arithmetic", {}), "1389");
+  WOLANG_EXPECT_EQ(f.Run("Equal", {}), "11");
+  WOLANG_EXPECT_EQ(f.Run("Ordered", {}), "79");
+  WOLANG_EXPECT_EQ(f.Run("InPlace", {}), "23");
+  WOLANG_EXPECT_EQ(f.Run("Classes", {}), "1430");
+  WOLANG_EXPECT_EQ(f.Run("Generic", {}), "494");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

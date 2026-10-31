@@ -6,6 +6,8 @@
 // case is most of the calls in gameplay code, and insertion sort beats
 // everything on it.
 
+need std.ops.{Ord}
+
 /// Sorts `items` in place, with `before(a, b)` saying whether `a` comes
 /// first.
 ///
@@ -14,6 +16,12 @@
 /// is not one leaves the elements in some order rather than looping.
 offer fun Sort<T>(items: []T, before: fun(T, T) -> bool) {
   Quicksort(items, 0, items.len - 1, before)
+}
+
+/// Sorts `items` in place by their own order, the one `<` gives them
+/// (D239): `Sort` with the comparison already written.
+offer fun SortBy<T: Ord>(items: []T) {
+  Sort(items, |a: T, b: T| a < b)
 }
 
 fun Quicksort<T>(items: []T, low: int, high: int, before: fun(T, T) -> bool) {
@@ -184,4 +192,27 @@ fun FindsWhereAValueGoes() -> bool uses unsafe {
   const missing = Contains(items, 8, |a, b| a < b)
   Free(items)
   return at == 3 && held && !missing
+}
+
+struct Pt {
+  var key: int
+}
+
+extend Pt as Ord {
+  fun Compare(other: &Self) -> int => key - other.key
+}
+
+@Test
+fun SortsAnythingWithAnOrder() -> bool uses unsafe {
+  var items = ArrayNew<Pt>(3)
+  items[0] = Pt(3)
+  items[1] = Pt(1)
+  items[2] = Pt(2)
+  SortBy(items)
+  var numbers = ArrayNew<int>(3)
+  numbers[0] = 9
+  numbers[1] = 4
+  numbers[2] = 6
+  SortBy(numbers)
+  return items[0].key == 1 && items[2].key == 3 && numbers[0] == 4 && numbers[2] == 9
 }

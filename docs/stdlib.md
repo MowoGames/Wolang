@@ -1,6 +1,6 @@
 # The standard library
 
-Thirty-four modules, all written in Wolang over a floor of about sixty C
+Thirty-five modules, all written in Wolang over a floor of about sixty C
 calls. This is what each one is for, what it gives you, and what it does
 not. Every example here compiles.
 
@@ -41,6 +41,7 @@ out a writable view of text that may be a literal, so a caller declares
 | [`std.log`](#stdlog) | Levelled logging |
 | [`std.thread`](#stdthread), [`std.tasks`](#stdtasks) | Threads, locks, and a frame's worth of parallel work |
 | [`std.mem`](#stdmem), [`std.own`](#stdown) | Storage, views and ownership |
+| [`std.ops`](#stdops) | Operators as abilities: `Add`, `Eq`, `Ord` and the rest |
 
 And three first-party packages beside it: [`http`](#the-http-package),
 [`db`](#the-db-package), [`gfx`](#the-gfx-package), plus `tls` and
@@ -700,6 +701,40 @@ are built on these.
 that counts how many hold it.
 
 ---
+
+## std.ops
+
+`Add`, `Sub`, `Mul`, `Div`, `Neg`, `Eq`, `Ord`, `Hash`, `Max` and `Min`.
+Each of the first seven is an `@Operator` ability whose one method is what
+an operator calls (D239): `Plus` for `+`, `Minus`, `Times`, `Divide`,
+`Negate` for unary `-`, `Equals` for `==` and `!=`, and `Compare` for
+`< <= > >=`. `Self` is the type that has the ability.
+
+```wolang
+need std.io.{Print}
+need std.ops.{Eq, Max, Ord}
+
+struct Level {
+  var n: int
+}
+
+extend Level as Eq {
+  fun Equals(other: &Self) -> bool => n == other.n
+}
+
+extend Level as Ord {
+  fun Compare(other: &Self) -> int => n - other.n
+}
+
+fun main() uses io {
+  const top = Max(Level(3), Level(8))
+  Print("{top.n} {Level(1) == Level(1)} {Level(1) < Level(2)} {Max(3, 9)}")
+}
+```
+
+Numbers, `bool`, `char` and `text` have the operators they were always
+given, so `Max(3, 9)` is a compare and not a call. `Hash` is not an
+operator: it is the number `std.map` files a key under.
 
 ## The `http` package
 

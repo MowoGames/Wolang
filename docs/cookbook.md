@@ -355,6 +355,36 @@ fun main() uses io, unsafe {
 `Open(..., kGl)` gives a GL context instead: `StartGl`, draw with
 OpenGL, `Swap`.
 
+## Give your own type `+`, `==` and `<`
+
+An operator is an ability from `std.ops`: say a type has it and the operator
+works. `Eq` gives `==` and `!=`, and `Ord` gives `< <= > >=` from one
+`Compare` that answers negative, zero or positive.
+
+```wolang
+need std.io.{Print}
+need std.ops.{Add, Max, Ord}
+
+struct Money {
+  var cents: int
+}
+
+extend Money as Add {
+  fun Plus(other: Self) -> Self => Money(cents + other.cents)
+}
+
+extend Money as Ord {
+  fun Compare(other: &Self) -> int => cents - other.cents
+}
+
+fun main() uses io {
+  var wallet = Money(250) + Money(175)
+  wallet += Money(5)
+  const bigger = Max(wallet, Money(1000))
+  Print("{wallet.cents} {bigger.cents} {wallet < bigger}")
+}
+```
+
 ## Parse command-line arguments
 
 ```wolang

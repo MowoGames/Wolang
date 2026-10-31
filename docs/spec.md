@@ -230,6 +230,9 @@ right associative.
 | 12 | `*` `/` `%` |
 | 13 | `as` |
 
+`+ - * / == != < <= > >=` and unary `-` on a type of your own are calls to an
+`@Operator` ability (section 3, D239); the precedence is the same.
+
 Prefix operators (`-`, `!`, `~`, `*`, `&`, `&mut`, `wait`, `spawn`) bind
 tighter than any binary operator. Postfix forms — call, index, `.name`,
 `?.name`, `?`, and an initializer block — bind tightest of all.
@@ -359,7 +362,24 @@ SomeType`; an implementation that does not is `E0402`. Inside the ability the
 bare name is the implementation's choice. Generic code names it through a type
 parameter, `C.Item`, and `C.Walker.Item` follows one associated type into the
 next; once `C` is known it is whatever that implementation said. The target comes first either way, so the declaration reads as a
-sentence. (`impl` is reserved, so the Rust spelling produces a message rather
+sentence.
+
+`Self` inside an ability is the type that implements it, and inside `extend T`
+or a type's own body it is `T`; anywhere else it is `E0156`. An ability that
+takes or returns `Self` cannot be the type of a value (`E0157`), because a pair
+of data and table cannot say what `other` is; it can still be a bound.
+
+An ability marked `@Operator` lends its one method to an operator (D239):
+`Plus` is `+`, `Minus` `-`, `Times` `*`, `Divide` `/`, `Negate` unary `-`,
+`Equals` `==` and `!=`, and `Compare` `<` `<=` `>` `>=`. A malformed one is
+`E0160`. `a + b` on a type that has the ability is the call `a.Plus(b)`, and
+`a += b` is `a = a.Plus(b)`; `a != b` is `Equals` and then a not, and `a < b`
+compares what `Compare` answers (negative, zero, positive) with zero. The
+ability is required, not just a method of the same name. Numbers meet every
+operator ability, `bool` and `char` meet `Equals` and `Compare`, and `text`
+meets `Equals`, so `T: Add` takes `int`, and a number's operator stays the
+machine instruction. `std.ops` has `Add`, `Sub`, `Mul`, `Div`, `Neg`, `Eq`,
+`Ord` and `Hash`. (`impl` is reserved, so the Rust spelling produces a message rather
 than a confusing parse failure.)
 
 `const` binds a name that never changes and `var` one that does. Two words

@@ -283,6 +283,42 @@ fun main() uses io {
 }
 ```
 
+An operator is an ability too. `a + b` on a type that says it has `Add` is
+the call `a.Plus(b)`, and `Self` in the ability is the type that has it:
+
+```wolang
+need std.io.{Print}
+need std.ops.{Add, Eq, Neg, Ord}
+
+struct Vec3 {
+  var x: float
+  var y: float
+  var z: float
+}
+
+extend Vec3 as Add {
+  fun Plus(other: Self) -> Self => Vec3(x + other.x, y + other.y, z + other.z)
+}
+
+extend Vec3 as Neg {
+  fun Negate() -> Self => Vec3(-x, -y, -z)
+}
+
+extend Vec3 as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x && y == other.y && z == other.z
+}
+
+// Numbers have every one of these already, so `Twice(2)` works too.
+fun Twice<T: Add>(value: T) -> T => value + value
+
+fun main() uses io {
+  var v = Vec3(1.0, 2.0, 3.0) + Vec3(0.5, 0.5, 0.5)
+  v += v
+  const same = -v != v
+  Print("{v.x} {Twice(21)} {same}")
+}
+```
+
 An ability can leave a type for each implementation to choose: `type Item`
 is answered with `type Item = int` in the `extend`, and generic code reads
 it as `T.Item`. This is how `for` works over anything — `std.iter` says

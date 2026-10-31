@@ -295,6 +295,38 @@ fun main() uses unsafe {
   WOLANG_EXPECT(program.Output().find("overflow") != std::string::npos);
 }
 
+WOLANG_TEST(AotTest, AnOperatorOnAStructIsACall) {
+  if (!Links()) {
+    return;
+  }
+  // D239: `a + b` on a struct is `a.Plus(b)`, and the compiled binary
+  // agrees with the interpreter.
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+@Operator
+ability Add {
+  fun Plus(other: Self) -> Self
+}
+
+struct V {
+  var x: int
+  var y: int
+}
+
+extend V as Add {
+  fun Plus(other: Self) -> Self => V(x + other.x, y + other.y)
+}
+
+fun main() uses unsafe {
+  var a = V(1, 2) + V(10, 20)
+  a += V(3, 4)
+  exit((a.x + a.y) as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 40");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

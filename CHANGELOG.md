@@ -6,6 +6,16 @@ how a release is made is in [docs/releasing.md](docs/releasing.md).
 
 ## 1.2.0
 
+### Added
+
+- Operators are abilities (D239). `Self` in an ability is the type that
+  implements it, and an ability marked `@Operator` lends its one method to
+  an operator: `a + b` on a `Vec3` is `a.Plus(b)`, `a += b`, `-a`, `==`,
+  `!=` and `< <= > >=` likewise. `std.ops` has `Add`, `Sub`, `Mul`, `Div`,
+  `Neg`, `Eq`, `Ord`, `Hash`, `Max` and `Min`; numbers meet every bound
+  and keep their instructions. New diagnostics `E0156`, `E0157`, `E0160`.
+- `std.sort.SortBy` sorts anything with an `Ord`.
+
 ### Changed
 
 - `int` is `s64` on every target and in every tier; `float` stays `f32`.
