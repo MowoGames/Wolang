@@ -1,0 +1,307 @@
+// seed 8
+extern "C" fun wolang_objects_live() -> s64
+
+struct Pair {
+  var a: int = 0
+  var b: float = 0.0
+}
+
+class Cell {
+  var n: int = 0
+  var big: u64 = 0
+  var f: f64 = 0.0
+}
+
+enum Shape {
+  Dot,
+  Circle(r: int),
+  Box(w: s8, h: u64),
+}
+
+error Bad
+error Worse
+
+fun Maybe_s8(x: s8) -> s8? {
+  if x > 100 {
+    return null
+  }
+  return x
+}
+
+fun Check_s8(x: s8) -> s8! {
+  if x > 100 {
+    return Bad
+  }
+  if x < 5 {
+    return Worse
+  }
+  return x - 5
+}
+
+fun Maybe_int(x: int) -> int? {
+  if x > 100 {
+    return null
+  }
+  return x
+}
+
+fun Check_int(x: int) -> int! {
+  if x > 100 {
+    return Bad
+  }
+  if x < 5 {
+    return Worse
+  }
+  return x - 5
+}
+
+fun Maybe_s64(x: s64) -> s64? {
+  if x > 100 {
+    return null
+  }
+  return x
+}
+
+fun Check_s64(x: s64) -> s64! {
+  if x > 100 {
+    return Bad
+  }
+  if x < 5 {
+    return Worse
+  }
+  return x - 5
+}
+
+fun Maybe_u8(x: u8) -> u8? {
+  if x > 100 {
+    return null
+  }
+  return x
+}
+
+fun Check_u8(x: u8) -> u8! {
+  if x > 100 {
+    return Bad
+  }
+  if x < 5 {
+    return Worse
+  }
+  return x - 5
+}
+
+fun Maybe_u64(x: u64) -> u64? {
+  if x > 100 {
+    return null
+  }
+  return x
+}
+
+fun Check_u64(x: u64) -> u64! {
+  if x > 100 {
+    return Bad
+  }
+  if x < 5 {
+    return Worse
+  }
+  return x - 5
+}
+
+fun ShapeVal(s: Shape) -> int {
+  return match s {
+    Shape.Dot => 1,
+    Shape.Circle(r) => (r & 127),
+    Shape.Box(w, h) => (((w & 15) as int) + ((h & 127) as int)),
+  }
+}
+
+fun f0(p0: u64, pc: Cell) -> u8 {
+  var x_s8: s8 = 0
+  var x_s16: s16 = (-6)
+  var x_int: int = (-2)
+  var x_s64: s64 = (-4)
+  var x_u8: u8 = 19
+  var x_u16: u16 = 65534
+  var x_u32: u32 = 9
+  var x_u64: u64 = 10
+  var x_float: float = 2.5
+  var x_f64: f64 = (-2.5)
+  var buf: [4]int
+  buf[0] = 1
+  buf[1] = 2
+  buf[2] = 3
+  buf[3] = 4
+  var pair = Pair(5, 1.5)
+  var tx = "seed{1}"
+  var sh0: Shape = Shape.Circle(3)
+  var c0 = Cell(1, 2, 0.5)
+  var c1 = Cell(3, 4, 1.5)
+  var c2 = c0
+  if ((("y{x_u64}w{x_int}" + "r{x_s8}v{p0}")).len as u64) == (p0 >> 58) {
+    for i0 in 0..1 {
+      c1 = Cell(i0, (x_u64 | x_u64), (match Shape.Circle(i0) { Shape.Dot => x_f64, Shape.Circle(r1) => x_f64, Shape.Box(w2, h3) => x_f64 }))
+    }
+  } else {
+    var v4: u8 = x_u8
+  }
+  if (match ((x_int as s64) & 3) { 0 => ((x_u8 & 15) as int), 1 => c2.n, _ => ((x_u16 & 15) as int) }) < ((Maybe_int(x_int) ?? x_int) - ((Maybe_int(x_int) ?? x_int) & (x_int & x_int))) {
+    var i6 = 0
+    L5: loop {
+      i6 = i6 + 1
+      if i6 > 1 { break L5 }
+      buf[(x_u8 & 3)] = (tx.len as int)
+    }
+  } else {
+    var t7 = ("z{x_u16}" + "q{p0}")
+  }
+  x_int = (((x_int / ((x_int & 7) + 1)) << (x_int & 31)) & (buf[(x_s64 & 3)] / (((-1) & 7) + 1)))
+  const _ = (Maybe_u8((x_u8 ^ x_u8)) ?? ((Maybe_u8(x_u8) ?? x_u8) % ((x_u8 & 7) + 1)))
+  return (~x_u8)
+}
+
+fun f1(p0: s64, p1: int) -> f64 {
+  var x_s8: s8 = 10
+  var x_s16: s16 = 1
+  var x_int: int = 9
+  var x_s64: s64 = 0
+  var x_u8: u8 = 254
+  var x_u16: u16 = 0
+  var x_u32: u32 = 0
+  var x_u64: u64 = 5
+  var x_float: float = 10.5
+  var x_f64: f64 = (-2.5)
+  var buf: [4]int
+  buf[0] = 1
+  buf[1] = 2
+  buf[2] = 3
+  buf[3] = 4
+  var pair = Pair(5, 1.5)
+  var tx = "seed{1}"
+  var sh0: Shape = Shape.Circle(3)
+  var c0 = Cell(1, 2, 0.5)
+  var c1 = Cell(3, 4, 1.5)
+  var c2 = c0
+  const k8: int = ((((((x_u64 & 15) as u32) & 15) as s8) ^ (((x_s8 & 7) * (1 & 7)) >> (x_s8 & 7))) & 3) as int & 1
+  var s9 = buf[k8..k8 + 2]
+  const k10: int = (x_s16 & 3) as int & 1
+  var s11 = buf[k10..k10 + 2]
+  c2.n = pair.a
+  var o12: s16? = x_s16
+  c2.n = pair.a
+  return ((-c1.f) % (x_f64 + (match (x_u32 & 3) { 0 => x_f64, 1 => x_f64, 2 => x_f64, _ => x_f64 })))
+}
+
+fun f2(p0: float) -> float {
+  var x_s8: s8 = (-127 - 1)
+  var x_s16: s16 = 1
+  var x_int: int = (-10)
+  var x_s64: s64 = 6
+  var x_u8: u8 = 254
+  var x_u16: u16 = 9
+  var x_u32: u32 = 5
+  var x_u64: u64 = 4
+  var x_float: float = 0.0
+  var x_f64: f64 = 0.0
+  var buf: [4]int
+  buf[0] = 1
+  buf[1] = 2
+  buf[2] = 3
+  buf[3] = 4
+  var pair = Pair(5, 1.5)
+  var tx = "seed{1}"
+  var sh0: Shape = Shape.Circle(3)
+  var c0 = Cell(1, 2, 0.5)
+  var c1 = Cell(3, 4, 1.5)
+  var c2 = c0
+  x_f64 = (-c0.f)
+  x_s16 = x_s16
+  var o13: u64? = (x_u64 & (((x_u64 & 7) + 8) - (x_u64 & 7)))
+  return (-p0)
+}
+
+fun Body() -> int {
+  var x_s8: s8 = 0
+  var x_s16: s16 = 2
+  var x_int: int = (-2)
+  var x_s64: s64 = 2
+  var x_u8: u8 = 15
+  var x_u16: u16 = 5
+  var x_u32: u32 = 1
+  var x_u64: u64 = 1
+  var x_float: float = 0.0
+  var x_f64: f64 = (-2.5)
+  var buf: [4]int
+  buf[0] = 1
+  buf[1] = 2
+  buf[2] = 3
+  buf[3] = 4
+  var pair = Pair(5, 1.5)
+  var tx = "seed{1}"
+  var sh0: Shape = Shape.Circle(3)
+  var c0 = Cell(1, 2, 0.5)
+  var c1 = Cell(3, 4, 1.5)
+  var c2 = c0
+  pair.b = x_float
+  const _ = (((x_u32 / ((11 & 7) + 1)) % ((((x_u32 & 7) + (x_u32 & 7)) & 7) + 1)) as f64)
+  if x_u16 == x_u16 {
+    if (x_s16 % ((4 & 7) + 1)) < x_s16 {
+      var v14: u8 = (~x_u8)
+    } else {
+      buf[(x_s16 & 3)] = (tx.len as int)
+    }
+  } else {
+    if (if x_f64 == 3.5 { x_s64 } else { x_s64 }) <= (tx.len as s64) {
+      var i15 = 0
+      loop {
+        i15 = i15 + 1
+        if i15 > 4 { break }
+        if x_f64 != x_f64 { continue }
+        const k16: int = (x_int & 3) as int & 1
+        var s17 = buf[k16..k16 + 2]
+      }
+    } else {
+      L18: for i19 in 0..=1 {
+        const _ = x_f64
+      }
+    }
+  }
+  var o20: s8? = null
+  var v21: s64 = x_s64
+  var acc = 0
+  acc = (acc % 1000003) * 31 + ((x_s8 & 127) as int) + (((x_s8 >> 0) & 127) as int)
+  acc = (acc % 1000003) * 31 + ((x_s16 & 127) as int) + (((x_s16 >> 8) & 127) as int)
+  acc = (acc % 1000003) * 31 + ((x_int & 127) as int) + (((x_int >> 24) & 127) as int)
+  acc = (acc % 1000003) * 31 + ((x_s64 & 127) as int) + (((x_s64 >> 56) & 127) as int)
+  acc = (acc % 1000003) * 31 + ((x_u8 & 127) as int) + (((x_u8 >> 0) & 127) as int)
+  acc = (acc % 1000003) * 31 + ((x_u16 & 127) as int) + (((x_u16 >> 8) & 127) as int)
+  acc = (acc % 1000003) * 31 + ((x_u32 & 127) as int) + (((x_u32 >> 24) & 127) as int)
+  acc = (acc % 1000003) * 31 + ((x_u64 & 127) as int) + (((x_u64 >> 56) & 127) as int)
+  acc = (acc % 1000003) * 31 + (if x_float < 100.0 && x_float > -100.0 { x_float as int } else { 0 })
+  acc = (acc % 1000003) * 31 + (if x_f64 < 100.0 && x_f64 > -100.0 { x_f64 as int } else { 0 })
+  acc = (acc % 1000003) * 31 + (tx.len as int)
+  acc = (acc % 1000003) * 31 + ShapeVal(sh0)
+  acc = (acc % 1000003) * 31 + (c0.n & 127) + ((c0.big & 127) as int) + (if c0.f < 100.0 && c0.f > -100.0 { c0.f as int } else { 0 })
+  acc = (acc % 1000003) * 31 + (c1.n & 127) + ((c1.big & 127) as int) + (if c1.f < 100.0 && c1.f > -100.0 { c1.f as int } else { 0 })
+  acc = (acc % 1000003) * 31 + (c2.n & 127) + ((c2.big & 127) as int) + (if c2.f < 100.0 && c2.f > -100.0 { c2.f as int } else { 0 })
+  acc = (acc % 1000003) * 31 + (((o20 ?? 0) & 127) as int)
+  acc = (acc % 1000003) * 31 + ((v21 & 127) as int) + (((v21 >> 56) & 127) as int)
+  acc = (acc % 1000003) * 31 + (buf[0] & 127) + (buf[1] & 127) + (buf[2] & 127) + (buf[3] & 127)
+  acc = (acc % 1000003) * 31 + (pair.a & 127)
+  acc = (acc % 1000003) * 31 + (if pair.b < 100.0 && pair.b > -100.0 { pair.b as int } else { 0 })
+  acc = (acc % 1000003) * 31 + (match (((x_u64 & 15) as s64) & 3) { 0 => (((tx.len as s64) & 15) as int), 1 => (x_int % (((match Shape.Dot { Shape.Dot => x_int, Shape.Circle(r22) => x_int, Shape.Box(w23, h24) => x_int }) & 7) + 1)), _ => (match sh0 { Shape.Dot => (match (x_u32 & 3) { 0 => x_int, 1 => x_int, _ => x_int }), Shape.Circle(r25) => r25, Shape.Box(w26, h27) => ((x_int & 7) + (x_int & 7)) }) }) & 127
+  return acc
+}
+
+fun Live() -> int uses unsafe {
+  return wolang_objects_live() as int
+}
+
+fun Probe() -> int uses unsafe {
+  const before = Live()
+  const result = Body()
+  const after = Live()
+  if after != before {
+    return 0 - 1000000 - (after - before)
+  }
+  return result
+}
+

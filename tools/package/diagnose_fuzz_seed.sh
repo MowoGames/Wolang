@@ -11,6 +11,9 @@ limit() { timeout -k 5 "$@"; }
 echo "== fuzz, stage by stage"
 WOLANG_FUZZ_TRACE=1 limit 120 "$W" fuzz "$here/diag/seed8.wo"
 echo "fuzz rc $?"
+echo "== fuzz on seed 8 as clang-cl generated it (operands right to left)"
+WOLANG_FUZZ_TRACE=1 limit 120 "$W" fuzz "$here/diag/seed8_right_to_left.wo"
+echo "fuzz rc $?"
 echo "== asm (compile only)"
 limit 120 "$W" asm --raw "$here/diag/seed8.wo" > "$work/asm.txt" 2>&1
 echo "asm rc $?"
