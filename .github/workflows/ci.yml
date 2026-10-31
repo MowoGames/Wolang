@@ -225,6 +225,12 @@ jobs:
         run: cmake --preset windows
       - name: Build
         run: cmake --build --preset windows -j
+      # Temporary: fuzz seed 8 hangs here and nowhere else; this says which
+      # tier and which function, and prints their machine code.
+      - name: Diagnose fuzz seed 8
+        shell: bash
+        continue-on-error: true
+        run: sh tools/package/diagnose_fuzz_seed.sh build/windows/tools/wolang/wolang.exe 8
       # A suite at a time, each with a time limit: a test that hangs here
       # fails and names itself, where the whole-suite entry ran into the
       # job's hour and said nothing. Twenty minutes, because the fuzz
