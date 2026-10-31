@@ -15,8 +15,8 @@
       "Bash(ctest:*)",
       "Bash(build/debug/tools/wolang/wolang:*)",
       "Bash(build/debug/tests/wolang_tests:*)",
-      "Bash(python3 tools/package/check_includes.py)",
-      "Bash(python3 tools/package/check_docs.py)",
+      "Bash(py tools/package/check_includes.py)",
+      "Bash(py tools/package/check_docs.py)",
       "Bash(clang-format:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard_big_reads.py",
+            "command": "py \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard_big_reads.py",
             "timeout": 10
           }
         ]

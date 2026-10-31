@@ -4,7 +4,7 @@
 # than found by CI. A no-op until the driver has been built, and for the
 # two examples that do not parse on purpose.
 set -uo pipefail
-file="$(python3 -c 'import json,sys; print((json.load(sys.stdin).get("tool_input") or {}).get("file_path",""))' 2>/dev/null)"
+file="$(py -c 'import json,sys; print((json.load(sys.stdin).get("tool_input") or {}).get("file_path",""))' 2>/dev/null)"
 case "$file" in
   *.wo) ;;
   *) exit 0 ;;
