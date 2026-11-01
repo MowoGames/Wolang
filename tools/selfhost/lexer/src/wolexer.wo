@@ -1,0 +1,480 @@
+need std.list.{List, ListNew}
+need std.map.{Map, TextMapNew}
+need std.text.{Bytes, BuilderNew, Pieces, Substring}
+
+offer enum Kind {
+  Eof
+  Ident
+  Keyword
+  Reserved
+  IntLit
+  FloatLit
+  StringLit
+  CharLit
+  DocComment
+  Punct
+  Unknown
+}
+
+offer struct Token {
+  var kind: Kind
+  var start: int
+  var length: int
+  var line: int
+  var starts_line: bool
+}
+
+struct Scan {
+  var end: int
+  var is_float: bool
+}
+
+fun At(bytes: []u8, index: int) -> u8 {
+  if index < bytes.len {
+    return bytes[index]
+  }
+  return 0
+}
+
+fun IsDigit(byte: u8) -> bool {
+  return byte >= 48 && byte <= 57
+}
+
+fun IsHex(byte: u8) -> bool {
+  return IsDigit(byte) || (byte >= 97 && byte <= 102) || (byte >= 65 && byte <= 70)
+}
+
+fun IsIdentStart(byte: u8) -> bool {
+  return byte == 95 || (byte >= 97 && byte <= 122) || (byte >= 65 && byte <= 90) || byte >= 128
+}
+
+fun IsIdentPart(byte: u8) -> bool {
+  return IsIdentStart(byte) || IsDigit(byte)
+}
+
+fun Words(table: Map<text, int>, words: text, code: int) uses unsafe {
+  for word in Pieces(words, " ") {
+    table.Put(word, code)
+  }
+}
+
+fun KeywordTable() -> Map<text, int> uses unsafe {
+  var table = TextMapNew<int>()
+  Words(table, "ability after arena as before break class component const comptime continue defer else enum error extend extern false for foreach fun if in loop match mut need null on offer override ptrnull priv return self signal spawn struct system tag task true type unsafe uses wait var virtual where while", 1)
+  Words(table, "abstract actor await case catch delete do final fn goto impl import interface is kernel lazy let macro module namespace new nil operator package private protected pub public region rollback shader sizeof static super switch template this throw trait transactional try typedef typeof union using void yield", 2)
+  return table
+}
+
+fun Operators() -> List<text> uses unsafe {
+  var operators = ListNew<text>()
+  for spelling in Pieces("..= <<= >>= ??= .. -> => += -= *= /= %= == != <= >= << >> &= && |= || ^= ?. ?? ( ) \{ \} [ ] , ; : . @ + - * / % = ! < > & | ^ ~ ?", " ") {
+    operators.Push(spelling)
+  }
+  return operators
+}
+
+fun MatchesAt(bytes: []u8, at: int, pattern: text) -> bool uses unsafe {
+  const want = Bytes(pattern)
+  if at + want.len > bytes.len {
+    return false
+  }
+
+  var k = 0
+  while k < want.len {
+    if bytes[at + k] != want[k] {
+      return false
+    }
+    k = k + 1
+  }
+  return true
+}
+
+fun ScanPunct(bytes: []u8, from: int, operators: List<text>) -> int uses unsafe {
+  var k = 0
+  while k < operators.Len() {
+    const candidate = operators.At(k)
+    if MatchesAt(bytes, from, candidate) {
+      return from + Bytes(candidate).len
+    }
+    k = k + 1
+  }
+  return from
+}
+
+fun ScanLineEnd(bytes: []u8, from: int) -> int {
+  var i = from
+  while i < bytes.len && bytes[i] != 10 {
+    i = i + 1
+  }
+  return i
+}
+
+fun ScanBlockComment(bytes: []u8, from: int) -> int {
+  var i = from + 2
+  var depth = 1
+  while i < bytes.len {
+    if bytes[i] == 47 && At(bytes, i + 1) == 42 {
+      depth = depth + 1
+      i = i + 2
+      continue
+    }
+    if bytes[i] == 42 && At(bytes, i + 1) == 47 {
+      depth = depth - 1
+      i = i + 2
+      if depth == 0 {
+        return i
+      }
+      continue
+    }
+    i = i + 1
+  }
+  return i
+}
+
+fun ScanIdent(bytes: []u8, from: int) -> int {
+  var i = from
+  while i < bytes.len && IsIdentPart(bytes[i]) {
+    i = i + 1
+  }
+  return i
+}
+
+fun ScanDigits(bytes: []u8, from: int) -> int {
+  var i = from
+  while IsDigit(At(bytes, i)) || At(bytes, i) == 95 {
+    i = i + 1
+  }
+  return i
+}
+
+fun ScanNumber(bytes: []u8, from: int) -> Scan {
+  var i = from
+  const second = At(bytes, from + 1)
+  if At(bytes, from) == 48 && (second == 120 || second == 88 || second == 98 || second == 111) {
+    i = from + 2
+    while IsHex(At(bytes, i)) || At(bytes, i) == 95 {
+      i = i + 1
+    }
+    return Scan(ScanSuffix(bytes, i), false)
+  }
+
+  var is_float = false
+  i = ScanDigits(bytes, from)
+  if At(bytes, i) == 46 && IsDigit(At(bytes, i + 1)) {
+    is_float = true
+    i = ScanDigits(bytes, i + 1)
+  }
+
+  const mark = At(bytes, i)
+  if mark == 101 || mark == 69 {
+    const sign = At(bytes, i + 1)
+    if IsDigit(sign) {
+      is_float = true
+      i = ScanDigits(bytes, i + 1)
+    } else if (sign == 43 || sign == 45) && IsDigit(At(bytes, i + 2)) {
+      is_float = true
+      i = ScanDigits(bytes, i + 2)
+    }
+  }
+  return Scan(ScanSuffix(bytes, i), is_float)
+}
+
+fun ScanSuffix(bytes: []u8, from: int) -> int {
+  var i = from
+  while IsIdentPart(At(bytes, i)) {
+    i = i + 1
+  }
+  return i
+}
+
+fun SkipNested(bytes: []u8, from: int, quote: u8) -> int {
+  var i = from + 1
+  while i < bytes.len && bytes[i] != quote && bytes[i] != 10 {
+    if bytes[i] == 92 {
+      i = i + 2
+    } else {
+      i = i + 1
+    }
+  }
+  if i < bytes.len && bytes[i] == quote {
+    return i + 1
+  }
+  return i
+}
+
+fun ScanString(bytes: []u8, from: int) -> int {
+  var i = from + 1
+  var depth = 0
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == 10 {
+      return i
+    }
+
+    if depth == 0 {
+      if byte == 34 {
+        return i + 1
+      }
+      if byte == 92 {
+        i = i + 2
+        continue
+      }
+      if byte == 123 {
+        depth = 1
+      }
+      i = i + 1
+      continue
+    }
+
+    if byte == 34 || byte == 39 {
+      i = SkipNested(bytes, i, byte)
+      continue
+    }
+    if byte == 123 {
+      depth = depth + 1
+    }
+    if byte == 125 {
+      depth = depth - 1
+    }
+    i = i + 1
+  }
+  return bytes.len
+}
+
+fun ScanRawString(bytes: []u8, from: int) -> int {
+  var i = from + 2
+  while i < bytes.len && bytes[i] != 34 {
+    i = i + 1
+  }
+  if i < bytes.len {
+    return i + 1
+  }
+  return i
+}
+
+fun ScanChar(bytes: []u8, from: int) -> int {
+  var i = from + 1
+  if At(bytes, i) == 92 {
+    i = i + 2
+  } else {
+    i = i + 1
+    while At(bytes, i) >= 128 && At(bytes, i) < 192 {
+      i = i + 1
+    }
+  }
+
+  while i < bytes.len && bytes[i] != 39 && bytes[i] != 10 {
+    i = i + 1
+  }
+  if i < bytes.len && bytes[i] == 39 {
+    return i + 1
+  }
+  return i
+}
+
+fun CountLines(bytes: []u8, from: int, to: int) -> int {
+  var count = 0
+  var i = from
+  while i < to && i < bytes.len {
+    if bytes[i] == 10 {
+      count = count + 1
+    }
+    i = i + 1
+  }
+  return count
+}
+
+fun WordKind(keywords: Map<text, int>, source: text, from: int, to: int) -> Kind uses unsafe {
+  const word = Substring(source, from, to)
+  if word == "_" {
+    return Kind.Punct
+  }
+
+  const code = keywords.Get(word, 0)
+  if code == 1 {
+    return Kind.Keyword
+  }
+  if code == 2 {
+    return Kind.Reserved
+  }
+  return Kind.Ident
+}
+
+offer fun Lex(source: text) -> List<Token> uses unsafe {
+  var tokens = ListNew<Token>()
+  const bytes = Bytes(source)
+  const keywords = KeywordTable()
+  const operators = Operators()
+  var i = 0
+  var line = 1
+  var fresh = false
+
+  if At(bytes, 0) == 35 && At(bytes, 1) == 33 {
+    i = ScanLineEnd(bytes, 0)
+  }
+
+  while i < bytes.len {
+    const byte = bytes[i]
+    if byte == 10 {
+      line = line + 1
+      fresh = true
+      i = i + 1
+      continue
+    }
+    if byte == 32 || byte == 9 || byte == 13 || byte == 11 || byte == 12 {
+      i = i + 1
+      continue
+    }
+
+    if byte == 47 && At(bytes, i + 1) == 47 {
+      const comment_end = ScanLineEnd(bytes, i)
+      if At(bytes, i + 2) == 47 && At(bytes, i + 3) != 47 {
+        tokens.Push(Token(Kind.DocComment, i, comment_end - i, line, fresh))
+        fresh = false
+      }
+      i = comment_end
+      continue
+    }
+    if byte == 47 && At(bytes, i + 1) == 42 {
+      const block_end = ScanBlockComment(bytes, i)
+      const lines = CountLines(bytes, i, block_end)
+      if lines > 0 {
+        fresh = true
+      }
+      line = line + lines
+      i = block_end
+      continue
+    }
+
+    var kind = Kind.Punct
+    var end = i + 1
+    if byte == 114 && At(bytes, i + 1) == 34 {
+      kind = Kind.StringLit
+      end = ScanRawString(bytes, i)
+    } else if IsIdentStart(byte) {
+      end = ScanIdent(bytes, i)
+      kind = WordKind(keywords, source, i, end)
+    } else if IsDigit(byte) {
+      const number = ScanNumber(bytes, i)
+      end = number.end
+      kind = Kind.IntLit
+      if number.is_float {
+        kind = Kind.FloatLit
+      }
+    } else if byte == 34 {
+      kind = Kind.StringLit
+      end = ScanString(bytes, i)
+    } else if byte == 39 {
+      kind = Kind.CharLit
+      end = ScanChar(bytes, i)
+    } else {
+      end = ScanPunct(bytes, i, operators)
+      if end == i {
+        kind = Kind.Unknown
+        end = i + 1
+      }
+    }
+
+    tokens.Push(Token(kind, i, end - i, line, fresh))
+    line = line + CountLines(bytes, i, end)
+    fresh = false
+    i = end
+  }
+
+  tokens.Push(Token(Kind.Eof, bytes.len, 0, line, true))
+  return tokens
+}
+
+offer fun TextOf(source: text, token: Token) -> text uses unsafe {
+  return Substring(source, token.start, token.start + token.length)
+}
+
+fun Kinds(source: text) -> text uses unsafe {
+  const tokens = Lex(source)
+  var out = BuilderNew()
+  var k = 0
+  while k < tokens.Len() {
+    out.Append(KindLetter(tokens.At(k).kind))
+    k = k + 1
+  }
+  return out.Release()
+}
+
+fun KindLetter(kind: Kind) -> text {
+  return match kind {
+    Kind.Eof => "$"
+    Kind.Ident => "i"
+    Kind.Keyword => "k"
+    Kind.Reserved => "r"
+    Kind.IntLit => "n"
+    Kind.FloatLit => "f"
+    Kind.StringLit => "s"
+    Kind.CharLit => "c"
+    Kind.DocComment => "d"
+    Kind.Punct => "p"
+    Kind.Unknown => "?"
+  }
+}
+
+fun TextsOf(source: text) -> text uses unsafe {
+  const tokens = Lex(source)
+  var out = BuilderNew()
+  var k = 0
+  while k < tokens.Len() {
+    out.Append(TextOf(source, tokens.At(k)))
+    out.Append("|")
+    k = k + 1
+  }
+  return out.Release()
+}
+
+@Test
+fun LexesADeclaration() -> bool uses unsafe {
+  return Kinds("fun Add(a: int) -> int \{ return a + 1 \}") == "kipipippipkipnp$"
+}
+
+@Test
+fun TakesTheLongestOperator() -> bool uses unsafe {
+  return TextsOf("a ..= b >>= c ?? d ?. e ??= f .. g") == "a|..=|b|>>=|c|??|d|?.|e|??=|f|..|g|"
+}
+
+@Test
+fun ReadsNumbersWithSuffixesAndRanges() -> bool uses unsafe {
+  return Kinds("0xFF 1_000 2.5e3 10m 1..5 3e-2 0b101u8") == "nnfnnpnfn$" && TextsOf("1..5") == "1|..|5|"
+}
+
+@Test
+fun ReadsAStringWithAnInterpolationAsOneToken() -> bool uses unsafe {
+  const source = "x = \"a \{f(\"y\")\} b\" r\"raw \{ text\" 'c' '\\n'"
+  return Kinds(source) == "ipsscc$"
+}
+
+@Test
+fun SkipsCommentsAndKeepsDocComments() -> bool uses unsafe {
+  const source = "// plain\n/// doc\nfun /* a /* nested */ b */ x //// four\n"
+  return Kinds(source) == "dki$"
+}
+
+@Test
+fun MarksWhereALineStartsAndCountsLines() -> bool uses unsafe {
+  const source = "a b\n\nc /* x\ny */ d\ne"
+  const tokens = Lex(source)
+  if tokens.Len() != 6 {
+    return false
+  }
+  if tokens.At(0).starts_line || tokens.At(1).starts_line {
+    return false
+  }
+  if !tokens.At(2).starts_line || tokens.At(2).line != 3 {
+    return false
+  }
+  if !tokens.At(3).starts_line || tokens.At(3).line != 4 {
+    return false
+  }
+  return tokens.At(4).starts_line && tokens.At(4).line == 5 && tokens.At(5).kind == Kind.Eof
+}
+
+@Test
+fun SeparatesKeywordsReservedWordsAndUnknowns() -> bool uses unsafe {
+  return Kinds("let var state _ $") == "rkip?$"
+}

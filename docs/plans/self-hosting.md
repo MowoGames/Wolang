@@ -64,6 +64,46 @@ to be confirmed by a benchmark before it is fixed.
 | Errors with data | `T!(A, B)` and payloads (D235). | A compiler's diagnostic is a struct, not an error: the checker collects many, so a `List<Diagnostic>` is the shape, not `T!`. |
 | IR text | The printer. The reader is in `src/ir/reader.cc` (1.2.0, C++). | The Wolang side of the IR reader is stage 3. |
 
+## The throwaway lexer
+
+`tools/selfhost/lexer` is a Wolang lexer for Wolang (package `wolexer`, tests with
+`wl wo test tools/selfhost/lexer`): identifiers, keywords and reserved words,
+numbers with suffixes and ranges, strings with interpolation, raw strings,
+character literals, nested block comments, doc comments, `starts_line` and line
+numbers, and the longest operator. It is not the stage 2 lexer: it does not
+report errors, does not decode literals and does not check Unicode. It was written
+to find gaps, and it was written without being run. The gaps below are what
+writing it ran into; the first run will add more.
+
+1. **`unsafe` everywhere.** Reading the bytes of a `text` is `Bytes(...)`, which
+   is `uses unsafe`, so every function of a lexer, and then of a parser, says
+   `uses unsafe`. The effect stops saying anything. The read-only slice (D233)
+   is what would let `Bytes` be safe.
+2. **No byte literal.** `'a'` is a `char`, not a `u8`, so a byte test is written
+   with a number (`byte == 123`). A `b'{'` spelling, or a comparison of a `u8`
+   with a `char` literal, would make the lexer readable.
+3. **Braces in text.** A `{` in a string starts an interpolation, so a program
+   that talks about braces writes `\{` and `\}` (the operator table does). A
+   raw string avoids it but cannot hold a `"`. A compiler prints C-like code and
+   dumps, so it will meet this daily.
+4. **Text building.** `Text + text` gives an owned `Text`, which does not assign
+   to a `text` variable; building output goes through `Builder`. That is fine,
+   but it is the first thing a newcomer trips on.
+5. **No list or array literal.** The keyword table and the operator table are
+   split from one string and pushed. A `[ "a", "b" ]` literal for a `List<text>`
+   would remove that.
+6. **Unicode.** `std.utf8` has width and count but no identifier classes (XID) and
+   no normalization (NFC) checks, which D26 requires. The lexer takes every byte
+   from 128 up as part of an identifier.
+7. **Numbers.** `ParseInt` reads decimal `int` only. A literal is arbitrary
+   precision until it meets a type (D9), and the lexer would need a big integer
+   for that; `std` has none.
+8. **Two results.** `ScanNumber` returns a `Scan` struct because it wants an end
+   and a flag. Tuples exist and were not tried; a note for the first run.
+9. **Tables.** `Map<text, int>` answers a keyword lookup. `Get` with a fallback
+   was enough here; a parser's symbol tables will want an optional-returning
+   lookup.
+
 ## Layout
 
 The libraries stay in `lib/`. Moving them to `library/` would rename
