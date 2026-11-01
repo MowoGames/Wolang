@@ -95,6 +95,7 @@ character.
 | `E0043` | unexpected token after an expression | `"{a b}"` |
 | `E0044` | no enclosing loop carries that label | `break nowhere` |
 | `E0045` | expected an array length | `[]int` |
+| `E0046` | `keep` anywhere but on the function type of a parameter (D240) | `class C { var f: keep fun() }` |
 
 `E0026` carries two labels: the primary one where the closing delimiter was
 expected, and a secondary one on the delimiter that was left open.

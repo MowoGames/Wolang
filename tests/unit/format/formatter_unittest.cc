@@ -118,6 +118,11 @@ WOLANG_TEST(Formatter, KeepsUnsafeFun) {
                    "}\n");
 }
 
+WOLANG_TEST(Formatter, KeepsKeepOnAParameter) {
+  Pass pass("fun   Store(f:keep fun(int)->int,g:fun()){}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(), "fun Store(f: keep fun(int) -> int, g: fun()) {}\n");
+}
+
 WOLANG_TEST(Formatter, DropsSemicolonsAndExtraBlankLines) {
   Pass pass("fun f() {\n  const a = 1;\n\n\n  const b = 2;\n}\n");
   WOLANG_EXPECT_EQ(pass.formatted(),

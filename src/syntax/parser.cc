@@ -37,6 +37,7 @@ constexpr std::string_view kUnknownTypeParameter = "E0042";
 constexpr std::string_view kTrailingTokens = "E0043";
 constexpr std::string_view kUnknownLabel = "E0044";
 constexpr std::string_view kExpectedArraySize = "E0045";
+constexpr std::string_view kKeepMisplaced = "E0046";
 
 // True for tokens that can begin an expression. Used to tell `a..b` from
 // `a..`, where the range simply ends. |allow_brace| is false in a loop or
@@ -285,7 +286,8 @@ class Parser {
   StateId ParseState();
   bool ParseTransition(std::vector<TransitionId>* out);
 
-  AstRange<ParamId> ParseParameterList(bool types_required);
+  AstRange<ParamId> ParseParameterList(bool types_required,
+                                       bool allow_keep = false);
   AstRange<GenericParamId> ParseGenericParameters();
   void ParseWhereClause(std::vector<GenericParamId>* generics);
   AstRange<TypeRefId> ParseEffectList();
@@ -353,6 +355,7 @@ class Parser {
   // Set after consuming the first half of a `>>` token that closed a nested
   // generic argument list.
   bool pending_angle_close_ = false;
+  bool keep_allowed_ = false;
   // Set after consuming the first half of a `??` token in a pattern.
   bool pending_question_ = false;
   // Cleared while parsing the subject of `if`, `while`, `for`, `foreach` and
@@ -948,7 +951,8 @@ ItemId Parser::ParseImport(Item item, size_t start) {
   return ast_->Add(std::move(item));
 }
 
-AstRange<ParamId> Parser::ParseParameterList(bool types_required) {
+AstRange<ParamId> Parser::ParseParameterList(bool types_required,
+                                            bool allow_keep) {
   std::vector<ParamId> params;
   if (!ExpectToken(TokenKind::kLeftParen)) {
     return ast_->AddRange(std::span<const ParamId>(params));
@@ -971,6 +975,7 @@ AstRange<ParamId> Parser::ParseParameterList(bool types_required) {
     }
 
     if (Eat(TokenKind::kColon)) {
+      keep_allowed_ = allow_keep;
       param.type = ParseType();
     } else if (types_required) {
       std::string message = "expected `:` and a parameter type, found ";
@@ -1124,7 +1129,7 @@ ItemId Parser::ParseFunction(Item item, size_t start) {
     generics.push_back(id);
   }
 
-  item.params = ParseParameterList(/*types_required=*/true);
+  item.params = ParseParameterList(/*types_required=*/true, /*allow_keep=*/true);
 
   if (Eat(TokenKind::kArrow)) {
     item.type = ParseType();
@@ -2287,6 +2292,7 @@ ExprId Parser::ParseClosure() {
         break;
       }
       if (Eat(TokenKind::kColon)) {
+        keep_allowed_ = true;
         param.type = ParseType();
       }
       param.span = SpanFrom(param_start);
@@ -2919,6 +2925,7 @@ TypeRefId Parser::ParseTypeNoSuffix() {
       if (ExpectToken(TokenKind::kLeftParen)) {
         while (!AtEnd() && !At(TokenKind::kRightParen)) {
           const size_t before = pos_;
+          keep_allowed_ = true;
           params.push_back(ParseType());
           if (!Eat(TokenKind::kComma)) {
             break;
@@ -3048,6 +3055,8 @@ TypeRefId Parser::ParseTypeNoSuffix() {
 }
 
 TypeRefId Parser::ParseType() {
+  const bool keep_here = keep_allowed_;
+  keep_allowed_ = false;
   ScopedDepth depth(&depth_);
   if (depth_ > kMaxNesting) {
     const size_t start = pos_;
@@ -3060,7 +3069,19 @@ TypeRefId Parser::ParseType() {
   }
 
   const size_t start = pos_;
+  bool kept = false;
+  if (AtContextual(ContextualKeyword::kKeep) &&
+      PeekKind(1) == TokenKind::kKwFun) {
+    if (!keep_here) {
+      Report(kKeepMisplaced, "`keep` belongs on the function type of a parameter", CurrentSpan());
+    }
+    Advance();
+    kept = true;
+  }
   TypeRefId inner = ParseTypeNoSuffix();
+  if (kept) {
+    ast_->GetMutable(inner).flags |= TypeRefFlags::kKeep;
+  }
 
   // `T?` and `T!` are both postfix, so a type reads left to right: `Pawn?!`
   // is "a Pawn, possibly absent, fallibly".

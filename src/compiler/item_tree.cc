@@ -145,6 +145,9 @@ class SignatureWriter {
         out_.push_back(']');
         return;
       case TypeRefKind::kFunction: {
+        if (HasFlag(type.flags, TypeRefFlags::kKeep)) {
+          Put("keep ");
+        }
         Put("fun(");
         bool first = true;
         for (TypeRefId arg : ast_.Get(type.args)) {

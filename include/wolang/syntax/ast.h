@@ -233,6 +233,8 @@ enum class TypeRefFlags : uint16_t {
   // can be stored both ways and the choice can be measured.
   kSoa = 1 << 2,
   kAos = 1 << 3,
+  // `keep fun(...)` on a parameter: the callee may store the function (D240).
+  kKeep = 1 << 4,
 };
 
 enum class PatternKind : uint8_t {

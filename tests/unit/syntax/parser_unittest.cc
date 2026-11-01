@@ -876,6 +876,22 @@ WOLANG_TEST(Parser, UnsafeFunIsAModifier) {
   WOLANG_EXPECT(fixture.TreeContains("(fun Local unsafe"));
 }
 
+WOLANG_TEST(Parser, KeepMarksAParameterFunctionType) {
+  Fixture fixture("fun Store(f: keep fun(int) -> int, g: fun(int)) {}\nfun Opt(f: keep fun()?) {}");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.TreeContains("keep"));
+}
+
+WOLANG_TEST(Parser, KeepOutsideAParameterIsE0046) {
+  Fixture fixture("class C {\n  var f: keep fun()\n}");
+  WOLANG_EXPECT(fixture.HasCode("E0046"));
+}
+
+WOLANG_TEST(Parser, KeepIsStillAName) {
+  Fixture fixture("fun F(keep: int) -> int {\n  return keep\n}");
+  WOLANG_EXPECT(fixture.Codes().empty());
+}
+
 WOLANG_TEST(Parser, UnsafeBlockIsStillABlock) {
   Fixture fixture("fun g() {\n  unsafe {\n    const a = 1\n  }\n}");
   WOLANG_EXPECT(fixture.Codes().empty());

@@ -692,6 +692,9 @@ class Printer {
     if (HasFlag(type.flags, TypeRefFlags::kAos)) {
       Atom("aos");
     }
+    if (HasFlag(type.flags, TypeRefFlags::kKeep)) {
+      Atom("keep");
+    }
     if (HasFlag(type.flags, TypeRefFlags::kMutable) &&
         type.kind != TypeRefKind::kMut) {
       Atom("mut");

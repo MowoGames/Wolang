@@ -1558,6 +1558,9 @@ class Formatter {
         EmitType(type.element);
         return;
       case TypeRefKind::kFunction: {
+        if (HasFlag(type.flags, TypeRefFlags::kKeep)) {
+          Put("keep ");
+        }
         Put("fun(");
         bool first = true;
         for (TypeRefId arg : ast_.Get(type.args)) {

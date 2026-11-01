@@ -37,7 +37,7 @@ class Cache {
  public:
   // The format version. Bump this whenever a serialized structure changes;
   // an older file is then discarded rather than misread.
-  static constexpr uint32_t kVersion = 4;
+  static constexpr uint32_t kVersion = 5;
 
   // Writes the item trees of every source file in |database| to |path|.
   // Returns false when the file could not be written.
