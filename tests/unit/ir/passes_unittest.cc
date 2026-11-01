@@ -286,7 +286,7 @@ struct Point {
   var y: int = 0
 }
 
-fun Bump(points: []Point) {
+fun Bump(points: []mut Point) {
   var i = 0
   while i < points.len {
     points[i].x = points[i].x + 1

@@ -772,7 +772,7 @@ WOLANG_TEST(ModuleScopeTest, AHotPathMayNotTakeStorage) {
   const ModuleId game = fixture.AddModule("game");
   const FileId main = fixture.AddFile(
       game, "main.wo",
-      "unsafe fun ArrayNew<T>(count: int) -> []T\n"
+      "unsafe fun ArrayNew<T>(count: int) -> []mut T\n"
       "@Hot\nfun Tick() uses unsafe { const a = ArrayNew<int>(4) }\n");
 
   WOLANG_EXPECT_EQ(fixture.Codes(main), "E0155");

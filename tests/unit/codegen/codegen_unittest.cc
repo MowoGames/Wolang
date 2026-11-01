@@ -1624,7 +1624,7 @@ WOLANG_TEST(CodegenTest, LaysOutARecordAsOneArrayPerField) {
   // the first version of this got 36 where it should have had 10 because
   // every field shared one array.
   Fixture f(R"(
-offer unsafe fun SoaNew<T>(count: int) -> soa []T
+offer unsafe fun SoaNew<T>(count: int) -> soa []mut T
 
 struct Particle {
   var x: float = 0.0
@@ -1747,7 +1747,7 @@ WOLANG_TEST(CodegenTest, ReadsAndWritesAnAggregateThroughAPointer) {
   // a frame slot, and the reference tier holds a slot as a value rather
   // than at an address, so there would be no pointer to write.
   Fixture f(R"(
-offer unsafe fun ArrayNew<T>(count: int) -> []T
+offer unsafe fun ArrayNew<T>(count: int) -> []mut T
 
 class Rows {
   var data: []int
@@ -1775,8 +1775,8 @@ WOLANG_TEST(CodegenTest, AGenericStoreOverSoaStorage) {
   // them. Every piece of this works on its own, and putting them
   // together is what found the rest.
   Fixture f(R"(
-offer unsafe fun SoaNew<T>(count: int) -> soa []T
-offer unsafe fun ArrayNew<T>(count: int) -> []T
+offer unsafe fun SoaNew<T>(count: int) -> soa []mut T
+offer unsafe fun ArrayNew<T>(count: int) -> []mut T
 
 struct Point {
   var x: float = 0.0
@@ -1784,8 +1784,8 @@ struct Point {
 }
 
 class Store<T> {
-  var rows: soa []T
-  var owners: []int
+  var rows: soa []mut T
+  var owners: []mut int
   var count: int = 0
 
   fun Add(e: int) -> int {
@@ -1820,10 +1820,10 @@ fun Build() -> int uses unsafe {
 
 WOLANG_TEST(CodegenTest, WritesThroughASliceFieldOfAnObject) {
   Fixture f(R"(
-offer unsafe fun ArrayNew<T>(count: int) -> []T
+offer unsafe fun ArrayNew<T>(count: int) -> []mut T
 
 class Store {
-  var owners: []int
+  var owners: []mut int
   var count: int = 0
 }
 
@@ -2477,7 +2477,7 @@ WOLANG_TEST(CodegenTest, FillsABufferThroughASlice) {
   //   * a frame bigger than an instruction's immediate reach is still a
   //     frame, and a request buffer is four kilobytes on its own.
   Fixture f(R"(
-fun Fill(bytes: []u8, value: u8) -> int {
+fun Fill(bytes: []mut u8, value: u8) -> int {
   var written = 0
   while written < bytes.len {
     bytes[written] = value
@@ -3602,7 +3602,7 @@ WOLANG_TEST(CodegenTest, CarriesASliceAndACounterAroundALoop) {
   // other was not, so this walked an array on one machine and indexed
   // past the end of it on the other (D200).
   Fixture f(R"(
-fun Fill(out: []u8, count: int) -> int {
+fun Fill(out: []mut u8, count: int) -> int {
   var written = 0
   var i = 0
   while i < count {
@@ -3980,8 +3980,8 @@ fun Check() -> int {
 WOLANG_TEST(CodegenTest, CompoundAssignmentOperatesOnItsTarget) {
   // `i += 1` lowered as `i = 1`, so a loop on it never ended (D246).
   Fixture f(R"(
-offer unsafe fun ArrayNew<T>(count: int) -> []T
-offer unsafe fun SoaNew<T>(count: int) -> soa []T
+offer unsafe fun ArrayNew<T>(count: int) -> []mut T
+offer unsafe fun SoaNew<T>(count: int) -> soa []mut T
 
 var total: int = 10
 
