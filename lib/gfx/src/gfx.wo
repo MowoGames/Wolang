@@ -467,7 +467,7 @@ offer fun SetClipboard(value: text) uses unsafe {
 /// every backend here takes without converting. A canvas owns its
 /// storage and gives it back when it goes out of scope.
 offer class Canvas {
-  var pixels: []u32
+  var pixels: []mut u32
   var width: int = 0
   var height: int = 0
 

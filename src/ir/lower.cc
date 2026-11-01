@@ -6318,7 +6318,7 @@ class Lowerer {
     // pointer moved on by `at` elements and the length shortened by as
     // many. Between the two a caller can name any run inside a view
     // without copying it (D177).
-    if (called == "Prefix" || called == "Suffix") {
+    if (called == "Prefix" || called == "PrefixMut" || called == "Suffix") {
       const TypeId slice = Unwrapped(type);
       if (types_->KindOf(slice) != TypeKind::kSlice) {
         return InstId{};
@@ -6329,7 +6329,7 @@ class Lowerer {
           types_->Int(IntWidth::k8, /*is_signed=*/false),
           /*is_mutable=*/true);
       const InstId data = builder_->Extract(pointer, arguments[0], 0);
-      if (called == "Prefix") {
+      if (called != "Suffix") {
         return Coerce(builder_->Add(Opcode::kMakeStruct, slice,
                                     {data, Widen(arguments[1], word)}),
                       slice, type);

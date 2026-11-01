@@ -41,7 +41,7 @@ offer const kMaxPixels: int = 67108864
 ///
 /// Owns its storage and gives it back when it goes out of scope.
 offer class Image {
-  var pixels: []u8
+  var pixels: []mut u8
   var width: int = 0
   var height: int = 0
 
@@ -230,16 +230,16 @@ class PngInfo {
   var depth: int = 0
   var kind: int = 0
   var interlace: int = 0
-  var palette: []u8
+  var palette: []mut u8
   var palette_count: int = 0
   /// Alpha per palette entry; 255 where a tRNS chunk did not say.
-  var alpha: []u8
+  var alpha: []mut u8
   var has_key: bool = false
   /// The colour tRNS marks as transparent, as full 16-bit samples.
   var key_r: int = 0
   var key_g: int = 0
   var key_b: int = 0
-  var raw: []u8
+  var raw: []mut u8
 
   deinit  {
     Free(palette)
@@ -348,7 +348,7 @@ fun Predict(data: []u8, cur: int, prev: int, x: int, bpp: int, kind: int) -> int
 
 /// Undoes the filters of one pass in place. False for a filter type
 /// that is not 0 to 4.
-fun Unfilter(raw: []u8, start: int, rowbytes: int, rows: int, bpp: int) -> bool {
+fun Unfilter(raw: []mut u8, start: int, rowbytes: int, rows: int, bpp: int) -> bool {
   var y = 0
   while y < rows {
     const row = start + y * (rowbytes + 1)
@@ -410,7 +410,7 @@ fun Scale(value: int, depth: int) -> int {
 
 /// Writes pixel `x` of the row at `row` as RGBA at `at`. False when a
 /// palette index points past the palette.
-fun PngPixel(raw: []u8, row: int, x: int, info: &PngInfo, dest: []u8, at: int) -> bool {
+fun PngPixel(raw: []u8, row: int, x: int, info: &PngInfo, dest: []mut u8, at: int) -> bool {
   const depth = info.depth
   var r = 0
   var g = 0

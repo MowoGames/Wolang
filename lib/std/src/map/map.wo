@@ -17,9 +17,9 @@ need std.hash.{TextEquals, TextHash}
 /// lookup a couple of cache lines instead of a pointer chase. `deinit`
 /// gives the three arrays back.
 offer class Map<K, V> {
-  var keys: []K
-  var values: []V
-  var filled: []bool
+  var keys: []mut K
+  var values: []mut V
+  var filled: []mut bool
   var count: int = 0
   var hash: fun(K) -> int
   var equals: fun(K, K) -> bool

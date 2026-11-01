@@ -54,7 +54,7 @@ class Bits {
 // A Huffman table as the format describes one: how many codes of each
 // length, and the symbols in order.
 class Codes {
-  var counts: []int
+  var counts: []mut int
   var symbols: []int
   var ok: bool = true
 

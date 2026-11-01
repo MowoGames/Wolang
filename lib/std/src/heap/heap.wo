@@ -12,7 +12,7 @@
 need std.mem.{ArrayNew, Free}
 
 offer class Heap<T> {
-  var items: []T
+  var items: []mut T
   var count: int = 0
   /// Whether the first argument comes out before the second.
   var before: fun(T, T) -> bool

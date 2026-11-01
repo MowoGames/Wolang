@@ -14,7 +14,7 @@ need std.mem.{ArrayNew, BytesFromRaw, Free}
 extern "C" fun wolang_open_read(path: *u8, length: u64) -> s32 uses io
 extern "C" fun wolang_open_write(path: *u8, length: u64) -> s32 uses io
 extern "C" fun wolang_fd_close(fd: s32) -> s32 uses io
-extern "C" fun wolang_fd_read(fd: s32, buffer: *u8, count: u64) -> s64 uses io
+extern "C" fun wolang_fd_read(fd: s32, buffer: *mut u8, count: u64) -> s64 uses io
 extern "C" fun wolang_fd_write(fd: s32, buffer: *u8, count: u64) -> s64 uses io
 
 /// An open file. Closing it is `deinit`'s job, so a handle that goes out
@@ -41,7 +41,7 @@ offer class File {
 
   /// Fills `buffer` and says how many bytes arrived: zero at the end of
   /// the file, negative when the system refused.
-  fun Read(buffer: []u8) -> int uses unsafe {
+  fun Read(buffer: []mut u8) -> int uses unsafe {
     if fd < 0 {
       return -1
     }
