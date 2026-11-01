@@ -311,6 +311,10 @@ class TypeResolver {
   // Resolves one `TypeRef` node of |ast|.
   TypeId Resolve(const Ast& ast, TypeRefId id);
 
+  // Resolves the type of a parameter: a function type there is borrowed
+  // unless it says `keep`, and everywhere else one is kept (D240).
+  TypeId ResolveParameter(const Ast& ast, TypeRefId id);
+
   // Type parameters of the declaration being resolved, pushed and popped
   // around a generic declaration's signature and body.
   void PushTypeParameter(Symbol name, TypeId type);

@@ -856,6 +856,25 @@ TypeId TypeResolver::ResolvePath(const Ast& ast, const TypeRef& type) {
   return binding->type;
 }
 
+static bool WritesKeep(const Ast& ast, TypeRefId id) {
+  if (!ast.Contains(id)) {
+    return false;
+  }
+  const TypeRef& type = ast.Get(id);
+  if (HasFlag(type.flags, TypeRefFlags::kKeep)) {
+    return true;
+  }
+  return type.kind == TypeRefKind::kOptional && WritesKeep(ast, type.element);
+}
+
+TypeId TypeResolver::ResolveParameter(const Ast& ast, TypeRefId id) {
+  const TypeId type = Resolve(ast, id);
+  if (!types_->IsFunctionLike(type)) {
+    return type;
+  }
+  return WritesKeep(ast, id) ? types_->Kept(type) : types_->Borrowed(type);
+}
+
 TypeId TypeResolver::Resolve(const Ast& ast, TypeRefId id) {
   if (!ast.Contains(id)) {
     return types_->error();
@@ -958,7 +977,7 @@ TypeId TypeResolver::Resolve(const Ast& ast, TypeRefId id) {
     case TypeRefKind::kFunction: {
       std::vector<TypeId> params;
       for (TypeRefId param : ast.Get(type.args)) {
-        params.push_back(Resolve(ast, param));
+        params.push_back(ResolveParameter(ast, param));
       }
       const TypeId result = type.element.is_valid()
                                 ? Resolve(ast, type.element)
@@ -1347,7 +1366,7 @@ void ResolveSignatures(TypeStore* types,
     params.reserve(item.params.size());
     for (ParamId param_id : ast.Get(item.params)) {
       const Param& param = ast.Get(param_id);
-      params.push_back(param.type.is_valid() ? resolver.Resolve(ast, param.type)
+      params.push_back(param.type.is_valid() ? resolver.ResolveParameter(ast, param.type)
                                              : types->error());
     }
     const TypeId result = item.type.is_valid()

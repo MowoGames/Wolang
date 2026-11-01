@@ -406,5 +406,29 @@ WOLANG_TEST(TypeStoreTest, UnifiesAndSubstitutesTypeParameters) {
   WOLANG_EXPECT(store.MentionsParameter(store.Tuple({wide, t})));
 }
 
+WOLANG_TEST(TypeStoreTest, KeptAndBorrowedFunctionsAreDistinct) {
+  TypeStore store;
+  const TypeId i32 = store.Int(IntWidth::k32, true);
+  const TypeId kept = store.Function({i32}, i32, true);
+  const TypeId borrowed = store.Function({i32}, i32, false);
+  WOLANG_EXPECT_NE(kept, borrowed);
+  WOLANG_EXPECT_EQ(store.Kept(borrowed), kept);
+  WOLANG_EXPECT_EQ(store.Borrowed(kept), borrowed);
+  WOLANG_EXPECT(store.IsKept(kept));
+  WOLANG_EXPECT(!store.IsKept(borrowed));
+  WOLANG_EXPECT_EQ(store.Borrowed(store.Optional(kept)), store.Optional(borrowed));
+  WOLANG_EXPECT_EQ(store.Kept(i32), i32);
+  WOLANG_EXPECT(store.IsKept(i32));
+  WOLANG_EXPECT(!store.IsFunctionLike(i32));
+  WOLANG_EXPECT(store.IsFunctionLike(store.Optional(borrowed)));
+}
+
+WOLANG_TEST(TypeStoreTest, UnifyIgnoresKept) {
+  TypeStore store;
+  const TypeId i32 = store.Int(IntWidth::k32, true);
+  TypeStore::Substitution substitution;
+  WOLANG_EXPECT(store.Unify(store.Function({i32}, i32, true), store.Function({i32}, i32, false), &substitution));
+}
+
 }  // namespace
 }  // namespace wolang

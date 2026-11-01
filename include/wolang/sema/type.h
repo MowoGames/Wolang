@@ -274,6 +274,11 @@ struct Type {
 
   // Function: whether the last parameter is variadic. Reserved for the FFI.
   bool is_variadic = false;
+
+  // Function: whether a value of this type may be stored. A parameter of
+  // function type is borrowed unless it says `keep`; every other place a
+  // function type appears is kept (D240).
+  bool is_kept = false;
 };
 
 // Interns types and answers the structural questions about them.
@@ -384,7 +389,13 @@ class TypeStore {
   TypeId Slice(TypeId element, bool is_soa);
   TypeId Array(TypeId element, uint64_t length, bool is_soa);
   TypeId Tuple(const std::vector<TypeId>& elements);
-  TypeId Function(const std::vector<TypeId>& params, TypeId result);
+  TypeId Function(const std::vector<TypeId>& params, TypeId result, bool is_kept = true);
+  // The same type with its top-level function marked kept or borrowed, looking
+  // through `?`. Anything else is returned as it came (D240).
+  TypeId Kept(TypeId id);
+  TypeId Borrowed(TypeId id);
+  bool IsKept(TypeId id) const;
+  bool IsFunctionLike(TypeId id) const;
   TypeId Pointer(TypeId element, bool is_mutable);
   TypeId Reference(TypeId element, bool is_mutable);
   TypeId Quantity(TypeId numeric, const Dimensions& dimensions);

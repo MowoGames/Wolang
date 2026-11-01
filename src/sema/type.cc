@@ -347,13 +347,55 @@ TypeId TypeStore::Tuple(const std::vector<TypeId>& elements) {
   return Intern(std::move(key));
 }
 
-TypeId TypeStore::Function(const std::vector<TypeId>& params, TypeId result) {
+TypeId TypeStore::Function(const std::vector<TypeId>& params, TypeId result, bool is_kept) {
   Key key;
   std::memset(&key.type, 0, sizeof(key.type));
   key.type.kind = TypeKind::kFunction;
   key.type.element = result;
+  key.type.is_kept = is_kept;
   key.args = params;
   return Intern(std::move(key));
+}
+
+bool TypeStore::IsFunctionLike(TypeId id) const {
+  const TypeKind kind = KindOf(id);
+  return kind == TypeKind::kFunction ||
+         (kind == TypeKind::kOptional && IsFunctionLike(Get(id).element));
+}
+
+bool TypeStore::IsKept(TypeId id) const {
+  const TypeKind kind = KindOf(id);
+  if (kind == TypeKind::kFunction) {
+    return Get(id).is_kept;
+  }
+  if (kind == TypeKind::kOptional) {
+    return IsKept(Get(id).element);
+  }
+  return true;
+}
+
+TypeId TypeStore::Kept(TypeId id) {
+  const TypeKind kind = KindOf(id);
+  if (kind == TypeKind::kFunction) {
+    const Type type = Get(id);
+    return Function(ArgumentsOf(id), type.element, true);
+  }
+  if (kind == TypeKind::kOptional) {
+    return Optional(Kept(Get(id).element));
+  }
+  return id;
+}
+
+TypeId TypeStore::Borrowed(TypeId id) {
+  const TypeKind kind = KindOf(id);
+  if (kind == TypeKind::kFunction) {
+    const Type type = Get(id);
+    return Function(ArgumentsOf(id), type.element, false);
+  }
+  if (kind == TypeKind::kOptional) {
+    return Optional(Borrowed(Get(id).element));
+  }
+  return id;
 }
 
 TypeId TypeStore::Pointer(TypeId element, bool is_mutable) {
@@ -744,7 +786,7 @@ TypeId TypeStore::AnswerProjections(TypeId id, const std::function<TypeId(TypeId
     case TypeKind::kTuple:
       return Tuple(args);
     case TypeKind::kFunction:
-      return Function(args, element);
+      return Function(args, element, type.is_kept);
     case TypeKind::kInstance:
       return Instance(AnswerProjections(type.base, answer), args);
     default:
@@ -912,7 +954,7 @@ TypeId TypeStore::Substitute(TypeId id, const Substitution& substitution) {
     case TypeKind::kTuple:
       return Tuple(args);
     case TypeKind::kFunction:
-      return Function(args, element);
+      return Function(args, element, type.is_kept);
     case TypeKind::kInstance:
       return Instance(Substitute(type.base, substitution), args);
     case TypeKind::kProjection:
@@ -1038,6 +1080,9 @@ std::string TypeStore::Describe(const StringInterner& interner,
           text.append(", ");
         }
         first = false;
+        if (IsFunctionLike(param) && IsKept(param)) {
+          text.append("keep ");
+        }
         text.append(Describe(interner, param));
       }
       text.push_back(')');

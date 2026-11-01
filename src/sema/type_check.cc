@@ -3587,7 +3587,7 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       for (ParamId param_id : ast_.Get(expr.params)) {
         const Param& param = ast_.Get(param_id);
         TypeId param_type = param.type.is_valid()
-                                ? resolver_.Resolve(ast_, param.type)
+                                ? resolver_.ResolveParameter(ast_, param.type)
                                 : TypeId{};
         if (!param_type.is_valid() && position < from_context.size()) {
           param_type = from_context[position];
@@ -4033,7 +4033,7 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   for (ParamId param_id : ast_.Get(item.params)) {
     const Param& param = ast_.Get(param_id);
     const TypeId type = param.type.is_valid()
-                            ? resolver_.Resolve(ast_, param.type)
+                            ? resolver_.ResolveParameter(ast_, param.type)
                             : types_->error();
     if (param.type.is_valid()) {
       RefuseSelfAbilityValue(type, ast_.Get(param.type).span);
