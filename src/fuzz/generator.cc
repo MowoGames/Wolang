@@ -877,7 +877,10 @@ class Writer {
 
   void ClosureStatement(int indent, int depth) {
     const std::string name = Fresh("k");
-    Line(indent, "const " + name + " = MakeAdder(" + Expression(Ty::kInt, depth, false) + ", " + ClassVar() + ")");
+    const std::string seed = Expression(Ty::kInt, depth, false);
+    const std::string cell = ClassVar();
+
+    Line(indent, "const " + name + " = MakeAdder(" + seed + ", " + cell + ")");
     Line(indent, "const _ = " + name + "() + CallTwice(" + name + ")");
   }
 
