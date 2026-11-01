@@ -232,7 +232,8 @@ struct Type {
   bool is_signed = true;
   // Floats: width.
   FloatWidth float_width = FloatWidth::k32;
-  // Pointers and references: whether the target may be written.
+  // Pointers, references and slices: whether the target may be written
+  // (D251).
   bool is_mutable = false;
   // Slices and arrays: whether the storage keeps one array per field.
   bool is_soa = false;
@@ -393,7 +394,7 @@ class TypeStore {
   // when it was built (D235).
   TypeId FindOptional(TypeId element) const;
   TypeId Fallible(TypeId element, TypeId error_set);
-  TypeId Slice(TypeId element, bool is_soa);
+  TypeId Slice(TypeId element, bool is_soa, bool is_mutable = false);
   TypeId Array(TypeId element, uint64_t length, bool is_soa);
   TypeId Tuple(const std::vector<TypeId>& elements);
   TypeId Function(const std::vector<TypeId>& params, TypeId result, bool is_kept = true);

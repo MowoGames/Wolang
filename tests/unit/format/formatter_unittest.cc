@@ -118,6 +118,12 @@ WOLANG_TEST(Formatter, KeepsUnsafeFun) {
                    "}\n");
 }
 
+WOLANG_TEST(Formatter, KeepsMutOnASlice) {
+  Pass pass("fun   Fill(xs:[]mut  int,ys:[]int){}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(), "fun Fill(xs: []mut int, ys: []int) {}\n");
+  WOLANG_EXPECT_STABLE(pass.formatted());
+}
+
 WOLANG_TEST(Formatter, KeepsKeepOnAParameter) {
   Pass pass("fun   Store(f:keep fun(int)->int,g:fun()){}\n");
   WOLANG_EXPECT_EQ(pass.formatted(), "fun Store(f: keep fun(int) -> int, g: fun()) {}\n");

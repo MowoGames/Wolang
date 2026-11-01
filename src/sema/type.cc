@@ -321,12 +321,13 @@ TypeId TypeStore::Fallible(TypeId element, TypeId error_set) {
   return Intern(std::move(key));
 }
 
-TypeId TypeStore::Slice(TypeId element, bool is_soa) {
+TypeId TypeStore::Slice(TypeId element, bool is_soa, bool is_mutable) {
   Key key;
   std::memset(&key.type, 0, sizeof(key.type));
   key.type.kind = TypeKind::kSlice;
   key.type.element = element;
   key.type.is_soa = is_soa;
+  key.type.is_mutable = is_mutable;
   return Intern(std::move(key));
 }
 
@@ -794,7 +795,7 @@ TypeId TypeStore::AnswerProjections(TypeId id, const std::function<TypeId(TypeId
     case TypeKind::kFallible:
       return Fallible(element, type.base);
     case TypeKind::kSlice:
-      return Slice(element, type.is_soa);
+      return Slice(element, type.is_soa, type.is_mutable);
     case TypeKind::kArray:
       return Array(element, type.length, type.is_soa);
     case TypeKind::kPointer:
@@ -962,7 +963,7 @@ TypeId TypeStore::Substitute(TypeId id, const Substitution& substitution) {
     case TypeKind::kFallible:
       return Fallible(element, type.base);
     case TypeKind::kSlice:
-      return Slice(element, type.is_soa);
+      return Slice(element, type.is_soa, type.is_mutable);
     case TypeKind::kArray:
       return Array(element, type.length, type.is_soa);
     case TypeKind::kPointer:
@@ -1065,6 +1066,9 @@ std::string TypeStore::Describe(const StringInterner& interner,
     // them. The brackets say what the shape is before the element does.
     case TypeKind::kSlice: {
       std::string text = type.is_soa ? "soa []" : "[]";
+      if (type.is_mutable) {
+        text.append("mut ");
+      }
       text.append(Describe(interner, type.element));
       return text;
     }

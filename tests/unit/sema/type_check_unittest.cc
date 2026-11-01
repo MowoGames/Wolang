@@ -2769,6 +2769,95 @@ fun Run(door: Door) -> bool {
   WOLANG_EXPECT(f.HasCode("E0112"));
 }
 
+// `[]T` is read-only and `[]mut T` is writable, as `*T` and `*mut T` are
+// (D251).
+WOLANG_TEST(TypeCheck, WritingAnElementOfAReadOnlySliceIsE0165) {
+  Fixture f(R"(
+fun Fill(xs: []int) {
+  xs[0] = 1
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0165"));
+  Fixture compound(R"(
+fun Bump(xs: []int) {
+  xs[0] += 1
+}
+)");
+  WOLANG_EXPECT(compound.HasCode("E0165"));
+  Fixture field(R"(
+struct P {
+  var x: int
+}
+
+fun Move(ps: []P) {
+  ps[0].x = 1
+}
+)");
+  WOLANG_EXPECT(field.HasCode("E0165"));
+  Fixture fine(R"(
+fun Fill(xs: []mut int) {
+  xs[0] = 1
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0165"));
+  WOLANG_EXPECT_EQ(fine.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, WritingThroughAHandleInASliceIsNotAWriteToTheSlice) {
+  Fixture f(R"(
+class Cell {
+  var n: int
+}
+
+fun Fill(cells: []Cell) {
+  cells[0].n = 1
+}
+)");
+  WOLANG_EXPECT(!f.HasCode("E0165"));
+}
+
+WOLANG_TEST(TypeCheck, AWritableSliceFitsAReadOnlyOneAndNotTheOtherWay) {
+  Fixture fine(R"(
+fun Read(xs: []int) -> int {
+  return xs[0]
+}
+
+fun Pass(xs: []mut int) -> int {
+  return Read(xs)
+}
+)");
+  WOLANG_EXPECT_EQ(fine.Codes(), "");
+  Fixture f(R"(
+fun Fill(xs: []mut int) {
+  xs[0] = 1
+}
+
+fun Pass(xs: []int) {
+  Fill(xs)
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0101"));
+}
+
+WOLANG_TEST(TypeCheck, AnArrayIsAViewOfEitherKind) {
+  Fixture f(R"(
+fun Fill(xs: []mut int) {
+  xs[0] = 1
+}
+
+fun Read(xs: []int) -> int {
+  return xs[0]
+}
+
+fun Run() -> int {
+  var a = [1, 2, 3]
+  Fill(a)
+  return Read(a)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 WOLANG_TEST(TypeCheck, SelfIsTheMachineInItsBlocks) {
   Fixture f(R"(
 machine Door {

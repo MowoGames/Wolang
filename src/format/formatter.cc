@@ -1548,7 +1548,7 @@ class Formatter {
         }
         return;
       case TypeRefKind::kSlice:
-        Put("[]");
+        Put(HasFlag(type.flags, TypeRefFlags::kMutable) ? "[]mut " : "[]");
         EmitType(type.element);
         return;
       case TypeRefKind::kArray:

@@ -134,6 +134,9 @@ class SignatureWriter {
         return;
       case TypeRefKind::kSlice:
         out_.push_back('[');
+        if (HasFlag(type.flags, TypeRefFlags::kMutable)) {
+          Put("mut ");
+        }
         PutType(type.element);
         out_.push_back(']');
         return;

@@ -71,6 +71,8 @@ constexpr std::string_view kBorrowedEscapes = "E0161";
 constexpr std::string_view kFrameBoundCapture = "E0162";
 // A script class deriving from a host class (D256).
 constexpr std::string_view kScriptDerivesHost = "E0164";
+// An element written through a slice that is not `[]mut T` (D251).
+constexpr std::string_view kReadOnlySlice = "E0165";
 constexpr std::string_view kWaitOutsideTask = "E0301";
 constexpr std::string_view kTaskNotWaited = "E0302";
 constexpr std::string_view kWaitNotWholeExpression = "E0303";
@@ -656,6 +658,8 @@ class Checker {
   ExprId RootOfPlace(ExprId id) const;
   const Member* SignalOperand(ExprId id) const;
   bool IsBytesAndText(TypeId from, TypeId to) const;
+  bool WritesReadOnlySlice(ExprId place) const;
+  void ReportReadOnlySlice(SourceSpan span);
   bool IsPointerArithmetic(TokenKind op, TypeId left, TypeId right);
   TypeId CheckCall(ExprId id, const Expr& expr);
   TypeId CheckIndex(const Expr& expr);
@@ -896,6 +900,16 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
   if (types_->KindOf(expected) == TypeKind::kPointer &&
       types_->KindOf(found) == TypeKind::kPointer &&
       types_->ElementOf(expected) == types_->ElementOf(found)) {
+    return types_->Get(found).is_mutable &&
+           !types_->Get(expected).is_mutable;
+  }
+
+  // A slice that may be written fits where a read-only one is wanted, as
+  // a pointer does (D251). The element and the layout have to be the same.
+  if (types_->KindOf(expected) == TypeKind::kSlice &&
+      types_->KindOf(found) == TypeKind::kSlice &&
+      types_->ElementOf(expected) == types_->ElementOf(found) &&
+      types_->Get(expected).is_soa == types_->Get(found).is_soa) {
     return types_->Get(found).is_mutable &&
            !types_->Get(expected).is_mutable;
   }
@@ -1405,6 +1419,10 @@ TypeId Checker::CheckUnary(ExprId id, const Expr& expr, TypeId expected) {
       }
       return operand;
     case TokenKind::kAmp:
+      if (HasFlag(expr.flags, ExprFlags::kMutable) &&
+          WritesReadOnlySlice(expr.lhs)) {
+        ReportReadOnlySlice(expr.span);
+      }
       return types_->Reference(operand,
                                HasFlag(expr.flags, ExprFlags::kMutable));
     case TokenKind::kStar: {
@@ -1768,6 +1786,47 @@ bool Checker::IsBytesAndText(TypeId from, TypeId to) const {
   return (is_bytes(from) && is_text(to)) || (is_text(from) && is_bytes(to));
 }
 
+// Whether writing |place| would change an element that a read-only slice
+// views: `xs[i] = v`, `xs[i].x = v` and `xs[i].x += v` where `xs` is `[]T`
+// and not `[]mut T`. A write that goes through a handle, a pointer or a
+// reference changes what they point at and not the slice's storage, so the
+// walk stops there (D251).
+bool Checker::WritesReadOnlySlice(ExprId place) const {
+  ExprId current = place;
+  while (ast_.Contains(current)) {
+    const Expr& expr = ast_.Get(current);
+    if (expr.kind == ExprKind::kIndex) {
+      const TypeId base = types_->StripWrappers(result_.TypeOf(expr.lhs));
+      if (types_->KindOf(base) == TypeKind::kSlice) {
+        return !types_->Get(base).is_mutable;
+      }
+      if (types_->KindOf(base) != TypeKind::kArray) {
+        return false;
+      }
+      current = expr.lhs;
+      continue;
+    }
+    if (expr.kind == ExprKind::kField) {
+      const TypeId base = result_.TypeOf(expr.lhs);
+      if (types_->IsHandle(base) || types_->KindOf(base) == TypeKind::kPointer ||
+          types_->KindOf(base) == TypeKind::kReference) {
+        return false;
+      }
+      current = expr.lhs;
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
+void Checker::ReportReadOnlySlice(SourceSpan span) {
+  Report(kReadOnlySlice, "an element of a read-only slice cannot be written",
+         span,
+         "write `[]mut T` where the slice is declared, or copy it into one "
+         "you own");
+}
+
 // The signal a field access names, when it names one: `p.Died` in
 // `p.Died.Emit(...)`.
 const Member* Checker::SignalOperand(ExprId id) const {
@@ -1900,6 +1959,10 @@ void Checker::CheckMachine(const Item& item) {
 
 TypeId Checker::CheckAssign(ExprId id, const Expr& expr) {
   const TypeId target = Check(expr.lhs, TypeId{});
+
+  if (WritesReadOnlySlice(expr.lhs)) {
+    ReportReadOnlySlice(expr.span);
+  }
 
   // Only a name, a field or an element can be assigned to, and a `let`
   // binding cannot be reassigned at all.
@@ -2341,7 +2404,9 @@ TypeId Checker::CheckIndex(const Expr& expr) {
     if (ast_.Contains(expr.rhs) &&
         ast_.Get(expr.rhs).kind == ExprKind::kRange) {
       return types_->Slice(types_->ElementOf(container),
-                           types_->Get(container).is_soa);
+                           types_->Get(container).is_soa,
+                           kind == TypeKind::kArray ||
+                               types_->Get(container).is_mutable);
     }
     return types_->ElementOf(container);
   }
@@ -2850,7 +2915,8 @@ TypeId Checker::CheckField(const Expr& expr) {
   // code that hands a buffer to something outside the language.
   if (interner_->Text(expr.name) == "data" &&
       types_->KindOf(named) == TypeKind::kSlice) {
-    return types_->Pointer(types_->ElementOf(named), /*is_mutable=*/true);
+    return types_->Pointer(types_->ElementOf(named),
+                           types_->Get(named).is_mutable);
   }
 
   // How many elements there are. An `int` rather than an unsigned word,

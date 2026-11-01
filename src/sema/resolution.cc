@@ -982,7 +982,8 @@ TypeId TypeResolver::Resolve(const Ast& ast, TypeRefId id) {
     }
 
     case TypeRefKind::kSlice:
-      return types_->Slice(Resolve(ast, type.element), is_soa);
+      return types_->Slice(Resolve(ast, type.element), is_soa,
+                           HasFlag(type.flags, TypeRefFlags::kMutable));
 
     case TypeRefKind::kArray: {
       const TypeId element = Resolve(ast, type.element);

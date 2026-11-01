@@ -2981,6 +2981,9 @@ TypeRefId Parser::ParseTypeNoSuffix() {
       Advance();
       if (Eat(TokenKind::kRightBracket)) {
         type.kind = TypeRefKind::kSlice;
+        if (Eat(TokenKind::kKwMut)) {
+          type.flags |= TypeRefFlags::kMutable;
+        }
       } else {
         type.kind = TypeRefKind::kArray;
         type.length = ParseExpression();

@@ -887,6 +887,15 @@ WOLANG_TEST(Parser, KeepOutsideAParameterIsE0046) {
   WOLANG_EXPECT(fixture.HasCode("E0046"));
 }
 
+WOLANG_TEST(Parser, MutMarksAWritableSlice) {
+  Fixture fixture("fun Fill(xs: []mut int, ys: []int) {}\nfun Soa(zs: soa []mut int) {}");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.TreeContains("mut"));
+  Fixture plain("fun Read(ys: []int) {}");
+  WOLANG_EXPECT(plain.Codes().empty());
+  WOLANG_EXPECT(!plain.TreeContains("mut"));
+}
+
 WOLANG_TEST(Parser, KeepIsStillAName) {
   Fixture fixture("fun F(keep: int) -> int {\n  return keep\n}");
   WOLANG_EXPECT(fixture.Codes().empty());
