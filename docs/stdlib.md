@@ -1,14 +1,17 @@
 # The standard library
 
-Thirty-four modules, all written in Wolang over a floor of about sixty C
+Thirty-five modules, all written in Wolang over a floor of about sixty C
 calls. This is what each one is for, what it gives you, and what it does
 not. Every example here compiles.
 
+A length, an index and a hash are `int`, which is `s64` (D238): `.len` on a
+text, slice or list is an `int`, and a collection is not capped at 2^31.
+
 How to read a signature: `uses unsafe` on a standard library function
 means *it* takes the responsibility, not you — `std.math.Sqrt`-style
-wrappers over a C call. The one exception is `std.text.Bytes`: it hands
-out a writable view of text that may be a literal, so a caller declares
-`uses unsafe` and answers for never writing through it (D233).
+wrappers over a C call. `std.text.Bytes` hands out a `[]u8` view of text that
+may be a literal, which cannot be written through (D251), so it needs no
+promise from the caller.
 
 | Module | What it is for |
 |---|---|
@@ -38,6 +41,7 @@ out a writable view of text that may be a literal, so a caller declares
 | [`std.log`](#stdlog) | Levelled logging |
 | [`std.thread`](#stdthread), [`std.tasks`](#stdtasks) | Threads, locks, and a frame's worth of parallel work |
 | [`std.mem`](#stdmem), [`std.own`](#stdown) | Storage, views and ownership |
+| [`std.ops`](#stdops) | Operators as abilities: `Add`, `Eq`, `Ord` and the rest |
 
 And three first-party packages beside it: [`http`](#the-http-package),
 [`db`](#the-db-package), [`gfx`](#the-gfx-package), plus `tls` and
@@ -90,7 +94,7 @@ form: use it for any string that outlives the builder (D227).
 `TextFromRaw`.
 
 A `text` is bytes and a length. There is no copy on a substring and no
-terminator; `Bytes` (`uses unsafe`, a view you must not write) hands you the bytes and `TextFromRaw` takes them
+terminator; `Bytes` (a read-only `[]u8`) hands you the bytes and `TextFromRaw` takes them
 back.
 
 ## std.fmt
@@ -242,7 +246,10 @@ fun main() uses io, unsafe {
 }
 ```
 
-`std.map.IntHash`/`IntEquals` are there for integer keys.
+`std.map.IntHash`/`IntEquals` are there for integer keys. `IntMapNew<V>()` and
+`TextMapNew<V>()` build a map with the hashing already chosen.
+
+`std.text.Builder` also has `AppendLine(value)`: the text and a newline.
 
 ## std.set
 
@@ -332,7 +339,9 @@ exhausting the stack (D227).
 TOML 1.0 as it is used: strings in four styles, numbers in four bases,
 booleans, dates as text, arrays, inline tables, dotted keys, `[table]`
 and `[[array of tables]]`. Arrays and inline tables nested deeper than 64
-answer `Malformed` instead of exhausting the stack (D227).
+answer `Malformed` instead of exhausting the stack (D227). `Malformed` carries
+the `line` and `column` the document went wrong at, counted from one, in `json`,
+`toml` and `yaml` (D235): `Malformed(line, column) => ..`.
 
 ```wolang
 need std.doc.{AsText, Get, Null}
@@ -673,8 +682,10 @@ fun main() uses io, unsafe {
 
 A body started on another thread (`Spawn`, `ParallelFor`: the
 parameters of functions marked `@Thread`) may not read or write a
-module-level `var`, directly or through the functions it calls, unless
-the function making the call states `uses unsafe` (`E0147`), and `Spawn`
+module-level `var`, directly or through the functions and methods it
+calls, in any module, unless the function making the call states
+`uses unsafe` (`E0147`); a function that states it stops the walk
+(D252), and `Spawn`
 takes no capturing closure at all (`E0148`); `ParallelFor`'s closure
 may capture, each thread getting a copy (D232).
 
@@ -687,9 +698,11 @@ tasks.
 
 ## std.mem
 
-`ArrayNew`, `Free`, `Prefix`, `Suffix`, `BytesFromRaw`, `ViewFromRaw`,
-`SizeOf`, `SoaNew`. Storage and views; the language's arrays and lists
-are built on these.
+`ArrayNew`, `Free`, `Prefix`, `PrefixMut`, `Suffix`, `BytesFromRaw`,
+`ViewFromRaw`, `SizeOf`, `SoaNew`. Storage and views; the language's arrays
+and lists are built on these. What allocates or views raw storage answers
+`[]mut T`; `Prefix` and `Suffix` take and answer a read-only `[]T`, and
+`PrefixMut` the writable one (D251).
 
 ## std.own
 
@@ -697,6 +710,40 @@ are built on these.
 that counts how many hold it.
 
 ---
+
+## std.ops
+
+`Add`, `Sub`, `Mul`, `Div`, `Neg`, `Eq`, `Ord`, `Hash`, `Max` and `Min`.
+Each of the first seven is an `@Operator` ability whose one method is what
+an operator calls (D239): `Plus` for `+`, `Minus`, `Times`, `Divide`,
+`Negate` for unary `-`, `Equals` for `==` and `!=`, and `Compare` for
+`< <= > >=`. `Self` is the type that has the ability.
+
+```wolang
+need std.io.{Print}
+need std.ops.{Eq, Max, Ord}
+
+struct Level {
+  var n: int
+}
+
+extend Level as Eq {
+  fun Equals(other: &Self) -> bool => n == other.n
+}
+
+extend Level as Ord {
+  fun Compare(other: &Self) -> int => n - other.n
+}
+
+fun main() uses io {
+  const top = Max(Level(3), Level(8))
+  Print("{top.n} {Level(1) == Level(1)} {Level(1) < Level(2)} {Max(3, 9)}")
+}
+```
+
+Numbers, `bool`, `char` and `text` have the operators they were always
+given, so `Max(3, 9)` is a compare and not a call. `Hash` is not an
+operator: it is the number `std.map` files a key under.
 
 ## The `http` package
 
@@ -837,6 +884,51 @@ on a side or `kMaxPixels` = 64 Mi pixels); sizes are checked before any
 allocation and the PNG inflater is limited to what the header implies
 (D227), so a hostile file cannot trap or balloon. Encoders return storage
 the caller owns.
+
+---
+
+## The `math` package
+
+Vectors, matrices and quaternions for gameplay and rendering code, written in
+Wolang (D263). `Vec2`, `Vec3` and `Vec4` are structs of `float` (`f32`, like
+`std.math`), and the arithmetic is `std.ops` abilities (D239): `a + b`, `a - b`,
+`-a`, `a * b`, `a / b` and `a == b` work on all of them, component by
+component. `Mat3`, `Mat4` and `Quat` meet `Mul` (a matrix or Hamilton product,
+the right side applied first) and `Eq`. Equality is exact; use `NearTo` for a
+tolerance. Anything that takes a square root states `uses unsafe`, as
+`std.math.Sqrt` does.
+
+```wolang
+need math.{Vec3, Mat4Translation, QuatAxisAngle}
+need std.io.{Print}
+
+fun main() uses io, unsafe {
+  const turn = QuatAxisAngle(Vec3(0.0, 0.0, 1.0), 1.5707963)
+  const move = Mat4Translation(Vec3(10.0, 0.0, 0.0))
+  const point = move.TransformPoint(turn.Rotate(Vec3(1.0, 0.0, 0.0)))
+  Print("{point.x} {point.y} {point.z}")
+  const sum = Vec3(1.0, 2.0, 3.0) + Vec3(1.0, 1.0, 1.0)
+  const length = sum.Length()
+  Print("{length}")
+}
+```
+
+| Function | What |
+|---|---|
+| `Dot(other)`, `LengthSquared()`, `Length()`, `Distance(other)` | on `Vec2`, `Vec3`, `Vec4` (`Distance` not on `Vec4`); `Quat` has `Dot` and `Length` |
+| `Cross(other)` | `Vec3` only |
+| `Normalized()` | unit length; the zero vector stays zero (a zero `Quat` gives the identity) |
+| `Scaled(k)`, `Divided(k)` | by a number; `*` and `/` between vectors are per component |
+| `Lerped(other, t)`, `Clamped(low, high)`, `NearTo(other, tolerance)` | per component (`Clamped` on `Vec2`, `Vec3`) |
+| `Mat3Identity()`, `Mat4Identity()` | |
+| `Mat4Translation(by)`, `Mat4Scale(by)`, `Mat4FromMat3(m)` | |
+| `Transform(v)` | `Mat3` times a `Vec3` |
+| `TransformPoint(p)`, `TransformDirection(d)`, `TransformVec4(v)` | `Mat4`; a point gets the translation, a direction does not |
+| `Transposed()`, `Determinant()`, `Upper()` | `Determinant` is `Mat3`, `Upper` takes the `Mat3` out of a `Mat4` |
+| `QuatIdentity()`, `QuatAxisAngle(axis, radians)` | the axis need not be a unit vector |
+| `Rotate(v)`, `Conjugate()`, `Slerp(other, t)`, `ToMat3()`, `ToMat4()` | `Quat`; `Slerp` takes the short way round |
+
+There is no general matrix inverse and no projection matrix yet.
 
 ## How this compares
 

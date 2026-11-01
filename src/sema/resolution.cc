@@ -19,6 +19,8 @@ constexpr std::string_view kUnknownDimension = "E0114";
 constexpr std::string_view kBadUnitFactor = "E0115";
 constexpr std::string_view kBadDimensionProduct = "E0116";
 constexpr std::string_view kCyclicDimension = "E0118";
+// `Self` where there is no type for it to be (D239).
+constexpr std::string_view kSelfOutside = "E0156";
 
 // The names the language provides without any declaration. Spelled out here
 // rather than injected as a synthetic module, because they have no
@@ -41,8 +43,10 @@ constexpr BuiltinType kBuiltins[] = {
     {"text", TypeKind::kStr, IntWidth::k32, true, FloatWidth::k32},
     {"never", TypeKind::kNever, IntWidth::k32, true, FloatWidth::k32},
     // `int` and `float` are the widths gameplay code should reach for when it
-    // does not care, so they are aliases rather than separate types.
-    {"int", TypeKind::kInt, IntWidth::k32, true, FloatWidth::k32},
+    // does not care, so they are aliases rather than separate types. `int` is
+    // s64 so a length, an index or a hash is never capped at 2^31 (D238); C's
+    // `int` stays `s32` at an `extern` boundary.
+    {"int", TypeKind::kInt, IntWidth::k64, true, FloatWidth::k32},
     // `s` for signed, not `i` for integer: both halves of the table are
     // integers, and only one of them is signed.
     {"s8", TypeKind::kInt, IntWidth::k8, true, FloatWidth::k32},
@@ -105,6 +109,41 @@ BindingKind BindingKindOf(ItemKind kind) {
 }
 
 }  // namespace
+
+// The operator a method name stands for in an `@Operator` ability (D239).
+static OperatorKind OperatorNamed(std::string_view name) {
+  if (name == "Plus") {
+    return OperatorKind::kPlus;
+  }
+  if (name == "Minus") {
+    return OperatorKind::kMinus;
+  }
+  if (name == "Times") {
+    return OperatorKind::kTimes;
+  }
+  if (name == "Divide") {
+    return OperatorKind::kDivide;
+  }
+  if (name == "Negate") {
+    return OperatorKind::kNegate;
+  }
+  if (name == "Equals") {
+    return OperatorKind::kEquals;
+  }
+  if (name == "Compare") {
+    return OperatorKind::kCompare;
+  }
+  return OperatorKind::kNone;
+}
+
+static bool HasAttribute(const Ast& ast, const StringInterner& interner, const Item& item, std::string_view name) {
+  for (AttributeId attribute_id : ast.Get(item.attributes)) {
+    if (interner.Text(ast.Get(attribute_id).name) == name) {
+      return true;
+    }
+  }
+  return false;
+}
 
 Dimensions FileResolution::ProductOf(DimensionId dimension) const {
   for (const auto& [id, product] : dimension_products) {
@@ -175,6 +214,7 @@ std::span<const Member> FileResolution::MembersOf(TypeId type) const {
   built.type = type;
   built.is_value = declared->is_value;
   built.is_ability = declared->is_ability;
+  built.takes_self = declared->takes_self;
   built.parameters = declared->parameters;
   built.members = declared->members;
   for (Member& member : built.members) {
@@ -261,9 +301,67 @@ const Member* FileResolution::FindInheritedMember(TypeId type,
   return nullptr;
 }
 
+OperatorKind FileResolution::OperatorOf(TypeId ability) const {
+  for (const Member& member : MembersOf(ability)) {
+    if (member.kind == MemberKind::kMethod && member.operator_kind != OperatorKind::kNone) {
+      return member.operator_kind;
+    }
+  }
+  return OperatorKind::kNone;
+}
+
+bool FileResolution::TakesSelf(TypeId ability) const {
+  for (const TypeMembers& table : type_members) {
+    if (table.type == ability) {
+      return table.takes_self;
+    }
+  }
+  return false;
+}
+
+TypeId FileResolution::FindOperatorAbility(TypeId type, OperatorKind kind) const {
+  if (!type.is_valid() || kind == OperatorKind::kNone) {
+    return TypeId{};
+  }
+  TypeId current = type;
+  if (types != nullptr && types->KindOf(current) == TypeKind::kInstance) {
+    current = types->Get(current).base;
+  }
+  for (size_t depth = 0; depth <= relations.size() && current.is_valid(); ++depth) {
+    for (TypeId ability : AbilitiesOf(current)) {
+      if (OperatorOf(ability) == kind) {
+        return ability;
+      }
+    }
+    current = BaseOf(current);
+  }
+  return TypeId{};
+}
+
 bool FileResolution::Satisfies(TypeId type, TypeId bound) const {
   if (!type.is_valid() || !bound.is_valid()) {
     return true;
+  }
+
+  // A number, a `bool`, a `char` and a `text` have the operators built in,
+  // so they meet the abilities that lend those operators (D239).
+  if (types != nullptr) {
+    const OperatorKind lent = OperatorOf(bound);
+    const TypeKind kind = types->KindOf(type);
+    if (lent != OperatorKind::kNone) {
+      const bool number = kind == TypeKind::kInt || kind == TypeKind::kFloat || kind == TypeKind::kIntLiteral || kind == TypeKind::kFloatLiteral;
+      const bool comparison = lent == OperatorKind::kEquals || lent == OperatorKind::kCompare;
+      const bool negatable = lent != OperatorKind::kNegate || kind == TypeKind::kFloat || kind == TypeKind::kFloatLiteral || (kind == TypeKind::kInt && types->Get(type).is_signed);
+      if (number && negatable) {
+        return true;
+      }
+      if ((kind == TypeKind::kBool || kind == TypeKind::kChar) && comparison) {
+        return true;
+      }
+      if ((kind == TypeKind::kStr || kind == TypeKind::kString) && lent == OperatorKind::kEquals) {
+        return true;
+      }
+    }
   }
 
   // `ListWalk<int>` satisfies what `extend ListWalk<T> as ...` declared.
@@ -361,6 +459,7 @@ void MachineMembers(const Ast& ast,
   // Every event mentioned by any state, once: the method is the event, and
   // which state is in is what decides what it does.
   std::vector<Symbol> events;
+  bool has_delay = false;
   for (StateId state_id : ast.Get(ast.Get(id).states)) {
     if (!ast.Contains(state_id)) {
       continue;
@@ -371,6 +470,7 @@ void MachineMembers(const Ast& ast,
         continue;
       }
       const Transition& transition = ast.Get(transition_id);
+      has_delay = has_delay || ast.Contains(transition.delay);
       if (!transition.event.is_valid()) {
         continue;  // `always`, which fires on the way in.
       }
@@ -390,6 +490,36 @@ void MachineMembers(const Ast& ast,
     method.name = event;
     method.kind = MemberKind::kMethod;
     method.type = types->Function({}, types->bool_type());
+    method.file = file_index;
+    method.item = machine;
+    method.slot = slot++;
+    method.is_public = true;
+    members->push_back(std::move(method));
+  }
+
+  // A machine with an `after` is given its time by the caller: `Tick(dt)`
+  // adds to how long it has been in this state and fires the first
+  // transition whose delay has run out. Pausing is not calling it, slow
+  // motion is scaling `dt` (D260).
+  const Symbol tick = interner->Intern("Tick");
+  if (has_delay && std::find(events.begin(), events.end(), tick) ==
+                       events.end()) {
+    const TypeId seconds = types->Float(FloatWidth::k32);
+
+    Member clock;
+    clock.name = Symbol{};
+    clock.kind = MemberKind::kMachineClock;
+    clock.type = seconds;
+    clock.file = file_index;
+    clock.item = machine;
+    clock.is_mutable = true;
+    clock.is_public = false;
+    members->push_back(std::move(clock));
+
+    Member method;
+    method.name = tick;
+    method.kind = MemberKind::kMethod;
+    method.type = types->Function({seconds}, types->bool_type());
     method.file = file_index;
     method.item = machine;
     method.slot = slot++;
@@ -725,6 +855,12 @@ TypeId TypeResolver::ResolvePath(const Ast& ast, const TypeRef& type) {
 
   const Binding* binding =
       resolution_ == nullptr ? nullptr : resolution_->Find(name);
+  if (binding == nullptr && interner_->Text(name) == "Self") {
+    diagnostics_->Error(kSelfOutside, "`Self` is the implementing type, and there is none here")
+        .Primary(type.span)
+        .Note("use it inside an ability, an `extend` or a type's own body (D239)");
+    return types_->error();
+  }
   if (binding == nullptr) {
     std::string message = "no type named `";
     message.append(interner_->Text(name));
@@ -750,6 +886,25 @@ TypeId TypeResolver::ResolvePath(const Ast& ast, const TypeRef& type) {
     return types_->error();
   }
   return binding->type;
+}
+
+static bool WritesKeep(const Ast& ast, TypeRefId id) {
+  if (!ast.Contains(id)) {
+    return false;
+  }
+  const TypeRef& type = ast.Get(id);
+  if (HasFlag(type.flags, TypeRefFlags::kKeep)) {
+    return true;
+  }
+  return type.kind == TypeRefKind::kOptional && WritesKeep(ast, type.element);
+}
+
+TypeId TypeResolver::ResolveParameter(const Ast& ast, TypeRefId id) {
+  const TypeId type = Resolve(ast, id);
+  if (!types_->IsFunctionLike(type)) {
+    return type;
+  }
+  return WritesKeep(ast, id) ? types_->Kept(type) : types_->Borrowed(type);
 }
 
 TypeId TypeResolver::Resolve(const Ast& ast, TypeRefId id) {
@@ -791,14 +946,44 @@ TypeId TypeResolver::Resolve(const Ast& ast, TypeRefId id) {
     case TypeRefKind::kOptional:
       return types_->Optional(Resolve(ast, type.element));
 
-    case TypeRefKind::kFallible:
-      // The error set is inferred from the body, so the declared type starts
-      // with an open set and type checking fills it in.
-      return types_->Fallible(Resolve(ast, type.element),
-                              types_->ErrorSet({}));
+    case TypeRefKind::kFallible: {
+      const TypeId element = Resolve(ast, type.element);
+      if (type.args.empty()) {
+        return types_->Fallible(element, types_->OpenErrorSet());
+      }
+
+      std::vector<ErrorMember> stated;
+      for (TypeRefId member_id : ast.Get(type.args)) {
+        if (!ast.Contains(member_id)) {
+          continue;
+        }
+        const TypeRef& member = ast.Get(member_id);
+        const std::span<const Symbol> path = ast.Get(member.path);
+        const Binding* binding = nullptr;
+        if (resolution_ != nullptr && !path.empty()) {
+          binding = path.size() == 2 ? resolution_->FindQualified(path.front(), path.back()) : resolution_->Find(path.back());
+        }
+        if (binding == nullptr || binding->kind != BindingKind::kErrorTag) {
+          std::string message = "no error named `";
+          message.append(path.empty() ? std::string_view("?") : interner_->Text(path.back()));
+          message.append("` is in scope (D235)");
+          diagnostics_->Error(kUnknownType, std::move(message)).Primary(member.span);
+          continue;
+        }
+        if (used_ != nullptr) {
+          used_->push_back(path.back());
+        }
+        for (const ErrorMember& named : types_->StatedErrorsOf(binding->type)) {
+          stated.push_back(named);
+        }
+      }
+
+      return types_->Fallible(element, stated.empty() ? types_->OpenErrorSet() : types_->StatedErrorSet(std::move(stated)));
+    }
 
     case TypeRefKind::kSlice:
-      return types_->Slice(Resolve(ast, type.element), is_soa);
+      return types_->Slice(Resolve(ast, type.element), is_soa,
+                           HasFlag(type.flags, TypeRefFlags::kMutable));
 
     case TypeRefKind::kArray: {
       const TypeId element = Resolve(ast, type.element);
@@ -825,7 +1010,7 @@ TypeId TypeResolver::Resolve(const Ast& ast, TypeRefId id) {
     case TypeRefKind::kFunction: {
       std::vector<TypeId> params;
       for (TypeRefId param : ast.Get(type.args)) {
-        params.push_back(Resolve(ast, param));
+        params.push_back(ResolveParameter(ast, param));
       }
       const TypeId result = type.element.is_valid()
                                 ? Resolve(ast, type.element)
@@ -865,6 +1050,7 @@ FileResolution ResolveFile(TypeStore* types,
                            StringInterner* interner,
                            const Ast& ast,
                            uint32_t file_index,
+                           std::string_view module,
                            DiagnosticEngine* diagnostics) {
   FileResolution resolution;
   resolution.types = types;
@@ -936,9 +1122,30 @@ FileResolution ResolveFile(TypeStore* types,
     }
     if (entry.kind == ItemKind::kErrorSet && item != nullptr) {
       for (Symbol name : ast.Get(item->names)) {
+        std::string qualified;
+        if (!module.empty()) {
+          qualified.assign(module);
+          qualified.push_back('.');
+        }
+        qualified.append(interner->Text(name));
+
+        bool has_payload = false;
+        for (ParamId field : ast.Get(item->params)) {
+          has_payload |= ast.Get(field).error == name;
+        }
+
+        ErrorMember member;
+        member.name = interner->Intern(qualified);
+        member.tag = ErrorTag(qualified);
+        if (has_payload) {
+          member.detail = types->Named(interner->Intern("$err." + qualified), file_index, index, /*is_handle=*/true, /*is_foreign=*/false);
+        }
+
         Binding binding;
         binding.name = name;
         binding.kind = BindingKind::kErrorTag;
+        binding.type = types->StatedErrorSet({member});
+        binding.error_name = member.name;
         binding.item = index;
         binding.file = file_index;
         binding.is_public = HasFlag(entry.flags, ItemFlags::kOffer);
@@ -968,6 +1175,8 @@ FileResolution ResolveFile(TypeStore* types,
     binding.is_foreign = HasFlag(entry.flags, ItemFlags::kExtern);
     binding.is_task = HasFlag(entry.flags, ItemFlags::kAsync);
     binding.has_body = HasFlag(entry.flags, ItemFlags::kHasBody);
+    binding.is_unsafe_fun = HasFlag(entry.flags, ItemFlags::kUnsafe);
+    binding.is_weak = HasFlag(entry.flags, ItemFlags::kWeak);
     if (item != nullptr && entry.kind == ItemKind::kFunction) {
       for (AttributeId attribute_id : ast.Get(item->attributes)) {
         const Attribute& attribute = ast.Get(attribute_id);
@@ -1191,7 +1400,7 @@ void ResolveSignatures(TypeStore* types,
     params.reserve(item.params.size());
     for (ParamId param_id : ast.Get(item.params)) {
       const Param& param = ast.Get(param_id);
-      params.push_back(param.type.is_valid() ? resolver.Resolve(ast, param.type)
+      params.push_back(param.type.is_valid() ? resolver.ResolveParameter(ast, param.type)
                                              : types->error());
     }
     const TypeId result = item.type.is_valid()
@@ -1226,12 +1435,14 @@ void ResolveSignatures(TypeStore* types,
     std::reverse(owners.begin(), owners.end());
 
     size_t pushed = 0;
+    const Symbol self_name = interner->Lookup("Self");
     for (uint32_t owner : owners) {
       const ItemId owner_id = ResolveItem(ast, owner);
       if (!ast.Contains(owner_id)) {
         continue;
       }
       uint32_t position = 0;
+      std::vector<TypeId> own_parameters;
       for (GenericParamId generic_id : ast.Get(ast.Get(owner_id).generics)) {
         const GenericParam& generic = ast.Get(generic_id);
         std::vector<TypeId> bounds;
@@ -1241,8 +1452,30 @@ void ResolveSignatures(TypeStore* types,
         resolver.PushTypeParameter(
             generic.name,
             types->Parameter(generic.name, owner, position, bounds));
+        own_parameters.push_back(types->Parameter(generic.name, owner, position));
         ++position;
         ++pushed;
+      }
+      // `Self` is the type that implements the ability (a projection like
+      // `Item`, D212), or the type whose body or `extend` this is (D239).
+      if (self_name.is_valid()) {
+        const ItemKind owner_kind = tree.entries[owner].kind;
+        TypeId self;
+        if (owner_kind == ItemKind::kAbility) {
+          self = resolution->item_types[owner].is_valid() ? types->Projection(resolution->item_types[owner], self_name) : TypeId{};
+        } else if (owner_kind == ItemKind::kExtend) {
+          const Item& extend = ast.Get(owner_id);
+          self = extend.target_type.is_valid() ? resolver.Resolve(ast, extend.target_type) : TypeId{};
+        } else if (owner_kind == ItemKind::kClass || owner_kind == ItemKind::kStruct || owner_kind == ItemKind::kEnum || owner_kind == ItemKind::kComponent || owner_kind == ItemKind::kTag || owner_kind == ItemKind::kMachine) {
+          self = resolution->item_types[owner];
+          if (self.is_valid() && !own_parameters.empty()) {
+            self = types->Instance(self, own_parameters);
+          }
+        }
+        if (self.is_valid()) {
+          resolver.PushTypeParameter(self_name, self);
+          ++pushed;
+        }
       }
       // Inside an ability, `Item` is the associated type of whatever
       // implements it: a projection of the ability itself, which a use
@@ -1366,6 +1599,10 @@ void ResolveSignatures(TypeStore* types,
   // type it extends, which is what makes `extend` additive.
   const auto members_of = [&](uint32_t index) {
     std::vector<Member> members;
+    // `@Operator` on an ability lends its one method to an operator, by the
+    // method's name (D239).
+    const ItemId owner_item = ResolveItem(ast, index);
+    const bool lends_operator = tree.entries[index].kind == ItemKind::kAbility && ast.Contains(owner_item) && HasAttribute(ast, *interner, ast.Get(owner_item), "Operator");
     for (uint32_t child = 0; child < tree.entries.size(); ++child) {
       const ItemTreeEntry& member_entry = tree.entries[child];
       if (member_entry.parent != index || !member_entry.name.is_valid()) {
@@ -1381,9 +1618,14 @@ void ResolveSignatures(TypeStore* types,
       member.is_public = !HasFlag(member_entry.flags, ItemFlags::kPriv);
       member.is_virtual = HasFlag(member_entry.flags, ItemFlags::kVirtual);
       member.is_override = HasFlag(member_entry.flags, ItemFlags::kOverride);
+      member.is_unsafe = HasFlag(member_entry.flags, ItemFlags::kUnsafe);
+      member.has_body = HasFlag(member_entry.flags, ItemFlags::kHasBody);
       switch (member_entry.kind) {
         case ItemKind::kFunction:
           member.kind = MemberKind::kMethod;
+          if (lends_operator) {
+            member.operator_kind = OperatorNamed(interner->Text(member_entry.name));
+          }
           break;
         case ItemKind::kVariant:
           member.kind = MemberKind::kVariant;
@@ -1499,6 +1741,21 @@ void ResolveSignatures(TypeStore* types,
     table.is_value = entry.kind != ItemKind::kClass &&
                      entry.kind != ItemKind::kAbility;
     table.is_ability = entry.kind == ItemKind::kAbility;
+    // A method that names `Self` makes the ability unusable as a value type:
+    // a pair of data and table cannot say what `other` is (D239).
+    if (table.is_ability) {
+      const Symbol self_name = interner->Lookup("Self");
+      for (const Member& member : table.members) {
+        bool names_self = false;
+        if (self_name.is_valid() && member.kind == MemberKind::kMethod && types->MentionsProjection(member.type)) {
+          types->AnswerProjections(member.type, [&](TypeId owner, Symbol name) {
+            names_self |= owner == table.type && name == self_name;
+            return types->Projection(owner, name);
+          });
+        }
+        table.takes_self |= names_self;
+      }
+    }
     // The declaration's own parameters, interned against it, so that a field
     // of `Holder<int>` can be worked out by substitution.
     const ItemId owner_id = ResolveItem(ast, index);
@@ -1525,6 +1782,40 @@ void ResolveSignatures(TypeStore* types,
       }
     }
     resolution->relations.push_back(std::move(relation));
+  }
+
+  for (const Binding& binding : resolution->scope) {
+    if (binding.kind != BindingKind::kErrorTag || binding.file != file_index || binding.item == Binding::kNoItem) {
+      continue;
+    }
+    const std::vector<ErrorMember> stated = types->StatedErrorsOf(binding.type);
+    if (stated.size() != 1 || !stated[0].detail.is_valid()) {
+      continue;
+    }
+    const ItemId owner = ResolveItem(ast, binding.item);
+    if (!ast.Contains(owner)) {
+      continue;
+    }
+
+    TypeMembers payload;
+    payload.type = stated[0].detail;
+    uint32_t slot = 0;
+    for (ParamId param_id : ast.Get(ast.Get(owner).params)) {
+      const Param& param = ast.Get(param_id);
+      if (param.error != binding.name) {
+        continue;
+      }
+      Member field;
+      field.name = param.name;
+      field.kind = MemberKind::kField;
+      field.type = param.type.is_valid() ? resolver.Resolve(ast, param.type) : types->error();
+      field.file = file_index;
+      field.item = binding.item;
+      field.slot = slot++;
+      field.is_public = true;
+      payload.members.push_back(std::move(field));
+    }
+    resolution->type_members.push_back(std::move(payload));
   }
 
   // `extend T { ... }` adds to T's table rather than declaring its own.

@@ -137,6 +137,23 @@ WOLANG_TEST(Workspace, ADenyingManifestForbidsUnsafe) {
   WOLANG_EXPECT_EQ(all.front().code, "E0801");
 }
 
+WOLANG_TEST(Workspace, ADeniedPackageCannotCallAnUnsafeFun) {
+  TempTree tree("denied-unsafe-fun");
+  tree.Write("wolang.toml",
+             "[package]\nname = \"game\"\n[build]\nunsafe = \"deny\"\n");
+  tree.Write("src/main.wo",
+             "unsafe fun Poke() {}\n"
+             "fun Use() { Poke() }\n");
+
+  Database db;
+  DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(LoadPackage(&db, tree.path(), &diagnostics));
+
+  const std::vector<Diagnostic> all = db.AllDiagnostics();
+  WOLANG_ASSERT_EQ(all.size(), size_t{1});
+  WOLANG_EXPECT_EQ(all.front().code, "E0801");
+}
+
 WOLANG_TEST(Workspace, AnAllowingManifestPermitsUnsafe) {
   TempTree tree("withunsafe");
   tree.Write("wolang.toml", "[package]\nname = \"game\"\n");
@@ -154,10 +171,9 @@ WOLANG_TEST(Workspace, ACapabilityGrantLimitsWhatAPackageMayDo) {
   TempTree tree("sandbox");
   tree.Write("wolang.toml",
              "[package]\nname = \"mod\"\n"
-             "[build]\ncapabilities = \"io, alloc\"\n");
+             "[build]\ncapabilities = \"io\"\n");
   tree.Write("src/main.wo",
              "fun Log() uses io {}\n"
-             "fun Grow() uses alloc {}\n"
              "fun Roll() uses rand {}\n"
              "fun Pure() -> int => 1\n");
 

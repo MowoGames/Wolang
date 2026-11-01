@@ -34,7 +34,7 @@ offer struct Url {
 }
 
 /// `http://host:port/path?query` taken apart.
-offer fun ParseUrl(url: text) -> Url! uses unsafe {
+offer fun ParseUrl(url: text) -> Url!BadUrl uses unsafe {
   var rest = url
   var parsed = Url("", 80, "/", false)
   if StartsWith(rest, "http://") {
@@ -98,30 +98,30 @@ offer fun ReplyHeader(answer: &Reply, name: text, fallback: text) -> text uses u
 }
 
 /// `GET url`.
-offer fun Fetch(url: text) -> Reply! uses io, net, time, unsafe {
+offer fun Fetch(url: text) -> Reply!(BadUrl, Unreachable, Truncated, NotHttp) uses io, net, time, unsafe {
   return Perform(CallNew("GET", url))
 }
 
 /// `POST url` with a JSON body.
-offer fun PostJson(url: text, body: text) -> Reply! uses io, net, time, unsafe {
+offer fun PostJson(url: text, body: text) -> Reply!(BadUrl, Unreachable, Truncated, NotHttp) uses io, net, time, unsafe {
   return Perform(WithBody(CallNew("POST", url), body, "application/json"))
 }
 
 /// `PUT`, `PATCH` and `DELETE`, for an API that uses them.
-offer fun PutJson(url: text, body: text) -> Reply! uses io, net, time, unsafe {
+offer fun PutJson(url: text, body: text) -> Reply!(BadUrl, Unreachable, Truncated, NotHttp) uses io, net, time, unsafe {
   return Perform(WithBody(CallNew("PUT", url), body, "application/json"))
 }
 
-offer fun PatchJson(url: text, body: text) -> Reply! uses io, net, time, unsafe {
+offer fun PatchJson(url: text, body: text) -> Reply!(BadUrl, Unreachable, Truncated, NotHttp) uses io, net, time, unsafe {
   return Perform(WithBody(CallNew("PATCH", url), body, "application/json"))
 }
 
-offer fun Delete(url: text) -> Reply! uses io, net, time, unsafe {
+offer fun Delete(url: text) -> Reply!(BadUrl, Unreachable, Truncated, NotHttp) uses io, net, time, unsafe {
   return Perform(CallNew("DELETE", url))
 }
 
 /// A form submission: `a=1&b=two`, escaped, as a browser sends it.
-offer fun PostForm(url: text, body: text) -> Reply! uses io, net, time, unsafe {
+offer fun PostForm(url: text, body: text) -> Reply!(BadUrl, Unreachable, Truncated, NotHttp) uses io, net, time, unsafe {
   return Perform(
       WithBody(CallNew("POST", url), body, "application/x-www-form-urlencoded"))
 }
@@ -132,7 +132,7 @@ offer fun PostForm(url: text, body: text) -> Reply! uses io, net, time, unsafe {
 /// Redirects are followed up to the call's limit -- a `303` becomes a
 /// `GET` with no body, which is what the status means and what every
 /// other client does -- and `https` goes over the system's TLS (D151).
-offer fun Perform(call: Call) -> Reply! uses io, net, time, unsafe {
+offer fun Perform(call: Call) -> Reply!(BadUrl, Unreachable, Truncated, NotHttp) uses io, net, time, unsafe {
   var held = call
   var left = call.redirects
   loop {
@@ -201,7 +201,7 @@ offer fun Absolute(from: text, location: text) -> text uses unsafe {
 /// connection has to decide when to let it go -- and a function that
 /// answers once has nowhere to keep it. A client that wants keep-alive
 /// uses `Open` and `Ask`.
-offer fun Once(call: Call) -> Reply! uses io, net, time, unsafe {
+offer fun Once(call: Call) -> Reply!(BadUrl, Unreachable, Truncated, NotHttp) uses io, net, time, unsafe {
   const target = ParseUrl(call.url)?
   const request = Written(call, target, false)
   if target.secure {
@@ -272,7 +272,7 @@ offer fun Written(call: Call, target: Url, keep_alive: bool) -> text uses unsafe
 ///
 /// Plain only: a kept TLS connection is `tls.Open` and `Ask` over it,
 /// which a caller that wants one can write in three lines.
-offer fun Open(url: text) -> Socket! uses io, net, unsafe {
+offer fun Open(url: text) -> Socket!(BadUrl, NeedsTls, Unreachable) uses io, net, unsafe {
   const target = ParseUrl(url)?
   if target.secure {
     return NeedsTls
@@ -292,7 +292,7 @@ offer fun Ask(
     method: text,
     body: text,
     kind: text,
-    keep_alive: bool) -> Reply! uses io, time, unsafe {
+    keep_alive: bool) -> Reply!(Unreachable, Truncated, NotHttp) uses io, time, unsafe {
   var call = CallNew(method, target.target)
   call = WithBody(call, body, kind)
   if !connection.Send(Written(call, target, keep_alive)) {
@@ -302,7 +302,7 @@ offer fun Ask(
 }
 
 /// Reads an answer off a plain connection.
-offer fun Plain(connection: &mut Socket, timeout: int) -> Reply! uses io, time, unsafe {
+offer fun Plain(connection: &mut Socket, timeout: int) -> Reply!(Truncated, NotHttp) uses io, time, unsafe {
   var received = BuilderNew()
   const started = Now()
   var head = -1
@@ -331,7 +331,7 @@ offer fun Plain(connection: &mut Socket, timeout: int) -> Reply! uses io, time, 
 /// and a socket are two types with the same three methods, and an
 /// ability with a method per direction is more machinery than the
 /// duplication costs (D151).
-offer fun Secure(stream: &mut Stream, timeout: int) -> Reply! uses io, time, unsafe {
+offer fun Secure(stream: &mut Stream, timeout: int) -> Reply!(Truncated, NotHttp) uses io, time, unsafe {
   var received = BuilderNew()
   const started = Now()
   var head = -1
@@ -387,7 +387,7 @@ offer fun Progress(
 }
 
 /// The answer, with a chunked body put back together.
-offer fun Finish(whole: text, head: int, length: int, chunked: bool) -> Reply! uses unsafe {
+offer fun Finish(whole: text, head: int, length: int, chunked: bool) -> Reply!(Truncated, NotHttp) uses unsafe {
   if head < 0 {
     return Truncated
   }
@@ -551,7 +551,7 @@ fun ContentLength(head: text) -> int uses unsafe {
 }
 
 /// What a response's bytes mean.
-offer fun ParseReply(whole: text, head: int, length: int) -> Reply! uses unsafe {
+offer fun ParseReply(whole: text, head: int, length: int) -> Reply!NotHttp uses unsafe {
   var answer = ReplyNew()
   const bytes = Bytes(whole)
   // `HTTP/1.1 200 OK`: the status is the second word.

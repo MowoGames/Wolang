@@ -975,6 +975,19 @@ class FlowChecker {
         Expression(expr.lhs);
         locals_.resize(depth);
         Restore(before);
+        // An escaping closure owns what it captured, so a value with a
+        // `deinit` is moved into it and the name around it is empty (D240).
+        if (typed_.IsEscaping(id)) {
+          for (const TypedBody::CapturedType& held : typed_.captured_types) {
+            if (held.closure != id || types_.KindOf(held.type) == TypeKind::kString || !IsOwning(held.type)) {
+              continue;
+            }
+            Local* outer = Find(held.name);
+            if (outer != nullptr && outer->state == Liveness::kLive) {
+              outer->state = Liveness::kMoved;
+            }
+          }
+        }
         return Flow::kFalls;
       }
 

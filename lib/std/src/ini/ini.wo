@@ -18,7 +18,7 @@ need std.text.{Bytes, BuilderNew, Length, Trim}
 offer error Malformed
 
 /// Reads a document. Every value is text.
-offer fun Parse(input: text) -> Value! uses unsafe {
+offer fun Parse(input: text) -> Value!Malformed uses unsafe {
   const bytes = Bytes(input)
   var root = Object()
   var section = ""

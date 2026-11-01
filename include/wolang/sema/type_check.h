@@ -18,6 +18,16 @@
 
 namespace wolang {
 
+// What a body allocates by itself, for the `@Hot` check (D237).
+enum class AllocKind : uint8_t {
+  kNone,
+  kClass,
+  kArray,
+  kText,
+  kError,
+  kClosure,
+};
+
 // The type of every expression in one declaration, plus the diagnostics found
 // while working them out.
 struct TypedBody {
@@ -54,11 +64,46 @@ struct TypedBody {
     std::vector<std::pair<uint32_t, uint32_t>> callees;
   };
   std::vector<ThreadRoot> thread_roots;
+  // What one function or method allocates directly (the first site wins) and
+  // every function it names or calls, closures and local functions inside it
+  // included. `item` is its index in the item tree. Read by the program-wide
+  // allocation query, which is what `@Hot` asks (D237).
+  struct Allocation {
+    uint32_t item = 0xFFFFFFFFu;
+    AllocKind kind = AllocKind::kNone;
+    Symbol what;
+    SourceSpan span;
+    std::vector<std::pair<uint32_t, uint32_t>> callees;
+    // Whether this function or method names a module-level `var`, and
+    // whether it states `uses unsafe` (or is `unsafe fun`), which takes
+    // responsibility for what a thread sharing it does. Read by the
+    // program-wide walk that judges what a `@Thread` body reaches (D252).
+    bool touches_global = false;
+    bool vouches = false;
+  };
+  std::vector<Allocation> allocation;
   // Expressions that were accepted as an implicit borrow: an owned
   // `String` where a `str` was wanted (D15b). Recorded because it is the
   // difference between a use that moves and a use that does not, and only
   // the checker knows which rule it applied.
   std::vector<ExprId> borrows;
+  // Closures that capture and flow into a kept place: their environment is a
+  // counted object on the heap rather than a slot in the frame (D240).
+  std::vector<ExprId> escaping;
+  struct CapturedType {
+    ExprId closure;
+    Symbol name;
+    TypeId type;
+  };
+  std::vector<CapturedType> captured_types;
+  bool IsEscaping(ExprId closure) const {
+    for (const ExprId id : escaping) {
+      if (id == closure) {
+        return true;
+      }
+    }
+    return false;
+  }
   // `module.Name` expressions that named a module's item rather than a
   // member of a value (D246). Lowering reads this instead of redoing the
   // shadowing rules.
@@ -88,6 +133,34 @@ struct TypedBody {
   // the IR carries one specialization per entry in this list and none for
   // the generic itself.
   std::vector<std::pair<ExprId, std::vector<TypeId>>> instantiations;
+
+  // An operator the checker settled as a call (D239): `a + b` on a `Vec3`
+  // is `a.Plus(b)`. Lowering reads this instead of redoing the lookup, so
+  // it sees an ordinary call and the tiers have nothing new to agree on.
+  struct OperatorCall {
+    ExprId expr;
+    OperatorKind kind = OperatorKind::kNone;
+    // The type of the left operand, as the checker saw it. A type parameter
+    // inside a generic body, which monomorphization replaces.
+    TypeId receiver;
+    // The method that answers: the implementation's when the operand is
+    // concrete, the ability's own when it is a type parameter.
+    uint32_t file = Member::kNoSource;
+    uint32_t item = Member::kNoSource;
+    uint32_t slot = 0;
+    TypeId ability;
+  };
+  std::vector<OperatorCall> operator_calls;
+
+  // The operator call recorded for |id|, or null when it is the built-in one.
+  const OperatorCall* OperatorOf(ExprId id) const {
+    for (const OperatorCall& call : operator_calls) {
+      if (call.expr == id) {
+        return &call;
+      }
+    }
+    return nullptr;
+  }
 
   // The item tree index of the declaration this body belongs to, so that a
   // caller elsewhere can be matched to it.

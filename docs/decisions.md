@@ -3185,3 +3185,221 @@ pointer an optimised host kept its result in. The constant's area is now
 zeroed with the frame's slots and never written, AOT makes it LLVM's null
 of the type, and asking for the spill offset of a value with none is a
 check failure instead of a write into the frame.
+
+**D250. The compiler will be self-hosted in stages, after 1.2.0.** D2 said the
+compiler stays C++20 and self-hosting is not a goal. That held while the
+language was moving; 1.2.0 lands the last breaking decisions (D235-D240), and
+a compiler is the largest program anyone will write in Wolang, so writing it
+there finds what the language and `std` lack faster than any benchmark. The
+C++ compiler is not replaced: it stays as the bootstrap, as Rust's did, and
+the runtime, the platform layer, the interpreter, the JIT emitters and the
+LSP stay C++ longest. Work goes stage by stage as in
+[docs/plans/self-hosting.md](plans/self-hosting.md), each stage checked by
+giving the new and the old part the same input and requiring the same output.
+Nothing is self-hosted inside 1.2.0 except the groundwork: `std` that a
+compiler needs, and the IR reader.
+
+
+**D238. `int` is `s64`.** A length, an index and a hash are `int`, and `int` was 32
+bits, so a collection, a file read into memory or a hash table stopped at 2^31. Making only `len`
+wider would break every `var i = 0 ... i < xs.len`, because there are no mixed-width operations (D33).
+Making `int` wider breaks almost nothing written in the language. A word-sized `isize` would differ
+between wasm32 and x86-64, and one answer on every target is the rule this project keeps. The
+boundaries keep their widths: C's `int` is `s32` in `extern` and in bindings, and a stored format
+writes an explicit width. `float` stays `f32`: that is the GPU's width, and a different question.
+A tag is `u32` wherever it is read; `int` names a width the program chose, never a layout's.
+
+**D239. An ability can name the type that implements it, and an operator is an
+ability.** `Self` in an ability is the implementing type: a projection like
+`Item` (D212), so the machinery that rewrites `Item` onto its owner rewrites
+`Self`, and every monomorphised copy is concrete. A projection named `Self`
+whose owner is not an ability is its owner. Inside `extend T` or a type's own
+body `Self` is `T`. Anywhere else it is `E0156`. An ability that takes or
+returns `Self` cannot be a value type (`E0157`): a pair of data and table
+cannot say what `other` is. An ability marked `@Operator` lends its one method
+to an operator: `Plus +, Minus -, Times *, Divide /, Negate -x, Equals == !=,
+Compare < <= > >=`; a malformed one is `E0160`. `std.ops` offers `Add, Sub,
+Mul, Div, Neg, Eq, Ord` and `Hash`. `a + b` on a `Vec3` is the call
+`a.Plus(b)`, decided in the checker, so lowering sees an ordinary call and the
+tiers have nothing new to agree on. The ability is required, not just the
+method's name: relaxing that later breaks nothing, and tightening it would.
+Numbers meet every operator ability, `bool` and `char` meet `Equals` and
+`Compare`, and `text` meets `Equals`, so a bound like `<T: Add>` takes `int`.
+
+**D235. An error can carry data, and a set is written or open.** `error
+Malformed(line: int, column: int)` is an error with a payload. A function states
+which errors it gives back, `-> Value!(Malformed, TooDeep)`, or writes `T!` and
+means *any*. Inference was promised and never built: every `T!` accepted every
+error, so a `match` that missed one compiled and trapped. A written set is
+checked: returning or `?`-passing an error outside it is `E0151`. A `match` over
+it is exhaustive (`E0201`). An open `T!` needs a catch-all arm. An offered
+function states its set (`E0150`), for the reason it states its effects: a caller
+in another module cannot see the body. A payload is boxed in a counted object,
+one optional slot per payload error the set names, in tag order, so a set with no
+payload errors keeps today's two-field layout. An open `T!` carries no payload
+(`E0152`), because its layout cannot depend on a body, and a payload error is
+built only where a `T!` is wanted: alone it has nowhere to keep its data. Errors
+are told apart by declaration, not by name: a tag is FNV-1a of `module.Name`,
+never zero, the same in every tier, every build and every reload. This replaces
+D13's "inferred" and "no data", and D90's "named by the symbol". The value of a
+payload error before it is put into a `T!` is the tag and the slot, and it is not
+counted on its own.
+
+**D236. `unsafe fun` is a promise the caller makes; `uses unsafe` is one the
+author made.** A body that states `uses unsafe` vouches for itself and absorbs
+it (D35, D221). Some bodies cannot: a function whose safety depends on the
+pointer or length it is given is only as safe as its caller. `unsafe fun` says
+so. Its body may do unsafe things without stating it, and every call or naming
+of it (D222) charges `unsafe` to the caller, as `extern` does, whatever its body
+or its `uses` clause says. A bodiless primitive is written `unsafe fun`: `uses
+unsafe` there said one thing and meant the other (`E0153`). An `unsafe fun`
+cannot override or implement a method that is not one (`E0154`), because a call
+through the base would skip the promise; the other way round is allowed. `unsafe`
+before `fun`, `task`, `virtual`, `override` or `extern` is the modifier; `unsafe
+{` is still the block. `std.mem`, `TextFromRaw`, `ParallelFor`, `AtomicAdd`,
+`socket.Read` and `gfx.TextFromC` are `unsafe fun`.
+
+**D237. What allocates is worked out, and only `@Hot` asks.** `alloc` was an
+effect nobody inferred, so `@Hot` accepted anything. Allocation is now a
+property of a body, found the way D232 finds a thread's globals. Constructing a
+class, `ArrayNew` and `SoaNew`, building owned text (interpolation, `+`), a call
+to a bodiless function that returns owned text, and an error that carries data
+(D235) set it. A call or a naming (D222) passes it on, across modules and
+through methods, because `List.Push` is in another module and is a method. A
+`@Hot` function that reaches it is `E0155`, with the chain of calls. It is not
+a row effect: stating it on every function that formats a message would cost
+everyone, for one attribute's benefit. The work is one program-wide query that
+is asked only when some declaration is `@Hot`, so a program without one pays
+nothing. Not followed: `extern` calls, a function value that the hot body did
+not name, virtual dispatch past the base method, ability-bound calls inside a
+generic body. `uses alloc` and the `alloc` capability are gone; a name in `uses`
+that is no effect is `E0158` (so `alloc` is one), and `alloc` in `capabilities`
+is `E0053`.
+
+**D240. A closure that outlives its call owns what it captured.** A function
+value stays two words: the code and an environment. A function-typed parameter
+is borrowed: the environment may be in the caller's frame, so storing it,
+returning it or giving it to a `keep` parameter is `E0161`. `keep fun(...)` on a
+parameter says the callee may keep it. A function type anywhere else (a field, a
+global, a result, a local annotation, a type argument) is kept already, and
+`keep` there is `E0046`. A function name, and a literal that captures nothing,
+are kept; a literal that captures is kept only where its expected type is, and
+then its environment is a counted heap object (`Tuple{drop address, captures}`).
+The last release runs the drop, which lets go of each capture and frees the
+object. A value that flows into a kept place is retained, one that leaves is
+released, so a kept function value is counted like a class handle. A closure
+that does not escape is what it was: a frame environment, no header, no count.
+What an escaping closure takes is copied (plain values), retained (counted
+values), copied again (owned `Text`) or moved (a value with a `deinit`; the name
+around it is then `E0122`, and the drop runs the `deinit`, which D229 left
+undone). A reference, a pointer, a slice or a borrowed function cannot be taken
+along (`E0162`). `E0136` is retired. The C ABI is unchanged: a C callback takes
+the code word, and a capturing closure to an `extern` parameter stays refused.
+Not covered: retaining around a call through a field or global (the gap of
+D193), a closure that stores itself in `self` (a cycle), and a kept closure
+built inside `arena {}` that outlives the block. A borrowed value reaching a
+kept slot through a generic `T` is `E0161` too: the type argument is kept.
+
+**D261. The embedding package carries no LLVM.** `wolang_core` linked LLVM's
+component libraries `PUBLIC` and `Wolang::core` is exported, so an installed
+`WolangTargets.cmake` and a host that linked it named libraries the host does
+not have. Ahead-of-time compilation belongs to the driver: `codegen/aot/aot.cc`
+is its own target, `wolang_aot`, which holds the LLVM definitions, include
+directories and libraries. The driver and the tests link it; it is never
+installed or exported, so nothing a host reads mentions LLVM. The amalgamation
+already left `aot.cc` out. `tools/package/test_install.sh` fails when an
+installed target file or `wolang-embed.pc` contains "llvm".
+
+**D262. The reflection bindings cover statics, text, structs and object fields,
+and ask the host before touching an object.** The generator of D218 left out a
+third of an engine: its `static` functions, anything that answered a
+`std::string`, a struct, a `TObjectPtr`, and a rotator; it built a `Quat` with
+`w` first where the engine takes `x, y, z, w`; and its glue only tested `self`
+for null, so an object the engine had destroyed was called anyway. Now a quaternion
+is `x, y, z, w` and `FRotator` is `Rotator{pitch, yaw, roll}`. `TObjectPtr<X>` is
+an object like `X*`, read through `.Get()`. A `std::string` answer is kept in a
+thread-local string in the glue and handed over as data and length, and the
+wrapper makes an owned copy of it at once, because the next call overwrites the
+buffer; a text property is the same pair of accessors. A reflected struct whose
+fields are all numbers is answered through an out-pointer the way a vector is
+(a struct is never taken as a parameter: it has no constructor to build it
+from). A static function becomes a free `offer fun`, over an `extern "C" fun`
+named `Class_Name`; the name is the engine's, or the class name without its
+one-letter prefix in front of it when two classes have the same one. Every
+call and every property access tests `MowoWolangAlive` first, unless the driver
+is given `--no-alive-check`. The reflection JSON is assumed to give a struct as
+`"kind": "struct"` with `properties` shaped like a class's.
+
+**D252. A thread body is followed into every module and every method.** D232 walked
+only the calls inside the thread body's own module and only the functions of
+that module, so a body that called `lib.Bump`, or a method such as
+`counter.Hit()`, reached a module-level `var` without a word. The walk now
+runs over the whole program, the same graph `@Hot` asks about (D237), and a
+method is its own node. A function that states `uses unsafe`, or is an
+`unsafe fun`, stops the walk: its author vouched for what two threads sharing
+it do, as the caller does (D232). A function handed to a `@Thread` parameter
+may be written `Name` or `module.Name` (D246). Not covered: a function held in
+a variable and then handed over, which names nothing the checker can follow, is
+not judged. Refusing it is a later step: it needs to tell a parameter that is
+itself `@Thread` from a local.
+
+**D259. A host names a function by module, loads a lone file with its `need`, and sees `Print`.** Four gaps in the embedding API, found by the engine integration. (1) `wolang_vm_function_name` was one flat namespace, so two packages that both offer `Tick` could not both be called: a function may now be named `module.Name` (`sample.mover.Tick`) in `wolang_vm_call` and `wolang_vm_has`, `wolang_vm_function_module` says which module offers function `i` (ABI 1.1, D241), and a bare name that two different modules offer is refused with a note saying to qualify it. Files of one module (the `host` package a session's lines share, D140) do not conflict. (2) A single `.wo` given to `wolang_vm_load` went through `LoadFile` with no package and could not `need` anything; it now joins the `host` package the way source text does, and the standard library is loaded first from `WOLANG_STD` or a `lib/std` above the file, the way the driver finds it. (3) `wolang_vm_destroy` released nothing: a module-level `var` that held a host object, or a `C?` of one, never got its release. It now lets go of every global of every loaded file, and `LetGo` covers an optional. (4) `std.io.Print` reaches `wolang_fd_write`, not libc `write`, so the writer a host set never saw it; the runtime gains `wolang_set_fd_write_hook`, which `wolang_vm_set_writer` and `_set_reporter` install for fds 1 and 2, in the interpreter, the JIT and AOT alike (a null hook costs one atomic load). The hook is process-wide like the writer itself; per-VM writers belong to the host-space decision. Also here: `KindOf` answers `kWolangObject` for a script class and `kWolangHandle` for an `extern class` (an optional of either too), so `wolang_function_parameter` is no longer `kWolangVoid` for them, and a program object passed as an argument is boxed instead of becoming void (the "undefined value" of the engine's item 17). A host handle bound to a `T?` parameter is absent when null, and a foreign function that answers an optional handle maps 0 to absent, so `if const` fires. `target?.Method()` type-checks and lowers as the method's result made optional.
+
+**D255. A reload that fails, or would change a class the host holds, changes nothing.** `wolang_vm_reload` rebuilt the vm in place before it knew the new program compiled, so a typo in an editor left every call failing until the next good save, and an object the host held could be read with a layout it no longer had. Now the new program is loaded into a staged vm first, with its initializers and the compiled tier off. If it does not compile, the vm keeps the program that was running, `wolang_vm_errors` carries the new program's errors, and the reload answers an error with `wolang_vm_ok` still 1. The vm also tracks the objects the host holds: those a call handed to it and those it took a reference to, until it lets go. If the new program has no class of that name, or its stored fields (name and shape, descriptor classes included) differ, the reload is refused and the notes name the class. Migrating a held object in place is not built: the old address is still held by the host and possibly by other objects, so moving it needs a walk that rewrites every reference, which cannot be written correctly without running it. That is the follow-up; the refusal is the safe floor. The bindings, host classes and writers of the vm, its answers and its held objects carry across the rebuild, and `wolang_vm_object_get` finds a class by its name rather than by an index that a reload changes. Cost: a reload compiles the program twice.
+
+**D257. A vm's bindings, host classes and writers belong to the vm.** `wolang_vm_bind`, `wolang_vm_register_class` and the writers ignored their `vm` argument, so two vms could not bind one symbol to different functions, and one engine world's output reached another's log. They now live in the vm's global space, which a turn already enters (D214) and which threads a program starts inherit. A lookup asks that space first and the process after, so a host that never made a second vm sees no change. `wolang_vm_set_writer` and `_set_reporter` install a hook in the space that `wolang_fd_write` and the `write` symbol consult, replacing the process-wide hook of D259. A reload copies the bindings and classes into the new space.
+
+**D258. A host can make and fill a script object and read the program's classes.** The engine scanned `.wo` sources to find classes and could not make one. `wolang_vm_object_new` allocates a class's object with every field zero and `wolang_vm_object_set` writes a numeric, boolean or character field; a class with virtual methods or a field zero cannot stand for (text, a class, an array) is refused, because filling it from the host would need the program's allocator and drop rules. `wolang_vm_class_count`/`_name`, `_field_count`/`_name`/`_kind` and `_attribute_count`/`_name` read the host's own files' classes, their stored fields in order and the attributes written on a class. The ABI minor is 2 (D241); nothing existing changes.
+
+
+**D263. `math` is a package of `float` vectors, matrices and quaternions whose operators are abilities.** `Vec2`, `Vec3`, `Vec4`, `Mat3`, `Mat4` and `Quat` are structs of `float` (`f32`, as in `std.math`: a gameplay number is a position, not a bank balance). `+ - * / unary-` and `==` on them are the `std.ops` abilities of D239, so `a + b` is the call `a.Plus(b)` and a generic `<T: Add>` takes a `Vec3`. Between vectors `*` and `/` are per component; scaling by a number is `Scaled(k)` and `Divided(k)`, because an operator ability takes `Self` and one type cannot also take a `float`. `Mat3`, `Mat4` and `Quat` meet `Mul` (a matrix product, a Hamilton product, the right side applied first) and `Eq`. `==` is exact; `NearTo(other, tolerance)` is the comparison a test wants. Square roots and trigonometry come from `std.math`, so the functions that use them state `uses unsafe` as theirs do. `Normalized()` of a zero vector is zero, not a trap. `Quat.Slerp` negates one side to take the short way and falls back to a normalised lerp when the two are nearly equal. The package is `math`, the module of the same name in `std` stays `std.math`; a program writes `need math.{Vec3}` and `need std.math.{Sqrt}`. No general matrix inverse and no projection matrix yet.
+
+**D256. A script class does not derive from an `extern class`.** A subclass of an `extern class` compiled, but its instances were script objects with no host object behind them, so a call that reached the host dereferenced a pointer the host never made, and an upcast to the extern type handed the host that same pointer (the engine's item 19). A `class` whose base is an `extern class` is now `E0164`, with the hint to hold the host object in a field. An `extern class` may derive from another `extern class`: both are host types and the host decides what the base means. A host-backed subclass, where the host makes the derived object, needs a decision of its own and is not part of 1.2.0.
+
+**D253. A module-level `weak var` holds its object weakly.** `weak var` was parsed on any declaration and checked only inside a class, so at module level it quietly behaved as a strong reference: an assignment retained, a read never asked whether the object was still there, and after the host set `alive = false` a `!= null` check was still true (the engine's item 2). A module-level `weak var` is now allowed for a `C?` of a class or of an `extern class`, and works as a weak field does (D207): a write takes the weak count and lets go of the old one, a read upgrades to a counted reference or `null`, and the file's initializer lets go of the strong reference its initial value arrived with. Any other `weak` on a module-level `let` or on something that is not a `C?` is `E0137`, and a weak local does not parse (`E0040`): it would be `null` by the next line. `Binding::is_weak` carries it to the files that use the name, and the cache format moved to version 6. A VM that goes away or reloads lets go of a weak global's weak count, not a strong one, and a weak host handle costs the host nothing.
+
+**D254. A host class may give its objects a token, so a weak reference is not fooled by address reuse.** `alive(object)` is asked when a weak reference is read, and a host that frees an object and builds another at the same address answers yes for the new one (the engine's item 9). A class may now be registered with a token callback, `uint64_t token(void* object, void* user)`, through the size-prefixed `WolangHostClass` of `wolang_vm_register_class_ex` (D241; ABI 1.3). A weak slot that points at a host object of such a class holds a small cell made by `wolang_host_weak_make`: the object and the token it had when the reference was stored. A read calls `wolang_host_weak_upgrade`, which asks `alive` first and only then `token`, so the token callback is never asked of an object the host has already freed, and answers null unless both agree; the reference it hands back is counted like any other. A class with no token keeps the slot as the plain pointer, so nothing changes for it, and nothing costs more than the existing `alive` call. The class has to be registered before the program is loaded: the cell is what the slot holds, and a registration made afterwards would read a pointer as a cell. Two things differ from the first sketch of this decision. The slot stays one word wide, because a cell behind the word leaves every layout, struct copy and tier as it was; the cost is one small allocation per weak store of a host object of a class with a token. And the token is a number the host chooses, so an index and a serial both fit. A weak `var` or field is released with `wolang_host_weak_free`, including when a VM is destroyed or reloaded.
+
+**D264. The IR has a typed text form that a reader takes back.** The stable dump (`PrintModule`) leaves out what a reader would need: the type of nearly every value, the string pool, the classes, the callee's index, an alloca's slot count, the flags of a function, and it spells some types the same way (`*T?` is both a pointer to an optional and an optional pointer). Changing it would change every golden test, so it stays. `PrintModuleTyped` (`wolang ir --typed`) is a second form that says all of it, one instruction per line, and `ir::ReadModule` rebuilds an `ir::Module` from it (stage 3 of D250 compares IR dumps of the C++ and Wolang lowerings, and needs this). Types are written in a grammar of their own (`opt(T)`, `ptrmut(T)`, `slice(T)`, `array(N, T)`, `tuple(A, B)`, `fn(A) -> R`, `s64`, `text`); a kind the reader cannot build from text (a declared struct, class or enum, an instance, a fallible) is written in backticks as `Describe` spells it, and the caller of `ReadModule` gives the types that may appear (`ReadOptions::named`). Callees are written `@"name"#index`: the index is what the reader uses and the name is a check for the human. Instruction ids are kept as written, so print, read and print again is the identity; an instruction that produces no value has no id in the text and gets a fresh one at the end. Source spans, debug locals and the `ClassInfo` method order beyond what is printed are not carried: the form is for comparing IR, not for resuming a compile. The result of `ReadModule` is meant to pass `ir::Verify`; the tests check that.
+
+**D260. A machine is given its time by `Tick(dt)`.** D243 reserved
+`on X after 3s` for a machine with a clock. A machine with an `after` now has
+a hidden member holding the seconds spent in the current state, and a generated
+`Tick(dt: float) -> bool`: it adds `dt` to that time and takes the first
+transition of the current state whose delay has run out, through the exit,
+state and enter steps an event takes, then says whether one fired. Every change
+of state, by an event or by `Tick`, sets the time back to zero. The clock is the
+caller's: pausing is not calling `Tick` and slow motion is a smaller `dt`, so a
+host needs no hook for the game clock (engine item 23). The delay is a number
+of seconds; a quantity is read as its number whatever its dimension, and
+anything else is `E0101` (`E0159` is retired). A machine with an event called `Tick` keeps it and
+gets no clock. `Self` is bound in a machine's `enter` and `exit` blocks. This
+amends D243.
+
+**D251. A slice is read-only unless it says `mut`.** `[]T` is a view whose
+elements cannot be written and `[]mut T` one whose elements can, as `*T` and
+`*mut T`, `&T` and `&mut T` already are. `[]mut T` fits where `[]T` is wanted
+and not the other way round; an array fits either, since it is the storage. A
+slice cut out of another by a range keeps the mutability of what it was cut
+from. Writing an element (`xs[i] = v`, `xs[i] += v`, `xs[i].x = v`) or taking
+`&mut xs[i]` through a `[]T` is `E0165`; a write that goes through a handle the
+slice holds (`cells[i].n = 1` for a `class`) changes the object, not the
+slice, and is allowed. `.data` of a `[]mut T` is a `*mut T`, of a `[]T` a `*T`.
+The syntax is `[]mut T` (and `soa []mut T`): `mut` follows the brackets.
+
+This replaces the stopgap of D233, which made the caller of `std.text.Bytes`
+promise never to write through its view: `Bytes` now answers `[]u8` and needs
+no `uses unsafe` from its caller. `@Exposes` remains for a library author who
+needs it, and nothing in `std` uses it. What allocates or views raw storage
+(`ArrayNew`, `SoaNew`, `BytesFromRaw`, `ViewFromRaw`) answers `[]mut T`;
+`Prefix` and `Suffix` take and answer `[]T` and `PrefixMut` is the writable
+one, which `List.Items` uses.
+
+Mutability is a checker property. The IR erases it, as it erases a dimension,
+so the layout, the three tiers and the verifier are unchanged; there is no
+verifier rule for it, because every producer of a slice would have to keep the
+bit exactly right in the IR for the rule to mean anything. This breaks source
+that writes through a `[]T`: the fix is the `mut` the diagnostic points at.
+Not covered: a method that changes a value-type element in place
+(`xs[i].Move()` on a struct), and an array bound with `const` handed to a
+`[]mut T`.

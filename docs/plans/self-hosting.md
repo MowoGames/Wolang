@@ -47,6 +47,63 @@ are given the same input and must give the same output.
 The interpreter, the JIT emitters and the LSP move last, if ever: they are
 where the C++ compiler is fastest and where a rewrite buys the least.
 
+## Stage 0: what `std` has for a compiler
+
+Read from `lib/std/src` at 1.2.0, not measured. "Slow" is a reading of the code,
+to be confirmed by a benchmark before it is fixed.
+
+| Need | What exists | Missing or slow |
+|---|---|---|
+| Fast `Map` | `std.map.Map<K, V>`: open addressing, linear probing, half load, backward-shift removal. `IntMapNew` and `TextMapNew` (1.2.0) choose the hashing. `std.hash` has FNV-style text hashing. | Slot finding is `hash % size` with a 64-bit divide on every probe start; a power-of-two table and a mask would not divide. `Get` takes a fallback rather than answering an optional, so a lookup of a class value needs a sentinel. The walk gives keys only, so values cost a second probe each. `Reserve` rehashes through `Put`, which hashes every key again; the hash is not stored. No `Entry` type. |
+| Arenas | The language `arena { }` block frees what was taken inside it at block end. | No arena a compiler can hold across calls and free as one: the IR, the AST and the type store each want their own lifetime. `Builder.Release` says "nothing frees the bytes yet", so text built by a compiler is never freed outside an `arena`. A `[]T` bump allocator with `Reset` is the missing piece. |
+| Text building | `std.text.Builder`: `Append`, `AppendByte`, `AppendLine` (1.2.0), `Text`, `Release`, `Clear`. `std.fmt` for numbers. | `Append` copies byte by byte; there is no bulk copy intrinsic, so a large append is a loop. `std.fmt` imports `std.text`, so `Builder` has no `AppendInt` without a cycle. No `Builder.Insert` or `Truncate`. |
+| Text scanning | `Bytes`, `IndexOf`, `Substring`, `StartsWith`, `Trim`, `Split`, `ParseInt`, `ParseFloat`, `std.utf8`. | `Substring` is a view of the same bytes, not a copy, so token text is free; a lexer indexes `Bytes(source)` directly. No character classes (`IsDigit`, `IsAlpha`): each lexer writes its own. |
+| Lists and sorting | `List<T>`, `Heap<T>`, `Sort`, `SortBy<T: Ord>`, `LowerBound`, `Deque`, `Set`. | `List` has `Push`, `Pop`, `At`, `Set`, `Items`; no `Insert`, `RemoveAt` or `Last`. `Sort` is a quicksort with an insertion cutoff and is not stable; a compiler that prints diagnostics in source order needs a stable sort. |
+| Files | `std.fs`: `ReadAll`, `ReadText`, `WriteAll`, `WriteText`, `Append`, `Exists`, `List`, `Walk`, `Copy`, `RemoveTree`, `TempName`. `std.path`: `Join`, `Normalize`, `Parent`, `Name`, `Extension`. | `List` and `Walk` answer one `text` with separators, so a directory walk is a split. `ReadAll` takes a byte limit. No file timestamps beyond `ChangedAt`, no symlink question. |
+| Process | `std.process`: `Run`, `Start`, `StartWith`, `Command` with directory and variables, exit code and captured output. `std.env`: arguments, variables. | No way to wait on several children; the linker and `cc` are run one at a time, which is what the driver does today. |
+| Errors with data | `T!(A, B)` and payloads (D235). | A compiler's diagnostic is a struct, not an error: the checker collects many, so a `List<Diagnostic>` is the shape, not `T!`. |
+| IR text | The printer. The reader is in `src/ir/reader.cc` (1.2.0, C++). | The Wolang side of the IR reader is stage 3. |
+
+## The throwaway lexer
+
+`tools/selfhost/lexer` is a Wolang lexer for Wolang (package `wolexer`, tests with
+`wl wo test tools/selfhost/lexer`): identifiers, keywords and reserved words,
+numbers with suffixes and ranges, strings with interpolation, raw strings,
+character literals, nested block comments, doc comments, `starts_line` and line
+numbers, and the longest operator. It is not the stage 2 lexer: it does not
+report errors, does not decode literals and does not check Unicode. It was written
+to find gaps, and it was written without being run. The gaps below are what
+writing it ran into; the first run will add more.
+
+1. **`unsafe` everywhere.** Reading the bytes of a `text` is `Bytes(...)`, which
+   is `uses unsafe`, so every function of a lexer, and then of a parser, says
+   `uses unsafe`. The effect stops saying anything. The read-only slice (D233)
+   is what would let `Bytes` be safe.
+2. **No byte literal.** `'a'` is a `char`, not a `u8`, so a byte test is written
+   with a number (`byte == 123`). A `b'{'` spelling, or a comparison of a `u8`
+   with a `char` literal, would make the lexer readable.
+3. **Braces in text.** A `{` in a string starts an interpolation, so a program
+   that talks about braces writes `\{` and `\}` (the operator table does). A
+   raw string avoids it but cannot hold a `"`. A compiler prints C-like code and
+   dumps, so it will meet this daily.
+4. **Text building.** `Text + text` gives an owned `Text`, which does not assign
+   to a `text` variable; building output goes through `Builder`. That is fine,
+   but it is the first thing a newcomer trips on.
+5. **No list or array literal.** The keyword table and the operator table are
+   split from one string and pushed. A `[ "a", "b" ]` literal for a `List<text>`
+   would remove that.
+6. **Unicode.** `std.utf8` has width and count but no identifier classes (XID) and
+   no normalization (NFC) checks, which D26 requires. The lexer takes every byte
+   from 128 up as part of an identifier.
+7. **Numbers.** `ParseInt` reads decimal `int` only. A literal is arbitrary
+   precision until it meets a type (D9), and the lexer would need a big integer
+   for that; `std` has none.
+8. **Two results.** `ScanNumber` returns a `Scan` struct because it wants an end
+   and a flag. Tuples exist and were not tried; a note for the first run.
+9. **Tables.** `Map<text, int>` answers a keyword lookup. `Get` with a fallback
+   was enough here; a parser's symbol tables will want an optional-returning
+   lookup.
+
 ## Layout
 
 The libraries stay in `lib/`. Moving them to `library/` would rename

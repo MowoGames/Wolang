@@ -195,6 +195,82 @@ fun main() uses unsafe {
   WOLANG_EXPECT_EQ(program.Output(), "exit 30");
 }
 
+WOLANG_TEST(AotTest, AnEscapingClosureOwnsWhatItCaptured) {
+  if (!Links()) {
+    return;
+  }
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+var drops: int = 0
+
+class Cell {
+  var n: int = 0
+  fun Bump() -> int {
+    n = n + 1
+    return n
+  }
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Make() -> fun() -> int {
+  const cell = Cell(0)
+  return || cell.Bump()
+}
+
+fun main() uses unsafe {
+  var total = 0
+  {
+    const counter = Make()
+    total = counter() * 10 + counter()
+  }
+  exit((total * 10 + drops) as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 121");
+}
+
+WOLANG_TEST(AotTest, PayloadErrorsAgree) {
+  if (!Links()) {
+    return;
+  }
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+error Plain, Bad(line: int, why: text)
+
+fun Make(n: int) -> int!(Plain, Bad) {
+  if n == 0 {
+    return Plain
+  }
+  if n == 1 {
+    return Bad(40, "late")
+  }
+  return n
+}
+
+fun Pass(n: int) -> int!(Plain, Bad) {
+  const v = Make(n)?
+  return v + 1
+}
+
+fun Use(n: int) -> int {
+  return match Pass(n) {
+    Ok(v) => v
+    Plain => 1
+    Bad(line, why) => line + why.len
+  }
+}
+
+fun main() uses unsafe {
+  exit((Use(0) + Use(1) + Use(5)) as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 51");
+}
+
 WOLANG_TEST(AotTest, RunsStructsOptionalsAndEnums) {
   if (!Links()) {
     return;
@@ -260,6 +336,71 @@ fun main() uses unsafe {
   const std::string said = program.Output();
   WOLANG_EXPECT(said.find("out of bounds") != std::string::npos);
   WOLANG_EXPECT(said.find("exit 70") != std::string::npos);
+}
+
+WOLANG_TEST(AotTest, IntIsSixtyFourBits) {
+  if (!Links()) {
+    return;
+  }
+  // 2^31 is a value of `int` (D238); 2^31 / 2^30 is 2.
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+fun main() uses unsafe {
+  var a = 2147483647
+  a += 1
+  exit((a / 1073741824) as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 2");
+}
+
+WOLANG_TEST(AotTest, ASignedThirtyTwoBitSumStillTraps) {
+  if (!Links()) {
+    return;
+  }
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+fun main() uses unsafe {
+  var a: s32 = 2147483647
+  a += 1
+  exit(a)
+}
+)");
+  WOLANG_EXPECT(program.Output().find("overflow") != std::string::npos);
+}
+
+WOLANG_TEST(AotTest, AnOperatorOnAStructIsACall) {
+  if (!Links()) {
+    return;
+  }
+  // D239: `a + b` on a struct is `a.Plus(b)`, and the compiled binary
+  // agrees with the interpreter.
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+@Operator
+ability Add {
+  fun Plus(other: Self) -> Self
+}
+
+struct V {
+  var x: int
+  var y: int
+}
+
+extend V as Add {
+  fun Plus(other: Self) -> Self => V(x + other.x, y + other.y)
+}
+
+fun main() uses unsafe {
+  var a = V(1, 2) + V(10, 20)
+  a += V(3, 4)
+  exit((a.x + a.y) as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 40");
 }
 
 }  // namespace

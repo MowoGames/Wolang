@@ -137,6 +137,36 @@ WOLANG_TEST(VerifierTest, AcceptsAWellFormedFunction) {
   WOLANG_EXPECT(result.ok());
 }
 
+static VerificationResult VerifyLengthOf(IntWidth width, uint32_t field) {
+  Builder b;
+  const BlockId entry = b.function().entry();
+  const TypeId slice = b.types().Slice(b.types().default_int(), false);
+  const InstId view = b.Add(entry, Opcode::kConstInt, slice);
+  const InstId length =
+      b.Add(entry, Opcode::kExtract, b.types().Int(width, true), {view});
+  b.function().Get(length).field = field;
+  b.Terminate(entry, Opcode::kReturn, {}, {});
+  return b.Verify();
+}
+
+WOLANG_TEST(VerifierTest, RejectsALengthReadAtThirtyTwoBits) {
+  // The length of a slice is a 64-bit word (D238).
+  const VerificationResult result = VerifyLengthOf(IntWidth::k32, 1);
+  WOLANG_ASSERT(!result.ok());
+  WOLANG_EXPECT(result.problems.front().find("64-bit") != std::string::npos);
+}
+
+WOLANG_TEST(VerifierTest, AcceptsALengthReadAtSixtyFourBits) {
+  WOLANG_EXPECT(VerifyLengthOf(IntWidth::k64, 1).ok());
+}
+
+WOLANG_TEST(VerifierTest, RejectsAThirdFieldOfASlice) {
+  const VerificationResult result = VerifyLengthOf(IntWidth::k64, 2);
+  WOLANG_ASSERT(!result.ok());
+  WOLANG_EXPECT(result.problems.front().find("which has two") !=
+                std::string::npos);
+}
+
 WOLANG_TEST(VerifierTest, RejectsABlockWithNoTerminator) {
   Builder b;
   const BlockId entry = b.function().entry();
@@ -350,7 +380,7 @@ WOLANG_TEST(PrinterTest, PrintsBlockParametersAndEdges) {
                    "^0:  // entry\n"
                    "  %1 = const.int 7\n"
                    "  jmp %1 ^1\n"
-                   "^1(%0: s32):  // join\n"
+                   "^1(%0: s64):  // join\n"
                    "  ret %0\n"
                    "}\n");
 }

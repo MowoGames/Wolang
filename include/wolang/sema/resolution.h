@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -75,10 +76,18 @@ struct Binding {
   // absorbed by the body, because what it returns lets the caller write
   // memory the caller does not own (D233).
   bool exposes = false;
+  // Whether the declaration is `unsafe fun`: naming it costs the caller the
+  // `unsafe` effect, whatever its body does (D236).
+  bool is_unsafe_fun = false;
+  // Whether a module-level `var` is `weak`: it holds a `C?` without keeping the
+  // object alive, and a read upgrades it (D253).
+  bool is_weak = false;
   // For a name reached as `module.Name` (D246): the spelling the declaration
   // has in its own module. `name` is then the qualified spelling, which is
   // what keeps two modules' `Parse` apart once a file has both.
   Symbol real_name;
+  // An error name: the qualified `module.Name` its tag is hashed from (D235).
+  Symbol error_name;
 
   friend bool operator==(const Binding& lhs, const Binding& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
@@ -90,7 +99,10 @@ struct Binding {
            lhs.is_task == rhs.is_task && lhs.has_body == rhs.has_body &&
            lhs.thread_args == rhs.thread_args &&
            lhs.exposes == rhs.exposes &&
-           lhs.real_name == rhs.real_name;
+           lhs.is_unsafe_fun == rhs.is_unsafe_fun &&
+           lhs.is_weak == rhs.is_weak &&
+           lhs.real_name == rhs.real_name &&
+           lhs.error_name == rhs.error_name;
   }
 };
 
@@ -111,6 +123,8 @@ struct TypeMembers {
   // a pair -- what it points at and which class that is -- so that a call
   // on it can find the body (D86).
   bool is_ability = false;
+  // An ability one of whose methods names `Self` (D239).
+  bool takes_self = false;
   // The declaration's own type parameters, in order. Needed to work out what
   // a field of `Holder<int>` is: zip these with the instance's arguments.
   std::vector<TypeId> parameters;
@@ -118,6 +132,7 @@ struct TypeMembers {
   friend bool operator==(const TypeMembers& lhs, const TypeMembers& rhs) {
     return lhs.type == rhs.type && lhs.members == rhs.members &&
            lhs.is_value == rhs.is_value && lhs.is_ability == rhs.is_ability &&
+           lhs.takes_self == rhs.takes_self &&
            lhs.parameters == rhs.parameters;
   }
 };
@@ -255,6 +270,18 @@ struct FileResolution {
   // derives from it, or implements it as an ability.
   bool Satisfies(TypeId type, TypeId bound) const;
 
+  // The operator an `@Operator` ability lends its method to, or kNone for
+  // any other type (D239).
+  OperatorKind OperatorOf(TypeId ability) const;
+
+  // The `@Operator` ability |type| implements for |kind|, or an invalid id.
+  // Looks through a generic instance to its declaration and up the base chain.
+  TypeId FindOperatorAbility(TypeId type, OperatorKind kind) const;
+
+  // True when a method of |ability| names `Self`, so a value of the ability
+  // could not say what its `other` is (D239).
+  bool TakesSelf(TypeId ability) const;
+
   // The product a dimension stands for, or the empty product.
   Dimensions ProductOf(DimensionId dimension) const;
 
@@ -287,6 +314,10 @@ class TypeResolver {
 
   // Resolves one `TypeRef` node of |ast|.
   TypeId Resolve(const Ast& ast, TypeRefId id);
+
+  // Resolves the type of a parameter: a function type there is borrowed
+  // unless it says `keep`, and everywhere else one is kept (D240).
+  TypeId ResolveParameter(const Ast& ast, TypeRefId id);
 
   // Type parameters of the declaration being resolved, pushed and popped
   // around a generic declaration's signature and body.
@@ -331,6 +362,7 @@ FileResolution ResolveFile(TypeStore* types,
                            StringInterner* interner,
                            const Ast& ast,
                            uint32_t file_index,
+                           std::string_view module,
                            DiagnosticEngine* diagnostics);
 
 }  // namespace wolang

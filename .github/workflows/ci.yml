@@ -129,6 +129,7 @@ jobs:
           $W test lib/db
           $W test lib/tls
           $W test lib/image
+          $W test lib/math
 
       # The differential fuzzer: the same program through every tier, and
       # any disagreement is a miscompilation. The one test that has found
@@ -243,6 +244,7 @@ jobs:
           $W test lib/db
           $W test lib/tls
           $W test lib/image
+          $W test lib/math
       - name: Fuzz the tiers against each other
         shell: bash
         run: |

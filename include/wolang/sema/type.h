@@ -108,6 +108,9 @@ enum class MemberKind : uint8_t {
   // Which state a `machine` is in: one field, written by the transitions
   // and read by the predicates.
   kMachineState,
+  // How long a machine has been in its state, in seconds, for the transitions
+  // that say `after` (D260). Written by `Tick` and by every change of state.
+  kMachineClock,
   // What a signal holds: how many handlers there are, how many it has
   // room for, and where they are. Written by the compiler, like the ready
   // bit below and for the same reason.
@@ -123,6 +126,20 @@ enum class MemberKind : uint8_t {
 // cached value, or the bit that says whether that cache is current.
 // Everything else -- a method, a variant, a signal -- is code or a tag.
 bool HasStorage(MemberKind kind);
+
+// Which operator an `@Operator` ability lends its one method to (D239). Kept
+// on the method's member so a use of `+` finds the ability by what it says
+// and not by a name two libraries might spell alike.
+enum class OperatorKind : uint8_t {
+  kNone,
+  kPlus,
+  kMinus,
+  kTimes,
+  kDivide,
+  kNegate,
+  kEquals,
+  kCompare,
+};
 
 // One name declared inside a named type. Member tables are part of the file
 // resolution that produced them rather than of the type store, so that
@@ -154,6 +171,14 @@ struct Member {
   bool is_override = false;
   // Fields: `weak var`, which does not keep the object alive.
   bool is_weak = false;
+  // Methods: `unsafe fun`, which charges its caller the `unsafe` effect (D236).
+  bool is_unsafe = false;
+  // Methods: whether the declaration has a body. One without, on an `extern
+  // class`, is the host's function, which a call from another file must
+  // name by its symbol (D213).
+  bool has_body = false;
+  // Methods of an `@Operator` ability: the operator this one answers.
+  OperatorKind operator_kind = OperatorKind::kNone;
   // Derived fields: which fields the expression reads, as indices into the
   // same table. A write to any of them is what makes the value stale, and
   // the list is here because the writer may be in another file.
@@ -168,9 +193,36 @@ struct Member {
            lhs.is_virtual == rhs.is_virtual &&
            lhs.is_override == rhs.is_override &&
            lhs.is_weak == rhs.is_weak &&
+           lhs.is_unsafe == rhs.is_unsafe && lhs.has_body == rhs.has_body &&
+           lhs.operator_kind == rhs.operator_kind &&
            lhs.depends_on == rhs.depends_on;
   }
 };
+
+// One error a stated set names (D235). The name is the qualified
+// `module.Name`; the tag is its hash; the detail is the class that boxes its
+// payload, or invalid when it carries none.
+struct ErrorMember {
+  Symbol name;
+  uint32_t tag = 0;
+  TypeId detail;
+};
+
+enum class ErrorFit : uint8_t {
+  kFits,
+  kMissing,
+  kPayloadIntoOpen,
+};
+
+// FNV-1a of the qualified error name, never zero: zero is the tag of success.
+inline uint32_t ErrorTag(std::string_view qualified) {
+  uint32_t hash = 0x811c9dc5u;
+  for (char c : qualified) {
+    hash ^= static_cast<uint8_t>(c);
+    hash *= 0x01000193u;
+  }
+  return hash == 0 ? 1u : hash;
+}
 
 struct Type {
   TypeKind kind = TypeKind::kError;
@@ -180,7 +232,8 @@ struct Type {
   bool is_signed = true;
   // Floats: width.
   FloatWidth float_width = FloatWidth::k32;
-  // Pointers and references: whether the target may be written.
+  // Pointers, references and slices: whether the target may be written
+  // (D251).
   bool is_mutable = false;
   // Slices and arrays: whether the storage keeps one array per field.
   bool is_soa = false;
@@ -229,6 +282,11 @@ struct Type {
 
   // Function: whether the last parameter is variadic. Reserved for the FFI.
   bool is_variadic = false;
+
+  // Function: whether a value of this type may be stored. A parameter of
+  // function type is borrowed unless it says `keep`; every other place a
+  // function type appears is kept (D240).
+  bool is_kept = false;
 };
 
 // Interns types and answers the structural questions about them.
@@ -265,9 +323,9 @@ class TypeStore {
   TypeId Int(IntWidth width, bool is_signed);
   TypeId Float(FloatWidth width);
 
-  // `int` is `i32` and `float` is `f32`; the aliases exist so gameplay code
+  // `int` is `s64` and `float` is `f32` (D238); the aliases exist so gameplay code
   // does not have to spell a width it does not care about.
-  TypeId default_int() { return Int(IntWidth::k32, true); }
+  TypeId default_int() { return Int(IntWidth::k64, true); }
   TypeId default_float() { return Float(FloatWidth::k32); }
 
   // ------------------------------------------------------- constructors --
@@ -331,15 +389,33 @@ class TypeStore {
   // off the syntax by the graph that schedules systems.
   TypeId Query(const std::vector<TypeId>& args, bool writes);
   TypeId Optional(TypeId element);
+  // The optional of |element| if it was ever made, else the error type. Lets
+  // a read-only user name the slot of a payload error, which a stated set made
+  // when it was built (D235).
+  TypeId FindOptional(TypeId element) const;
   TypeId Fallible(TypeId element, TypeId error_set);
-  TypeId Slice(TypeId element, bool is_soa);
+  TypeId Slice(TypeId element, bool is_soa, bool is_mutable = false);
   TypeId Array(TypeId element, uint64_t length, bool is_soa);
   TypeId Tuple(const std::vector<TypeId>& elements);
-  TypeId Function(const std::vector<TypeId>& params, TypeId result);
+  TypeId Function(const std::vector<TypeId>& params, TypeId result, bool is_kept = true);
+  // The same type with its top-level function marked kept or borrowed, looking
+  // through `?`. Anything else is returned as it came (D240).
+  TypeId Kept(TypeId id);
+  TypeId Borrowed(TypeId id);
+  bool IsKept(TypeId id) const;
+  // Equal, or the same function type that differs only in whether its
+  // top-level function may be stored. The IR checks edges and calls with it,
+  // because who may keep a value is the checker's rule (D240).
+  bool SameShape(TypeId a, TypeId b) const;
+  bool IsFunctionLike(TypeId id) const;
   TypeId Pointer(TypeId element, bool is_mutable);
   TypeId Reference(TypeId element, bool is_mutable);
   TypeId Quantity(TypeId numeric, const Dimensions& dimensions);
   TypeId ErrorSet(const std::vector<Symbol>& members);
+  // A stated set (D235): sorted by tag, one entry per name. An empty list is
+  // the open set, which is what `ErrorSet({})` also gives.
+  TypeId StatedErrorSet(std::vector<ErrorMember> members);
+  TypeId OpenErrorSet() { return ErrorSet({}); }
 
   // ------------------------------------------------------------ accessors --
 
@@ -353,6 +429,12 @@ class TypeStore {
   Dimensions DimensionsOf(TypeId id) const;
   // Error set members, as interned names.
   std::vector<Symbol> ErrorMembersOf(TypeId id) const;
+  std::vector<ErrorMember> StatedErrorsOf(TypeId id) const;
+  bool IsOpenErrorSet(TypeId id) const;
+  bool ErrorSetHasPayload(TypeId id) const;
+  // Whether a value of |found| may stand where |expected| is wanted. Names the
+  // members of |found| that |expected| lacks in |missing|.
+  ErrorFit ErrorSetFits(TypeId expected, TypeId found, std::vector<Symbol>* missing) const;
 
   // ------------------------------------------------------------ questions --
 
@@ -413,12 +495,15 @@ class TypeStore {
     std::vector<TypeId> args;
     std::vector<Dimensions::Factor> factors;
     std::vector<Symbol> names;
+    std::vector<uint32_t> tags;
+    std::vector<TypeId> details;
 
     friend bool operator==(const Key& lhs, const Key& rhs) {
       // The ranges are compared through the key's own copies, so two
       // structurally equal types compare equal before either is stored.
       return lhs.SameType(rhs) && lhs.args == rhs.args &&
-             lhs.factors == rhs.factors && lhs.names == rhs.names;
+             lhs.factors == rhs.factors && lhs.names == rhs.names &&
+             lhs.tags == rhs.tags && lhs.details == rhs.details;
     }
 
     bool SameType(const Key& other) const;
@@ -433,6 +518,8 @@ class TypeStore {
   std::vector<TypeId> args_;
   std::vector<Dimensions::Factor> factors_;
   std::vector<Symbol> names_;
+  std::vector<uint32_t> tags_;
+  std::vector<TypeId> details_;
   std::unordered_map<Key, uint32_t, KeyHash> interned_;
 
   TypeId error_;

@@ -109,6 +109,44 @@ struct ModuleEffectRows {
   }
 };
 
+// Which functions and methods of the whole program allocate, directly or
+// through what they call (D237). One answer for every module, because a call
+// crosses them: `List.Push` is in another module and is a method.
+struct ProgramAllocation {
+  struct Node {
+    uint32_t file = 0;
+    uint32_t item = 0;
+    AllocKind kind = AllocKind::kNone;
+    Symbol what;
+    SourceSpan span;
+    bool allocates = false;
+    bool has_via = false;
+    uint32_t via_file = 0;
+    uint32_t via_item = 0;
+    // Whether it reaches a module-level `var`, by itself or through what it
+    // calls, stopping at any function that states `uses unsafe` (D252).
+    bool touches = false;
+    bool vouches = false;
+
+    friend bool operator==(const Node& lhs, const Node& rhs) {
+      return lhs.file == rhs.file && lhs.item == rhs.item &&
+             lhs.kind == rhs.kind && lhs.what == rhs.what &&
+             lhs.span == rhs.span && lhs.allocates == rhs.allocates &&
+             lhs.has_via == rhs.has_via && lhs.via_file == rhs.via_file &&
+             lhs.via_item == rhs.via_item && lhs.touches == rhs.touches &&
+             lhs.vouches == rhs.vouches;
+    }
+  };
+  std::vector<Node> nodes;
+
+  const Node* Find(uint32_t file, uint32_t item) const;
+
+  friend bool operator==(const ProgramAllocation& lhs,
+                         const ProgramAllocation& rhs) {
+    return lhs.nodes == rhs.nodes;
+  }
+};
+
 // Owns everything one compilation knows and answers questions about it
 // incrementally.
 //

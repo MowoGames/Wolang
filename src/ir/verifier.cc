@@ -407,7 +407,7 @@ class Verifier {
         }
         const TypeId result = types_.ElementOf(target.type);
         if (result.is_valid() && inst.type.is_valid() &&
-            inst.type != result) {
+            !types_.SameShape(inst.type, result)) {
           Fail(At(id) + " takes the result of @" +
                std::string(interner_.Text(target.name)) +
                " as the wrong type");
@@ -424,6 +424,41 @@ class Verifier {
           Fail(At(id) + " does not produce a bool");
         }
         break;
+
+      case Opcode::kExtract:
+      case Opcode::kInsert: {
+        // A text or slice is a pointer and a 64-bit length (D238); reading
+        // the length at 32 bits was the bug that capped `.len` at 2^31.
+        // Other aggregates are not checked here.
+        const bool extracting = inst.opcode == Opcode::kExtract;
+        if (!arity(extracting ? 1 : 2)) {
+          break;
+        }
+        const TypeKind aggregate_kind = types_.KindOf(type_of(0));
+        if (aggregate_kind != TypeKind::kStr &&
+            aggregate_kind != TypeKind::kSlice) {
+          break;
+        }
+        // Only two fields exist, so a third is a lowering bug.
+        if (inst.field > 1) {
+          Fail(At(id) + " reads field " + std::to_string(inst.field) +
+               " of a text or slice, which has two");
+          break;
+        }
+        const TypeId field_type = extracting ? inst.type : type_of(1);
+        if (inst.field == 1 &&
+            (types_.KindOf(field_type) != TypeKind::kInt ||
+             types_.Get(field_type).int_width != IntWidth::k64)) {
+          Fail(At(id) + " reads the length of a text or slice that is not "
+                        "a 64-bit integer");
+        }
+        if (inst.field == 0 &&
+            types_.KindOf(field_type) != TypeKind::kPointer) {
+          Fail(At(id) + " reads the data of a text or slice that is not a "
+                        "pointer");
+        }
+        break;
+      }
 
       default:
         break;
@@ -471,8 +506,8 @@ class Verifier {
             !function_.Contains(params[j])) {
           continue;
         }
-        if (function_.Get(arguments[j]).type !=
-            function_.Get(params[j]).type) {
+        if (!types_.SameShape(function_.Get(arguments[j]).type,
+                              function_.Get(params[j]).type)) {
           Fail(At(terminator) + " passes " + At(arguments[j]) +
                " where " + At(targets[0]) + " expects the type of " +
                At(params[j]));
@@ -494,7 +529,7 @@ class Verifier {
   // wanted -- which is the one direction that is always safe, and the one
   // the C boundary asks for constantly.
   bool FitsParameter(TypeId found, TypeId wanted) const {
-    if (found == wanted) {
+    if (types_.SameShape(found, wanted)) {
       return true;
     }
     if (types_.KindOf(found) != TypeKind::kPointer ||

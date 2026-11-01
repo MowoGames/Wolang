@@ -10,7 +10,7 @@ need std.mem.{ArrayNew, Free}
 need std.iter.{Iterable, Iterator}
 
 offer class Deque<T> {
-  var items: []T
+  var items: []mut T
   /// Where the first element is.
   var first: int = 0
   var count: int = 0

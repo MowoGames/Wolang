@@ -80,7 +80,7 @@ WOLANG_TEST(LowerTest, LowersArithmetic) {
   Fixture f("fun Add(a: int, b: int) -> int {\n  return a + b\n}\n");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   WOLANG_EXPECT_EQ(f.Function("Add"),
-                   "fun @Add(%0: s32, %1: s32) -> s32 {\n"
+                   "fun @Add(%0: s64, %1: s64) -> s64 {\n"
                    "^0:  // entry\n"
                    "  %2 = add %0, %1\n"
                    "  ret %2\n"
@@ -98,7 +98,7 @@ fun Max(a: int, b: int) -> int {
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   WOLANG_EXPECT_EQ(f.Function("Max"),
-                   "fun @Max(%0: s32, %1: s32) -> s32 {\n"
+                   "fun @Max(%0: s64, %1: s64) -> s64 {\n"
                    "^0:  // entry\n"
                    "  %2 = gt %0, %1\n"
                    "  br %2 ^1 ^2\n"
@@ -138,9 +138,35 @@ fun Count(n: int) -> int {
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   const std::string body = f.Function("Count");
-  WOLANG_EXPECT(body.find("alloca : s32") != std::string::npos);
+  WOLANG_EXPECT(body.find("alloca : s64") != std::string::npos);
   WOLANG_EXPECT(body.find("store") != std::string::npos);
   WOLANG_EXPECT(body.find("load") != std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AClosureThatDoesNotEscapeKeepsNoHeader) {
+  Fixture f(R"(
+fun Apply(f: fun(int) -> int, x: int) -> int => f(x)
+
+fun Use() -> int {
+  const k = 3
+  return Apply(|n| n + k, 1)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string ir = f.Ir();
+  WOLANG_EXPECT(ir.find("closure$0$drop") == std::string::npos);
+  WOLANG_EXPECT(ir.find("wolang_object_retain") == std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AnEscapingClosureGetsADropAndACountedEnvironment) {
+  Fixture f(R"(
+fun Make() -> fun() -> int {
+  const k = 3
+  return || k
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Ir().find("closure$0$drop") != std::string::npos);
 }
 
 WOLANG_TEST(LowerTest, AnImmutableLocalNeedsNoSlot) {
@@ -427,8 +453,8 @@ fun UseFloat() -> float => Identity(1.5)
   WOLANG_EXPECT_EQ(f.Problems(), "");
   // Two call sites with the same argument share one copy; a different
   // argument gets its own.
-  WOLANG_EXPECT_EQ(f.Function("Identity<s32>"),
-                   "fun @Identity<s32>(%0: s32) -> s32 {\n"
+  WOLANG_EXPECT_EQ(f.Function("Identity<s64>"),
+                   "fun @Identity<s64>(%0: s64) -> s64 {\n"
                    "^0:  // entry\n"
                    "  ret %0\n"
                    "}\n");
@@ -452,11 +478,11 @@ fun Twice<T>(value: T) -> T => Identity(Identity(value))
 fun Use() -> int => Twice(3)
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
-  WOLANG_EXPECT_EQ(f.Function("Twice<s32>"),
-                   "fun @Twice<s32>(%0: s32) -> s32 {\n"
+  WOLANG_EXPECT_EQ(f.Function("Twice<s64>"),
+                   "fun @Twice<s64>(%0: s64) -> s64 {\n"
                    "^0:  // entry\n"
-                   "  %1 = call @Identity<s32>, %0\n"
-                   "  %2 = call @Identity<s32>, %1\n"
+                   "  %1 = call @Identity<s64>, %0\n"
+                   "  %2 = call @Identity<s64>, %1\n"
                    "  ret %2\n"
                    "}\n");
 }
@@ -584,6 +610,188 @@ fun main() -> int {
   return F(1, 3)
 }
 )"), "");
+}
+
+// D239: an operator the checker settled as an `@Operator` call is not lowered
+// yet, but it must not become a built-in `add` of two structs.
+WOLANG_TEST(LowerTest, AnOperatorCallIsNotABuiltInOperationOnStructs) {
+  Fixture f(R"(
+@Operator
+ability Add {
+  fun Plus(other: Self) -> Self
+}
+
+struct V {
+  var x: int
+}
+
+extend V as Add {
+  fun Plus(other: Self) -> Self => V(x + other.x)
+}
+
+fun Sum(a: V, b: V) -> V => a + b
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Function("Sum").find(" = add ") == std::string::npos);
+}
+
+static constexpr const char kOperatorPrelude[] = R"(
+@Operator
+ability Add {
+  fun Plus(other: Self) -> Self
+}
+
+@Operator
+ability Sub {
+  fun Minus(other: Self) -> Self
+}
+
+@Operator
+ability Mul {
+  fun Times(other: Self) -> Self
+}
+
+@Operator
+ability Div {
+  fun Divide(other: Self) -> Self
+}
+
+@Operator
+ability Neg {
+  fun Negate() -> Self
+}
+
+@Operator
+ability Eq {
+  fun Equals(other: &Self) -> bool
+}
+
+@Operator
+ability Ord {
+  fun Compare(other: &Self) -> int
+}
+
+struct V {
+  var x: int
+  var y: int
+}
+
+extend V as Add {
+  fun Plus(other: Self) -> Self => V(x + other.x, y + other.y)
+}
+
+extend V as Sub {
+  fun Minus(other: Self) -> Self => V(x - other.x, y - other.y)
+}
+
+extend V as Mul {
+  fun Times(other: Self) -> Self => V(x * other.x, y * other.y)
+}
+
+extend V as Div {
+  fun Divide(other: Self) -> Self => V(x / other.x, y / other.y)
+}
+
+extend V as Neg {
+  fun Negate() -> Self => V(-x, -y)
+}
+
+extend V as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x && y == other.y
+}
+
+extend V as Ord {
+  fun Compare(other: &Self) -> int => x - other.x
+}
+
+class Money {
+  var cents: int
+}
+
+extend Money as Add {
+  fun Plus(other: Self) -> Self => Money(cents + other.cents)
+}
+
+extend Money as Eq {
+  fun Equals(other: &Self) -> bool => cents == other.cents
+}
+
+fun Max<T: Ord>(a: T, b: T) -> T {
+  if a >= b {
+    return a
+  }
+  return b
+}
+
+fun Sign<T: Ord>(a: T, b: T) -> int => a.Compare(&b)
+)";
+
+// D239: a number keeps its opcodes, so `Max<int>` has no call in it, and a
+// struct operator is a call rather than an opcode.
+WOLANG_TEST(LowerTest, AGenericOperatorOnAnIntIsAnOpcodeNotACall) {
+  Fixture f(std::string(kOperatorPrelude) + R"(
+fun Use() -> int => Max(3, 9)
+
+fun UseStruct() -> int => Max(V(1, 0), V(2, 0)).x
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string ints = f.Function("Max<s64>");
+  WOLANG_EXPECT(ints.find("call") == std::string::npos);
+  WOLANG_EXPECT(ints.find(" = ge ") != std::string::npos);
+  WOLANG_EXPECT(f.Function("Max<V>").find("call") != std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AMethodCallOfAnOperatorOnAnIntIsOpcodes) {
+  Fixture f(std::string(kOperatorPrelude) + R"(
+fun Use() -> int => Sign(3, 9)
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Function("Sign<s64>").find("call") == std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, FreeReadsTheDataOfASliceAsAPointer) {
+  // The data half of a slice is a pointer (D238); `Free` once extracted it
+  // as a word and the verifier, rightly, refused every program importing
+  // std.list.
+  Fixture f(R"(
+offer unsafe fun Free<T>(items: []T)
+
+fun Release(items: []u8) uses unsafe {
+  Free(items)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+}
+
+WOLANG_TEST(LowerTest, ParallelForTakesItsThreadCountAtTheRuntimesWidth) {
+  // `int` is 64 bits (D238) and the runtime's thread count is 32: the
+  // argument has to be converted, not passed as it is.
+  Fixture f(R"(
+offer unsafe fun ParallelFor(count: int, threads: int, body: fun(int, int))
+
+fun Run(threads: int) uses unsafe {
+  ParallelFor(8, threads, |a, b| { })
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+}
+
+WOLANG_TEST(LowerTest, AnErrorTagIsAHashOfItsQualifiedName) {
+  Fixture f(R"(
+error Corrupt, Missing
+
+fun A() -> int! {
+  return Corrupt
+}
+
+fun B() -> int! {
+  return Missing
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Function("A").find(std::to_string(ErrorTag("Corrupt"))) != std::string::npos);
+  WOLANG_EXPECT(f.Function("B").find(std::to_string(ErrorTag("Missing"))) != std::string::npos);
+  WOLANG_EXPECT(f.Function("A").find(std::to_string(ErrorTag("Missing"))) == std::string::npos);
 }
 
 }  // namespace

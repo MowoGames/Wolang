@@ -200,7 +200,7 @@ interp::Value Decode(const TypeStore& types,
     uint32_t tag = 0;
     std::memcpy(&tag, source, sizeof(tag));
     std::vector<interp::Value> elements;
-    elements.push_back(interp::Value::Int(tag, IntWidth::k32, true));
+    elements.push_back(interp::Value::Int(tag, IntWidth::k32, false));
     return interp::Value::Aggregate(std::move(elements));
   }
   std::vector<interp::Value> elements;

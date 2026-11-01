@@ -99,6 +99,12 @@ size_t TypeStore::KeyHash::operator()(const Key& key) const {
   for (Symbol name : key.names) {
     hash = HashBytes(&name.index, sizeof(name.index), hash);
   }
+  for (uint32_t tag : key.tags) {
+    hash = HashBytes(&tag, sizeof(tag), hash);
+  }
+  for (TypeId detail : key.details) {
+    hash = HashBytes(&detail.index, sizeof(detail.index), hash);
+  }
   return static_cast<size_t>(hash);
 }
 
@@ -166,6 +172,12 @@ TypeId TypeStore::Intern(Key key) {
     type.args_begin = static_cast<uint32_t>(names_.size());
     type.args_count = static_cast<uint32_t>(key.names.size());
     names_.insert(names_.end(), key.names.begin(), key.names.end());
+    tags_.resize(names_.size(), 0);
+    details_.resize(names_.size());
+    for (size_t i = 0; i < key.tags.size(); ++i) {
+      tags_[type.args_begin + i] = key.tags[i];
+      details_[type.args_begin + i] = key.details[i];
+    }
   }
 
   const auto index = static_cast<uint32_t>(types_.size());
@@ -195,7 +207,8 @@ bool HasStorage(MemberKind kind) {
   return kind == MemberKind::kField || kind == MemberKind::kDerived ||
          kind == MemberKind::kReadyBit ||
          kind == MemberKind::kSignalList ||
-         kind == MemberKind::kMachineState;
+         kind == MemberKind::kMachineState ||
+         kind == MemberKind::kMachineClock;
 }
 
 TypeId TypeStore::Named(Symbol name,
@@ -290,6 +303,15 @@ TypeId TypeStore::Optional(TypeId element) {
   return Intern(std::move(key));
 }
 
+TypeId TypeStore::FindOptional(TypeId element) const {
+  Key key;
+  std::memset(&key.type, 0, sizeof(key.type));
+  key.type.kind = TypeKind::kOptional;
+  key.type.element = element;
+  const auto it = interned_.find(key);
+  return it == interned_.end() ? error_ : TypeId{it->second};
+}
+
 TypeId TypeStore::Fallible(TypeId element, TypeId error_set) {
   Key key;
   std::memset(&key.type, 0, sizeof(key.type));
@@ -299,12 +321,13 @@ TypeId TypeStore::Fallible(TypeId element, TypeId error_set) {
   return Intern(std::move(key));
 }
 
-TypeId TypeStore::Slice(TypeId element, bool is_soa) {
+TypeId TypeStore::Slice(TypeId element, bool is_soa, bool is_mutable) {
   Key key;
   std::memset(&key.type, 0, sizeof(key.type));
   key.type.kind = TypeKind::kSlice;
   key.type.element = element;
   key.type.is_soa = is_soa;
+  key.type.is_mutable = is_mutable;
   return Intern(std::move(key));
 }
 
@@ -326,13 +349,72 @@ TypeId TypeStore::Tuple(const std::vector<TypeId>& elements) {
   return Intern(std::move(key));
 }
 
-TypeId TypeStore::Function(const std::vector<TypeId>& params, TypeId result) {
+TypeId TypeStore::Function(const std::vector<TypeId>& params, TypeId result, bool is_kept) {
   Key key;
   std::memset(&key.type, 0, sizeof(key.type));
   key.type.kind = TypeKind::kFunction;
   key.type.element = result;
+  key.type.is_kept = is_kept;
   key.args = params;
   return Intern(std::move(key));
+}
+
+bool TypeStore::IsFunctionLike(TypeId id) const {
+  const TypeKind kind = KindOf(id);
+  return kind == TypeKind::kFunction ||
+         (kind == TypeKind::kOptional && IsFunctionLike(Get(id).element));
+}
+
+bool TypeStore::SameShape(TypeId a, TypeId b) const {
+  if (a == b) {
+    return true;
+  }
+  const TypeKind kind = KindOf(a);
+  if (kind != KindOf(b)) {
+    return false;
+  }
+  if (kind == TypeKind::kOptional) {
+    return SameShape(Get(a).element, Get(b).element);
+  }
+  if (kind != TypeKind::kFunction) {
+    return false;
+  }
+  return Get(a).element == Get(b).element && ArgumentsOf(a) == ArgumentsOf(b);
+}
+
+bool TypeStore::IsKept(TypeId id) const {
+  const TypeKind kind = KindOf(id);
+  if (kind == TypeKind::kFunction) {
+    return Get(id).is_kept;
+  }
+  if (kind == TypeKind::kOptional) {
+    return IsKept(Get(id).element);
+  }
+  return true;
+}
+
+TypeId TypeStore::Kept(TypeId id) {
+  const TypeKind kind = KindOf(id);
+  if (kind == TypeKind::kFunction) {
+    const Type type = Get(id);
+    return Function(ArgumentsOf(id), type.element, true);
+  }
+  if (kind == TypeKind::kOptional) {
+    return Optional(Kept(Get(id).element));
+  }
+  return id;
+}
+
+TypeId TypeStore::Borrowed(TypeId id) {
+  const TypeKind kind = KindOf(id);
+  if (kind == TypeKind::kFunction) {
+    const Type type = Get(id);
+    return Function(ArgumentsOf(id), type.element, false);
+  }
+  if (kind == TypeKind::kOptional) {
+    return Optional(Borrowed(Get(id).element));
+  }
+  return id;
 }
 
 TypeId TypeStore::Pointer(TypeId element, bool is_mutable) {
@@ -372,6 +454,28 @@ TypeId TypeStore::ErrorSet(const std::vector<Symbol>& members) {
   std::memset(&key.type, 0, sizeof(key.type));
   key.type.kind = TypeKind::kErrorSet;
   key.names = members;
+  return Intern(std::move(key));
+}
+
+TypeId TypeStore::StatedErrorSet(std::vector<ErrorMember> members) {
+  std::sort(members.begin(), members.end(), [](const ErrorMember& lhs, const ErrorMember& rhs) {
+    return lhs.tag != rhs.tag ? lhs.tag < rhs.tag : lhs.name.index < rhs.name.index;
+  });
+  members.erase(std::unique(members.begin(), members.end(), [](const ErrorMember& lhs, const ErrorMember& rhs) {
+    return lhs.name == rhs.name;
+  }), members.end());
+
+  Key key;
+  std::memset(&key.type, 0, sizeof(key.type));
+  key.type.kind = TypeKind::kErrorSet;
+  for (const ErrorMember& member : members) {
+    key.names.push_back(member.name);
+    key.tags.push_back(member.tag);
+    key.details.push_back(member.detail);
+    if (member.detail.is_valid()) {
+      Optional(member.detail);
+    }
+  }
   return Intern(std::move(key));
 }
 
@@ -430,6 +534,64 @@ std::vector<Symbol> TypeStore::ErrorMembersOf(TypeId id) const {
     result.push_back(names_[type.args_begin + i]);
   }
   return result;
+}
+
+std::vector<ErrorMember> TypeStore::StatedErrorsOf(TypeId id) const {
+  const Type& type = Get(id);
+  std::vector<ErrorMember> result;
+  if (type.kind != TypeKind::kErrorSet) {
+    return result;
+  }
+  for (uint32_t i = 0; i < type.args_count; ++i) {
+    ErrorMember member;
+    member.name = names_[type.args_begin + i];
+    member.tag = tags_[type.args_begin + i];
+    member.detail = details_[type.args_begin + i];
+    result.push_back(member);
+  }
+  return result;
+}
+
+bool TypeStore::IsOpenErrorSet(TypeId id) const {
+  return KindOf(id) == TypeKind::kErrorSet && Get(id).args_count == 0;
+}
+
+bool TypeStore::ErrorSetHasPayload(TypeId id) const {
+  for (const ErrorMember& member : StatedErrorsOf(id)) {
+    if (member.detail.is_valid()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+ErrorFit TypeStore::ErrorSetFits(TypeId expected, TypeId found, std::vector<Symbol>* missing) const {
+  if (IsOpenErrorSet(expected)) {
+    return ErrorSetHasPayload(found) ? ErrorFit::kPayloadIntoOpen : ErrorFit::kFits;
+  }
+
+  if (IsOpenErrorSet(found)) {
+    return ErrorFit::kMissing;
+  }
+
+  const std::vector<ErrorMember> allowed = StatedErrorsOf(expected);
+  bool fits = true;
+  for (const ErrorMember& member : StatedErrorsOf(found)) {
+    bool listed = false;
+    for (const ErrorMember& candidate : allowed) {
+      if (candidate.name == member.name) {
+        listed = true;
+        break;
+      }
+    }
+    if (!listed) {
+      fits = false;
+      if (missing != nullptr) {
+        missing->push_back(member.name);
+      }
+    }
+  }
+  return fits ? ErrorFit::kFits : ErrorFit::kMissing;
 }
 
 bool TypeStore::IsInteger(TypeId id) const {
@@ -633,7 +795,7 @@ TypeId TypeStore::AnswerProjections(TypeId id, const std::function<TypeId(TypeId
     case TypeKind::kFallible:
       return Fallible(element, type.base);
     case TypeKind::kSlice:
-      return Slice(element, type.is_soa);
+      return Slice(element, type.is_soa, type.is_mutable);
     case TypeKind::kArray:
       return Array(element, type.length, type.is_soa);
     case TypeKind::kPointer:
@@ -643,7 +805,7 @@ TypeId TypeStore::AnswerProjections(TypeId id, const std::function<TypeId(TypeId
     case TypeKind::kTuple:
       return Tuple(args);
     case TypeKind::kFunction:
-      return Function(args, element);
+      return Function(args, element, type.is_kept);
     case TypeKind::kInstance:
       return Instance(AnswerProjections(type.base, answer), args);
     default:
@@ -801,7 +963,7 @@ TypeId TypeStore::Substitute(TypeId id, const Substitution& substitution) {
     case TypeKind::kFallible:
       return Fallible(element, type.base);
     case TypeKind::kSlice:
-      return Slice(element, type.is_soa);
+      return Slice(element, type.is_soa, type.is_mutable);
     case TypeKind::kArray:
       return Array(element, type.length, type.is_soa);
     case TypeKind::kPointer:
@@ -811,7 +973,7 @@ TypeId TypeStore::Substitute(TypeId id, const Substitution& substitution) {
     case TypeKind::kTuple:
       return Tuple(args);
     case TypeKind::kFunction:
-      return Function(args, element);
+      return Function(args, element, type.is_kept);
     case TypeKind::kInstance:
       return Instance(Substitute(type.base, substitution), args);
     case TypeKind::kProjection:
@@ -881,12 +1043,32 @@ std::string TypeStore::Describe(const StringInterner& interner,
     case TypeKind::kOptional:
       return Describe(interner, type.element) + "?";
     case TypeKind::kFallible:
-      return Describe(interner, type.element) + "!";
+    {
+      std::string text = Describe(interner, type.element) + "!";
+      const std::vector<ErrorMember> stated = StatedErrorsOf(type.base);
+      if (stated.size() > 1) {
+        text.push_back('(');
+      }
+      for (size_t i = 0; i < stated.size(); ++i) {
+        if (i > 0) {
+          text.append(", ");
+        }
+        const std::string_view full = interner.Text(stated[i].name);
+        text.append(full.substr(full.rfind('.') == std::string_view::npos ? 0 : full.rfind('.') + 1));
+      }
+      if (stated.size() > 1) {
+        text.push_back(')');
+      }
+      return text;
+    }
 
     // `[]T` and `[N]T` read left to right: a slice of T, an array of N of
     // them. The brackets say what the shape is before the element does.
     case TypeKind::kSlice: {
       std::string text = type.is_soa ? "soa []" : "[]";
+      if (type.is_mutable) {
+        text.append("mut ");
+      }
       text.append(Describe(interner, type.element));
       return text;
     }
@@ -920,6 +1102,9 @@ std::string TypeStore::Describe(const StringInterner& interner,
           text.append(", ");
         }
         first = false;
+        if (IsFunctionLike(param) && IsKept(param)) {
+          text.append("keep ");
+        }
         text.append(Describe(interner, param));
       }
       text.push_back(')');

@@ -334,16 +334,26 @@ std::vector<TypeId> Chain(const Resolution& resolution, TypeId type) {
   return chain;
 }
 
+static std::vector<TypeId> ErrorPayloads(const TypeStore& types, TypeId fallible) {
+  std::vector<TypeId> payloads;
+  for (const ErrorMember& member : types.StatedErrorsOf(types.Get(fallible).base)) {
+    if (member.detail.is_valid()) {
+      payloads.push_back(member.detail);
+    }
+  }
+  return payloads;
+}
+
 }  // namespace
 
 uint32_t LayoutStore::FieldCount(TypeId type) const {
   switch (types_.KindOf(type)) {
     case TypeKind::kOptional:
-    // A `T!` is the same shape: which it is, and the value when it is a
-    // value (D90).
-    case TypeKind::kFallible:
-      // A tag and the value it may hold.
       return 2;
+    case TypeKind::kFallible:
+      // A tag, the value it may hold (D90), and one optional handle per
+      // error that carries data, in tag order (D235).
+      return 2 + static_cast<uint32_t>(ErrorPayloads(types_, type).size());
     case TypeKind::kArray:
       return static_cast<uint32_t>(types_.Get(type).length);
     case TypeKind::kTuple:
@@ -393,6 +403,10 @@ TypeId LayoutStore::FieldType(TypeId type, uint32_t index) const {
     case TypeKind::kFallible:
       // Which error, or zero for a value. A number rather than a bool,
       // because a `T!` says *which* way it failed.
+      if (index >= 2) {
+        const std::vector<TypeId> payloads = ErrorPayloads(types_, type);
+        return index - 2 < payloads.size() ? types_.FindOptional(payloads[index - 2]) : types_.error();
+      }
       return index == 0 ? types_.u32() : types_.ElementOf(type);
     case TypeKind::kArray:
       return types_.ElementOf(type);

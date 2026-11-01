@@ -124,7 +124,7 @@ const kMaxCount: int = 1000
 const kMaxSteps: int = 20000
 
 /// Compiles `pattern`. `flags` holds `i` and `s`.
-offer fun Compile(pattern: text, flags: text) -> Regex! uses unsafe {
+offer fun Compile(pattern: text, flags: text) -> Regex!BadPattern uses unsafe {
   var steps = ListNew<Step>()
   var pen = Pen(Bytes(pattern), 0, true, 0, 0)
   const fold = Contains(flags, 105)

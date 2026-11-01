@@ -21,6 +21,10 @@ struct ReflectionOptions {
   // An effect every engine call carries, so that a mod has to be granted
   // it: `World`. Empty for none.
   std::string effect;
+  // Whether the glue asks the host if an object is still alive before it
+  // calls into it (D262). Off only for a host whose objects never die
+  // under a script.
+  bool check_alive = true;
 };
 
 struct ReflectionResult {

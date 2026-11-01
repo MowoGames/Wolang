@@ -5,6 +5,8 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace wolang {
@@ -21,6 +23,10 @@ struct GlobalEntry {
 // not share them (D214).
 struct GlobalSpace {
   std::vector<GlobalEntry> Entries;
+  std::vector<std::pair<std::string, void*>> Symbols;
+  std::vector<SpaceClass> Classes;
+  SpaceWriteHook WriteHook = nullptr;
+  void* WriteUser = nullptr;
 };
 
 static GlobalSpace& ProcessSpace() {
@@ -80,6 +86,85 @@ GlobalSpace* GlobalSpaceEnter(GlobalSpace* space) {
 
 GlobalSpace* GlobalSpaceCurrent() {
   return sm_Current;
+}
+
+void SpaceBindSymbol(GlobalSpace* space, std::string_view name, void* address) {
+  if (space == nullptr) {
+    return;
+  }
+  for (auto& [existing, held] : space->Symbols) {
+    if (existing == name) {
+      held = address;
+      return;
+    }
+  }
+  space->Symbols.emplace_back(std::string(name), address);
+}
+
+void* SpaceSymbol(std::string_view name) {
+  if (sm_Current == nullptr) {
+    return nullptr;
+  }
+  for (const auto& [existing, held] : sm_Current->Symbols) {
+    if (existing == name) {
+      return held;
+    }
+  }
+  return nullptr;
+}
+
+void SpaceRegisterClass(GlobalSpace* space, const SpaceClass& entry) {
+  if (space == nullptr) {
+    return;
+  }
+  for (SpaceClass& held : space->Classes) {
+    if (held.Tag == entry.Tag) {
+      held = entry;
+      return;
+    }
+  }
+  space->Classes.push_back(entry);
+}
+
+bool SpaceClassOf(uint64_t tag, SpaceClass* out) {
+  if (sm_Current == nullptr) {
+    return false;
+  }
+  for (const SpaceClass& held : sm_Current->Classes) {
+    if (held.Tag == tag) {
+      *out = held;
+      return true;
+    }
+  }
+  return false;
+}
+
+void SpaceCopyBindings(const GlobalSpace* from, GlobalSpace* to) {
+  if (from == nullptr || to == nullptr) {
+    return;
+  }
+  to->Symbols = from->Symbols;
+  to->Classes = from->Classes;
+}
+
+void SpaceSetWriteHook(GlobalSpace* space, SpaceWriteHook hook, void* user) {
+  if (space == nullptr) {
+    return;
+  }
+  space->WriteHook = hook;
+  space->WriteUser = user;
+}
+
+bool SpaceWrite(int32_t fd, const uint8_t* bytes, uint64_t count, int64_t* result) {
+  if (sm_Current == nullptr || sm_Current->WriteHook == nullptr) {
+    return false;
+  }
+  const int64_t handled = sm_Current->WriteHook(sm_Current->WriteUser, fd, bytes, count);
+  if (handled < 0) {
+    return false;
+  }
+  *result = handled;
+  return true;
 }
 
 }  // namespace runtime

@@ -78,12 +78,12 @@ and pointing `CMAKE_PREFIX_PATH` at it is enough.
 
 | | |
 | --- | --- |
-| **Load** | `wolang_vm_load` takes a package directory or a `.wo` file; `wolang_vm_load_source` takes text under a name of your choosing. A second call adds to what is loaded. |
+| **Load** | `wolang_vm_load` takes a package directory or a `.wo` file; `wolang_vm_load_source` takes text under a name of your choosing. A second call adds to what is loaded. A lone file or a piece of source sits in a package named `host` that can `need` the standard library, found through `WOLANG_STD` or a `lib/std` above the file (D259). |
 | **Call** | `wolang_vm_call` by name, or `wolang_vm_function` once and `wolang_call` per frame. The compiled tier runs what it can and the interpreter runs the rest, which is why calls are fast without asking. |
-| **Ask** | `wolang_vm_function_count`/`_name` list what the package *offered*; `wolang_function_arity`, `_parameter`, `_result` and `_doc` say what one takes, answers and is for. |
+| **Ask** | `wolang_vm_function_count`/`_name`/`_module` list what the package *offered* and the module that offered it, so two packages that both offer `Tick` are told apart as `sample.mover.Tick` and `sample.camera.Tick`; a bare `Tick` that two modules offer is refused (D259); `wolang_function_arity`, `_parameter`, `_result` and `_doc` say what one takes, answers and is for. |
 | **Configure** | `wolang_vm_get_global`/`_set_global` read and write the program's module-level `var`s. A script's `var gravity: f32 = -9.8` is a setting the host owns. |
 | **Extend** | `wolang_vm_bind` makes a host function reachable: the script declares `extern "C" fun host_log(message: *u8, length: u64)` and calls it. |
-| **Capture** | `wolang_vm_set_writer` sends the program's output to the host's console instead of standard output; `wolang_vm_set_reporter` does the same for diagnostics. |
+| **Capture** | `wolang_vm_set_writer` sends the program's output to the host's console instead of standard output; `wolang_vm_set_reporter` does the same for diagnostics. `std.io.Print` and `Eprint` reach them too, in every tier (D259). |
 | **Contain** | `wolang_vm_set_step_limit` stops a call after so many instructions, for scripts the host did not write. It keeps calls on the interpreter, which is the trade. |
 | **Debug** | `wolang_vm_debug_listen` opens a port an editor attaches to with the Debug Adapter Protocol; breakpoints stop the host's call where it is. See [debugging](debugging.md). |
 | **Reload** | `wolang_vm_reload` loads everything again and keeps the program's state; `wolang_vm_file_count`/`_name` say which files to watch. |
@@ -137,13 +137,35 @@ destroy: it reads `null` afterwards instead of a dangling pointer. An
 object passed into a call is lent for the length of it. A script cannot
 construct an `extern class` or give it fields (`E0139`).
 
+`alive` alone cannot tell an object from a new one built at the same address.
+A host that reuses addresses registers its class with a token, through the
+size-prefixed `WolangHostClass` (D254), before it loads the program:
+
+```c
+WolangHostClass actor = {0};
+actor.size = sizeof(actor);
+actor.name = "Actor";
+actor.retain = ActorRetain;
+actor.release = ActorRelease;
+actor.alive = ActorAlive;
+actor.token = ActorToken;   // uint64_t ActorToken(void* object, void* user)
+actor.user = engine;
+wolang_vm_register_class_ex(vm, &actor);
+```
+
+A `weak var` then remembers the token the object had when it was stored, and
+reads `null` when `alive` says yes but `token` answers something else. The
+token is asked only of an object `alive` says is there.
+
 ## The ABI keeps its shape
 
 `wolang.h` defines `WOLANG_ABI_VERSION` (major in the high 16 bits, minor in
 the low) and the library answers `wolang_abi_version()`. A host compares the
 two once at load, because the library it links is not always the one it was
 compiled against: a different major is a different ABI, a larger minor only
-adds (D241).
+adds (D241). Minor 1 adds `wolang_vm_function_module` (D259). Minor 2 adds
+`wolang_vm_object_new`, `wolang_vm_object_set` and the `wolang_vm_class_*`
+reflection calls (D258).
 
 ```c
 if ((wolang_abi_version() >> 16) != (WOLANG_ABI_VERSION >> 16)) {
@@ -205,12 +227,22 @@ wolang bind --reflection --effect World     Intermediate/Build/Generated/Debug/M
 
 - **`mowo.wo`** — an `offer extern class` per reflected class, with its
   base, its methods, and a `Get`/`Set` pair per property. A method that
-  takes or answers a `Vec3`, a `Quat` or a string has a raw form the host
-  answers and a method in an `extend` block that scripts call:
-  `actor.GetActorLocation()` answers a `Vec3`.
+  takes or answers a `Vec3`, a `Quat`, a `Rotator` or a string has a raw
+  form the host answers and a method in an `extend` block that scripts
+  call: `actor.GetActorLocation()` answers a `Vec3`. A string comes back as
+  an owned copy of what the engine held, and a reflected struct whose
+  fields are all numbers is answered the way a vector is. A property of
+  an object type (`X*` or `TObjectPtr<X>`) or of `std::string` has its
+  `Get`/`Set` pair like any other.
+- **Statics** — an engine `static` function is a free `offer fun` in
+  the same package, named after the function; two classes that both have
+  a `Count` get `ActorCount` and `WorldCount`, the class name without its
+  one-letter engine prefix first (D262).
 - **The glue** — an `extern "C"` function per method and accessor, and
   `MowoWolang_Bind_mowo(vm)`, which registers every class and binds every
-  function. A null object answers zero rather than crashing. A property
+  function. A null object, or one `MowoWolangAlive` says the engine has
+  destroyed, answers zero rather than crashing; `--no-alive-check` leaves
+  the second test out (D262). A property
   is reached by its offset, asked for once from the engine's own
   reflection through `MowoWolangPropertyOffset(class, key)`.
 
@@ -220,8 +252,9 @@ The engine supplies four functions the glue declares: that offset, and
 be granted `World` to touch the world at all.
 
 What is left out is printed, one line each: components (which belong on
-the ECS side), properties of types with no binding, functions answering
-a `std::string`, overloads (D218).
+the ECS side), properties and functions of types with no binding, structs
+with a field that is not a number, a struct taken as a parameter, and
+overloads (D218, D262).
 
 ## The program's objects in the host
 
@@ -241,6 +274,27 @@ wolang_vm_object_release(vm, enemy);
 
 `wolang_vm_object_retain` takes another reference, for a host that keeps
 the object in two places.
+
+A host can also make an object and fill it (D258):
+
+```c
+WolangValue spot;
+wolang_vm_object_new(vm, "Spot", &spot);
+wolang_vm_object_set(vm, spot, "x", wolang_int(7));
+wolang_vm_object_release(vm, spot);
+```
+
+Every field starts as zero. Only a numeric, boolean or optional field can be
+left that way safely, so a class with a `text`, class or array field, or with
+virtual methods, is refused: make it in a script function and call that.
+`wolang_vm_class_count`/`_name`, `wolang_vm_class_field_count`/`_name`/`_kind`
+and `wolang_vm_class_attribute_count`/`_name` list the program's classes, the
+stored fields of each and the attributes written on it (`Replicated` for
+`@Replicated`), so a host need not scan the source.
+
+Each vm has its own bindings, host classes and writers (D257). Two vms in one
+process may bind the same symbol to different functions and print to different
+places; a lookup asks the vm whose call it is, then the process.
 
 ## Mods
 
@@ -303,6 +357,14 @@ health it had. When `Player` gained a field, the player keeps the fields
 that are still there, and the new one starts from what the initializer
 gave it. A `var` or a field whose type changed starts again from its
 initializer, and `wolang_vm_notes` has a line saying so.
+
+A reload that cannot work changes nothing (D255). The new program is
+loaded beside the old one first, without starting anything. If it does not
+compile, `wolang_vm_reload` answers an error, `wolang_vm_errors` says why, and
+the program that was running keeps running. The same goes for a program that
+would change the class of an object the host holds: the host's objects are not
+rebuilt, so the reload is refused with a line naming the class, and goes
+through once the host has let go of the object.
 
 Function handles from `wolang_vm_function` survive a reload and call the
 new code. The program as it was is kept until the vm is destroyed —

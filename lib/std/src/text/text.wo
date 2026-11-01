@@ -18,10 +18,9 @@ offer fun IsEmpty(value: text) -> bool {
   return value.length == 0
 }
 
-/// The bytes of `value`, as a view. Nothing is copied. The view is of text
-/// that may be a literal, so it must only be read: the caller declares
-/// `uses unsafe` for it (D233).
-@Exposes
+/// The bytes of `value`, as a view. Nothing is copied. The view is
+/// read-only: it is of text that may be a literal, and `[]u8` cannot be
+/// written through (D251).
 offer fun Bytes(value: text) -> []u8 uses unsafe {
   return BytesFromRaw(value.data, value.length as int)
 }
@@ -96,7 +95,7 @@ offer fun IndexOf(value: text, needle: text) -> int uses unsafe {
 /// `Text()` stays valid until the builder goes away -- which is what a
 /// destructor is for, and why this is a class and not a function.
 offer class Builder {
-  var bytes: []u8
+  var bytes: []mut u8
   var count: int = 0
 
   deinit  {
@@ -146,6 +145,12 @@ offer class Builder {
     count = count + source.len
   }
 
+  /// `value` and a newline: what a printer that builds a dump line by line writes (D250).
+  fun AppendLine(value: text) uses unsafe {
+    Append(value)
+    AppendByte(10)
+  }
+
   fun AppendByte(value: u8) uses unsafe {
     Reserve(count + 1)
     bytes[count] = value
@@ -185,7 +190,7 @@ fun BytesAsText(buffer: []u8, length: int) -> text uses unsafe {
   return TextFromRaw(buffer.data, length)
 }
 
-offer fun TextFromRaw(data: *u8, length: int) -> text uses unsafe
+offer unsafe fun TextFromRaw(data: *u8, length: int) -> text
 
 extend Split as Iterator {
   type Item = text
@@ -232,6 +237,14 @@ fun BuildsText() -> bool uses unsafe {
   }
   const built = builder.Text()
   return Equals(built, "hello world")
+}
+
+@Test
+fun BuildsLines() -> bool uses unsafe {
+  var builder = BuilderNew()
+  builder.AppendLine("a")
+  builder.AppendLine("bc")
+  return builder.Len() == 5 && Equals(builder.Text(), "a\nbc\n")
 }
 
 // ------------------------------------------------- looking at a string ---

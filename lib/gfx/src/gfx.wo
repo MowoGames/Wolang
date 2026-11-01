@@ -467,7 +467,7 @@ offer fun SetClipboard(value: text) uses unsafe {
 /// every backend here takes without converting. A canvas owns its
 /// storage and gives it back when it goes out of scope.
 offer class Canvas {
-  var pixels: []u32
+  var pixels: []mut u32
   var width: int = 0
   var height: int = 0
 
@@ -847,7 +847,7 @@ offer fun SaveFileDialog(title: text, name: text) -> text? uses unsafe {
 
 /// A C string as text. The bytes belong to the library that answered,
 /// so this copies.
-fun TextFromC(from: *u8) -> text uses unsafe {
+unsafe fun TextFromC(from: *u8) -> text {
   if from == 0 as *u8 {
     return ""
   }

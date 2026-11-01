@@ -184,9 +184,9 @@ fun Use() -> int {
                       lowered->module);
   // The copy is here, with a body, and so is the method of the instance
   // it returns.
-  WOLANG_EXPECT(text.find("fun @Wrap<s32>") != std::string::npos);
-  WOLANG_EXPECT(text.find("fun @Holder<s32>.Item") != std::string::npos);
-  WOLANG_EXPECT(text.find("fun @Wrap<s32>(s32) -> Holder<s32>\n") ==
+  WOLANG_EXPECT(text.find("fun @Wrap<s64>") != std::string::npos);
+  WOLANG_EXPECT(text.find("fun @Holder<s64>.Item") != std::string::npos);
+  WOLANG_EXPECT(text.find("fun @Wrap<s64>(s64) -> Holder<s64>\n") ==
                 std::string::npos);
 }
 
@@ -244,6 +244,88 @@ fun Use2() -> int {
 }
 )");
   WOLANG_EXPECT_EQ(fixture.Codes(hidden), "E0144");
+}
+
+WOLANG_TEST(ModuleScopeTest, AQualifiedNameCanBeAssignedOnlyIfItIsAVar) {
+  Fixture fixture;
+  const ModuleId a = fixture.AddModule("a");
+  fixture.AddFile(a, "a.wo", "offer const Limit: int = 3\noffer var Count: int = 0\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId frozen = fixture.AddFile(app, "frozen.wo", "need a\nfun Set() {\n  a.Limit = 4\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(frozen), "E0105");
+
+  const ModuleId app2 = fixture.AddModule("app2");
+  const FileId live = fixture.AddFile(app2, "live.wo", "need a\nfun Bump() {\n  a.Count = 4\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(live), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AQualifiedIntrinsicIsNotACall) {
+  Fixture fixture;
+  const ModuleId mem = fixture.AddModule("mem");
+  fixture.AddFile(mem, "mem.wo", "offer fun SizeOf<T>(value: T) -> int\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId main = fixture.AddFile(app, "main.wo", "need mem\nfun Width(x: s32) -> int {\n  return mem.SizeOf(x)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+
+  const LoweredFile* lowered = fixture.db().Lowered(main);
+  WOLANG_ASSERT_NE(lowered, nullptr);
+  for (const ir::Function& function : lowered->module.functions) {
+    WOLANG_EXPECT(fixture.db().interner().Text(function.name).find("SizeOf") == std::string_view::npos);
+  }
+}
+
+WOLANG_TEST(ModuleScopeTest, AQualifiedErrorNameIsAPattern) {
+  Fixture fixture;
+  const ModuleId a = fixture.AddModule("a");
+  fixture.AddFile(a, "a.wo", "offer error Corrupt, Missing\noffer fun Load(n: int) -> int!(Corrupt, Missing) {\n  if n == 0 {\n    return Corrupt\n  }\n  return n\n}\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId matched = fixture.AddFile(app, "m.wo", "need a\nfun Use() -> int {\n  match a.Load(0) {\n    Ok(v) => { return v }\n    a.Corrupt => { return -1 }\n    a.Missing => { return -2 }\n  }\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(matched), "");
+
+  const ModuleId app2 = fixture.AddModule("app2");
+  const FileId unknown = fixture.AddFile(app2, "u.wo", "need a\nfun Use() -> int {\n  match a.Load(0) {\n    Ok(v) => { return v }\n    a.Nope => { return -1 }\n    _ => { return -2 }\n  }\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(unknown), "E0144");
+}
+
+WOLANG_TEST(ModuleScopeTest, AThreadReachesAGlobalThroughAnotherModule) {
+  Fixture fixture;
+  const ModuleId lib = fixture.AddModule("lib");
+  fixture.AddFile(lib, "lib.wo", "var shared: int = 0\noffer fun Bump() {\n  shared = shared + 1\n}\noffer fun Idle() {\n}\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId shares = fixture.AddFile(app, "shares.wo", "need lib.{Bump}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(Bump)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(shares), "E0147");
+
+  const ModuleId app2 = fixture.AddModule("app2");
+  const FileId idle = fixture.AddFile(app2, "idle.wo", "need lib.{Idle}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(Idle)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(idle), "");
+
+  const ModuleId vouched = fixture.AddModule("vouched");
+  fixture.AddFile(vouched, "v.wo", "var shared: int = 0\noffer fun Bump() uses unsafe {\n  shared = shared + 1\n}\n");
+  const ModuleId app3 = fixture.AddModule("app3");
+  const FileId trusted = fixture.AddFile(app3, "trusted.wo", "need vouched.{Bump}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(Bump)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(trusted), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AThreadReachesAGlobalThroughAMethod) {
+  Fixture fixture;
+  const ModuleId lib = fixture.AddModule("lib");
+  fixture.AddFile(lib, "lib.wo", "var shared: int = 0\noffer class Counter {\n  fun Hit() {\n    shared = shared + 1\n  }\n  fun Len() -> int {\n    return 0\n  }\n}\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId shares = fixture.AddFile(app, "shares.wo", "need lib.{Counter}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(|| {\n    const c = Counter()\n    c.Hit()\n  })\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(shares), "E0147");
+
+  const ModuleId app2 = fixture.AddModule("app2");
+  const FileId reads = fixture.AddFile(app2, "reads.wo", "need lib.{Counter}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(|| {\n    const c = Counter()\n    const n = c.Len()\n  })\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(reads), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AThreadFunctionMayBeNamedThroughItsModule) {
+  Fixture fixture;
+  const ModuleId lib = fixture.AddModule("lib");
+  fixture.AddFile(lib, "lib.wo", "var shared: int = 0\noffer fun Bump() {\n  shared = shared + 1\n}\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId shares = fixture.AddFile(app, "shares.wo", "need lib\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(lib.Bump)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(shares), "E0147");
 }
 
 WOLANG_TEST(ModuleScopeTest, AValueNamedLikeAModuleStillMeansTheValue) {
@@ -345,7 +427,27 @@ fun Use() -> int {
                       lowered->module);
   // The method is a call, not an undefined value.
   WOLANG_EXPECT(text.find("undef : <error>") == std::string::npos);
-  WOLANG_EXPECT(text.find("Holder<s32>.Item") != std::string::npos);
+  WOLANG_EXPECT(text.find("Holder<s64>.Item") != std::string::npos);
+}
+
+WOLANG_TEST(ModuleScopeTest, AHostMethodCalledFromAnotherModuleNamesItsSymbol) {
+  Fixture fixture;
+  const ModuleId engine = fixture.AddModule("game.engine");
+  fixture.AddFile(engine, "actor.wo", "offer extern class Actor {\n  fun Health() -> s32\n}\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(game, "main.wo", "need game.engine.{Actor}\nfun Read(a: Actor) -> s32 uses unsafe {\n  return a.Health()\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+
+  const LoweredFile* lowered = fixture.db().Lowered(main);
+  WOLANG_ASSERT_NE(lowered, nullptr);
+  bool names_symbol = false;
+  for (const ir::Function& function : lowered->module.functions) {
+    if (function.foreign_symbol.is_valid() && fixture.db().interner().Text(function.foreign_symbol) == "Actor_Health") {
+      names_symbol = true;
+    }
+  }
+  WOLANG_EXPECT(names_symbol);
 }
 
 WOLANG_TEST(ModuleScopeTest, ResolvesImportsBetweenModules) {
@@ -396,6 +498,45 @@ WOLANG_TEST(ModuleScopeTest, ANameUsedInTypePositionCounts) {
       "need game.math.{Vec3}\nfun take(_v: Vec3) {}\n");
 
   WOLANG_EXPECT_EQ(fixture.Warnings(main), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AnAliasFromAnotherModuleIsItsTarget) {
+  Fixture fixture;
+  const ModuleId assets = fixture.AddModule("game.assets");
+  fixture.AddFile(assets, "mesh.wo", "offer type MeshAsset = text\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId fits = fixture.AddFile(game, "fits.wo", "need game.assets.{MeshAsset}\nfun Name(m: MeshAsset) -> text { return m }\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(fits), "");
+
+  const FileId clashes = fixture.AddFile(game, "clashes.wo", "need game.assets.{MeshAsset}\nfun Count(m: MeshAsset) -> int { return m }\n");
+  WOLANG_EXPECT(!fixture.Codes(clashes).empty());
+}
+
+WOLANG_TEST(ModuleScopeTest, ExtendingAForeignClassSeesItsFields) {
+  Fixture fixture;
+  const ModuleId engine = fixture.AddModule("game.engine");
+  fixture.AddFile(engine, "pawn.wo", "offer class Pawn {\n  var health: int\n}\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId reads = fixture.AddFile(game, "heal.wo", "need game.engine.{Pawn}\nextend Pawn {\n  fun Health() -> int { return self.health }\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(reads), "");
+
+  const FileId misses = fixture.AddFile(game, "miss.wo", "need game.engine.{Pawn}\nextend Pawn {\n  fun Mana() -> int { return self.mana }\n}\n");
+  WOLANG_EXPECT(!fixture.Codes(misses).empty());
+}
+
+WOLANG_TEST(ModuleScopeTest, ABaseClassCountsAsUsed) {
+  Fixture fixture;
+  const ModuleId engine = fixture.AddModule("game.engine");
+  fixture.AddFile(engine, "actor.wo", "offer class Actor {}\noffer fun Spare() {}\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(game, "main.wo", "need game.engine.{Actor}\nclass Pawn : Actor {}\n");
+  WOLANG_EXPECT_EQ(fixture.Warnings(main), "");
+
+  const FileId unused = fixture.AddFile(game, "other.wo", "need game.engine.{Actor, Spare}\nclass Pawn2 : Actor {}\n");
+  WOLANG_EXPECT_EQ(fixture.Warnings(unused), "W0101");
 }
 
 WOLANG_TEST(ModuleScopeTest, ABareNeedIsNeverUnused) {
@@ -576,9 +717,65 @@ WOLANG_TEST(ModuleScopeTest, AHotFunctionMayNotAllocate) {
   const ModuleId game = fixture.AddModule("game");
   const FileId main = fixture.AddFile(
       game, "main.wo",
-      "@Hot\nfun Tick() { Grow() }\nfun Grow() uses alloc {}\n");
+      "class Box {}\n@Hot\nfun Tick() { Grow() }\nfun Grow() { const b = Box() }\n");
 
-  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0702");
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0155");
+}
+
+WOLANG_TEST(ModuleScopeTest, AHotFunctionThatDoesNotAllocateIsFine) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "struct P { var x: int }\n@Hot\nfun Tick() -> int { const p = P(1)\n return p.x + 1 }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AHotPathReachesAnotherModulesMethod) {
+  Fixture fixture;
+  const ModuleId col = fixture.AddModule("col");
+  fixture.AddFile(
+      col, "col.wo",
+      "offer class Node {}\n"
+      "offer class Bag {\n"
+      "  fun Push() { const n = Node() }\n"
+      "  fun Len() -> int => 0\n"
+      "}\n");
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "need col.{Bag}\n"
+      "@Hot\nfun Tick(b: Bag) { b.Push() }\n");
+  const ModuleId calm = fixture.AddModule("calm");
+  const FileId quiet = fixture.AddFile(
+      calm, "main.wo",
+      "need col.{Bag}\n"
+      "@Hot\nfun Tick(b: Bag) -> int { return b.Len() }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0155");
+  WOLANG_EXPECT_EQ(fixture.Codes(quiet), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AHotPathMayNotFormatText) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "@Hot\nfun Tick(n: int) -> text { return \"{n}\" }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0155");
+}
+
+WOLANG_TEST(ModuleScopeTest, AHotPathMayNotTakeStorage) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "unsafe fun ArrayNew<T>(count: int) -> []mut T\n"
+      "@Hot\nfun Tick() uses unsafe { const a = ArrayNew<int>(4) }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0155");
 }
 
 WOLANG_TEST(ModuleScopeTest, AComptimeFunctionHasNoEffects) {

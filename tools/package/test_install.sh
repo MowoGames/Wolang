@@ -39,6 +39,11 @@ pass() { echo "ok: $*"; }
 mkdir "$work/serve"
 cmake --install "$build" --prefix "$work/serve/$name" > "$work/install.log" ||
   { cat "$work/install.log"; fail "cmake --install"; }
+for exported in "$work/serve/$name"/lib/cmake/Wolang/WolangTargets*.cmake "$work/serve/$name"/lib/pkgconfig/wolang-embed.pc; do
+  [ -f "$exported" ] || continue
+  ! grep -qi "llvm" "$exported" || fail "$exported names LLVM (D261)"
+done
+pass "the embedding package names no LLVM"
 (cd "$work/serve" && tar -czf "$name.tar.gz" "$name" &&
   { sha256sum "$name.tar.gz" 2> /dev/null ||
     shasum -a 256 "$name.tar.gz"; } > SHA256SUMS)

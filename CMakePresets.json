@@ -29,6 +29,7 @@
       "displayName": "Debug + sanitizers",
       "inherits": "debug",
       "cacheVariables": {
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL",
         "WOLANG_ENABLE_SANITIZERS": "ON"
       }
     },

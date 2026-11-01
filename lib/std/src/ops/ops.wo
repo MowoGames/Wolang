@@ -1,0 +1,217 @@
+// What an operator means.
+//
+// `a + b` on a type of your own is the call `a.Plus(b)`, and the type says
+// it can by saying it has `Add`. An operator is an ability, so a generic
+// bound like `T: Add` is how a function says it needs one, and numbers
+// meet every one of these without being declared to (D239). `Self` is the
+// type that implements the ability.
+
+/// `a + b` and `a += b`.
+@Operator
+offer ability Add {
+  fun Plus(other: Self) -> Self
+}
+
+/// `a - b` and `a -= b`.
+@Operator
+offer ability Sub {
+  fun Minus(other: Self) -> Self
+}
+
+/// `a * b` and `a *= b`.
+@Operator
+offer ability Mul {
+  fun Times(other: Self) -> Self
+}
+
+/// `a / b` and `a /= b`.
+@Operator
+offer ability Div {
+  fun Divide(other: Self) -> Self
+}
+
+/// `-a`.
+@Operator
+offer ability Neg {
+  fun Negate() -> Self
+}
+
+/// `a == b` and `a != b`. The other side is borrowed, so comparing two
+/// counted values neither copies nor frees either.
+@Operator
+offer ability Eq {
+  fun Equals(other: &Self) -> bool
+}
+
+/// `a < b`, `a <= b`, `a > b` and `a >= b`: `Compare` answers a negative
+/// number, zero or a positive one for less, equal and greater.
+@Operator
+offer ability Ord {
+  fun Compare(other: &Self) -> int
+}
+
+/// A number a table can file the value under. Not an operator: it is what
+/// `std.map` and `std.set` ask of a key that is not a number or text.
+offer ability Hash {
+  fun Hash() -> int
+}
+
+/// The greater of two, by `Ord`.
+offer fun Max<T: Ord>(a: T, b: T) -> T {
+  if a >= b {
+    return a
+  }
+  return b
+}
+
+/// The lesser of two, by `Ord`.
+offer fun Min<T: Ord>(a: T, b: T) -> T {
+  if a <= b {
+    return a
+  }
+  return b
+}
+
+struct Vec2 {
+  var x: int
+  var y: int
+}
+
+extend Vec2 as Add {
+  fun Plus(other: Self) -> Self => Vec2(x + other.x, y + other.y)
+}
+
+extend Vec2 as Sub {
+  fun Minus(other: Self) -> Self => Vec2(x - other.x, y - other.y)
+}
+
+extend Vec2 as Mul {
+  fun Times(other: Self) -> Self => Vec2(x * other.x, y * other.y)
+}
+
+extend Vec2 as Div {
+  fun Divide(other: Self) -> Self => Vec2(x / other.x, y / other.y)
+}
+
+extend Vec2 as Neg {
+  fun Negate() -> Self => Vec2(-x, -y)
+}
+
+extend Vec2 as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x && y == other.y
+}
+
+extend Vec2 as Ord {
+  fun Compare(other: &Self) -> int {
+    if x != other.x {
+      return if x < other.x {
+        -1
+      } else {
+        1
+      }
+    }
+    if y != other.y {
+      return if y < other.y {
+        -1
+      } else {
+        1
+      }
+    }
+    return 0
+  }
+}
+
+class Money {
+  var cents: int
+}
+
+extend Money as Add {
+  fun Plus(other: Self) -> Self => Money(cents + other.cents)
+}
+
+extend Money as Eq {
+  fun Equals(other: &Self) -> bool => cents == other.cents
+}
+
+extend Money as Ord {
+  fun Compare(other: &Self) -> int => cents - other.cents
+}
+
+fun Twice<T: Add>(value: T) -> T => value + value
+
+@Test
+fun AddsStructs() -> bool {
+  const sum = Vec2(1, 2) + Vec2(10, 20)
+  return sum.x == 11 && sum.y == 22
+}
+
+@Test
+fun SubtractsMultipliesAndDividesStructs() -> bool {
+  const a = Vec2(12, 30)
+  const b = Vec2(3, 5)
+  const less = a - b
+  const more = a * b
+  const part = a / b
+  return less.x == 9 && less.y == 25 && more.x == 36 && more.y == 150 && part.x == 4 && part.y == 6
+}
+
+@Test
+fun NegatesAStruct() -> bool {
+  const flipped = -Vec2(3, -4)
+  return flipped.x == -3 && flipped.y == 4
+}
+
+@Test
+fun ComparesStructsForEquality() -> bool {
+  const a = Vec2(1, 2)
+  const b = Vec2(1, 2)
+  const c = Vec2(1, 3)
+  return a == b && !(a == c) && a != c && !(a != b)
+}
+
+@Test
+fun OrdersStructs() -> bool {
+  const small = Vec2(1, 9)
+  const big = Vec2(2, 0)
+  const same = Vec2(1, 9)
+  return small < big && small <= big && big > small && big >= small && small <= same && small >= same && !(small > big) && !(big < small)
+}
+
+@Test
+fun AddsInPlace() -> bool {
+  var total = Vec2(1, 1)
+  total += Vec2(2, 3)
+  total += Vec2(4, 5)
+  total -= Vec2(1, 1)
+  return total.x == 6 && total.y == 8
+}
+
+@Test
+fun AddsClassesWithoutLeakingOrFreeingEarly() -> bool {
+  const a = Money(250)
+  const b = Money(175)
+  var total = a + b
+  total += Money(5)
+  return total.cents == 430 && a.cents == 250 && b.cents == 175 && a != b && a > b
+}
+
+@Test
+fun PicksTheGreaterOfAStructAndOfAnInt() -> bool {
+  const bigger = Max(Vec2(1, 5), Vec2(1, 7))
+  const smaller = Min(Vec2(1, 5), Vec2(1, 7))
+  return bigger.y == 7 && smaller.y == 5 && Max(3, 9) == 9 && Min(3, 9) == 3 && Max(
+      Money(1),
+      Money(2)).cents == 2
+}
+
+@Test
+fun GenericAddTakesStructsAndNumbers() -> bool {
+  return Twice(Vec2(1, 2)).y == 4 && Twice(21) == 42 && Twice(1.5) == 3.0
+}
+
+@Test
+fun ComparesANumberThroughTheAbility() -> bool {
+  return Sign(3, 5) == -1 && Sign(5, 3) == 1 && Sign(4, 4) == 0
+}
+
+fun Sign<T: Ord>(a: T, b: T) -> int => a.Compare(&b)

@@ -39,7 +39,8 @@ WOLANG_TEST(TypeStoreTest, EqualTypesGetTheSameId) {
   WOLANG_EXPECT_NE(store.Int(IntWidth::k32, true),
                    store.Int(IntWidth::k64, true));
   WOLANG_EXPECT_EQ(store.Float(FloatWidth::k32), store.default_float());
-  WOLANG_EXPECT_EQ(store.Int(IntWidth::k32, true), store.default_int());
+  WOLANG_EXPECT_EQ(store.Int(IntWidth::k64, true), store.default_int());
+  WOLANG_EXPECT_NE(store.Int(IntWidth::k32, true), store.default_int());
 
   const TypeId a = store.Optional(store.default_int());
   const TypeId b = store.Optional(store.default_int());
@@ -48,16 +49,16 @@ WOLANG_TEST(TypeStoreTest, EqualTypesGetTheSameId) {
 
 WOLANG_TEST(TypeStoreTest, StructuralTypesAreInternedByContents) {
   TypeStore store;
-  const TypeId i32 = store.default_int();
+  const TypeId wide = store.default_int();
   const TypeId f32 = store.default_float();
 
-  WOLANG_EXPECT_EQ(store.Tuple({i32, f32}), store.Tuple({i32, f32}));
-  WOLANG_EXPECT_NE(store.Tuple({i32, f32}), store.Tuple({f32, i32}));
-  WOLANG_EXPECT_EQ(store.Function({i32}, f32), store.Function({i32}, f32));
-  WOLANG_EXPECT_NE(store.Function({i32}, f32), store.Function({f32}, f32));
-  WOLANG_EXPECT_NE(store.Slice(i32, false), store.Slice(i32, true));
-  WOLANG_EXPECT_NE(store.Array(i32, 3, false), store.Array(i32, 4, false));
-  WOLANG_EXPECT_NE(store.Pointer(i32, false), store.Pointer(i32, true));
+  WOLANG_EXPECT_EQ(store.Tuple({wide, f32}), store.Tuple({wide, f32}));
+  WOLANG_EXPECT_NE(store.Tuple({wide, f32}), store.Tuple({f32, wide}));
+  WOLANG_EXPECT_EQ(store.Function({wide}, f32), store.Function({wide}, f32));
+  WOLANG_EXPECT_NE(store.Function({wide}, f32), store.Function({f32}, f32));
+  WOLANG_EXPECT_NE(store.Slice(wide, false), store.Slice(wide, true));
+  WOLANG_EXPECT_NE(store.Array(wide, 3, false), store.Array(wide, 4, false));
+  WOLANG_EXPECT_NE(store.Pointer(wide, false), store.Pointer(wide, true));
 }
 
 WOLANG_TEST(TypeStoreTest, NamedTypesAreIdentifiedByTheirDeclaration) {
@@ -89,19 +90,19 @@ WOLANG_TEST(TypeStoreTest, GenericInstanceWithoutArgumentsIsItsBase) {
 
 WOLANG_TEST(TypeStoreTest, AccessorsReturnWhatWasBuilt) {
   TypeStore store;
-  const TypeId i32 = store.default_int();
+  const TypeId wide = store.default_int();
   const TypeId f32 = store.default_float();
 
-  const TypeId tuple = store.Tuple({i32, f32, i32});
+  const TypeId tuple = store.Tuple({wide, f32, wide});
   const std::vector<TypeId> elements = store.ArgumentsOf(tuple);
   WOLANG_ASSERT_EQ(elements.size(), size_t{3});
-  WOLANG_EXPECT_EQ(elements[0], i32);
+  WOLANG_EXPECT_EQ(elements[0], wide);
   WOLANG_EXPECT_EQ(elements[1], f32);
 
-  WOLANG_EXPECT_EQ(store.ElementOf(store.Optional(i32)), i32);
+  WOLANG_EXPECT_EQ(store.ElementOf(store.Optional(wide)), wide);
   WOLANG_EXPECT_EQ(store.ElementOf(store.Slice(f32, false)), f32);
   WOLANG_EXPECT_EQ(store.ElementOf(store.Function({}, f32)), f32);
-  WOLANG_EXPECT(!store.ElementOf(i32).is_valid());
+  WOLANG_EXPECT(!store.ElementOf(wide).is_valid());
 }
 
 WOLANG_TEST(TypeStoreTest, ClassifiesNumbers) {
@@ -124,22 +125,22 @@ WOLANG_TEST(TypeStoreTest, ClassifiesNumbers) {
 
 WOLANG_TEST(TypeStoreTest, StripsOptionalAndFallibleLayers) {
   TypeStore store;
-  const TypeId i32 = store.default_int();
+  const TypeId wide = store.default_int();
   const TypeId errors = store.ErrorSet({});
-  const TypeId wrapped = store.Fallible(store.Optional(i32), errors);
-  WOLANG_EXPECT_EQ(store.StripWrappers(wrapped), i32);
-  WOLANG_EXPECT_EQ(store.StripWrappers(i32), i32);
+  const TypeId wrapped = store.Fallible(store.Optional(wide), errors);
+  WOLANG_EXPECT_EQ(store.StripWrappers(wrapped), wide);
+  WOLANG_EXPECT_EQ(store.StripWrappers(wide), wide);
 }
 
 WOLANG_TEST(TypeStoreTest, DescribesTypesTheWayTheyAreWritten) {
   TypeStore store;
   StringInterner interner;
-  const TypeId i32 = store.default_int();
+  const TypeId wide = store.default_int();
   const TypeId f32 = store.default_float();
   const TypeId pawn = store.Named(interner.Intern("Pawn"), 0, 0);
   const TypeId array = store.Named(interner.Intern("Array"), 0, 1);
 
-  WOLANG_EXPECT_EQ(store.Describe(interner, i32), "s32");
+  WOLANG_EXPECT_EQ(store.Describe(interner, wide), "s64");
   WOLANG_EXPECT_EQ(store.Describe(interner, f32), "f32");
   WOLANG_EXPECT_EQ(store.Describe(interner, store.Int(IntWidth::k8, false)),
                    "u8");
@@ -153,12 +154,12 @@ WOLANG_TEST(TypeStoreTest, DescribesTypesTheWayTheyAreWritten) {
                    "soa []Pawn");
   WOLANG_EXPECT_EQ(store.Describe(interner, store.Array(f32, 3, false)),
                    "[3]f32");
-  WOLANG_EXPECT_EQ(store.Describe(interner, store.Instance(array, {i32})),
-                   "Array<s32>");
-  WOLANG_EXPECT_EQ(store.Describe(interner, store.Tuple({i32, f32})),
-                   "(s32, f32)");
-  WOLANG_EXPECT_EQ(store.Describe(interner, store.Function({i32}, f32)),
-                   "fun(s32) -> f32");
+  WOLANG_EXPECT_EQ(store.Describe(interner, store.Instance(array, {wide})),
+                   "Array<s64>");
+  WOLANG_EXPECT_EQ(store.Describe(interner, store.Tuple({wide, f32})),
+                   "(s64, f32)");
+  WOLANG_EXPECT_EQ(store.Describe(interner, store.Function({wide}, f32)),
+                   "fun(s64) -> f32");
   WOLANG_EXPECT_EQ(
       store.Describe(interner, store.Function({}, store.void_type())),
       "fun()");
@@ -191,6 +192,68 @@ WOLANG_TEST(TypeStoreTest, ErrorSetsAreInternedByMembers) {
   WOLANG_ASSERT_EQ(members.size(), size_t{2});
   WOLANG_EXPECT_EQ(interner.Text(members[0]), "NotFound");
   WOLANG_EXPECT_EQ(store.Describe(interner, set), "NotFound | Corrupt");
+}
+
+static ErrorMember MakeMember(StringInterner* interner, std::string_view name, TypeId detail) {
+  ErrorMember member;
+  member.name = interner->Intern(name);
+  member.tag = ErrorTag(name);
+  member.detail = detail;
+  return member;
+}
+
+WOLANG_TEST(TypeStoreTest, ErrorTagsAreStableAndNeverZero) {
+  WOLANG_EXPECT_NE(ErrorTag("std.json.Malformed"), ErrorTag("std.yaml.Malformed"));
+  WOLANG_EXPECT_EQ(ErrorTag("a.B"), ErrorTag("a.B"));
+  WOLANG_EXPECT_NE(ErrorTag("a.B"), 0u);
+  WOLANG_EXPECT_NE(ErrorTag(""), 0u);
+}
+
+WOLANG_TEST(TypeStoreTest, StatedErrorSetsAreOrderIndependent) {
+  TypeStore store;
+  StringInterner interner;
+  const ErrorMember a = MakeMember(&interner, "m.A", TypeId{});
+  const ErrorMember b = MakeMember(&interner, "m.B", TypeId{});
+  WOLANG_EXPECT_EQ(store.StatedErrorSet({a, b}), store.StatedErrorSet({b, a}));
+  WOLANG_EXPECT_EQ(store.StatedErrorSet({a, a}), store.StatedErrorSet({a}));
+  WOLANG_EXPECT_NE(store.StatedErrorSet({a}), store.StatedErrorSet({a, b}));
+  WOLANG_EXPECT_EQ(store.StatedErrorsOf(store.StatedErrorSet({a, b})).size(), size_t{2});
+  WOLANG_EXPECT(store.IsOpenErrorSet(store.OpenErrorSet()));
+  WOLANG_EXPECT(!store.IsOpenErrorSet(store.StatedErrorSet({a})));
+}
+
+WOLANG_TEST(TypeStoreTest, ErrorSetFitsFollowsTheSubsetRule) {
+  TypeStore store;
+  StringInterner interner;
+  const TypeId box = store.Named(interner.Intern("$err.m.P"), 0, 0);
+  const ErrorMember a = MakeMember(&interner, "m.A", TypeId{});
+  const ErrorMember b = MakeMember(&interner, "m.B", TypeId{});
+  const ErrorMember p = MakeMember(&interner, "m.P", box);
+  const TypeId open = store.OpenErrorSet();
+  const TypeId only_a = store.StatedErrorSet({a});
+  const TypeId a_and_b = store.StatedErrorSet({a, b});
+  const TypeId only_p = store.StatedErrorSet({p});
+
+  std::vector<Symbol> missing;
+  WOLANG_EXPECT(store.ErrorSetFits(a_and_b, only_a, &missing) == ErrorFit::kFits);
+  WOLANG_EXPECT(missing.empty());
+  WOLANG_EXPECT(store.ErrorSetFits(only_a, a_and_b, &missing) == ErrorFit::kMissing);
+  WOLANG_EXPECT_EQ(missing.size(), size_t{1});
+  WOLANG_EXPECT(store.ErrorSetFits(only_a, open, nullptr) == ErrorFit::kMissing);
+  WOLANG_EXPECT(store.ErrorSetFits(open, a_and_b, nullptr) == ErrorFit::kFits);
+  WOLANG_EXPECT(store.ErrorSetFits(open, only_p, nullptr) == ErrorFit::kPayloadIntoOpen);
+  WOLANG_EXPECT(store.ErrorSetFits(only_p, only_p, nullptr) == ErrorFit::kFits);
+}
+
+WOLANG_TEST(TypeStoreTest, DescribesAStatedSetOfFallible) {
+  TypeStore store;
+  StringInterner interner;
+  const ErrorMember a = MakeMember(&interner, "m.A", TypeId{});
+  const ErrorMember b = MakeMember(&interner, "m.B", TypeId{});
+  const TypeId wide = store.default_int();
+  WOLANG_EXPECT_EQ(store.Describe(interner, store.Fallible(wide, store.StatedErrorSet({a}))), "s64!A");
+  const std::string two = store.Describe(interner, store.Fallible(wide, store.StatedErrorSet({a, b})));
+  WOLANG_EXPECT(two == "s64!(A, B)" || two == "s64!(B, A)");
 }
 
 // --------------------------------------------------------------- quantities --
@@ -315,18 +378,18 @@ WOLANG_TEST(TypeStoreTest, UnifiesAndSubstitutesTypeParameters) {
   StringInterner interner;
   const TypeId t = store.Parameter(interner.Intern("T"), 0, 0);
   const TypeId u = store.Parameter(interner.Intern("U"), 0, 1);
-  const TypeId i32 = store.default_int();
+  const TypeId wide = store.default_int();
   const TypeId f32 = store.default_float();
 
   WOLANG_EXPECT(store.MentionsParameter(store.Slice(t, false)));
-  WOLANG_EXPECT(!store.MentionsParameter(store.Slice(i32, false)));
+  WOLANG_EXPECT(!store.MentionsParameter(store.Slice(wide, false)));
 
   TypeStore::Substitution substitution;
-  WOLANG_EXPECT(store.Unify(store.Slice(t, false), store.Slice(i32, false),
+  WOLANG_EXPECT(store.Unify(store.Slice(t, false), store.Slice(wide, false),
                             &substitution));
-  WOLANG_EXPECT_EQ(store.Substitute(t, substitution), i32);
+  WOLANG_EXPECT_EQ(store.Substitute(t, substitution), wide);
   WOLANG_EXPECT_EQ(store.Substitute(store.Optional(t), substitution),
-                   store.Optional(i32));
+                   store.Optional(wide));
 
   // A parameter already inferred cannot be inferred differently.
   WOLANG_EXPECT(!store.Unify(t, f32, &substitution));
@@ -334,13 +397,37 @@ WOLANG_TEST(TypeStoreTest, UnifiesAndSubstitutesTypeParameters) {
   // A second parameter is independent.
   WOLANG_EXPECT(store.Unify(u, f32, &substitution));
   WOLANG_EXPECT_EQ(store.Substitute(store.Tuple({t, u}), substitution),
-                   store.Tuple({i32, f32}));
+                   store.Tuple({wide, f32}));
 
   // Walking a type never follows a field its kind does not use: a tuple has
   // no element type, and reading one would be a zeroed id pointing at a real
   // type.
-  WOLANG_EXPECT(!store.MentionsParameter(store.Tuple({i32, f32})));
-  WOLANG_EXPECT(store.MentionsParameter(store.Tuple({i32, t})));
+  WOLANG_EXPECT(!store.MentionsParameter(store.Tuple({wide, f32})));
+  WOLANG_EXPECT(store.MentionsParameter(store.Tuple({wide, t})));
+}
+
+WOLANG_TEST(TypeStoreTest, KeptAndBorrowedFunctionsAreDistinct) {
+  TypeStore store;
+  const TypeId i32 = store.Int(IntWidth::k32, true);
+  const TypeId kept = store.Function({i32}, i32, true);
+  const TypeId borrowed = store.Function({i32}, i32, false);
+  WOLANG_EXPECT_NE(kept, borrowed);
+  WOLANG_EXPECT_EQ(store.Kept(borrowed), kept);
+  WOLANG_EXPECT_EQ(store.Borrowed(kept), borrowed);
+  WOLANG_EXPECT(store.IsKept(kept));
+  WOLANG_EXPECT(!store.IsKept(borrowed));
+  WOLANG_EXPECT_EQ(store.Borrowed(store.Optional(kept)), store.Optional(borrowed));
+  WOLANG_EXPECT_EQ(store.Kept(i32), i32);
+  WOLANG_EXPECT(store.IsKept(i32));
+  WOLANG_EXPECT(!store.IsFunctionLike(i32));
+  WOLANG_EXPECT(store.IsFunctionLike(store.Optional(borrowed)));
+}
+
+WOLANG_TEST(TypeStoreTest, UnifyIgnoresKept) {
+  TypeStore store;
+  const TypeId i32 = store.Int(IntWidth::k32, true);
+  TypeStore::Substitution substitution;
+  WOLANG_EXPECT(store.Unify(store.Function({i32}, i32, true), store.Function({i32}, i32, false), &substitution));
 }
 
 }  // namespace

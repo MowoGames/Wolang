@@ -34,8 +34,8 @@ offer class Poller {
     return handle >= 0
   }
 
-  fun Watch(fd: int) -> bool uses unsafe {
-    return wolang_poll_add(handle, fd as s32) == 0
+  fun Watch(fd: s32) -> bool uses unsafe {
+    return wolang_poll_add(handle, fd) == 0
   }
 
   fun Forget(fd: int) -> bool uses unsafe {
@@ -70,6 +70,6 @@ offer fun PollerNew(most: int) -> Poller uses io, unsafe {
 
 /// Stops a descriptor from blocking: a read with nothing to read returns
 /// instead of waiting, which is what lets one loop serve many.
-offer fun SetNonBlocking(fd: int) -> bool uses net, unsafe {
-  return wolang_set_nonblocking(fd as s32) == 0
+offer fun SetNonBlocking(fd: s32) -> bool uses net, unsafe {
+  return wolang_set_nonblocking(fd) == 0
 }
