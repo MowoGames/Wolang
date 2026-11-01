@@ -249,13 +249,13 @@ WOLANG_TEST(ReflectionBindTest, TextCrossesAsACopy) {
   WOLANG_EXPECT(Holds(out, "  fun RawGetLabel(resultLength: *mut u64) -> *u8 uses World\n"));
   WOLANG_EXPECT(Holds(out, "  fun RawSetLabel(value: *u8, valueLength: u64) uses World\n"));
   WOLANG_EXPECT(Holds(out, "  offer fun SetLabel(value: text) uses World, unsafe {"));
-  WOLANG_EXPECT(Holds(out, "offer fun Find(tag: text) -> AActor uses World, unsafe {"));
+  WOLANG_EXPECT(Holds(out, "offer fun Find(tagValue: text) -> AActor uses World, unsafe {"));
 
   WOLANG_EXPECT(Holds(glue, "extern \"C\" const char* AActor_RawGetActorName(void* self, uint64_t* resultLength) {"));
   WOLANG_EXPECT(Holds(glue, "static thread_local std::string held;\n\theld = static_cast<Mowo::AActor*>(self)->GetActorName();"));
   WOLANG_EXPECT(Holds(glue, "\t*resultLength = held.size();\n\treturn held.c_str();\n"));
   WOLANG_EXPECT(Holds(glue, "held = *reinterpret_cast<const std::string*>(static_cast<char*>(self) + offset);"));
-  WOLANG_EXPECT(Holds(glue, "Mowo::AActor::Find(std::string(tag, static_cast<size_t>(tagLength)))"));
+  WOLANG_EXPECT(Holds(glue, "Mowo::AActor::Find(std::string(tagValue, static_cast<size_t>(tagValueLength)))"));
 
   bool said_text = false;
   for (const std::string& skipped : result.skipped) {
