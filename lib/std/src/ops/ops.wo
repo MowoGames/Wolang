@@ -104,10 +104,18 @@ extend Vec2 as Eq {
 extend Vec2 as Ord {
   fun Compare(other: &Self) -> int {
     if x != other.x {
-      return if x < other.x { -1 } else { 1 }
+      return if x < other.x {
+        -1
+      } else {
+        1
+      }
     }
     if y != other.y {
-      return if y < other.y { -1 } else { 1 }
+      return if y < other.y {
+        -1
+      } else {
+        1
+      }
     }
     return 0
   }
@@ -191,7 +199,9 @@ fun AddsClassesWithoutLeakingOrFreeingEarly() -> bool {
 fun PicksTheGreaterOfAStructAndOfAnInt() -> bool {
   const bigger = Max(Vec2(1, 5), Vec2(1, 7))
   const smaller = Min(Vec2(1, 5), Vec2(1, 7))
-  return bigger.y == 7 && smaller.y == 5 && Max(3, 9) == 9 && Min(3, 9) == 3 && Max(Money(1), Money(2)).cents == 2
+  return bigger.y == 7 && smaller.y == 5 && Max(3, 9) == 9 && Min(3, 9) == 3 && Max(
+      Money(1),
+      Money(2)).cents == 2
 }
 
 @Test

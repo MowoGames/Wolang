@@ -89,12 +89,16 @@ offer fun Parse(input: text) -> Value!Malformed uses unsafe {
   const start = Cursor(Bytes(input), 0)
   const step = ParseValue(SkipSpace(start), 0)
   if !step.ok {
-    return Malformed(LineOf(start.bytes, step.cursor.at), ColumnOf(start.bytes, step.cursor.at))
+    return Malformed(
+        LineOf(start.bytes, step.cursor.at),
+        ColumnOf(start.bytes, step.cursor.at))
   }
   // Trailing bytes other than space mean the document said two things.
   const rest = SkipSpace(step.cursor)
   if !AtEnd(rest) {
-    return Malformed(LineOf(start.bytes, rest.at), ColumnOf(start.bytes, rest.at))
+    return Malformed(
+        LineOf(start.bytes, rest.at),
+        ColumnOf(start.bytes, rest.at))
   }
   return step.value
 }

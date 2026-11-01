@@ -410,7 +410,13 @@ fun Scale(value: int, depth: int) -> int {
 
 /// Writes pixel `x` of the row at `row` as RGBA at `at`. False when a
 /// palette index points past the palette.
-fun PngPixel(raw: []u8, row: int, x: int, info: &PngInfo, dest: []mut u8, at: int) -> bool {
+fun PngPixel(
+    raw: []u8,
+    row: int,
+    x: int,
+    info: &PngInfo,
+    dest: []mut u8,
+    at: int) -> bool {
   const depth = info.depth
   var r = 0
   var g = 0

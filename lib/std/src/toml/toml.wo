@@ -139,16 +139,22 @@ offer fun Parse(input: text) -> Value!Malformed uses unsafe {
       }
       const header = ParsePath(SkipBlanks(cursor))
       if !header.ok {
-        return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
+        return Malformed(
+            LineOf(cursor.bytes, cursor.at),
+            ColumnOf(cursor.bytes, cursor.at))
       }
       cursor = SkipBlanks(header.cursor)
       if Peek(cursor) != 93 {
-        return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
+        return Malformed(
+            LineOf(cursor.bytes, cursor.at),
+            ColumnOf(cursor.bytes, cursor.at))
       }
       cursor.at = cursor.at + 1
       if doubled {
         if Peek(cursor) != 93 {
-          return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
+          return Malformed(
+              LineOf(cursor.bytes, cursor.at),
+              ColumnOf(cursor.bytes, cursor.at))
         }
         cursor.at = cursor.at + 1
       }
@@ -163,16 +169,22 @@ offer fun Parse(input: text) -> Value!Malformed uses unsafe {
 
     const key = ParsePath(cursor)
     if !key.ok {
-      return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
+      return Malformed(
+          LineOf(cursor.bytes, cursor.at),
+          ColumnOf(cursor.bytes, cursor.at))
     }
     cursor = SkipBlanks(key.cursor)
     if Peek(cursor) != 61 {
-      return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
+      return Malformed(
+          LineOf(cursor.bytes, cursor.at),
+          ColumnOf(cursor.bytes, cursor.at))
     }
     cursor.at = cursor.at + 1
     const step = ParseValue(SkipBlanks(cursor), 0)
     if !step.ok {
-      return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
+      return Malformed(
+          LineOf(cursor.bytes, cursor.at),
+          ColumnOf(cursor.bytes, cursor.at))
     }
     cursor = step.cursor
     root = Assign(root, &path, &key.path, step.value)
