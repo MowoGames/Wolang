@@ -638,11 +638,11 @@ row** is the set of effects it may produce.
 ```wolang
 effect Telemetry
 
-offer fun LoadLevel(path: text) -> Level! uses io, alloc
+offer fun LoadLevel(path: text) -> Level! uses io
 offer fun Report(event: text) uses Telemetry
 ```
 
-Built-in effects: `alloc`, `io`, `rand`, `time`, `net`, `gpu`, `unsafe`,
+Built-in effects: `io`, `rand`, `time`, `net`, `gpu`, `unsafe`,
 `panic`. An `unsafe { }` block *is* the `unsafe` effect, so a caller that
 forbids it does not have to look inside. `effect Name` declares one more, and
 a declared effect is interned by its declaration — so a project's own
@@ -678,7 +678,7 @@ A context outranks a signature: declaring an effect does not make it allowed.
 |---|---|
 | `comptime` | everything but `panic` — it runs inside the compiler |
 | `@Deterministic` | `rand`, `time`, `net` |
-| `@Hot` | `alloc` |
+| `@Hot` | `async` |
 
 ```wolang
 @Deterministic
@@ -687,8 +687,22 @@ fun Simulate() uses rand {        // E0702: not allowed here
 }
 ```
 
-This is one mechanism rather than three attribute checks, which is the whole
-reason effects exist as a language feature rather than a lint.
+`@Hot` also forbids allocation, but not through the row: stating `alloc` on
+every function that formats a message would cost everyone for one attribute's
+benefit (D237). The compiler works out what allocates instead. A body
+allocates when it constructs a class, interpolates or joins owned text, takes
+storage with `ArrayNew` or `SoaNew`, or builds an error that carries data. A
+call, or naming a function as a value, passes that on, across modules and
+through methods. A `@Hot` function that reaches an allocation is `E0155`, and
+the message lists the calls from the function to the site. Not followed: calls
+into `extern` code, calls through a function value that was not named in the
+hot body, virtual dispatch past the base method, and calls bound through an
+ability inside a generic body. `uses` takes only effects the language or the
+file declares; any other name is `E0158`, and `alloc` is no longer one.
+
+Apart from `@Hot` this is one mechanism rather than three attribute checks,
+which is the whole reason effects exist as a language feature rather than a
+lint.
 
 ### 5.3 Capabilities
 
@@ -696,7 +710,7 @@ A package may be granted a capability set and nothing more:
 
 ```toml
 [build]
-capabilities = "io, alloc"
+capabilities = "io"
 ```
 
 Anything outside the grant is `E0703` — not a mistake in the code, but a

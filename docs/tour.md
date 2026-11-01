@@ -444,10 +444,11 @@ fun main() uses io, unsafe {
 }
 ```
 
-The effects: `io`, `alloc`, `rand`, `time`, `net`, `gpu`, `unsafe`,
+The effects: `io`, `rand`, `time`, `net`, `gpu`, `unsafe`,
 `panic`. A function calling something with an effect must declare it or
-have it, which is what makes "this runs in the render loop and allocates
-nothing" a thing the compiler can check.
+have it. Allocation is not an effect: mark a function `@Hot` and the compiler
+checks that nothing it calls allocates, which is what makes "this runs in the
+render loop and allocates nothing" a thing it can check.
 
 ## Units and dimensions
 

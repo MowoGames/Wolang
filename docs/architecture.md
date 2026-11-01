@@ -562,10 +562,10 @@ public signatures:
 
 ```wolang
 offer fun Integrate(dt: Seconds, q: Query<mut Transform, Velocity>)
-offer fun LoadLevel(path: text) -> Result<Level> uses io, alloc
+offer fun LoadLevel(path: text) -> Result<Level> uses io
 ```
 
-Built-in effects are a closed set (`alloc`, `io`, `rand`, `time`, `net`, `gpu`,
+Built-in effects are a closed set (`io`, `rand`, `time`, `net`, `gpu`,
 `unsafe`, `panic`); user code declares additional capability tokens with
 `effect`. This one mechanism replaces what would otherwise be five unrelated
 checks: determinism, allocation-free hot paths, mod sandboxing, `comptime`

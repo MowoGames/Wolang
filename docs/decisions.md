@@ -3258,3 +3258,20 @@ through the base would skip the promise; the other way round is allowed. `unsafe
 before `fun`, `task`, `virtual`, `override` or `extern` is the modifier; `unsafe
 {` is still the block. `std.mem`, `TextFromRaw`, `ParallelFor`, `AtomicAdd`,
 `socket.Read` and `gfx.TextFromC` are `unsafe fun`.
+
+**D237. What allocates is worked out, and only `@Hot` asks.** `alloc` was an
+effect nobody inferred, so `@Hot` accepted anything. Allocation is now a
+property of a body, found the way D232 finds a thread's globals. Constructing a
+class, `ArrayNew` and `SoaNew`, building owned text (interpolation, `+`), a call
+to a bodiless function that returns owned text, and an error that carries data
+(D235) set it. A call or a naming (D222) passes it on, across modules and
+through methods, because `List.Push` is in another module and is a method. A
+`@Hot` function that reaches it is `E0155`, with the chain of calls. It is not
+a row effect: stating it on every function that formats a message would cost
+everyone, for one attribute's benefit. The work is one program-wide query that
+is asked only when some declaration is `@Hot`, so a program without one pays
+nothing. Not followed: `extern` calls, a function value that the hot body did
+not name, virtual dispatch past the base method, ability-bound calls inside a
+generic body. `uses alloc` and the `alloc` capability are gone; a name in `uses`
+that is no effect is `E0158` (so `alloc` is one), and `alloc` in `capabilities`
+is `E0053`.
