@@ -641,7 +641,7 @@ class Checker {
   // both operands, because in `1 + small` neither side should settle before
   // the other has been seen.
   TypeId Check(ExprId id, TypeId expected, bool keep_open = false);
-  TypeId CheckLiteral(const Expr& expr, TypeId expected);
+  TypeId CheckLiteral(ExprId id, const Expr& expr, TypeId expected);
   TypeId CheckPath(const Expr& expr);
   TypeId CheckUnary(ExprId id, const Expr& expr, TypeId expected);
   TypeId CheckBinary(ExprId id, const Expr& expr, TypeId expected);
@@ -1040,7 +1040,7 @@ TypeId Checker::QuantityOfUnit(const NumberLiteral& number,
 
 // -------------------------------------------------------------- literals ----
 
-TypeId Checker::CheckLiteral(const Expr& expr, TypeId expected) {
+TypeId Checker::CheckLiteral(ExprId id, const Expr& expr, TypeId expected) {
   switch (expr.kind) {
     case ExprKind::kIntLiteral:
     case ExprKind::kFloatLiteral: {
@@ -3533,7 +3533,7 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
     case ExprKind::kBoolLiteral:
     case ExprKind::kNullLiteral:
     case ExprKind::kPointerNull:
-      type = CheckLiteral(expr, expected);
+      type = CheckLiteral(id, expr, expected);
       break;
 
     case ExprKind::kStringText:

@@ -2291,13 +2291,11 @@ static std::string HeldObjectsBlock(WolangVm* vm, WolangVm* staged) {
     const TypeId before = FindClassNamed(vm->database, held.Type);
     const TypeId after = FindClassNamed(staged->database, held.Type);
     if (!before.is_valid() || !after.is_valid()) {
-      blocked += "the host holds a `" + held.Type + "` and the new program has no such class
-";
+      blocked += "the host holds a `" + held.Type + "` and the new program has no such class\n";
       continue;
     }
     if (LayoutKey(vm->database, before) != LayoutKey(staged->database, after)) {
-      blocked += "the host holds a `" + held.Type + "` and its fields changed
-";
+      blocked += "the host holds a `" + held.Type + "` and its fields changed\n";
     }
   }
   return blocked;
@@ -2326,8 +2324,7 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
     }
     if (staged_status != 0 || !staged->ok) {
       vm->errors = staged->errors;
-      vm->notes = "the reload was refused; the program that was running keeps running
-";
+      vm->notes = "the reload was refused; the program that was running keeps running\n";
       return kWolangError;
     }
     const std::string blocked = HeldObjectsBlock(vm, staged.get());
