@@ -211,6 +211,14 @@ WOLANG_TEST(TypeCheck, ReportsALiteralThatDoesNotFit) {
   WOLANG_EXPECT(Fixture("fun f() { const x: s8 = 127 }").Codes().empty());
 }
 
+WOLANG_TEST(TypeCheck, TheMinimumOfASignedTypeNeedsItsMinusSign) {
+  WOLANG_EXPECT(Fixture("fun f() { const x: s8 = 128 }").HasCode("E0109"));
+  WOLANG_EXPECT(Fixture("fun f() { const x: s64 = 9223372036854775808 }").HasCode("E0109"));
+  WOLANG_EXPECT(Fixture("fun f() { const x: s8 = -128 }").Codes().empty());
+  WOLANG_EXPECT(Fixture("fun f() { const x: s16 = -32768 }").Codes().empty());
+  WOLANG_EXPECT(Fixture("fun f() { const x: s8 = -129 }").HasCode("E0109"));
+}
+
 WOLANG_TEST(TypeCheck, AWideLiteralWithNoTypeIsNotCutToInt) {
   // `int` is s64 (D238), so the edge is 2^63; it used to wrap 4294967297 to
   // 1 without a word (D225).

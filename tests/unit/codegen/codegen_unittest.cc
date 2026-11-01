@@ -3035,6 +3035,19 @@ fun Product() -> s32 {
                    "trap: overflow at @Product:%13: mul overflowed");
 }
 
+WOLANG_TEST(CodegenTest, TheMinimumOfEverySignedWidthRoundTrips) {
+  Fixture f(R"(
+fun Minimums() -> int {
+  var a: s8 = -128
+  var b: s16 = -32768
+  var c: s32 = -2147483648
+  var d: s64 = -9223372036854775808
+  return (a as int) + (b as int) + (c as int) + (d as int) / 4611686018427387904
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Minimums", {}), "-2147516546");
+}
+
 WOLANG_TEST(CodegenTest, IntIsSixtyFourBitsInEveryTier) {
   // `int` is s64 (D238): 2^31 is a value, not an overflow, while s32 and the
   // top of s64 still trap.

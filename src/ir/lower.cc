@@ -3909,6 +3909,16 @@ class Lowerer {
       const InstId called = LowerOperatorCall(id, expr.op, Erase(TypeOf(expr.lhs)), receiver, ExprId{}, type, /*binary=*/false);
       return called.is_valid() ? called : builder_->Undef(type);
     }
+    // The minimum of a signed type has a magnitude one past its maximum, so
+    // negating the positive constant would overflow; the negative value is
+    // built directly (D238).
+    if (expr.op == TokenKind::kMinus && ast().Get(expr.lhs).kind == ExprKind::kIntLiteral) {
+      const TypeId built = Unwrapped(type);
+      if (types_->KindOf(built) == TypeKind::kInt && types_->Get(built).is_signed) {
+        const NumberLiteral& number = ast().number(ast().Get(expr.lhs).aux);
+        return Coerce(builder_->ConstInt(built, uint64_t{0} - number.integer_value), built, type);
+      }
+    }
     const InstId operand = Value(expr.lhs);
     // What arithmetic produces is what it was given, not what the context
     // wanted: `-total` where an `int?` is expected is a negation of an

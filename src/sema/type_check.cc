@@ -502,6 +502,7 @@ class Checker {
   // `uses unsafe` on the declaration being checked: the caller takes
   // responsibility for what the threads share.
   bool caller_unsafe_ = false;
+  ExprId negated_literal_;
 
   bool InsideClosure(ExprId closure) const {
     return std::find(closures_.begin(), closures_.end(), closure) !=
@@ -1059,8 +1060,12 @@ TypeId Checker::CheckLiteral(const Expr& expr, TypeId expected) {
       if (target.is_valid()) {
         const IntRange range = RangeOf(*types_, target);
         const uint64_t value = number.integer_value;
-        const bool fits = range.is_signed ? value <= range.max_magnitude
-                                          : value <= range.max_magnitude;
+        // The extra value of a signed type is on the negative side, so 128 is
+        // only an `s8` when a minus sign is directly on it (D238).
+        const bool negated = negated_literal_ == id;
+        const bool fits = range.is_signed && !negated
+                              ? value < range.max_magnitude
+                              : value <= range.max_magnitude;
         if (!fits) {
           std::string message = "the literal does not fit in `";
           message.append(Describe(target));
@@ -1330,6 +1335,9 @@ TypeId Checker::CheckUnary(ExprId id, const Expr& expr, TypeId expected) {
   }
   // `-9223372036854775807 - 1` is a literal expression until the context
   // says what it is; settling the operand on `int` first made it one (D225).
+  if (expr.op == TokenKind::kMinus) {
+    negated_literal_ = expr.lhs;
+  }
   const TypeId operand =
       Check(expr.lhs, wanted,
             /*keep_open=*/expr.op == TokenKind::kMinus ||
