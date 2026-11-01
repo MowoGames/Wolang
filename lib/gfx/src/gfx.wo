@@ -847,7 +847,7 @@ offer fun SaveFileDialog(title: text, name: text) -> text? uses unsafe {
 
 /// A C string as text. The bytes belong to the library that answered,
 /// so this copies.
-fun TextFromC(from: *u8) -> text uses unsafe {
+unsafe fun TextFromC(from: *u8) -> text {
   if from == 0 as *u8 {
     return ""
   }

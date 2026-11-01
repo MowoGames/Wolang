@@ -1123,6 +1123,7 @@ FileResolution ResolveFile(TypeStore* types,
     binding.is_foreign = HasFlag(entry.flags, ItemFlags::kExtern);
     binding.is_task = HasFlag(entry.flags, ItemFlags::kAsync);
     binding.has_body = HasFlag(entry.flags, ItemFlags::kHasBody);
+    binding.is_unsafe_fun = HasFlag(entry.flags, ItemFlags::kUnsafe);
     if (item != nullptr && entry.kind == ItemKind::kFunction) {
       for (AttributeId attribute_id : ast.Get(item->attributes)) {
         const Attribute& attribute = ast.Get(attribute_id);
@@ -1564,6 +1565,7 @@ void ResolveSignatures(TypeStore* types,
       member.is_public = !HasFlag(member_entry.flags, ItemFlags::kPriv);
       member.is_virtual = HasFlag(member_entry.flags, ItemFlags::kVirtual);
       member.is_override = HasFlag(member_entry.flags, ItemFlags::kOverride);
+      member.is_unsafe = HasFlag(member_entry.flags, ItemFlags::kUnsafe);
       switch (member_entry.kind) {
         case ItemKind::kFunction:
           member.kind = MemberKind::kMethod;

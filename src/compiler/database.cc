@@ -1286,11 +1286,28 @@ void Database::RegisterQueries() {
             declared = &stated;
           }
 
+          // `unsafe fun` vouches for what its body does, so `unsafe` counts
+          // as stated and is never missing (D236).
+          const bool is_unsafe_fun =
+              HasFlag(tree->entries[index].flags, ItemFlags::kUnsafe);
+          const EffectId unsafe_id{
+              static_cast<uint32_t>(BuiltinEffect::kUnsafe)};
+          if (is_unsafe_fun && declared != nullptr) {
+            stated.Add(unsafe_id);
+            declared = &stated;
+          }
+
           if (declared == nullptr) {
             // Inference stops at the module boundary, so a name other
             // modules can call has to say what it does -- otherwise its
             // callers have nothing to check against.
-            if (actual->empty() ||
+            EffectRow visible;
+            for (EffectId effect : actual->effects()) {
+              if (!is_unsafe_fun || effect != unsafe_id) {
+                visible.Add(effect);
+              }
+            }
+            if (visible.empty() ||
                 !HasFlag(tree->entries[index].flags, ItemFlags::kOffer) ||
                 tree->entries[index].kind != ItemKind::kFunction) {
               continue;
@@ -1302,7 +1319,7 @@ void Database::RegisterQueries() {
             std::string message = "`";
             message.append(interner_.Text(ast.Get(offered).name));
             message.append("` is offered to other modules and does `");
-            message.append(types_.Describe(interner_, *actual));
+            message.append(types_.Describe(interner_, visible));
             message.append("`, so it has to say so");
             diagnostics.Error(kUnstatedPublicEffect, std::move(message))
                 .Primary(ast.Get(offered).name_span,

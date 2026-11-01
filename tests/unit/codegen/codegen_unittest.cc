@@ -1481,7 +1481,7 @@ WOLANG_TEST(CodegenTest, LaysOutARecordAsOneArrayPerField) {
   // the first version of this got 36 where it should have had 10 because
   // every field shared one array.
   Fixture f(R"(
-offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
+offer unsafe fun SoaNew<T>(count: int) -> soa []T
 
 struct Particle {
   var x: float = 0.0
@@ -1523,7 +1523,7 @@ WOLANG_TEST(CodegenTest, TakesTheTypeArgumentACallWrites) {
   // []T` and the field offsets were computed against a type parameter,
   // which laid every field of every element on top of the others.
   Fixture f(R"(
-offer fun Empty<T>() -> []T uses unsafe
+offer unsafe fun Empty<T>() -> []T
 
 struct Pair {
   var a: int = 0
@@ -1604,7 +1604,7 @@ WOLANG_TEST(CodegenTest, ReadsAndWritesAnAggregateThroughAPointer) {
   // a frame slot, and the reference tier holds a slot as a value rather
   // than at an address, so there would be no pointer to write.
   Fixture f(R"(
-offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+offer unsafe fun ArrayNew<T>(count: int) -> []T
 
 class Rows {
   var data: []int
@@ -1632,8 +1632,8 @@ WOLANG_TEST(CodegenTest, AGenericStoreOverSoaStorage) {
   // them. Every piece of this works on its own, and putting them
   // together is what found the rest.
   Fixture f(R"(
-offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
-offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+offer unsafe fun SoaNew<T>(count: int) -> soa []T
+offer unsafe fun ArrayNew<T>(count: int) -> []T
 
 struct Point {
   var x: float = 0.0
@@ -1677,7 +1677,7 @@ fun Build() -> int uses unsafe {
 
 WOLANG_TEST(CodegenTest, WritesThroughASliceFieldOfAnObject) {
   Fixture f(R"(
-offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+offer unsafe fun ArrayNew<T>(count: int) -> []T
 
 class Store {
   var owners: []int
@@ -3677,8 +3677,8 @@ fun Check() -> int {
 WOLANG_TEST(CodegenTest, CompoundAssignmentOperatesOnItsTarget) {
   // `i += 1` lowered as `i = 1`, so a loop on it never ended (D246).
   Fixture f(R"(
-offer fun ArrayNew<T>(count: int) -> []T uses unsafe
-offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
+offer unsafe fun ArrayNew<T>(count: int) -> []T
+offer unsafe fun SoaNew<T>(count: int) -> soa []T
 
 var total: int = 10
 

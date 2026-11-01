@@ -185,7 +185,7 @@ fun BytesAsText(buffer: []u8, length: int) -> text uses unsafe {
   return TextFromRaw(buffer.data, length)
 }
 
-offer fun TextFromRaw(data: *u8, length: int) -> text uses unsafe
+offer unsafe fun TextFromRaw(data: *u8, length: int) -> text
 
 extend Split as Iterator {
   type Item = text

@@ -728,7 +728,7 @@ WOLANG_TEST(LowerTest, FreeReadsTheDataOfASliceAsAPointer) {
   // as a word and the verifier, rightly, refused every program importing
   // std.list.
   Fixture f(R"(
-offer fun Free<T>(items: []T) uses unsafe
+offer unsafe fun Free<T>(items: []T)
 
 fun Release(items: []u8) uses unsafe {
   Free(items)
@@ -741,7 +741,7 @@ WOLANG_TEST(LowerTest, ParallelForTakesItsThreadCountAtTheRuntimesWidth) {
   // `int` is 64 bits (D238) and the runtime's thread count is 32: the
   // argument has to be converted, not passed as it is.
   Fixture f(R"(
-offer fun ParallelFor(count: int, threads: int, body: fun(int, int)) uses unsafe
+offer unsafe fun ParallelFor(count: int, threads: int, body: fun(int, int))
 
 fun Run(threads: int) uses unsafe {
   ParallelFor(8, threads, |a, b| { })

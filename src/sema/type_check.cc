@@ -2282,6 +2282,9 @@ void Checker::RecordCallEffects(ExprId callee, ExprId call) {
 
 void Checker::ChargeBinding(const Binding* binding, bool drop_async) {
   NoteCall(binding->file, binding->item);
+  if (binding->is_unsafe_fun) {
+    result_.direct_effects.Add(types_->BuiltinEffectId(BuiltinEffect::kUnsafe));
+  }
   if (const EffectRow* declared =
           resolution_->DeclaredRow(binding->file, binding->item);
       declared != nullptr) {
@@ -2302,7 +2305,7 @@ void Checker::ChargeBinding(const Binding* binding, bool drop_async) {
         types_->BuiltinEffectId(BuiltinEffect::kAsync);
     for (EffectId effect : declared->effects()) {
       if (effect == unsafe_effect && binding->has_body &&
-          !binding->exposes) {
+          !binding->exposes && !binding->is_unsafe_fun) {
         continue;
       }
       if (drop_async && effect == async_effect) {
@@ -2336,6 +2339,7 @@ void Checker::ChargeMember(const Member* member, bool drop_async) {
   binding.item = member->item;
   binding.file = member->file;
   binding.has_body = true;
+  binding.is_unsafe_fun = member->is_unsafe;
   ChargeBinding(&binding, drop_async);
 }
 
@@ -3999,7 +4003,7 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   const bool previous_task = in_task_;
   in_task_ = HasFlag(item.flags, ItemFlags::kAsync);
   const bool previous_unsafe = caller_unsafe_;
-  caller_unsafe_ = false;
+  caller_unsafe_ = HasFlag(item.flags, ItemFlags::kUnsafe);
   for (TypeRefId effect : ast_.Get(item.effects)) {
     const std::span<const Symbol> path = ast_.Get(ast_.Get(effect).path);
     caller_unsafe_ |= !path.empty() &&

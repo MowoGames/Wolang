@@ -222,14 +222,14 @@ WOLANG_TEST(EffectRowTest, BodilessUnsafePrimitiveReExportsUnsafe) {
   // A primitive has no body vouching for it, so its `uses unsafe` is the
   // caller's to state, like `extern` (D221).
   WOLANG_EXPECT_EQ(CodesOf("prim-fires", R"(
-fun Free(items: []u8) uses unsafe
+unsafe fun Free(items: []u8)
 
 offer fun Drop(items: []u8) {
   Free(items)
 }
 )"), "E0704");
   WOLANG_EXPECT_EQ(CodesOf("prim-twin", R"(
-fun Free(items: []u8) uses unsafe
+unsafe fun Free(items: []u8)
 
 offer fun Drop(items: []u8) uses unsafe {
   Free(items)
@@ -239,7 +239,7 @@ offer fun Drop(items: []u8) uses unsafe {
 
 WOLANG_TEST(EffectRowTest, WrapperWithABodyStillAbsorbsUnsafe) {
   WOLANG_EXPECT_EQ(CodesOf("wrap-absorbs", R"(
-fun Free(items: []u8) uses unsafe
+unsafe fun Free(items: []u8)
 
 fun Release(items: []u8) uses unsafe {
   Free(items)
@@ -248,6 +248,57 @@ fun Release(items: []u8) uses unsafe {
 fun Safe(items: []u8) {
   Release(items)
 }
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, AnUnsafeFunChargesItsCaller) {
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-fires", R"(
+unsafe fun Poke() {}
+
+offer fun Use() {
+  Poke()
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-twin", R"(
+unsafe fun Poke() {}
+
+offer fun Use() uses unsafe {
+  Poke()
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, AnUnsafeFunBodyStatesNothing) {
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-body", R"(
+extern "C" fun abs(n: s32) -> s32
+
+offer unsafe fun Abs(n: s32) -> s32 {
+  return abs(n)
+}
+)"), "");
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-named", R"(
+unsafe fun Poke() {}
+
+offer fun Pick() uses io {
+  const _f: fun() = Poke
+}
+)"), "E0701");
+}
+
+WOLANG_TEST(EffectRowTest, AnUnsafeFunStillStatesItsOtherEffects) {
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-io", R"(
+offer unsafe fun Poke() {
+  Out()
+}
+
+fun Out() uses io
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-io-twin", R"(
+offer unsafe fun Poke() uses io {
+  Out()
+}
+
+fun Out() uses io
 )"), "");
 }
 
@@ -271,7 +322,7 @@ offer fun Sneaky() uses io {
 }
 )"), "");
   WOLANG_EXPECT_EQ(CodesOf("value-unsafe", R"(
-fun Free(items: []u8) uses unsafe
+unsafe fun Free(items: []u8)
 
 offer fun Sneaky() {
   const _w: fun([]u8) = Free

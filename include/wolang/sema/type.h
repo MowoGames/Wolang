@@ -168,6 +168,8 @@ struct Member {
   bool is_override = false;
   // Fields: `weak var`, which does not keep the object alive.
   bool is_weak = false;
+  // Methods: `unsafe fun`, which charges its caller the `unsafe` effect (D236).
+  bool is_unsafe = false;
   // Methods of an `@Operator` ability: the operator this one answers.
   OperatorKind operator_kind = OperatorKind::kNone;
   // Derived fields: which fields the expression reads, as indices into the
@@ -184,6 +186,7 @@ struct Member {
            lhs.is_virtual == rhs.is_virtual &&
            lhs.is_override == rhs.is_override &&
            lhs.is_weak == rhs.is_weak &&
+           lhs.is_unsafe == rhs.is_unsafe &&
            lhs.operator_kind == rhs.operator_kind &&
            lhs.depends_on == rhs.depends_on;
   }

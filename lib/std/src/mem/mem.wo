@@ -14,7 +14,7 @@
 ///
 /// `unsafe` because nothing here can check that there are that many, or
 /// that they stay there. The caller promises both.
-offer fun BytesFromRaw(data: *u8, length: int) -> []u8 uses unsafe
+offer unsafe fun BytesFromRaw(data: *u8, length: int) -> []u8
 
 /// Storage for `count` records, laid out as one array per field.
 ///
@@ -24,14 +24,14 @@ offer fun BytesFromRaw(data: *u8, length: int) -> []u8 uses unsafe
 ///
 /// Like `BytesFromRaw`, it has no body: how big the storage is, is a
 /// question only a tier can answer, so the compiler answers it at the call.
-offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
+offer unsafe fun SoaNew<T>(count: int) -> soa []T
 
 /// Storage for `count` records, one after another.
 ///
 /// The same records as `SoaNew` and a different layout: this is the one
 /// that reads well when a pass touches most of a record, and the other is
 /// the one that reads well when it touches one field of it.
-offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+offer unsafe fun ArrayNew<T>(count: int) -> []T
 
 /// Gives back storage `ArrayNew` or `SoaNew` handed out.
 ///
@@ -42,14 +42,14 @@ offer fun ArrayNew<T>(count: int) -> []T uses unsafe
 ///
 /// Like the two above, it has no body: what a view's storage *is* depends
 /// on how the tier laid it out, so the compiler answers at the call.
-offer fun Free<T>(items: []T) uses unsafe
+offer unsafe fun Free<T>(items: []T)
 
 /// A view of `count` values of `T` at `data`.
 ///
 /// `BytesFromRaw` with an element type: the same pair, and the same
 /// reason for having no body. `unsafe` because nothing here can check
 /// that there are that many values there, or that they stay.
-offer fun ViewFromRaw<T>(data: *u8, count: int) -> []T uses unsafe
+offer unsafe fun ViewFromRaw<T>(data: *u8, count: int) -> []T
 
 /// The first `count` elements of `items`, as a view.
 ///
@@ -57,7 +57,7 @@ offer fun ViewFromRaw<T>(data: *u8, count: int) -> []T uses unsafe
 /// container with room to spare hands out -- `List.Items()` is this with
 /// the count filled in -- and the one place that knows a slice is a
 /// pointer and a length (D138).
-offer fun Prefix<T>(items: []T, count: int) -> []T uses unsafe
+offer unsafe fun Prefix<T>(items: []T, count: int) -> []T
 
 /// How many bytes a value of `value`'s type takes.
 ///
@@ -105,7 +105,7 @@ struct Held {
 /// view is a pointer and a length, and only the tiers know how far
 /// along an element is. Between them a caller can name any run inside a
 /// view without copying it (D177).
-offer fun Suffix<T>(items: []T, at: int) -> []T uses unsafe
+offer unsafe fun Suffix<T>(items: []T, at: int) -> []T
 
 @Test
 fun TakesTheEndOfAView() -> bool uses unsafe {

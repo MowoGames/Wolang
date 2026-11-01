@@ -1057,7 +1057,7 @@ fun Empty<T>() -> []T {
   return []
 }
 
-fun Zero<T>(count: int) -> soa []T uses unsafe
+unsafe fun Zero<T>(count: int) -> soa []T
 
 fun use() uses unsafe {
   const a = Empty<int>()
