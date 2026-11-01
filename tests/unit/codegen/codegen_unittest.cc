@@ -2221,6 +2221,37 @@ fun All() -> int {
   WOLANG_EXPECT_EQ(f.Run("Dropped", {}), "50");
 }
 
+WOLANG_TEST(CodegenTest, APayloadMatchInsideAnArmLetsGoOfItsSubjectThere) {
+  Fixture f(R"(
+error Bad
+error Worse
+error Odd(code: int)
+
+fun Check(x: int) -> int!(Bad, Worse, Odd) {
+  if x > 100 {
+    return Odd(x)
+  }
+  if x > 50 {
+    return Bad
+  }
+  return x
+}
+
+fun F(n: int) -> int {
+  return match n & 3 {
+    0 => 1
+    1 => match Check(n) { Ok(v) => v, Bad => 2, Worse => 3, Odd(c) => c }
+    _ => 4
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("F", {Fixture::Int(0)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("F", {Fixture::Int(1)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("F", {Fixture::Int(57)}), "2");
+  WOLANG_EXPECT_EQ(f.Run("F", {Fixture::Int(101)}), "101");
+  WOLANG_EXPECT_EQ(f.Run("F", {Fixture::Int(2)}), "4");
+}
+
 WOLANG_TEST(CodegenTest, CarriesAValueThroughAnOptional) {
   Fixture f(R"(
 struct Pawn {

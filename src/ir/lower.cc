@@ -7128,6 +7128,10 @@ class Lowerer {
       builder_->SetCurrent(arms[i].body);
       const size_t depth = locals_.size();
       const size_t owners_before = owners_.size();
+      // What an arm holds is let go of where the arm ends: its slot and
+      // flag live in the arm's block, which does not dominate the end of
+      // the statement the `match` is part of (D235).
+      ++scope_depth_;
       BindArm(arm, subject, subject_type);
       if (subject_flag.is_valid()) {
         // A payload that owns something is the subject's own storage, so
@@ -7140,15 +7144,20 @@ class Lowerer {
       }
       if (produces) {
         const InstId value = Value(arm.body);
+        const InstId yielded = Coerce(value, ValueType(value), Erase(type), arm.body);
         if (!builder_->Terminated()) {
-          builder_->Jump(join_block(), {Coerce(value, ValueType(value), Erase(type), arm.body)});
+          RunDeferred(scope_depth_);
+          builder_->Jump(join_block(), {yielded});
         }
       } else {
         Lower(arm.body);
         if (!builder_->Terminated()) {
+          RunDeferred(scope_depth_);
           builder_->Jump(join_block());
         }
       }
+      ForgetDeferred(scope_depth_);
+      --scope_depth_;
       PopLocals(depth);
       if (owners_.size() > owners_before) {
         owners_.resize(owners_before);
