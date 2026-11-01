@@ -144,14 +144,14 @@ fun Count(n: int) -> int {
 }
 
 WOLANG_TEST(LowerTest, AClosureThatDoesNotEscapeKeepsNoHeader) {
-  Fixture f(
-      "fun Apply(f: fun(int) -> int, x: int) -> int => f(x)
-"
-      "fun Use() -> int {
+  Fixture f(R"(
+fun Apply(f: fun(int) -> int, x: int) -> int => f(x)
+
+fun Use() -> int {
   const k = 3
   return Apply(|n| n + k, 1)
 }
-");
+)");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   const std::string ir = f.Ir();
   WOLANG_EXPECT(ir.find("closure$0$drop") == std::string::npos);
@@ -159,12 +159,12 @@ WOLANG_TEST(LowerTest, AClosureThatDoesNotEscapeKeepsNoHeader) {
 }
 
 WOLANG_TEST(LowerTest, AnEscapingClosureGetsADropAndACountedEnvironment) {
-  Fixture f(
-      "fun Make() -> fun() -> int {
+  Fixture f(R"(
+fun Make() -> fun() -> int {
   const k = 3
   return || k
 }
-");
+)");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   WOLANG_EXPECT(f.Ir().find("closure$0$drop") != std::string::npos);
 }

@@ -868,7 +868,17 @@ class Writer {
       Loops(indent, depth);
       return;
     }
+    if (Chance(30)) {
+      ClosureStatement(indent, depth);
+      return;
+    }
     Line(indent, "const _ = " + Expression(RandomType(), depth, true));
+  }
+
+  void ClosureStatement(int indent, int depth) {
+    const std::string name = Fresh("k");
+    Line(indent, "const " + name + " = MakeAdder(" + Expression(Ty::kInt, depth, false) + ", " + ClassVar() + ")");
+    Line(indent, "const _ = " + name + "() + CallTwice(" + name + ")");
   }
 
   void Branch(int indent, int depth) {
@@ -970,6 +980,8 @@ class Writer {
     out_.append(
         "enum Shape {\n  Dot,\n  Circle(r: int),\n  Box(w: s8, h: u64),\n}\n\n");
     out_.append("error Bad\nerror Worse\nerror Odd(code: int)\n\n");
+    out_.append("fun MakeAdder(k: int, c: Cell) -> fun() -> int {\n  return || (c.n & 255) + (k & 255)\n}\n\n");
+    out_.append("fun CallTwice(f: fun() -> int) -> int {\n  return f() + f()\n}\n\n");
     for (Ty t : kHelperTypes) {
       const std::string name = TyName(t);
       out_.append("fun Maybe_" + name + "(x: " + name + ") -> " + name +
