@@ -447,12 +447,18 @@ absence, `??` for a default.
 ```wolang
 if const t = target { t.TakeDamage(10) }
 const name = target?.display_name ?? "none"
+const health = target?.Health()
 
 match count {
   n? => n
   null => 0
 }
 ```
+
+`target?.Health()` calls the method when `target` holds a value and is absent
+otherwise, so its type is the method's result made optional; a method that
+answers nothing is a statement that runs only when there is something to run it on.
+The arguments are evaluated either way.
 
 ### 4.3 Errors
 

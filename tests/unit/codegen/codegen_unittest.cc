@@ -2250,6 +2250,39 @@ fun All() -> int {
   WOLANG_EXPECT_EQ(f.Run("All", {}), "61");
 }
 
+WOLANG_TEST(CodegenTest, CallsAMethodThroughAnOptional) {
+  Fixture f(R"(
+class Pawn {
+  var hp: int
+  fun Hit(damage: int) {
+    hp = hp - damage
+  }
+  fun Health() -> int => hp
+  fun Maybe() -> int? {
+    if hp > 50 {
+      return hp
+    }
+    return null
+  }
+}
+
+fun Find(id: int) -> Pawn? {
+  if id == 0 {
+    return null
+  }
+  return Pawn(id * 10)
+}
+
+fun Reaches() -> int {
+  const pawn = Find(7)
+  pawn?.Hit(5)
+  Find(0)?.Hit(5)
+  return (pawn?.Health() ?? -1) + (Find(0)?.Health() ?? -100) + (Find(9)?.Maybe() ?? -1000)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Reaches", {}), "55");
+}
+
 WOLANG_TEST(CodegenTest, BuildsAndComparesStrings) {
   // A string is a pointer and a length in every tier, and what is built
   // from one is built by the runtime both tiers call. Which is what makes

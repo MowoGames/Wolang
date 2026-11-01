@@ -2927,7 +2927,19 @@ TypeId Checker::CheckField(const Expr& expr) {
     type = AsSelf(type, self_ability, receiver);
   }
   type = Normalize(type);
-  return through_optional ? types_->Optional(type) : type;
+  if (!through_optional) {
+    return type;
+  }
+
+  if (member->kind == MemberKind::kMethod && types_->KindOf(type) == TypeKind::kFunction) {
+    TypeId result = types_->ElementOf(type);
+    if (types_->KindOf(result) != TypeKind::kVoid && !types_->IsOptional(result)) {
+      result = types_->Optional(result);
+    }
+    return types_->Function(types_->ArgumentsOf(type), result);
+  }
+
+  return types_->Optional(type);
 }
 
 // `if p != null { ... }` narrows `p` for the body, the same way `if let`

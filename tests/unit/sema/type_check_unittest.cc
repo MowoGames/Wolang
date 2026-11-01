@@ -428,6 +428,28 @@ WOLANG_TEST(TypeCheck, ReportsAFieldAccessThroughAnOptional) {
                 std::string::npos);
 }
 
+WOLANG_TEST(TypeCheck, ACallThroughAnOptionalGivesAnOptional) {
+  Fixture fixture(
+      "class Pawn {\n"
+      "  var hp: int\n"
+      "  fun Health() -> int => hp\n"
+      "  fun Hit() {}\n"
+      "}\n"
+      "fun f(p: Pawn?) {\n"
+      "  const a = p?.Health()\n"
+      "  p?.Hit()\n"
+      "}\n");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "int?");
+
+  WOLANG_EXPECT(Fixture(
+      "class Pawn { fun Health() -> int => 1 }\n"
+      "fun f(p: Pawn?) { const a = p.Health() }\n").HasCode("E0104"));
+  WOLANG_EXPECT(!Fixture(
+      "class Pawn { fun Health() -> int => 1 }\n"
+      "fun f(p: Pawn?) { const a = p?.Health() }\n").HasCode("E0106"));
+}
+
 WOLANG_TEST(TypeCheck, IfLetNarrowsAnOptional) {
   Fixture fixture(
       "struct Pawn {}\n"

@@ -6449,6 +6449,10 @@ class Lowerer {
       return InstId{};
     }
 
+    if (callee.kind == ExprKind::kOptionalField) {
+      return LowerOptionalMethodCall(callee, type, arguments, id);
+    }
+
     TypeId owner;
     Symbol name;
     InstId receiver;
@@ -6480,6 +6484,72 @@ class Lowerer {
       return LowerPrimitiveOperator(name, receiver, *arguments);
     }
     return CallMethodOn(owner, name, receiver, arguments, type, id);
+  }
+
+  InstId LowerOptionalMethodCall(const Expr& callee,
+                                 TypeId type,
+                                 std::vector<InstId>* arguments,
+                                 ExprId id) {
+    InstId optional;
+    {
+      const Borrowing borrowing(this);
+      optional = Value(callee.lhs);
+    }
+    if (!optional.is_valid()) {
+      return InstId{};
+    }
+
+    const TypeId owner = Erase(types_->ElementOf(TypeOf(callee.lhs)));
+    const Member* member = resolution().FindMember(owner, callee.name);
+    if (member == nullptr) {
+      member = resolution().FindInheritedMember(owner, callee.name);
+    }
+    if (member == nullptr || member->kind != MemberKind::kMethod) {
+      return InstId{};
+    }
+
+    const bool produces = types_->KindOf(type) != TypeKind::kVoid;
+    const bool wraps = produces && !types_->IsOptional(Erase(types_->ElementOf(member->type)));
+    const TypeId inner = wraps ? Erase(types_->ElementOf(type)) : type;
+
+    const InstId present = builder_->Add(Opcode::kOptionalIsPresent, types_->bool_type(), {optional});
+    const BlockId have = builder_->AddBlock("call.have");
+    const BlockId absent = builder_->AddBlock("call.absent");
+    const BlockId join = builder_->AddBlock("call.join");
+    InstId result;
+    if (produces) {
+      result = builder_->AddParam(join, type);
+    }
+
+    builder_->Branch(present, have, absent);
+
+    builder_->SetCurrent(have);
+    const InstId object = builder_->Add(Opcode::kOptionalValue, owner, {optional});
+    InstId called = CallMethodOn(owner, callee.name, object, arguments, inner, id);
+    if (produces) {
+      if (!called.is_valid()) {
+        called = builder_->Undef(inner);
+      }
+      if (wraps) {
+        called = builder_->Add(Opcode::kOptionalWrap, type, {called});
+      }
+      builder_->Jump(join, {called});
+    } else {
+      builder_->Jump(join, {});
+    }
+
+    builder_->SetCurrent(absent);
+    if (produces) {
+      builder_->Jump(join, {builder_->ConstNull(type)});
+    } else {
+      builder_->Jump(join, {});
+    }
+
+    builder_->SetCurrent(join);
+    if (IsFreshHandle(optional)) {
+      ReleaseValue(optional, ValueType(optional));
+    }
+    return produces ? result : builder_->ConstBool(true);
   }
 
   // The call of |name| on |receiver|, once both are known. A written call
