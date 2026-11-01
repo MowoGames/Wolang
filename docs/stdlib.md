@@ -246,7 +246,10 @@ fun main() uses io, unsafe {
 }
 ```
 
-`std.map.IntHash`/`IntEquals` are there for integer keys.
+`std.map.IntHash`/`IntEquals` are there for integer keys. `IntMapNew<V>()` and
+`TextMapNew<V>()` build a map with the hashing already chosen.
+
+`std.text.Builder` also has `AppendLine(value)`: the text and a newline.
 
 ## std.set
 

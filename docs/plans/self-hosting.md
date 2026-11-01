@@ -47,6 +47,23 @@ are given the same input and must give the same output.
 The interpreter, the JIT emitters and the LSP move last, if ever: they are
 where the C++ compiler is fastest and where a rewrite buys the least.
 
+## Stage 0: what `std` has for a compiler
+
+Read from `lib/std/src` at 1.2.0, not measured. "Slow" is a reading of the code,
+to be confirmed by a benchmark before it is fixed.
+
+| Need | What exists | Missing or slow |
+|---|---|---|
+| Fast `Map` | `std.map.Map<K, V>`: open addressing, linear probing, half load, backward-shift removal. `IntMapNew` and `TextMapNew` (1.2.0) choose the hashing. `std.hash` has FNV-style text hashing. | Slot finding is `hash % size` with a 64-bit divide on every probe start; a power-of-two table and a mask would not divide. `Get` takes a fallback rather than answering an optional, so a lookup of a class value needs a sentinel. The walk gives keys only, so values cost a second probe each. `Reserve` rehashes through `Put`, which hashes every key again; the hash is not stored. No `Entry` type. |
+| Arenas | The language `arena { }` block frees what was taken inside it at block end. | No arena a compiler can hold across calls and free as one: the IR, the AST and the type store each want their own lifetime. `Builder.Release` says "nothing frees the bytes yet", so text built by a compiler is never freed outside an `arena`. A `[]T` bump allocator with `Reset` is the missing piece. |
+| Text building | `std.text.Builder`: `Append`, `AppendByte`, `AppendLine` (1.2.0), `Text`, `Release`, `Clear`. `std.fmt` for numbers. | `Append` copies byte by byte; there is no bulk copy intrinsic, so a large append is a loop. `std.fmt` imports `std.text`, so `Builder` has no `AppendInt` without a cycle. No `Builder.Insert` or `Truncate`. |
+| Text scanning | `Bytes`, `IndexOf`, `Substring`, `StartsWith`, `Trim`, `Split`, `ParseInt`, `ParseFloat`, `std.utf8`. | `Substring` copies. A lexer wants a view `(text, from, to)`; `Bytes` gives a `[]u8` over the whole text and a lexer indexes that, which is cheap. No character classes (`IsDigit`, `IsAlpha`): each lexer writes its own. |
+| Lists and sorting | `List<T>`, `Heap<T>`, `Sort`, `SortBy<T: Ord>`, `LowerBound`, `Deque`, `Set`. | `List` has `Push`, `Pop`, `At`, `Set`, `Items`; no `Insert`, `RemoveAt` or `Last`. `Sort` is a quicksort with an insertion cutoff and is not stable; a compiler that prints diagnostics in source order needs a stable sort. |
+| Files | `std.fs`: `ReadAll`, `ReadText`, `WriteAll`, `WriteText`, `Append`, `Exists`, `List`, `Walk`, `Copy`, `RemoveTree`, `TempName`. `std.path`: `Join`, `Normalize`, `Parent`, `Name`, `Extension`. | `List` and `Walk` answer one `text` with separators, so a directory walk is a split. `ReadAll` takes a byte limit. No file timestamps beyond `ChangedAt`, no symlink question. |
+| Process | `std.process`: `Run`, `Start`, `StartWith`, `Command` with directory and variables, exit code and captured output. `std.env`: arguments, variables. | No way to wait on several children; the linker and `cc` are run one at a time, which is what the driver does today. |
+| Errors with data | `T!(A, B)` and payloads (D235). | A compiler's diagnostic is a struct, not an error: the checker collects many, so a `List<Diagnostic>` is the shape, not `T!`. |
+| IR text | The printer. The reader is in `src/ir/reader.cc` (1.2.0, C++). | The Wolang side of the IR reader is stage 3. |
+
 ## Layout
 
 The libraries stay in `lib/`. Moving them to `library/` would rename

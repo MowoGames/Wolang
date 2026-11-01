@@ -146,6 +146,12 @@ offer class Builder {
     count = count + source.len
   }
 
+  /// `value` and a newline: what a printer that builds a dump line by line writes (D250).
+  fun AppendLine(value: text) uses unsafe {
+    Append(value)
+    AppendByte(10)
+  }
+
   fun AppendByte(value: u8) uses unsafe {
     Reserve(count + 1)
     bytes[count] = value
@@ -232,6 +238,14 @@ fun BuildsText() -> bool uses unsafe {
   }
   const built = builder.Text()
   return Equals(built, "hello world")
+}
+
+@Test
+fun BuildsLines() -> bool uses unsafe {
+  var builder = BuilderNew()
+  builder.AppendLine("a")
+  builder.AppendLine("bc")
+  return builder.Len() == 5 && Equals(builder.Text(), "a\nbc\n")
 }
 
 // ------------------------------------------------- looking at a string ---

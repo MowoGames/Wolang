@@ -8,6 +8,7 @@
 
 need std.mem.{ArrayNew, Free}
 need std.iter.{Iterable, Iterator}
+need std.hash.{TextEquals, TextHash}
 
 /// A map from `K` to `V`.
 ///
@@ -254,6 +255,16 @@ offer fun IntEquals(left: int, right: int) -> bool {
   return left == right
 }
 
+/// A map keyed by `int`, with the hashing already chosen.
+offer fun IntMapNew<V>() -> Map<int, V> uses unsafe {
+  return MapNew<int, V>(IntHash, IntEquals)
+}
+
+/// A map keyed by `text`: what a symbol table is (D250).
+offer fun TextMapNew<V>() -> Map<text, V> uses unsafe {
+  return MapNew<text, V>(TextHash, TextEquals)
+}
+
 extend<K, V> MapWalk<K, V> as Iterator {
   type Item = K
 }
@@ -339,6 +350,17 @@ fun WalksEveryKey() -> bool uses unsafe {
   }
   // Every key once, and the values that go with them: 2 * (0 + ... + 19).
   return keys == 20 && sum == 380
+}
+
+@Test
+fun BuildsMapsWithTheHashingChosen() -> bool uses unsafe {
+  var words = TextMapNew<int>()
+  words.Put("let", 1)
+  words.Put("fun", 2)
+  words.Put("let", 3)
+  var numbers = IntMapNew<text>()
+  numbers.Put(7, "seven")
+  return words.Len() == 2 && words.Get("let", -1) == 3 && words.Get("fun", -1) == 2 && !words.Has("var") && numbers.Get(7, "") == "seven"
 }
 
 @Test
