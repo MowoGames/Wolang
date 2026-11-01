@@ -604,7 +604,8 @@ need std.io.{Print}
 need std.mem.{ArrayNew, Free}
 
 fun main() uses io, unsafe {
-  // A view: a pointer and a length, with bounds checks.
+  // A view: a pointer and a length, with bounds checks. `ArrayNew` gives a
+  // `[]mut int`: a `[]int` is read-only.
   var room = ArrayNew<int>(4)
   room[0] = 7
   Print("{room[0]} of {room.len}")

@@ -9,9 +9,9 @@ text, slice or list is an `int`, and a collection is not capped at 2^31.
 
 How to read a signature: `uses unsafe` on a standard library function
 means *it* takes the responsibility, not you — `std.math.Sqrt`-style
-wrappers over a C call. The one exception is `std.text.Bytes`: it hands
-out a writable view of text that may be a literal, so a caller declares
-`uses unsafe` and answers for never writing through it (D233).
+wrappers over a C call. `std.text.Bytes` hands out a `[]u8` view of text that
+may be a literal, which cannot be written through (D251), so it needs no
+promise from the caller.
 
 | Module | What it is for |
 |---|---|
@@ -94,7 +94,7 @@ form: use it for any string that outlives the builder (D227).
 `TextFromRaw`.
 
 A `text` is bytes and a length. There is no copy on a substring and no
-terminator; `Bytes` (`uses unsafe`, a view you must not write) hands you the bytes and `TextFromRaw` takes them
+terminator; `Bytes` (a read-only `[]u8`) hands you the bytes and `TextFromRaw` takes them
 back.
 
 ## std.fmt
@@ -698,9 +698,11 @@ tasks.
 
 ## std.mem
 
-`ArrayNew`, `Free`, `Prefix`, `Suffix`, `BytesFromRaw`, `ViewFromRaw`,
-`SizeOf`, `SoaNew`. Storage and views; the language's arrays and lists
-are built on these.
+`ArrayNew`, `Free`, `Prefix`, `PrefixMut`, `Suffix`, `BytesFromRaw`,
+`ViewFromRaw`, `SizeOf`, `SoaNew`. Storage and views; the language's arrays
+and lists are built on these. What allocates or views raw storage answers
+`[]mut T`; `Prefix` and `Suffix` take and answer a read-only `[]T`, and
+`PrefixMut` the writable one (D251).
 
 ## std.own
 

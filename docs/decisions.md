@@ -3375,3 +3375,31 @@ of seconds; a quantity is read as its number whatever its dimension, and
 anything else is `E0159`. A machine with an event called `Tick` keeps it and
 gets no clock. `Self` is bound in a machine's `enter` and `exit` blocks. This
 amends D243.
+
+**D251. A slice is read-only unless it says `mut`.** `[]T` is a view whose
+elements cannot be written and `[]mut T` one whose elements can, as `*T` and
+`*mut T`, `&T` and `&mut T` already are. `[]mut T` fits where `[]T` is wanted
+and not the other way round; an array fits either, since it is the storage. A
+slice cut out of another by a range keeps the mutability of what it was cut
+from. Writing an element (`xs[i] = v`, `xs[i] += v`, `xs[i].x = v`) or taking
+`&mut xs[i]` through a `[]T` is `E0165`; a write that goes through a handle the
+slice holds (`cells[i].n = 1` for a `class`) changes the object, not the
+slice, and is allowed. `.data` of a `[]mut T` is a `*mut T`, of a `[]T` a `*T`.
+The syntax is `[]mut T` (and `soa []mut T`): `mut` follows the brackets.
+
+This replaces the stopgap of D233, which made the caller of `std.text.Bytes`
+promise never to write through its view: `Bytes` now answers `[]u8` and needs
+no `uses unsafe` from its caller. `@Exposes` remains for a library author who
+needs it, and nothing in `std` uses it. What allocates or views raw storage
+(`ArrayNew`, `SoaNew`, `BytesFromRaw`, `ViewFromRaw`) answers `[]mut T`;
+`Prefix` and `Suffix` take and answer `[]T` and `PrefixMut` is the writable
+one, which `List.Items` uses.
+
+Mutability is a checker property. The IR erases it, as it erases a dimension,
+so the layout, the three tiers and the verifier are unchanged; there is no
+verifier rule for it, because every producer of a slice would have to keep the
+bit exactly right in the IR for the rule to mean anything. This breaks source
+that writes through a `[]T`: the fix is the `mut` the diagnostic points at.
+Not covered: a method that changes a value-type element in place
+(`xs[i].Move()` on a struct), and an array bound with `const` handed to a
+`[]mut T`.

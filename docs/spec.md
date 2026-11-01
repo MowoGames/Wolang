@@ -406,7 +406,7 @@ the coroutine or actor rather than unwinding.
 | Other scalars | `bool`, `char` |
 | Strings | `Text` owning, `text` borrowed |
 | Fixed arrays | `[N]T`, a language construct: no allocation |
-| Slices | `[]T`, a borrowed view: no allocation. An array converts to one |
+| Slices | `[]T`, a borrowed read-only view, and `[]mut T`, one whose elements may be written: no allocation. An array converts to either, and `[]mut T` converts to `[]T` |
 | Collections | `List<T>`, `Map<K, V>`, `Set<T>` — library types in `std.list`, `std.map`, `std.set` |
 | Optionals | `T?`; there is no `Option<T>` type. References are non-nullable by default |
 | Fallible | `T!`, a value or any error; `T!A` and `T!(A, B)`, a value or one of the errors named |
@@ -415,7 +415,11 @@ the coroutine or actor rather than unwinding.
 
 `[N]T` and `[]T` are part of the language because `core` needs them and
 because they allocate nothing, which is what makes them usable on WASM and on
-embedded targets. A growable `List<T>` needs an allocator, so it is a library
+embedded targets. Writing an element of a `[]T`, or taking `&mut` of one, is
+`E0165`: the slice says whether its elements may change, the way `*T` and
+`*mut T` do, and `[]mut T` fits where `[]T` is wanted and not the other way
+round. A write through a handle that the slice holds, such as `cells[0].n = 1`
+for a `class`, changes the object and not the slice, so it is allowed (D251). A growable `List<T>` needs an allocator, so it is a library
 type from wave 13 onwards.
 
 ### 4.1 Integer literals
