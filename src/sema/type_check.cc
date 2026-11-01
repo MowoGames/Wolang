@@ -69,6 +69,8 @@ constexpr std::string_view kClosureCaptures = "E0135";
 // would keep something that lives in the frame (D240).
 constexpr std::string_view kBorrowedEscapes = "E0161";
 constexpr std::string_view kFrameBoundCapture = "E0162";
+// A script class deriving from a host class (D256).
+constexpr std::string_view kScriptDerivesHost = "E0164";
 constexpr std::string_view kWaitOutsideTask = "E0301";
 constexpr std::string_view kTaskNotWaited = "E0302";
 constexpr std::string_view kWaitNotWholeExpression = "E0303";
@@ -4584,6 +4586,19 @@ void Checker::CheckBaseChain(const Item& item, TypeId type) {
   // no use; naming it here is what keeps its `need` from looking unused.
   if (item.super_type.is_valid()) {
     resolver_.Resolve(ast_, item.super_type);
+  }
+  // A script class has no host object behind it, and an upcast of one would hand
+  // the host a pointer it never made (D256).
+  if (!HasFlag(item.flags, ItemFlags::kExtern)) {
+    const TypeId base = resolution_->BaseOf(type);
+    if (base.is_valid() && types_->IsForeignClass(base)) {
+      std::string message = "`";
+      message.append(Describe(type));
+      message.append("` is a script class and cannot derive from the host class `");
+      message.append(Describe(base));
+      message.append("`");
+      Report(kScriptDerivesHost, std::move(message), item.name_span, "declare it `extern class`, or hold the host object in a field");
+    }
   }
   TypeId current = resolution_->BaseOf(type);
   for (size_t depth = 0; current.is_valid(); ++depth) {

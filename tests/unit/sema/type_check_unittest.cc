@@ -1659,6 +1659,41 @@ extern class Actor {
   WOLANG_EXPECT(stored.HasCode("E0139"));
 }
 
+WOLANG_TEST(TypeCheck, AScriptClassMayNotDeriveFromAHostClass) {
+  Fixture derived(R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+class Pawn : Actor {
+  var score: int = 0
+}
+)");
+  WOLANG_EXPECT_EQ(derived.Codes(), "E0164");
+
+  Fixture host(R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+extern class Pawn : Actor {
+  fun Score() -> s32
+}
+)");
+  WOLANG_EXPECT(!host.HasCode("E0164"));
+
+  Fixture script(R"(
+class Actor {
+  var health: int = 0
+}
+
+class Pawn : Actor {
+  var score: int = 0
+}
+)");
+  WOLANG_EXPECT_EQ(script.Codes(), "");
+}
+
 WOLANG_TEST(TypeCheck, AWeakFieldIsAnOptionalClassInAClass) {
   Fixture fine(R"(
 class Node {
