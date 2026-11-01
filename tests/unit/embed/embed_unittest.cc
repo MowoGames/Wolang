@@ -1181,7 +1181,7 @@ offer fun Spawn(health: int) -> Enemy => Enemy(health)
 
 offer fun Describe(e: Enemy, tag: text) -> int => e.health + tag.len
 
-offer fun Host(pawn: Actor?, other: Actor) {}
+offer fun Host(_pawn: Actor?, _other: Actor) {}
 
 offer fun Number(n: int) -> int => n
 )"), 0);
@@ -1230,13 +1230,9 @@ WOLANG_TEST(EmbedTest, ALoneFileResolvesNeed) {
   const std::filesystem::path directory = std::filesystem::path(WOLANG_PROJECT_DIR) / "build" / "scratch";
   std::filesystem::create_directories(directory);
   const std::filesystem::path file = directory / "lone_need.wo";
-  WriteFile(file, R"(
-need std.fs
-
-offer fun Size() -> int uses io {
-  return fs.SizeOf("wolang.toml") as int
-}
-)");
+  const std::string measured = (std::filesystem::path(WOLANG_PROJECT_DIR) / "CMakeLists.txt").generic_string();
+  const std::string source = "need std.fs\n\noffer fun Size() -> int uses io {\n  return fs.SizeOf(\"" + measured + "\") as int\n}\n";
+  WriteFile(file, source.c_str());
 
   WolangVm* vm = wolang_vm_create();
   WOLANG_EXPECT_EQ(wolang_vm_load(vm, file.string().c_str()), 0);
@@ -1283,7 +1279,7 @@ static void CheckPrintReachesTheHost(bool compiled) {
 need std.io
 
 offer fun Say() -> int uses io {
-  io.Print("from print\n")
+  io.Print("from print")
   return 1
 }
 )"), 0);
@@ -1347,7 +1343,7 @@ offer fun Say() -> int uses io {
 
   WOLANG_EXPECT_EQ(wolang_vm_call(second, "Say", nullptr, 0, &answer), 0);
   WOLANG_EXPECT_EQ(first_out, std::string());
-  WOLANG_EXPECT_EQ(second_out, std::string("hi"));
+  WOLANG_EXPECT_EQ(second_out, std::string("hi\n"));
 
   wolang_vm_destroy(first);
   wolang_vm_destroy(second);
@@ -1426,7 +1422,9 @@ offer fun Steps(mover: Mover) -> int => mover.steps
 }
 
 WOLANG_TEST(EmbedTest, AReloadKeepsTheBindingsAndTheWriter) {
-  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_kept_bindings_test.wo";
+  const std::filesystem::path scratch = std::filesystem::path(WOLANG_PROJECT_DIR) / "build" / "scratch";
+  std::filesystem::create_directories(scratch);
+  const std::filesystem::path path = scratch / "wolang_kept_bindings_test.wo";
   const char* source = R"(
 need std.io
 
@@ -1454,7 +1452,7 @@ offer fun Say() -> int uses io {
   WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Scale", &argument, 1, &answer), 0);
   WOLANG_EXPECT_EQ(answer.integer, 12);
   WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Say", nullptr, 0, &answer), 0);
-  WOLANG_EXPECT_EQ(out, std::string("again"));
+  WOLANG_EXPECT_EQ(out, std::string("again\n"));
   wolang_vm_destroy(vm);
   std::filesystem::remove(path);
 }
