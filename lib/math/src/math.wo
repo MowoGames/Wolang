@@ -1,0 +1,583 @@
+need std.math.{Sqrt, Sin, Cos, Atan2, Lerp, Near, MinFloat, MaxFloat, AbsFloat}
+
+offer struct Vec2 {
+  var x: float
+  var y: float
+
+  fun Dot(other: Vec2) -> float => x * other.x + y * other.y
+
+  fun LengthSquared() -> float => x * x + y * y
+
+  fun Length() -> float uses unsafe {
+    return Sqrt(x * x + y * y)
+  }
+
+  fun Normalized() -> Vec2 uses unsafe {
+    const length = Sqrt(x * x + y * y)
+    if length == 0.0 {
+      return Vec2(0.0, 0.0)
+    }
+
+    return Vec2(x / length, y / length)
+  }
+
+  fun Scaled(k: float) -> Vec2 => Vec2(x * k, y * k)
+
+  fun Divided(k: float) -> Vec2 => Vec2(x / k, y / k)
+
+  fun Distance(other: Vec2) -> float uses unsafe {
+    const dx = x - other.x
+    const dy = y - other.y
+    return Sqrt(dx * dx + dy * dy)
+  }
+
+  fun Lerped(other: Vec2, t: float) -> Vec2 => Vec2(Lerp(x, other.x, t), Lerp(y, other.y, t))
+
+  fun Clamped(low: Vec2, high: Vec2) -> Vec2 => Vec2(MinFloat(MaxFloat(x, low.x), high.x), MinFloat(MaxFloat(y, low.y), high.y))
+
+  fun NearTo(other: Vec2, tolerance: float) -> bool => Near(x, other.x, tolerance) && Near(y, other.y, tolerance)
+}
+
+extend Vec2 as Add {
+  fun Plus(other: Self) -> Self => Vec2(x + other.x, y + other.y)
+}
+
+extend Vec2 as Sub {
+  fun Minus(other: Self) -> Self => Vec2(x - other.x, y - other.y)
+}
+
+extend Vec2 as Mul {
+  fun Times(other: Self) -> Self => Vec2(x * other.x, y * other.y)
+}
+
+extend Vec2 as Div {
+  fun Divide(other: Self) -> Self => Vec2(x / other.x, y / other.y)
+}
+
+extend Vec2 as Neg {
+  fun Negate() -> Self => Vec2(-x, -y)
+}
+
+extend Vec2 as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x && y == other.y
+}
+
+offer struct Vec3 {
+  var x: float
+  var y: float
+  var z: float
+
+  fun Dot(other: Vec3) -> float => x * other.x + y * other.y + z * other.z
+
+  fun Cross(other: Vec3) -> Vec3 => Vec3(y * other.z - z * other.y, z * other.x - x * other.z, x * other.y - y * other.x)
+
+  fun LengthSquared() -> float => x * x + y * y + z * z
+
+  fun Length() -> float uses unsafe {
+    return Sqrt(x * x + y * y + z * z)
+  }
+
+  fun Normalized() -> Vec3 uses unsafe {
+    const length = Sqrt(x * x + y * y + z * z)
+    if length == 0.0 {
+      return Vec3(0.0, 0.0, 0.0)
+    }
+
+    return Vec3(x / length, y / length, z / length)
+  }
+
+  fun Scaled(k: float) -> Vec3 => Vec3(x * k, y * k, z * k)
+
+  fun Divided(k: float) -> Vec3 => Vec3(x / k, y / k, z / k)
+
+  fun Distance(other: Vec3) -> float uses unsafe {
+    const dx = x - other.x
+    const dy = y - other.y
+    const dz = z - other.z
+    return Sqrt(dx * dx + dy * dy + dz * dz)
+  }
+
+  fun Lerped(other: Vec3, t: float) -> Vec3 => Vec3(Lerp(x, other.x, t), Lerp(y, other.y, t), Lerp(z, other.z, t))
+
+  fun Clamped(low: Vec3, high: Vec3) -> Vec3 => Vec3(MinFloat(MaxFloat(x, low.x), high.x), MinFloat(MaxFloat(y, low.y), high.y), MinFloat(MaxFloat(z, low.z), high.z))
+
+  fun NearTo(other: Vec3, tolerance: float) -> bool => Near(x, other.x, tolerance) && Near(y, other.y, tolerance) && Near(z, other.z, tolerance)
+}
+
+extend Vec3 as Add {
+  fun Plus(other: Self) -> Self => Vec3(x + other.x, y + other.y, z + other.z)
+}
+
+extend Vec3 as Sub {
+  fun Minus(other: Self) -> Self => Vec3(x - other.x, y - other.y, z - other.z)
+}
+
+extend Vec3 as Mul {
+  fun Times(other: Self) -> Self => Vec3(x * other.x, y * other.y, z * other.z)
+}
+
+extend Vec3 as Div {
+  fun Divide(other: Self) -> Self => Vec3(x / other.x, y / other.y, z / other.z)
+}
+
+extend Vec3 as Neg {
+  fun Negate() -> Self => Vec3(-x, -y, -z)
+}
+
+extend Vec3 as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x && y == other.y && z == other.z
+}
+
+offer struct Vec4 {
+  var x: float
+  var y: float
+  var z: float
+  var w: float
+
+  fun Dot(other: Vec4) -> float => x * other.x + y * other.y + z * other.z + w * other.w
+
+  fun LengthSquared() -> float => x * x + y * y + z * z + w * w
+
+  fun Length() -> float uses unsafe {
+    return Sqrt(x * x + y * y + z * z + w * w)
+  }
+
+  fun Normalized() -> Vec4 uses unsafe {
+    const length = Sqrt(x * x + y * y + z * z + w * w)
+    if length == 0.0 {
+      return Vec4(0.0, 0.0, 0.0, 0.0)
+    }
+
+    return Vec4(x / length, y / length, z / length, w / length)
+  }
+
+  fun Scaled(k: float) -> Vec4 => Vec4(x * k, y * k, z * k, w * k)
+
+  fun Divided(k: float) -> Vec4 => Vec4(x / k, y / k, z / k, w / k)
+
+  fun Lerped(other: Vec4, t: float) -> Vec4 => Vec4(Lerp(x, other.x, t), Lerp(y, other.y, t), Lerp(z, other.z, t), Lerp(w, other.w, t))
+
+  fun NearTo(other: Vec4, tolerance: float) -> bool => Near(x, other.x, tolerance) && Near(y, other.y, tolerance) && Near(z, other.z, tolerance) && Near(w, other.w, tolerance)
+}
+
+extend Vec4 as Add {
+  fun Plus(other: Self) -> Self => Vec4(x + other.x, y + other.y, z + other.z, w + other.w)
+}
+
+extend Vec4 as Sub {
+  fun Minus(other: Self) -> Self => Vec4(x - other.x, y - other.y, z - other.z, w - other.w)
+}
+
+extend Vec4 as Mul {
+  fun Times(other: Self) -> Self => Vec4(x * other.x, y * other.y, z * other.z, w * other.w)
+}
+
+extend Vec4 as Div {
+  fun Divide(other: Self) -> Self => Vec4(x / other.x, y / other.y, z / other.z, w / other.w)
+}
+
+extend Vec4 as Neg {
+  fun Negate() -> Self => Vec4(-x, -y, -z, -w)
+}
+
+extend Vec4 as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x && y == other.y && z == other.z && w == other.w
+}
+
+fun Dot3(a0: float, a1: float, a2: float, b0: float, b1: float, b2: float) -> float => a0 * b0 + a1 * b1 + a2 * b2
+
+fun Dot4(a0: float, a1: float, a2: float, a3: float, b0: float, b1: float, b2: float, b3: float) -> float => a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3
+
+offer struct Mat3 {
+  var m00: float
+  var m01: float
+  var m02: float
+  var m10: float
+  var m11: float
+  var m12: float
+  var m20: float
+  var m21: float
+  var m22: float
+
+  fun Transform(v: Vec3) -> Vec3 => Vec3(Dot3(m00, m01, m02, v.x, v.y, v.z), Dot3(m10, m11, m12, v.x, v.y, v.z), Dot3(m20, m21, m22, v.x, v.y, v.z))
+
+  fun Transposed() -> Mat3 => Mat3(m00, m10, m20, m01, m11, m21, m02, m12, m22)
+
+  fun Determinant() -> float => m00 * (m11 * m22 - m12 * m21) - m01 * (m10 * m22 - m12 * m20) + m02 * (m10 * m21 - m11 * m20)
+
+  fun NearTo(other: Mat3, tolerance: float) -> bool => Near(m00, other.m00, tolerance) && Near(m01, other.m01, tolerance) && Near(m02, other.m02, tolerance) && Near(m10, other.m10, tolerance) && Near(m11, other.m11, tolerance) && Near(m12, other.m12, tolerance) && Near(m20, other.m20, tolerance) && Near(m21, other.m21, tolerance) && Near(m22, other.m22, tolerance)
+}
+
+extend Mat3 as Mul {
+  fun Times(other: Self) -> Self {
+    return Mat3(Dot3(m00, m01, m02, other.m00, other.m10, other.m20), Dot3(m00, m01, m02, other.m01, other.m11, other.m21), Dot3(m00, m01, m02, other.m02, other.m12, other.m22), Dot3(m10, m11, m12, other.m00, other.m10, other.m20), Dot3(m10, m11, m12, other.m01, other.m11, other.m21), Dot3(m10, m11, m12, other.m02, other.m12, other.m22), Dot3(m20, m21, m22, other.m00, other.m10, other.m20), Dot3(m20, m21, m22, other.m01, other.m11, other.m21), Dot3(m20, m21, m22, other.m02, other.m12, other.m22))
+  }
+}
+
+extend Mat3 as Eq {
+  fun Equals(other: &Self) -> bool => m00 == other.m00 && m01 == other.m01 && m02 == other.m02 && m10 == other.m10 && m11 == other.m11 && m12 == other.m12 && m20 == other.m20 && m21 == other.m21 && m22 == other.m22
+}
+
+offer fun Mat3Identity() -> Mat3 => Mat3(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+offer struct Mat4 {
+  var m00: float
+  var m01: float
+  var m02: float
+  var m03: float
+  var m10: float
+  var m11: float
+  var m12: float
+  var m13: float
+  var m20: float
+  var m21: float
+  var m22: float
+  var m23: float
+  var m30: float
+  var m31: float
+  var m32: float
+  var m33: float
+
+  fun TransformPoint(p: Vec3) -> Vec3 => Vec3(Dot3(m00, m01, m02, p.x, p.y, p.z) + m03, Dot3(m10, m11, m12, p.x, p.y, p.z) + m13, Dot3(m20, m21, m22, p.x, p.y, p.z) + m23)
+
+  fun TransformDirection(d: Vec3) -> Vec3 => Vec3(Dot3(m00, m01, m02, d.x, d.y, d.z), Dot3(m10, m11, m12, d.x, d.y, d.z), Dot3(m20, m21, m22, d.x, d.y, d.z))
+
+  fun TransformVec4(v: Vec4) -> Vec4 => Vec4(Dot4(m00, m01, m02, m03, v.x, v.y, v.z, v.w), Dot4(m10, m11, m12, m13, v.x, v.y, v.z, v.w), Dot4(m20, m21, m22, m23, v.x, v.y, v.z, v.w), Dot4(m30, m31, m32, m33, v.x, v.y, v.z, v.w))
+
+  fun Transposed() -> Mat4 => Mat4(m00, m10, m20, m30, m01, m11, m21, m31, m02, m12, m22, m32, m03, m13, m23, m33)
+
+  fun Upper() -> Mat3 => Mat3(m00, m01, m02, m10, m11, m12, m20, m21, m22)
+
+  fun NearTo(other: Mat4, tolerance: float) -> bool => Near(m00, other.m00, tolerance) && Near(m01, other.m01, tolerance) && Near(m02, other.m02, tolerance) && Near(m03, other.m03, tolerance) && Near(m10, other.m10, tolerance) && Near(m11, other.m11, tolerance) && Near(m12, other.m12, tolerance) && Near(m13, other.m13, tolerance) && Near(m20, other.m20, tolerance) && Near(m21, other.m21, tolerance) && Near(m22, other.m22, tolerance) && Near(m23, other.m23, tolerance) && Near(m30, other.m30, tolerance) && Near(m31, other.m31, tolerance) && Near(m32, other.m32, tolerance) && Near(m33, other.m33, tolerance)
+}
+
+extend Mat4 as Mul {
+  fun Times(other: Self) -> Self {
+    return Mat4(Dot4(m00, m01, m02, m03, other.m00, other.m10, other.m20, other.m30), Dot4(m00, m01, m02, m03, other.m01, other.m11, other.m21, other.m31), Dot4(m00, m01, m02, m03, other.m02, other.m12, other.m22, other.m32), Dot4(m00, m01, m02, m03, other.m03, other.m13, other.m23, other.m33), Dot4(m10, m11, m12, m13, other.m00, other.m10, other.m20, other.m30), Dot4(m10, m11, m12, m13, other.m01, other.m11, other.m21, other.m31), Dot4(m10, m11, m12, m13, other.m02, other.m12, other.m22, other.m32), Dot4(m10, m11, m12, m13, other.m03, other.m13, other.m23, other.m33), Dot4(m20, m21, m22, m23, other.m00, other.m10, other.m20, other.m30), Dot4(m20, m21, m22, m23, other.m01, other.m11, other.m21, other.m31), Dot4(m20, m21, m22, m23, other.m02, other.m12, other.m22, other.m32), Dot4(m20, m21, m22, m23, other.m03, other.m13, other.m23, other.m33), Dot4(m30, m31, m32, m33, other.m00, other.m10, other.m20, other.m30), Dot4(m30, m31, m32, m33, other.m01, other.m11, other.m21, other.m31), Dot4(m30, m31, m32, m33, other.m02, other.m12, other.m22, other.m32), Dot4(m30, m31, m32, m33, other.m03, other.m13, other.m23, other.m33))
+  }
+}
+
+extend Mat4 as Eq {
+  fun Equals(other: &Self) -> bool => m00 == other.m00 && m01 == other.m01 && m02 == other.m02 && m03 == other.m03 && m10 == other.m10 && m11 == other.m11 && m12 == other.m12 && m13 == other.m13 && m20 == other.m20 && m21 == other.m21 && m22 == other.m22 && m23 == other.m23 && m30 == other.m30 && m31 == other.m31 && m32 == other.m32 && m33 == other.m33
+}
+
+offer fun Mat4Identity() -> Mat4 => Mat4(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+offer fun Mat4Translation(by: Vec3) -> Mat4 => Mat4(1.0, 0.0, 0.0, by.x, 0.0, 1.0, 0.0, by.y, 0.0, 0.0, 1.0, by.z, 0.0, 0.0, 0.0, 1.0)
+
+offer fun Mat4Scale(by: Vec3) -> Mat4 => Mat4(by.x, 0.0, 0.0, 0.0, 0.0, by.y, 0.0, 0.0, 0.0, 0.0, by.z, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+offer fun Mat4FromMat3(m: Mat3) -> Mat4 => Mat4(m.m00, m.m01, m.m02, 0.0, m.m10, m.m11, m.m12, 0.0, m.m20, m.m21, m.m22, 0.0, 0.0, 0.0, 0.0, 1.0)
+
+offer struct Quat {
+  var x: float
+  var y: float
+  var z: float
+  var w: float
+
+  fun Dot(other: Quat) -> float => x * other.x + y * other.y + z * other.z + w * other.w
+
+  fun Length() -> float uses unsafe {
+    return Sqrt(x * x + y * y + z * z + w * w)
+  }
+
+  fun Normalized() -> Quat uses unsafe {
+    const length = Sqrt(x * x + y * y + z * z + w * w)
+    if length == 0.0 {
+      return Quat(0.0, 0.0, 0.0, 1.0)
+    }
+
+    return Quat(x / length, y / length, z / length, w / length)
+  }
+
+  fun Conjugate() -> Quat => Quat(-x, -y, -z, w)
+
+  fun Rotate(v: Vec3) -> Vec3 {
+    const u = Vec3(x, y, z)
+    const t = u.Cross(v).Scaled(2.0)
+    return v + t.Scaled(w) + u.Cross(t)
+  }
+
+  fun Slerp(other: Quat, t: float) -> Quat uses unsafe {
+    var target = other
+    var cosine = x * other.x + y * other.y + z * other.z + w * other.w
+    if cosine < 0.0 {
+      target = Quat(-other.x, -other.y, -other.z, -other.w)
+      cosine = -cosine
+    }
+
+    if cosine > 0.9995 {
+      return Quat(Lerp(x, target.x, t), Lerp(y, target.y, t), Lerp(z, target.z, t), Lerp(w, target.w, t)).Normalized()
+    }
+
+    const sine = Sqrt(1.0 - cosine * cosine)
+    const angle = Atan2(sine, cosine)
+    const from = Sin((1.0 - t) * angle) / sine
+    const to = Sin(t * angle) / sine
+    return Quat(x * from + target.x * to, y * from + target.y * to, z * from + target.z * to, w * from + target.w * to)
+  }
+
+  fun ToMat3() -> Mat3 {
+    const xx = x * x
+    const yy = y * y
+    const zz = z * z
+    const xy = x * y
+    const xz = x * z
+    const yz = y * z
+    const wx = w * x
+    const wy = w * y
+    const wz = w * z
+    return Mat3(1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy), 2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx), 2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy))
+  }
+
+  fun ToMat4() -> Mat4 => Mat4FromMat3(ToMat3())
+
+  fun NearTo(other: Quat, tolerance: float) -> bool => Near(x, other.x, tolerance) && Near(y, other.y, tolerance) && Near(z, other.z, tolerance) && Near(w, other.w, tolerance)
+}
+
+extend Quat as Mul {
+  fun Times(other: Self) -> Self => Quat(w * other.x + x * other.w + y * other.z - z * other.y, w * other.y - x * other.z + y * other.w + z * other.x, w * other.z + x * other.y - y * other.x + z * other.w, w * other.w - x * other.x - y * other.y - z * other.z)
+}
+
+extend Quat as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x && y == other.y && z == other.z && w == other.w
+}
+
+offer fun QuatIdentity() -> Quat => Quat(0.0, 0.0, 0.0, 1.0)
+
+offer fun QuatAxisAngle(axis: Vec3, radians: float) -> Quat uses unsafe {
+  const unit = axis.Normalized()
+  const half = radians * 0.5
+  const s = Sin(half)
+  return Quat(unit.x * s, unit.y * s, unit.z * s, Cos(half))
+}
+
+fun Close(a: float, b: float) -> bool => Near(a, b, 0.0001)
+
+@Test
+fun AddsAndSubtractsVectors() -> bool {
+  const sum = Vec3(1.0, 2.0, 3.0) + Vec3(10.0, 20.0, 30.0)
+  const diff = Vec3(10.0, 20.0, 30.0) - Vec3(1.0, 2.0, 3.0)
+  const flat = Vec2(1.0, 2.0) + Vec2(3.0, 4.0) - Vec2(1.0, 1.0)
+  const four = Vec4(1.0, 2.0, 3.0, 4.0) + Vec4(1.0, 1.0, 1.0, 1.0) - Vec4(0.0, 0.0, 0.0, 1.0)
+  return sum == Vec3(11.0, 22.0, 33.0) && diff == Vec3(9.0, 18.0, 27.0) && flat == Vec2(3.0, 5.0) && four == Vec4(2.0, 3.0, 4.0, 4.0)
+}
+
+@Test
+fun MultipliesAndDividesVectorsByComponent() -> bool {
+  const product = Vec3(2.0, 3.0, 4.0) * Vec3(5.0, 6.0, 7.0)
+  const quotient = Vec3(10.0, 12.0, 14.0) / Vec3(2.0, 3.0, 7.0)
+  const flat = Vec2(2.0, 3.0) * Vec2(4.0, 5.0) / Vec2(2.0, 5.0)
+  const four = Vec4(2.0, 4.0, 6.0, 8.0) / Vec4(2.0, 2.0, 2.0, 2.0) * Vec4(1.0, 2.0, 3.0, 4.0)
+  return product == Vec3(10.0, 18.0, 28.0) && quotient == Vec3(5.0, 4.0, 2.0) && flat == Vec2(4.0, 3.0) && four == Vec4(1.0, 4.0, 9.0, 16.0)
+}
+
+@Test
+fun ScalesAndDividesVectorsByANumber() -> bool {
+  return Vec3(1.0, 2.0, 3.0).Scaled(2.0) == Vec3(2.0, 4.0, 6.0) && Vec3(2.0, 4.0, 6.0).Divided(2.0) == Vec3(1.0, 2.0, 3.0) && Vec2(1.0, 2.0).Scaled(3.0) == Vec2(3.0, 6.0) && Vec2(3.0, 6.0).Divided(3.0) == Vec2(1.0, 2.0) && Vec4(1.0, 2.0, 3.0, 4.0).Scaled(2.0) == Vec4(2.0, 4.0, 6.0, 8.0) && Vec4(2.0, 4.0, 6.0, 8.0).Divided(2.0) == Vec4(1.0, 2.0, 3.0, 4.0)
+}
+
+@Test
+fun NegatesVectors() -> bool {
+  return -Vec3(1.0, -2.0, 3.0) == Vec3(-1.0, 2.0, -3.0) && -Vec2(1.0, -2.0) == Vec2(-1.0, 2.0) && -Vec4(1.0, -2.0, 3.0, -4.0) == Vec4(-1.0, 2.0, -3.0, 4.0)
+}
+
+@Test
+fun ComparesVectorsForEquality() -> bool {
+  const a = Vec3(1.0, 2.0, 3.0)
+  return a == Vec3(1.0, 2.0, 3.0) && a != Vec3(1.0, 2.0, 4.0) && Vec2(1.0, 2.0) != Vec2(2.0, 1.0) && Vec4(1.0, 2.0, 3.0, 4.0) != Vec4(1.0, 2.0, 3.0, 5.0)
+}
+
+@Test
+fun TakesTheDotProduct() -> bool {
+  return Vec3(1.0, 2.0, 3.0).Dot(Vec3(4.0, 5.0, 6.0)) == 32.0 && Vec2(1.0, 2.0).Dot(Vec2(3.0, 4.0)) == 11.0 && Vec4(1.0, 2.0, 3.0, 4.0).Dot(Vec4(1.0, 1.0, 1.0, 1.0)) == 10.0
+}
+
+@Test
+fun TakesTheCrossProduct() -> bool {
+  const z = Vec3(1.0, 0.0, 0.0).Cross(Vec3(0.0, 1.0, 0.0))
+  const back = Vec3(0.0, 1.0, 0.0).Cross(Vec3(1.0, 0.0, 0.0))
+  return z == Vec3(0.0, 0.0, 1.0) && back == Vec3(0.0, 0.0, -1.0) && Vec3(2.0, 3.0, 4.0).Cross(Vec3(2.0, 3.0, 4.0)) == Vec3(0.0, 0.0, 0.0)
+}
+
+@Test
+fun MeasuresLength() -> bool uses unsafe {
+  return Close(Vec3(2.0, 3.0, 6.0).Length(), 7.0) && Close(Vec2(3.0, 4.0).Length(), 5.0) && Close(Vec4(1.0, 1.0, 1.0, 1.0).Length(), 2.0) && Vec3(2.0, 3.0, 6.0).LengthSquared() == 49.0 && Vec2(3.0, 4.0).LengthSquared() == 25.0 && Vec4(1.0, 1.0, 1.0, 1.0).LengthSquared() == 4.0
+}
+
+@Test
+fun MeasuresDistance() -> bool uses unsafe {
+  return Close(Vec3(1.0, 2.0, 3.0).Distance(Vec3(3.0, 6.0, 7.0)), 6.0) && Close(Vec2(0.0, 0.0).Distance(Vec2(3.0, 4.0)), 5.0)
+}
+
+@Test
+fun NormalizesToUnitLength() -> bool uses unsafe {
+  const unit = Vec3(0.0, 3.0, 4.0).Normalized()
+  const flat = Vec2(3.0, 4.0).Normalized()
+  const four = Vec4(0.0, 0.0, 5.0, 0.0).Normalized()
+  return unit.NearTo(Vec3(0.0, 0.6, 0.8), 0.0001) && Close(unit.Length(), 1.0) && flat.NearTo(Vec2(0.6, 0.8), 0.0001) && four.NearTo(Vec4(0.0, 0.0, 1.0, 0.0), 0.0001)
+}
+
+@Test
+fun NormalizingZeroGivesZero() -> bool uses unsafe {
+  return Vec3(0.0, 0.0, 0.0).Normalized() == Vec3(0.0, 0.0, 0.0) && Vec2(0.0, 0.0).Normalized() == Vec2(0.0, 0.0) && Vec4(0.0, 0.0, 0.0, 0.0).Normalized() == Vec4(0.0, 0.0, 0.0, 0.0)
+}
+
+@Test
+fun MixesVectorsByT() -> bool {
+  const mid = Vec3(0.0, 10.0, 20.0).Lerped(Vec3(10.0, 20.0, 40.0), 0.5)
+  return mid == Vec3(5.0, 15.0, 30.0) && Vec2(0.0, 0.0).Lerped(Vec2(4.0, 8.0), 0.25) == Vec2(1.0, 2.0) && Vec4(0.0, 0.0, 0.0, 0.0).Lerped(Vec4(2.0, 4.0, 6.0, 8.0), 0.5) == Vec4(1.0, 2.0, 3.0, 4.0) && Vec3(1.0, 2.0, 3.0).Lerped(Vec3(9.0, 9.0, 9.0), 0.0) == Vec3(1.0, 2.0, 3.0)
+}
+
+@Test
+fun ClampsVectorsBetweenBounds() -> bool {
+  const low = Vec3(0.0, 0.0, 0.0)
+  const high = Vec3(10.0, 10.0, 10.0)
+  return Vec3(-5.0, 5.0, 15.0).Clamped(low, high) == Vec3(0.0, 5.0, 10.0) && Vec2(-1.0, 20.0).Clamped(Vec2(0.0, 0.0), Vec2(10.0, 10.0)) == Vec2(0.0, 10.0)
+}
+
+@Test
+fun NearToHasATolerance() -> bool {
+  return Vec3(1.0, 1.0, 1.0).NearTo(Vec3(1.00001, 1.0, 1.0), 0.001) && !Vec3(1.0, 1.0, 1.0).NearTo(Vec3(1.1, 1.0, 1.0), 0.001) && Vec2(1.0, 1.0).NearTo(Vec2(1.0, 1.00001), 0.001) && !Vec2(1.0, 1.0).NearTo(Vec2(1.0, 2.0), 0.001)
+}
+
+@Test
+fun TheIdentityMatrixLeavesAPointAlone() -> bool {
+  const p = Vec3(1.0, 2.0, 3.0)
+  return Mat4Identity().TransformPoint(p) == p && Mat3Identity().Transform(p) == p && Mat4Identity().TransformVec4(Vec4(1.0, 2.0, 3.0, 4.0)) == Vec4(1.0, 2.0, 3.0, 4.0)
+}
+
+@Test
+fun TranslatesPointsButNotDirections() -> bool {
+  const move = Mat4Translation(Vec3(10.0, 20.0, 30.0))
+  return move.TransformPoint(Vec3(1.0, 2.0, 3.0)) == Vec3(11.0, 22.0, 33.0) && move.TransformDirection(Vec3(1.0, 2.0, 3.0)) == Vec3(1.0, 2.0, 3.0)
+}
+
+@Test
+fun ScalesPoints() -> bool {
+  return Mat4Scale(Vec3(2.0, 3.0, 4.0)).TransformPoint(Vec3(1.0, 1.0, 1.0)) == Vec3(2.0, 3.0, 4.0)
+}
+
+@Test
+fun MultipliesMatricesRightFirst() -> bool {
+  const move = Mat4Translation(Vec3(1.0, 0.0, 0.0))
+  const grow = Mat4Scale(Vec3(2.0, 2.0, 2.0))
+  const scaled_then_moved = move * grow
+  const moved_then_scaled = grow * move
+  return scaled_then_moved.TransformPoint(Vec3(1.0, 1.0, 1.0)) == Vec3(3.0, 2.0, 2.0) && moved_then_scaled.TransformPoint(Vec3(1.0, 1.0, 1.0)) == Vec3(4.0, 2.0, 2.0)
+}
+
+@Test
+fun IdentityIsNeutralForMatrixProducts() -> bool {
+  const m = Mat4Translation(Vec3(1.0, 2.0, 3.0)) * Mat4Scale(Vec3(2.0, 2.0, 2.0))
+  const n = Mat3(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0)
+  return m * Mat4Identity() == m && Mat4Identity() * m == m && n * Mat3Identity() == n && Mat3Identity() * n == n
+}
+
+@Test
+fun MultipliesMat3() -> bool {
+  const a = Mat3(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
+  const b = Mat3(9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0)
+  return a * b == Mat3(30.0, 24.0, 18.0, 84.0, 69.0, 54.0, 138.0, 114.0, 90.0)
+}
+
+@Test
+fun TransposesMatrices() -> bool {
+  const a = Mat3(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
+  const b = Mat4(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0)
+  return a.Transposed() == Mat3(1.0, 4.0, 7.0, 2.0, 5.0, 8.0, 3.0, 6.0, 9.0) && b.Transposed().Transposed() == b && b.Transposed().m01 == 5.0 && b.Transposed().m30 == 4.0
+}
+
+@Test
+fun TakesTheDeterminantOfMat3() -> bool {
+  return Close(Mat3Identity().Determinant(), 1.0) && Close(Mat3(2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0).Determinant(), 24.0) && Close(Mat3(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0).Determinant(), 0.0)
+}
+
+@Test
+fun TransformsAVec4ByAMatrix() -> bool {
+  const move = Mat4Translation(Vec3(1.0, 2.0, 3.0))
+  return move.TransformVec4(Vec4(0.0, 0.0, 0.0, 1.0)) == Vec4(1.0, 2.0, 3.0, 1.0) && move.TransformVec4(Vec4(1.0, 1.0, 1.0, 0.0)) == Vec4(1.0, 1.0, 1.0, 0.0)
+}
+
+@Test
+fun TakesTheUpperThreeByThree() -> bool {
+  const m = Mat4(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0)
+  return m.Upper() == Mat3(1.0, 2.0, 3.0, 5.0, 6.0, 7.0, 9.0, 10.0, 11.0) && Mat4FromMat3(m.Upper()).m33 == 1.0 && Mat4FromMat3(m.Upper()).m03 == 0.0
+}
+
+@Test
+fun MatricesCompareWithATolerance() -> bool {
+  const a = Mat4Identity()
+  const b = Mat4Translation(Vec3(0.00001, 0.0, 0.0))
+  return a.NearTo(b, 0.001) && !a.NearTo(Mat4Translation(Vec3(1.0, 0.0, 0.0)), 0.001) && Mat3Identity().NearTo(Mat3Identity(), 0.0) && !Mat3Identity().NearTo(Mat3(1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0), 0.5)
+}
+
+@Test
+fun TheIdentityQuaternionRotatesNothing() -> bool {
+  const v = Vec3(1.0, 2.0, 3.0)
+  return QuatIdentity().Rotate(v) == v && QuatIdentity() == Quat(0.0, 0.0, 0.0, 1.0)
+}
+
+@Test
+fun RotatesAroundAnAxis() -> bool uses unsafe {
+  const quarter = QuatAxisAngle(Vec3(0.0, 0.0, 1.0), 1.5707963)
+  return quarter.Rotate(Vec3(1.0, 0.0, 0.0)).NearTo(Vec3(0.0, 1.0, 0.0), 0.0001) && quarter.Rotate(Vec3(0.0, 0.0, 5.0)).NearTo(Vec3(0.0, 0.0, 5.0), 0.0001)
+}
+
+@Test
+fun BuildsAnAxisAngleFromANonUnitAxis() -> bool uses unsafe {
+  const quarter = QuatAxisAngle(Vec3(0.0, 0.0, 10.0), 1.5707963)
+  return Close(quarter.Length(), 1.0) && quarter.Rotate(Vec3(1.0, 0.0, 0.0)).NearTo(Vec3(0.0, 1.0, 0.0), 0.0001)
+}
+
+@Test
+fun MultipliesQuaternionsRightFirst() -> bool uses unsafe {
+  const turn_z = QuatAxisAngle(Vec3(0.0, 0.0, 1.0), 1.5707963)
+  const turn_x = QuatAxisAngle(Vec3(1.0, 0.0, 0.0), 1.5707963)
+  const z_after_x = turn_z * turn_x
+  return z_after_x.Rotate(Vec3(0.0, 1.0, 0.0)).NearTo(Vec3(0.0, 0.0, 1.0), 0.0001) && z_after_x.Rotate(Vec3(0.0, 0.0, 1.0)).NearTo(Vec3(1.0, 0.0, 0.0), 0.0001) && (turn_z * QuatIdentity()) == turn_z && (QuatIdentity() * turn_z) == turn_z
+}
+
+@Test
+fun ConjugatingUndoesARotation() -> bool uses unsafe {
+  const turn = QuatAxisAngle(Vec3(1.0, 2.0, 3.0), 0.7)
+  const v = Vec3(4.0, 5.0, 6.0)
+  return turn.Conjugate().Rotate(turn.Rotate(v)).NearTo(v, 0.001) && (turn * turn.Conjugate()).NearTo(QuatIdentity(), 0.0001)
+}
+
+@Test
+fun NormalizesAQuaternion() -> bool uses unsafe {
+  const q = Quat(0.0, 0.0, 3.0, 4.0).Normalized()
+  return q.NearTo(Quat(0.0, 0.0, 0.6, 0.8), 0.0001) && Close(q.Length(), 1.0) && Quat(0.0, 0.0, 0.0, 0.0).Normalized() == QuatIdentity() && Close(q.Dot(q), 1.0)
+}
+
+@Test
+fun SlerpsHalfwayBetweenTwoRotations() -> bool uses unsafe {
+  const start = QuatIdentity()
+  const end = QuatAxisAngle(Vec3(0.0, 0.0, 1.0), 1.5707963)
+  const half = start.Slerp(end, 0.5)
+  const expected = QuatAxisAngle(Vec3(0.0, 0.0, 1.0), 0.78539815)
+  return half.NearTo(expected, 0.0001) && start.Slerp(end, 0.0).NearTo(start, 0.0001) && start.Slerp(end, 1.0).NearTo(end, 0.0001)
+}
+
+@Test
+fun SlerpTakesTheShortWay() -> bool uses unsafe {
+  const start = QuatIdentity()
+  const end = QuatAxisAngle(Vec3(0.0, 0.0, 1.0), 1.5707963)
+  const flipped = Quat(-end.x, -end.y, -end.z, -end.w)
+  return start.Slerp(flipped, 0.5).NearTo(start.Slerp(end, 0.5), 0.0001)
+}
+
+@Test
+fun SlerpOfNearlyEqualRotationsStaysUnit() -> bool uses unsafe {
+  const a = QuatAxisAngle(Vec3(0.0, 1.0, 0.0), 0.5)
+  const b = QuatAxisAngle(Vec3(0.0, 1.0, 0.0), 0.50001)
+  return Close(a.Slerp(b, 0.5).Length(), 1.0)
+}
+
+@Test
+fun AQuaternionAndItsMatrixRotateAlike() -> bool uses unsafe {
+  const turn = QuatAxisAngle(Vec3(1.0, 1.0, 0.0), 1.2)
+  const v = Vec3(0.3, -2.0, 5.0)
+  return turn.ToMat3().Transform(v).NearTo(turn.Rotate(v), 0.0001) && turn.ToMat4().TransformPoint(v).NearTo(turn.Rotate(v), 0.0001) && turn.ToMat4().m33 == 1.0 && Close(turn.ToMat3().Determinant(), 1.0)
+}
