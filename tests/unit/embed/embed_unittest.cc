@@ -1225,3 +1225,109 @@ offer fun Say() -> int uses io {
   wolang_vm_destroy(first);
   wolang_vm_destroy(second);
 }
+
+WOLANG_TEST(EmbedTest, AFailedReloadKeepsTheProgramThatWasRunning) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_failed_reload_test.wo";
+  WriteFile(path, "offer fun Answer() -> int => 1\n");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Answer", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 1);
+
+  WriteFile(path, "offer fun Answer() -> int => nope\n");
+  WOLANG_EXPECT(wolang_vm_reload(vm) != 0);
+  WOLANG_EXPECT(!std::string(wolang_vm_errors(vm)).empty());
+  WOLANG_EXPECT_EQ(wolang_vm_ok(vm), 1);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Answer", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 1);
+
+  WriteFile(path, "offer fun Answer() -> int => 2\n");
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Answer", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 2);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, AReloadThatChangesAnObjectTheHostHoldsIsRefused) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_held_reload_test.wo";
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5)
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+)");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  WolangValue mover = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Make", nullptr, 0, &mover), 0);
+
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+  var speed: int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5, 2)
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+)");
+  WOLANG_EXPECT(wolang_vm_reload(vm) != 0);
+  WOLANG_EXPECT_EQ(wolang_vm_ok(vm), 1);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("Mover") != std::string::npos);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &mover, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 5);
+
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, mover), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Make", nullptr, 0, &mover), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &mover, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 5);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, mover), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, AReloadKeepsTheBindingsAndTheWriter) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_kept_bindings_test.wo";
+  const char* source = R"(
+need std.io
+
+extern "C" fun test_host_scale(value: s32) -> s32
+
+offer fun Scale(value: int) -> int uses unsafe {
+  return test_host_scale(value as s32) as int
+}
+
+offer fun Say() -> int uses io {
+  io.Print("again")
+  return 1
+}
+)";
+  WriteFile(path, source);
+  std::string out;
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_writer(vm, &AppendTo, &out);
+  WOLANG_EXPECT_EQ(wolang_vm_bind(vm, "test_host_scale", reinterpret_cast<void*>(&test_host_triple)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+
+  WolangValue argument = wolang_int(4);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Scale", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 12);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Say", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(out, std::string("again"));
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}

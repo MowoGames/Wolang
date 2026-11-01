@@ -139,6 +139,14 @@ bool SpaceClassOf(uint64_t tag, SpaceClass* out) {
   return false;
 }
 
+void SpaceCopyBindings(const GlobalSpace* from, GlobalSpace* to) {
+  if (from == nullptr || to == nullptr) {
+    return;
+  }
+  to->Symbols = from->Symbols;
+  to->Classes = from->Classes;
+}
+
 void SpaceSetWriteHook(GlobalSpace* space, SpaceWriteHook hook, void* user) {
   if (space == nullptr) {
     return;

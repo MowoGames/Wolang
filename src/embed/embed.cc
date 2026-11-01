@@ -19,6 +19,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -210,6 +211,14 @@ struct WolangVm {
   void* writer_user = nullptr;
   WolangWriter reporter = nullptr;
   void* reporter_user = nullptr;
+  // The program's objects the host took a reference to, by address: what a
+  // reload must not leave pointing at a class whose layout changed (D255).
+  struct Held {
+    int32_t Count = 0;
+    std::string Type;
+    uint32_t Index = 0;
+  };
+  std::map<void*, Held> held;
 };
 
 namespace {
@@ -956,6 +965,18 @@ static WolangValue ObjectOf(WolangVm* vm, uint64_t address, TypeId type) {
   return value;
 }
 
+// An object a call just handed to the host: the host owns that reference
+// until it releases it, so a reload has to keep the object as it is (D255).
+static void Handed(WolangVm* vm, const WolangValue& value) {
+  if (value.kind != kWolangObject || value.handle == nullptr) {
+    return;
+  }
+  WolangVm::Held& entry = vm->held[value.handle];
+  entry.Count += 1;
+  entry.Type.assign(value.text != nullptr ? value.text : "", static_cast<size_t>(value.length));
+  entry.Index = value.reserved;
+}
+
 // Runs |entry| with |boxed|, in machine code when there is some, and
 // answers what it returned.
 // The editor attached to |vm| right now, if one is.
@@ -1054,6 +1075,7 @@ static WolangStatus Invoke(WolangVm* vm, const Callable* entry, const std::vecto
     const TypeId returned = types.ElementOf(entry->function->type);
     if (types.IsHandle(returned) && !types.IsOptional(returned) && outcome.value.kind() == wolang::interp::Value::Kind::kInt) {
       *out = ObjectOf(vm, outcome.value.integer(), returned);
+      Handed(vm, *out);
     }
   }
   return kWolangOk;
@@ -1080,6 +1102,20 @@ static std::vector<const wolang::Member*> StoredMembers(const wolang::FileResolu
     }
   }
   return stored;
+}
+
+// The class called |name| in |database|, by the spelling an object answers
+// for its type; invalid when the program has no such class.
+static TypeId FindClassNamed(Database& database, const std::string& name) {
+  const wolang::TypeStore& types = database.types();
+  for (size_t i = 0; i < types.size(); ++i) {
+    const TypeId id{static_cast<uint32_t>(i)};
+    const TypeKind kind = types.KindOf(id);
+    if ((kind == TypeKind::kNamed || kind == TypeKind::kInstance) && types.IsHandle(id) && !types.IsForeignClass(id) && types.Describe(database.interner(), id) == name) {
+      return id;
+    }
+  }
+  return TypeId{};
 }
 
 static const Callable* FindMember(const WolangVm* vm, const std::string& name) {
@@ -1109,6 +1145,10 @@ WolangStatus wolang_vm_object_retain(WolangVm* vm, WolangValue object) {
     return kWolangError;
   }
   wolang::runtime::wolang_object_retain(object.handle);
+  WolangVm::Held& entry = vm->held[object.handle];
+  entry.Count += 1;
+  entry.Type.assign(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length));
+  entry.Index = object.reserved;
   return kWolangOk;
 }
 
@@ -1116,6 +1156,9 @@ WolangStatus wolang_vm_object_release(WolangVm* vm, WolangValue object) {
   const VmTurn turn(vm);
   if (vm == nullptr || object.kind != kWolangObject || object.handle == nullptr) {
     return kWolangError;
+  }
+  if (const auto found = vm->held.find(object.handle); found != vm->held.end() && --found->second.Count <= 0) {
+    vm->held.erase(found);
   }
   if (wolang::runtime::wolang_object_release(object.handle) == 0) {
     return kWolangOk;
@@ -1155,7 +1198,10 @@ WolangStatus wolang_vm_object_get(WolangVm* vm, WolangValue object, const char* 
     return kWolangError;
   }
   wolang::TypeStore& types = vm->database.types();
-  const TypeId type{object.reserved};
+  TypeId type = FindClassNamed(vm->database, std::string(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length)));
+  if (!type.is_valid()) {
+    type = TypeId{object.reserved};
+  }
   const uint32_t file = types.Get(type).declaring_file;
   const CheckedFile* checked = vm->database.Checked(FileId{file});
   if (checked == nullptr) {
@@ -1975,12 +2021,79 @@ static void Carry(WolangVm* vm, Database& before, const std::vector<GlobalSlot>&
   }
 }
 
+// What an object of |type| is made of, by field, the way two programs must
+// agree for the same bytes to mean the same thing. Unlike `Shape` it looks
+// inside a class with a descriptor, because an object the host holds is not
+// rebuilt and so cannot be allowed to change under it (D255).
+static std::string LayoutKey(Database& database, TypeId type) {
+  const CheckedFile* checked = database.Checked(FileId{database.types().Get(type).declaring_file});
+  if (checked == nullptr) {
+    return "?";
+  }
+  bool header = false;
+  std::string key;
+  for (const wolang::Member* member : StoredMembers(checked->resolution, type, &header)) {
+    key += std::string(database.interner().Text(member->name)) + ":" + Shape(database, member->type) + ",";
+  }
+  return (header ? "virtual;" : "plain;") + key;
+}
+
+// Why a reload would hurt an object the host holds, or nothing when it
+// would not: |staged| is the new program, loaded and not yet running.
+static std::string HeldObjectsBlock(WolangVm* vm, WolangVm* staged) {
+  std::string blocked;
+  for (const auto& [address, held] : vm->held) {
+    (void)address;
+    const TypeId before = FindClassNamed(vm->database, held.Type);
+    const TypeId after = FindClassNamed(staged->database, held.Type);
+    if (!before.is_valid() || !after.is_valid()) {
+      blocked += "the host holds a `" + held.Type + "` and the new program has no such class
+";
+      continue;
+    }
+    if (LayoutKey(vm->database, before) != LayoutKey(staged->database, after)) {
+      blocked += "the host holds a `" + held.Type + "` and its fields changed
+";
+    }
+  }
+  return blocked;
+}
+
 WolangStatus wolang_vm_reload(WolangVm* vm) {
-  const VmTurn turn(vm);
   if (vm == nullptr) {
     return kWolangError;
   }
+  const VmTurn turn(vm);
   const std::vector<WolangVm::Loaded> again = vm->loaded;
+
+  // The new program is loaded beside the old one first, without starting
+  // anything. Only a program that compiles, and that leaves every object
+  // the host holds as it was, replaces the one running; otherwise the old
+  // one keeps running and the vm says why (D255).
+  {
+    std::unique_ptr<WolangVm> staged = std::make_unique<WolangVm>();
+    staged->initialize = false;
+    staged->allow_compiled = false;
+    staged->sandboxes = vm->sandboxes;
+    wolang::runtime::SpaceCopyBindings(vm->globals.get(), staged->globals.get());
+    int32_t staged_status = 0;
+    for (const WolangVm::Loaded& file : again) {
+      staged_status |= file.from_source ? wolang_vm_load_source(staged.get(), file.path.c_str(), file.source.c_str()) : wolang_vm_load(staged.get(), file.path.c_str());
+    }
+    if (staged_status != 0 || !staged->ok) {
+      vm->errors = staged->errors;
+      vm->notes = "the reload was refused; the program that was running keeps running
+";
+      return kWolangError;
+    }
+    const std::string blocked = HeldObjectsBlock(vm, staged.get());
+    if (!blocked.empty()) {
+      vm->errors = "wolang: the reload was refused: " + blocked;
+      vm->notes = blocked;
+      return kWolangError;
+    }
+  }
+
   const std::vector<GlobalSlot> old = GlobalsOf(vm);
 
   // The program as it was goes into retirement rather than away: a value
@@ -1991,6 +2104,7 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   retired.compiled = std::move(vm->compiled);
   retired.globals = vm->globals;
   Database& before = *retired.database;
+  const std::shared_ptr<wolang::runtime::GlobalSpace> graveyard_space = vm->globals;
   const std::shared_ptr<std::recursive_mutex> lock = vm->lock;
   const std::shared_ptr<std::vector<Retired>> graveyard = vm->retired;
   const std::shared_ptr<std::deque<FunctionHandle>> handles = vm->handles;
@@ -1999,6 +2113,12 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   const bool allow_compiled = vm->allow_compiled;
   const bool initialize = vm->initialize;
   const std::vector<std::pair<std::string, std::vector<std::string>>> sandboxes = vm->sandboxes;
+  const WolangWriter writer = vm->writer;
+  void* const writer_user = vm->writer_user;
+  const WolangWriter reporter = vm->reporter;
+  void* const reporter_user = vm->reporter_user;
+  std::map<void*, WolangVm::Held> held = std::move(vm->held);
+  std::deque<std::string> answers = std::move(vm->answers);
 
   // A fresh database, because a query cache remembers what the files
   // said: reloading is loading again, not re-asking.
@@ -2012,6 +2132,16 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   vm->allow_compiled = allow_compiled;
   vm->initialize = initialize;
   vm->sandboxes = sandboxes;
+  vm->writer = writer;
+  vm->writer_user = writer_user;
+  vm->reporter = reporter;
+  vm->reporter_user = reporter_user;
+  vm->held = std::move(held);
+  vm->answers = std::move(answers);
+  wolang::runtime::SpaceCopyBindings(graveyard_space.get(), vm->globals.get());
+  if (writer != nullptr || reporter != nullptr) {
+    InstallWriter(vm);
+  }
   graveyard->push_back(std::move(retired));
 
   const wolang::runtime::GlobalSpaceScope entered(vm->globals.get());
@@ -2024,6 +2154,13 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   }
   if (status == 0 && vm->ok) {
     Carry(vm, before, old);
+    for (auto& [address, entry] : vm->held) {
+      (void)address;
+      const TypeId now = FindClassNamed(vm->database, entry.Type);
+      if (now.is_valid()) {
+        entry.Index = now.index;
+      }
+    }
   }
   return status != 0 ? kWolangError : kWolangOk;
 }

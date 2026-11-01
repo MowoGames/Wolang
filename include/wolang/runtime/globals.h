@@ -58,6 +58,7 @@ void SpaceBindSymbol(GlobalSpace* space, std::string_view name, void* address);
 void* SpaceSymbol(std::string_view name);
 void SpaceRegisterClass(GlobalSpace* space, const SpaceClass& entry);
 bool SpaceClassOf(uint64_t tag, SpaceClass* out);
+void SpaceCopyBindings(const GlobalSpace* from, GlobalSpace* to);
 void SpaceSetWriteHook(GlobalSpace* space, SpaceWriteHook hook, void* user);
 bool SpaceWrite(int32_t fd, const uint8_t* bytes, uint64_t count, int64_t* result);
 
