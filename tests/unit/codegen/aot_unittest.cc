@@ -195,6 +195,45 @@ fun main() uses unsafe {
   WOLANG_EXPECT_EQ(program.Output(), "exit 30");
 }
 
+WOLANG_TEST(AotTest, PayloadErrorsAgree) {
+  if (!Links()) {
+    return;
+  }
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+error Plain, Bad(line: int, why: text)
+
+fun Make(n: int) -> int!(Plain, Bad) {
+  if n == 0 {
+    return Plain
+  }
+  if n == 1 {
+    return Bad(40, "late")
+  }
+  return n
+}
+
+fun Pass(n: int) -> int!(Plain, Bad) {
+  const v = Make(n)?
+  return v + 1
+}
+
+fun Use(n: int) -> int {
+  return match Pass(n) {
+    Ok(v) => v
+    Plain => 1
+    Bad(line, why) => line + why.len
+  }
+}
+
+fun main() uses unsafe {
+  exit((Use(0) + Use(1) + Use(5)) as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 51");
+}
+
 WOLANG_TEST(AotTest, RunsStructsOptionalsAndEnums) {
   if (!Links()) {
     return;

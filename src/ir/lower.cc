@@ -1859,9 +1859,38 @@ class Lowerer {
     const bool wrapped =
         built.is_valid() &&
         types_->KindOf(Erase(built)) == TypeKind::kFallible;
+
+    // A `T!` into a `T!` that names other errors with data: the slots are
+    // moved to where the target keeps them, and the rest are empty (D235).
+    if (types_->KindOf(target) == TypeKind::kFallible && wrapped &&
+        Erase(built) != target &&
+        PayloadClasses(Erase(built)) != PayloadClasses(target)) {
+      const TypeId source_fallible = Erase(built);
+      const TypeId held = Erase(types_->ElementOf(target));
+      const std::vector<TypeId> have = PayloadClasses(source_fallible);
+      std::vector<InstId> fields;
+      fields.push_back(builder_->Extract(types_->u32(), value, 0));
+      fields.push_back(builder_->Extract(held, value, 1));
+      for (TypeId detail : PayloadClasses(target)) {
+        const TypeId optional = types_->Optional(detail);
+        const auto at = std::find(have.begin(), have.end(), detail);
+        if (at == have.end()) {
+          fields.push_back(builder_->ConstNull(optional));
+          continue;
+        }
+        const InstId slot = builder_->Extract(optional, value, 2 + static_cast<uint32_t>(at - have.begin()));
+        if (!IsFreshHandle(value)) {
+          RetainValue(slot, optional);
+        }
+        fields.push_back(slot);
+      }
+      return builder_->Add(Opcode::kMakeStruct, target, std::move(fields));
+    }
+
     if (types_->KindOf(target) == TypeKind::kFallible && !wrapped) {
       const TypeId held = Erase(types_->ElementOf(target));
       const bool is_error =
+          types_->KindOf(from) == TypeKind::kErrorSet ||
           types_->KindOf(source_type) == TypeKind::kErrorSet ||
           (built.is_valid() &&
            types_->KindOf(Erase(built)) == TypeKind::kErrorSet);
@@ -1869,13 +1898,36 @@ class Lowerer {
         // The value *is* the tag, so it travels as it is and the payload
         // is whatever was there -- a `T!` that failed has no value, and
         // nothing may read one out of it without matching first.
-        return builder_->Add(Opcode::kMakeStruct, target,
-                             {value, builder_->ConstInt(held, 0)});
+        //
+        // An error with data arrives as the tag and the slot that holds
+        // its box, and the slot goes where the target keeps that error's
+        // (D235).
+        std::vector<ErrorMember> given;
+        if (types_->KindOf(from) == TypeKind::kErrorSet) {
+          given = types_->StatedErrorsOf(from);
+        }
+        const bool boxed = given.size() == 1 && given[0].detail.is_valid();
+        std::vector<InstId> fields;
+        fields.push_back(boxed ? builder_->Extract(types_->u32(), value, 0) : value);
+        fields.push_back(builder_->ConstInt(held, 0));
+        for (TypeId detail : PayloadClasses(target)) {
+          const TypeId optional = types_->Optional(detail);
+          fields.push_back(boxed && given[0].detail == detail ? builder_->Extract(optional, value, 1) : builder_->ConstNull(optional));
+        }
+        const bool fresh_box = boxed && IsFreshHandle(value);
+        const InstId failed = builder_->Add(Opcode::kMakeStruct, target, std::move(fields));
+        if (fresh_box) {
+          m_Fresh.emplace_back(current_function_, failed);
+        }
+        return failed;
       }
-      return builder_->Add(
-          Opcode::kMakeStruct, target,
-          {builder_->ConstInt(types_->u32(), 0),
-           Coerce(value, from, held, source)});
+      std::vector<InstId> fields;
+      fields.push_back(builder_->ConstInt(types_->u32(), 0));
+      fields.push_back(Coerce(value, from, held, source));
+      for (TypeId detail : PayloadClasses(target)) {
+        fields.push_back(builder_->ConstNull(types_->Optional(detail)));
+      }
+      return builder_->Add(Opcode::kMakeStruct, target, std::move(fields));
     }
 
     // A value where an ability is wanted: the pair that says what it is and
@@ -2042,6 +2094,24 @@ class Lowerer {
                                types_->Get(type).is_mutable);
       case TypeKind::kOptional:
         return types_->Optional(Erase(types_->ElementOf(type)));
+      // Only the errors that carry data are part of the shape: each has a
+      // slot beside the value, and the rest are the tag alone (D235).
+      case TypeKind::kFallible: {
+        std::vector<ErrorMember> carrying;
+        for (const ErrorMember& member : types_->StatedErrorsOf(types_->Get(type).base)) {
+          if (member.detail.is_valid()) {
+            carrying.push_back(member);
+          }
+        }
+        return types_->Fallible(types_->ElementOf(type), types_->StatedErrorSet(std::move(carrying)));
+      }
+      case TypeKind::kErrorSet: {
+        const std::vector<ErrorMember> stated = types_->StatedErrorsOf(type);
+        if (stated.size() == 1 && stated[0].detail.is_valid()) {
+          return types_->Tuple({types_->u32(), types_->Optional(stated[0].detail)});
+        }
+        return type;
+      }
       case TypeKind::kSlice:
         return types_->Slice(Erase(types_->ElementOf(type)),
                              types_->Get(type).is_soa);
@@ -2381,7 +2451,12 @@ class Lowerer {
     }
     if (IsFallibleCounted(type)) {
       const TypeId element = Erase(types_->ElementOf(type));
-      OnValue(value, type, [&](InstId inner) { Destroy(inner, element); });
+      if (Counts(element)) {
+        OnValue(value, type, [&](InstId inner) { Destroy(inner, element); });
+      }
+      ForEachPayload(value, type, [&](InstId slot, TypeId optional) {
+        OnSome(slot, optional, [&](InstId inner) { Destroy(inner, types_->ElementOf(optional)); });
+      });
       return;
     }
     if (!types_->IsHandle(type)) {
@@ -2669,11 +2744,37 @@ class Lowerer {
     return raw.is_valid() && (IsCountedHandle(raw) || IsOptionalHandle(raw) || IsFallibleCounted(raw) || HoldsCounted(raw));
   }
 
+  // The boxes of the errors with data a `T!` can hold, in the order of its
+  // slots (D235). Of the erased type, whose set names only those.
+  std::vector<TypeId> PayloadClasses(TypeId fallible) {
+    std::vector<TypeId> classes;
+    if (types_->KindOf(fallible) != TypeKind::kFallible) {
+      return classes;
+    }
+    for (const ErrorMember& member : types_->StatedErrorsOf(types_->Get(fallible).base)) {
+      if (member.detail.is_valid()) {
+        classes.push_back(member.detail);
+      }
+    }
+    return classes;
+  }
+
+  template <typename Visit>
+  void ForEachPayload(InstId value, TypeId fallible, Visit visit) {
+    uint32_t index = 2;
+    for (TypeId detail : PayloadClasses(fallible)) {
+      const TypeId optional = types_->Optional(detail);
+      visit(builder_->Extract(optional, value, index), optional);
+      ++index;
+    }
+  }
+
   // A `T!` whose value is counted: `{which error, value}`, and the value
-  // is only there when the first is zero (D90).
+  // is only there when the first is zero (D90). One that can hold an error
+  // with data is counted too, for the box in its slot (D235).
   bool IsFallibleCounted(TypeId raw) {
     const TypeId held = Erase(Apply(raw));
-    return types_->KindOf(held) == TypeKind::kFallible && Counts(types_->ElementOf(held));
+    return types_->KindOf(held) == TypeKind::kFallible && (Counts(types_->ElementOf(held)) || !PayloadClasses(held).empty());
   }
 
   template <typename Then>
@@ -2984,7 +3085,12 @@ class Lowerer {
       return;
     }
     if (IsFallibleCounted(raw)) {
-      OnValue(value, raw, [&](InstId inner) { RetainValue(inner, types_->ElementOf(raw)); });
+      if (Counts(types_->ElementOf(raw))) {
+        OnValue(value, raw, [&](InstId inner) { RetainValue(inner, types_->ElementOf(raw)); });
+      }
+      ForEachPayload(value, raw, [&](InstId slot, TypeId optional) {
+        OnSome(slot, optional, [&](InstId inner) { RetainValue(inner, types_->ElementOf(optional)); });
+      });
       return;
     }
     if (HoldsCounted(raw)) {
@@ -3031,8 +3137,22 @@ class Lowerer {
       case Opcode::kOptionalWrap:
       case Opcode::kCast:
         return inst.operands_count != 0 && IsFreshHandle(current.OperandsOf(inst)[0]);
-      case Opcode::kMakeStruct:
-        return types_->KindOf(Erase(inst.type)) == TypeKind::kFallible && inst.operands_count == 2 && IsFreshHandle(current.OperandsOf(inst)[1]);
+      case Opcode::kMakeStruct: {
+        if (types_->KindOf(Erase(inst.type)) != TypeKind::kFallible) {
+          return false;
+        }
+        const std::span<const InstId> operands = current.OperandsOf(inst);
+        if (operands.size() == 2) {
+          return IsFreshHandle(operands[1]);
+        }
+        for (size_t i = 2; i < operands.size(); ++i) {
+          const bool empty = current.Contains(operands[i]) && current.Get(operands[i]).opcode == Opcode::kConstNull;
+          if (!empty && !IsFreshHandle(operands[i])) {
+            return false;
+          }
+        }
+        return operands.size() > 2 && (!Counts(types_->ElementOf(Erase(inst.type))) || IsFreshHandle(operands[1]));
+      }
       default:
         return false;
     }
@@ -5611,6 +5731,19 @@ class Lowerer {
       }
 
       const Binding* binding = resolution().Find(name);
+      // An error with data: its box is built, and travels with the tag
+      // until it is put into a `T!` (D235).
+      if (binding != nullptr && binding->kind == BindingKind::kErrorTag) {
+        const std::vector<ErrorMember> stated = types_->StatedErrorsOf(binding->type);
+        if (stated.size() == 1 && stated[0].detail.is_valid()) {
+          const TypeId optional = types_->Optional(stated[0].detail);
+          const InstId box = NewObject(stated[0].detail, arguments);
+          const InstId slot = builder_->Add(Opcode::kOptionalWrap, optional, {box});
+          const InstId pair = builder_->Add(Opcode::kMakeStruct, Erase(binding->type), {builder_->ConstInt(types_->u32(), TagOfBinding(binding, name)), slot});
+          m_Fresh.emplace_back(current_function_, pair);
+          return pair;
+        }
+      }
       // A constructor: the callee is a type, and the arguments are its
       // fields in order.
       if (binding != nullptr && binding->kind == BindingKind::kType) {
@@ -6687,6 +6820,46 @@ class Lowerer {
                          {combined, guard});
   }
 
+  // `Name(x, y)` on a `T!`, where `Name` is an error with data: each name
+  // binds a field of the box in the error's slot (D235). False for `Ok` and
+  // for anything else.
+  bool BindsPayload(const Pattern& pattern, InstId subject, TypeId subject_type) {
+    Symbol name = pattern.name;
+    if (const std::span<const Symbol> path = ast().Get(pattern.path); !path.empty()) {
+      name = path.back();
+    }
+    const Binding* tag = resolution().Find(name);
+    if (tag == nullptr || tag->kind != BindingKind::kErrorTag) {
+      return false;
+    }
+    const std::vector<ErrorMember> stated = types_->StatedErrorsOf(tag->type);
+    if (stated.size() != 1 || !stated[0].detail.is_valid()) {
+      return false;
+    }
+
+    const TypeId detail = stated[0].detail;
+    const std::vector<TypeId> classes = PayloadClasses(Erase(subject_type));
+    const auto at = std::find(classes.begin(), classes.end(), detail);
+    if (at == classes.end()) {
+      return true;
+    }
+
+    const TypeId optional = types_->Optional(detail);
+    const InstId slot = builder_->Extract(optional, subject, 2 + static_cast<uint32_t>(at - classes.begin()));
+    const InstId box = builder_->Add(Opcode::kOptionalValue, detail, {slot});
+    uint32_t position = 0;
+    for (PatternId element : ast().Get(pattern.elements)) {
+      if (ast().Contains(element) && ast().Get(element).kind == PatternKind::kBinding) {
+        const TypeId field_type = Erase(FieldTypeAt(detail, position));
+        const InstId address = builder_->FieldAddress(types_->Pointer(field_type, /*is_mutable=*/false), box, position);
+        const InstId field = builder_->Add(Opcode::kLoad, field_type, {address});
+        PushLocal(Local{ast().Get(element).name, InstId{}, field, field_type});
+      }
+      ++position;
+    }
+    return true;
+  }
+
   // The tag of an error: a hash of `module.Name`, so two modules' `Malformed`
   // differ and the number is the same in every build (D235).
   uint32_t TagOfBinding(const Binding* binding, Symbol name) const {
@@ -6814,6 +6987,11 @@ class Lowerer {
         continue;
       }
       if (pattern.kind == PatternKind::kVariant &&
+          types_->KindOf(subject_type) == TypeKind::kFallible &&
+          BindsPayload(pattern, subject, subject_type)) {
+        continue;
+      }
+      if (pattern.kind == PatternKind::kVariant &&
           types_->KindOf(subject_type) == TypeKind::kFallible) {
         // `Ok(value)`: the value is the second half of the pair.
         const TypeId held = Erase(types_->ElementOf(subject_type));
@@ -6898,9 +7076,24 @@ class Lowerer {
     const TypeId returned = Erase(return_type_);
     if (types_->KindOf(returned) == TypeKind::kFallible) {
       const TypeId mine = Erase(types_->ElementOf(returned));
-      const InstId again = builder_->Add(
-          Opcode::kMakeStruct, returned,
-          {tag, builder_->ConstInt(mine, 0)});
+      std::vector<InstId> fields;
+      fields.push_back(tag);
+      fields.push_back(builder_->ConstInt(mine, 0));
+      const std::vector<TypeId> have = PayloadClasses(Erase(inner));
+      for (TypeId detail : PayloadClasses(returned)) {
+        const TypeId optional = types_->Optional(detail);
+        const auto at = std::find(have.begin(), have.end(), detail);
+        if (at == have.end()) {
+          fields.push_back(builder_->ConstNull(optional));
+          continue;
+        }
+        const InstId slot = builder_->Extract(optional, subject, 2 + static_cast<uint32_t>(at - have.begin()));
+        if (!IsFreshHandle(subject)) {
+          RetainValue(slot, optional);
+        }
+        fields.push_back(slot);
+      }
+      const InstId again = builder_->Add(Opcode::kMakeStruct, returned, std::move(fields));
       RunDeferred(0);
       builder_->Return(again);
     } else {

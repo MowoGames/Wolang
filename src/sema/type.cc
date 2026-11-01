@@ -302,6 +302,15 @@ TypeId TypeStore::Optional(TypeId element) {
   return Intern(std::move(key));
 }
 
+TypeId TypeStore::FindOptional(TypeId element) const {
+  Key key;
+  std::memset(&key.type, 0, sizeof(key.type));
+  key.type.kind = TypeKind::kOptional;
+  key.type.element = element;
+  const auto it = interned_.find(key);
+  return it == interned_.end() ? error_ : TypeId{it->second};
+}
+
 TypeId TypeStore::Fallible(TypeId element, TypeId error_set) {
   Key key;
   std::memset(&key.type, 0, sizeof(key.type));
@@ -402,6 +411,9 @@ TypeId TypeStore::StatedErrorSet(std::vector<ErrorMember> members) {
     key.names.push_back(member.name);
     key.tags.push_back(member.tag);
     key.details.push_back(member.detail);
+    if (member.detail.is_valid()) {
+      Optional(member.detail);
+    }
   }
   return Intern(std::move(key));
 }

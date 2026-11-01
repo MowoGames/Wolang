@@ -1964,14 +1964,14 @@ WOLANG_TEST(CodegenTest, CarriesAnErrorThroughAFallible) {
   Fixture f(R"(
 error NotFound, Corrupt
 
-fun Half(n: int) -> int! {
+fun Half(n: int) -> int!(Corrupt, NotFound) {
   if n % 2 != 0 {
     return Corrupt
   }
   return n / 2
 }
 
-fun Quarter(n: int) -> int! {
+fun Quarter(n: int) -> int!(Corrupt, NotFound) {
   const half = Half(n)?
   return Half(half)?
 }
@@ -1991,6 +1991,91 @@ fun All() -> int {
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("All", {}), "189");
+}
+
+WOLANG_TEST(CodegenTest, PayloadErrorsAgree) {
+  Fixture f(R"(
+error Plain, Bad(line: int, why: text), Worse(code: int)
+
+fun Make(n: int) -> int!(Plain, Bad, Worse) {
+  if n == 0 {
+    return Plain
+  }
+  if n == 1 {
+    return Bad(40, "late")
+  }
+  if n == 2 {
+    return Worse(7)
+  }
+  return n
+}
+
+fun Pass(n: int) -> int!(Plain, Bad, Worse) {
+  const v = Make(n)?
+  return v + 1
+}
+
+fun Narrow(n: int) -> int!(Bad) {
+  if n == 1 {
+    return Bad(5, "narrow")
+  }
+  return n
+}
+
+fun Widen(n: int) -> int!(Bad, Worse) {
+  const v = Narrow(n)?
+  return v * 2
+}
+
+fun Use(n: int) -> int {
+  return match Pass(n) {
+    Ok(v) => v
+    Plain => -1
+    Bad(line, why) => line + why.len
+    Worse(code) => code * 100
+  }
+}
+
+fun UseBare(n: int) -> int {
+  return match Make(n) {
+    Ok(v) => v
+    Bad => 1000
+    _ => 0
+  }
+}
+
+fun UseWide(n: int) -> int {
+  return match Widen(n) {
+    Ok(v) => v
+    Bad(line, why) => line
+    Worse(code) => code
+  }
+}
+
+fun Dropped() -> int {
+  var total = 0
+  var i = 0
+  while i < 50 {
+    const ignored = Make(1)
+    total = total + 1
+    i = i + 1
+  }
+  return total
+}
+
+fun All() -> int {
+  return Use(0) + Use(1) * 10 + Use(2) + Use(3) + UseBare(1) + UseBare(2) + UseWide(1) + UseWide(4) + Dropped()
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Use", {Fixture::Int(1)}), "44");
+  WOLANG_EXPECT_EQ(f.Run("Use", {Fixture::Int(2)}), "700");
+  WOLANG_EXPECT_EQ(f.Run("Use", {Fixture::Int(0)}), "-1");
+  WOLANG_EXPECT_EQ(f.Run("Use", {Fixture::Int(3)}), "4");
+  WOLANG_EXPECT_EQ(f.Run("UseBare", {Fixture::Int(1)}), "1000");
+  WOLANG_EXPECT_EQ(f.Run("UseBare", {Fixture::Int(2)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("UseWide", {Fixture::Int(1)}), "5");
+  WOLANG_EXPECT_EQ(f.Run("UseWide", {Fixture::Int(4)}), "8");
+  WOLANG_EXPECT_EQ(f.Run("Dropped", {}), "50");
 }
 
 WOLANG_TEST(CodegenTest, CarriesAValueThroughAnOptional) {
@@ -2561,14 +2646,14 @@ WOLANG_TEST(CodegenTest, AValueReturnedFromAFallible) {
   Fixture f(R"(
 error Broken
 
-fun Risky(ok: bool) -> int! {
+fun Risky(ok: bool) -> int!Broken {
   if !ok {
     return Broken
   }
   return 7
 }
 
-fun Floating(ok: bool) -> float! {
+fun Floating(ok: bool) -> float!Broken {
   if !ok {
     return Broken
   }
@@ -3377,7 +3462,7 @@ struct Wide {
   var c: int
 }
 
-fun Make(n: int, d: int, e: int, g: int, h: int) -> Wide! {
+fun Make(n: int, d: int, e: int, g: int, h: int) -> Wide!Broken {
   // Enough live at once that every register the callee may use is saved.
   const p = n + d
   const q = p * 2 + e

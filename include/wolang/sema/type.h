@@ -373,6 +373,10 @@ class TypeStore {
   // off the syntax by the graph that schedules systems.
   TypeId Query(const std::vector<TypeId>& args, bool writes);
   TypeId Optional(TypeId element);
+  // The optional of |element| if it was ever made, else the error type. Lets
+  // a read-only user name the slot of a payload error, which a stated set made
+  // when it was built (D235).
+  TypeId FindOptional(TypeId element) const;
   TypeId Fallible(TypeId element, TypeId error_set);
   TypeId Slice(TypeId element, bool is_soa);
   TypeId Array(TypeId element, uint64_t length, bool is_soa);
