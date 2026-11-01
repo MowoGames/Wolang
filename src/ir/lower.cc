@@ -2955,7 +2955,33 @@ class Lowerer {
     return raw.is_valid() && (IsCountedHandle(raw) || IsKeptFunction(raw) || IsOptionalHandle(raw) || IsFallibleCounted(raw) || HoldsCounted(raw));
   }
 
+  // A named function has no environment: its second word is the constant
+  // zero, and counting that would only add a call the compile-time run
+  // cannot make (D240).
+  bool IsAbsentEnvironment(InstId environment) {
+    const ir::Function& function = module_->functions[current_function_];
+    const Inst& inst = function.Get(environment);
+    if (inst.opcode == Opcode::kConstInt) {
+      return inst.payload.integer == 0;
+    }
+    if (inst.opcode != Opcode::kExtract || inst.field != 1) {
+      return false;
+    }
+
+    const Inst& pair = function.Get(function.OperandsOf(inst)[0]);
+    if (pair.opcode != Opcode::kMakeStruct || function.OperandsOf(pair).size() != 2) {
+      return false;
+    }
+
+    const Inst& word = function.Get(function.OperandsOf(pair)[1]);
+    return word.opcode == Opcode::kConstInt && word.payload.integer == 0;
+  }
+
   void RetainEnvironment(InstId environment) {
+    if (IsAbsentEnvironment(environment)) {
+      return;
+    }
+
     const Symbol name = interner_->Intern("wolang_object_retain");
     const uint32_t retain = DeclareExternal(name, types_->Function({types_->u64()}, types_->void_type()));
     module_->functions[retain].foreign_symbol = name;
@@ -2966,6 +2992,10 @@ class Lowerer {
   // address the environment keeps in its first field, which lets go of what
   // the closure captured and gives the storage back (D240).
   void ReleaseEnvironment(InstId environment) {
+    if (IsAbsentEnvironment(environment)) {
+      return;
+    }
+
     const TypeId i32 = types_->Int(IntWidth::k32, /*is_signed=*/true);
     const Symbol released = interner_->Intern("wolang_object_release");
     const uint32_t release = DeclareExternal(released, types_->Function({types_->u64()}, i32));
