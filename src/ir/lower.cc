@@ -3812,6 +3812,39 @@ class Lowerer {
     return binding != nullptr ? binding->name : Symbol{};
   }
 
+  // The binding a call's callee names, whether written `Name` or `mod.Name`:
+  // an intrinsic is the same intrinsic either way (D246).
+  const Binding* IntrinsicBinding(const Expr& call) const {
+    if (!ast().Contains(call.lhs)) {
+      return nullptr;
+    }
+    const Expr& callee = ast().Get(call.lhs);
+    if (callee.kind == ExprKind::kPath) {
+      return resolution().Find(callee.name);
+    }
+    if (callee.kind == ExprKind::kField && IsQualifiedUse(call.lhs) && ast().Contains(callee.lhs)) {
+      return resolution().FindQualified(ast().Get(callee.lhs).name, callee.name);
+    }
+    return nullptr;
+  }
+
+  std::string_view IntrinsicName(const Expr& call) const {
+    if (!ast().Contains(call.lhs)) {
+      return {};
+    }
+    const Expr& callee = ast().Get(call.lhs);
+    if (callee.kind == ExprKind::kPath) {
+      return interner_->Text(callee.name);
+    }
+    if (callee.kind == ExprKind::kField && IsQualifiedUse(call.lhs)) {
+      const Binding* binding = IntrinsicBinding(call);
+      if (binding != nullptr) {
+        return interner_->Text(binding->real_name.is_valid() ? binding->real_name : callee.name);
+      }
+    }
+    return {};
+  }
+
   InstId LowerPath(ExprId id, const Expr& expr, TypeId type,
                    Symbol name) {
     const Local* local = Find(name);
@@ -4889,6 +4922,16 @@ class Lowerer {
         return place;
       }
       case ExprKind::kField: {
+        // `m.count = 1` where `m` is a module: the module's `var`, not a
+        // field of anything (D246).
+        if (const Symbol named = QualifiedName(id, expr); named.is_valid()) {
+          if (const InstId address = GlobalAddress(named); address.is_valid()) {
+            place.pointer = address;
+            place.root_type = Erase(TypeOf(id));
+            place.Global = true;
+            return place;
+          }
+        }
         const TypeId owner = Erase(TypeOf(expr.lhs));
         // What this step reads is the *field's* type. The checker records
         // the type the context wanted at the expression, so a field read
@@ -5591,9 +5634,7 @@ class Lowerer {
 
     // `Free(items)` gives the storage back. Not a call either: what a
     // view's storage is depends on how the tier laid it out.
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        interner_->Text(ast().Get(expr.lhs).name) == "Free" &&
+    if (IntrinsicName(expr) == "Free" &&
         arguments.size() == 1 &&
         types_->KindOf(Erase(TypeOf(ast().Get(expr.args).empty()
                                         ? ExprId{}
@@ -5622,11 +5663,9 @@ class Lowerer {
     // is this file's schedule, which only the compiler knows. Every
     // stage's systems are handed to the runtime together, because a stage
     // is exactly a set that may run at the same time (D101).
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        interner_->Text(ast().Get(expr.lhs).name) == "RunSystems" &&
+    if (IntrinsicName(expr) == "RunSystems" &&
         arguments.size() == 2) {
-      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      const Binding* binding = IntrinsicBinding(expr);
       if (binding == nullptr || !binding->has_body) {
         return RunSchedule(arguments[0], arguments[1]);
       }
@@ -5640,11 +5679,9 @@ class Lowerer {
     // stepping a generator: those *want* the low bits of a wrapped
     // result. Not a call, because what they stand for is the instruction
     // the compiler already writes for its own address arithmetic (D107).
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
+    if (!IntrinsicName(expr).empty() &&
         arguments.size() == 2) {
-      const std::string_view called =
-          interner_->Text(ast().Get(expr.lhs).name);
+      const std::string_view called = IntrinsicName(expr);
       Opcode wrapping = Opcode::kUndef;
       if (called == "WrappingAdd") {
         wrapping = Opcode::kAdd;
@@ -5653,7 +5690,7 @@ class Lowerer {
       } else if (called == "WrappingMul") {
         wrapping = Opcode::kMul;
       }
-      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      const Binding* binding = IntrinsicBinding(expr);
       if (wrapping != Opcode::kUndef &&
           (binding == nullptr || !binding->has_body)) {
         const TypeId word = Erase(type);
@@ -5670,11 +5707,9 @@ class Lowerer {
     // carries the type and each tier answers it. The value itself is not
     // read -- what is wanted is its type, which is why this is spelled
     // with an argument at all (D100).
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        interner_->Text(ast().Get(expr.lhs).name) == "SizeOf" &&
+    if (IntrinsicName(expr) == "SizeOf" &&
         arguments.size() == 1) {
-      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      const Binding* binding = IntrinsicBinding(expr);
       if ((binding == nullptr || !binding->has_body) &&
           !ast().Get(expr.args).empty()) {
         // Through the substitution in force: inside `Add<T>` the
@@ -5696,11 +5731,9 @@ class Lowerer {
     // is, is the one every tier computes the same way -- the declaration
     // it was written as, packed (D85). The result type is what carries
     // `T`, which is why it is a `Token<T>` rather than a bare number.
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        interner_->Text(ast().Get(expr.lhs).name) == "TokenOf" &&
+    if (IntrinsicName(expr) == "TokenOf" &&
         arguments.empty()) {
-      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      const Binding* binding = IntrinsicBinding(expr);
       const TypeId wrapper = Erase(Apply(type));
       const std::vector<TypeId> named = types_->ArgumentsOf(wrapper);
       if ((binding == nullptr || !binding->has_body) && !named.empty()) {
@@ -5713,10 +5746,7 @@ class Lowerer {
 
     // `SoaNew<T>(count)` is not a call either: how big that storage is, is
     // a question only a tier can answer.
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        (interner_->Text(ast().Get(expr.lhs).name) == "SoaNew" ||
-         interner_->Text(ast().Get(expr.lhs).name) == "ArrayNew") &&
+    if ((IntrinsicName(expr) == "SoaNew" || IntrinsicName(expr) == "ArrayNew") &&
         arguments.size() == 1 &&
         types_->KindOf(Unwrapped(type)) == TypeKind::kSlice) {
       const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
@@ -5730,9 +5760,7 @@ class Lowerer {
     // halves of the body's function value: the code, and what it closed
     // over. Which is a thing only lowering can do -- the language has no
     // way to take a function value apart, and should not (D147).
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        interner_->Text(ast().Get(expr.lhs).name) == "ParallelFor" &&
+    if (IntrinsicName(expr) == "ParallelFor" &&
         arguments.size() == 3) {
       const TypeId word = types_->u64();
       const TypeId count = types_->Int(IntWidth::k64, /*is_signed=*/true);
@@ -6078,11 +6106,10 @@ class Lowerer {
   InstId LowerBytesFromRaw(const Expr& expr,
                            TypeId type,
                            const std::vector<InstId>& arguments) {
-    if (arguments.size() != 2 || !ast().Contains(expr.lhs) ||
-        ast().Get(expr.lhs).kind != ExprKind::kPath) {
+    const std::string_view called = IntrinsicName(expr);
+    if (arguments.size() != 2 || called.empty()) {
       return InstId{};
     }
-    const std::string_view called = interner_->Text(ast().Get(expr.lhs).name);
     // `TextFromRaw` is the same instruction with a different name: a
     // `text` is a pointer and a length too (D67), so what both stand for
     // is the pair rather than a call.
@@ -6157,7 +6184,7 @@ class Lowerer {
         types_->KindOf(slice) != TypeKind::kStr) {
       return InstId{};
     }
-    const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+    const Binding* binding = IntrinsicBinding(expr);
     if (binding != nullptr && binding->has_body) {
       // Somebody wrote their own function of that name, and theirs wins.
       return InstId{};
@@ -6890,15 +6917,20 @@ class Lowerer {
                          {combined, guard});
   }
 
+  // The error a pattern names, written `Name` or `module.Name` (D246).
+  const Binding* ErrorBindingOf(const Pattern& pattern) const {
+    const std::span<const Symbol> path = ast().Get(pattern.path);
+    if (path.size() == 2 && resolution().IsQualifier(path.front()) && resolution().Find(path.front()) == nullptr) {
+      return resolution().FindQualified(path.front(), path.back());
+    }
+    return resolution().Find(path.empty() ? pattern.name : path.back());
+  }
+
   // `Name(x, y)` on a `T!`, where `Name` is an error with data: each name
   // binds a field of the box in the error's slot (D235). False for `Ok` and
   // for anything else.
   bool BindsPayload(const Pattern& pattern, InstId subject, TypeId subject_type) {
-    Symbol name = pattern.name;
-    if (const std::span<const Symbol> path = ast().Get(pattern.path); !path.empty()) {
-      name = path.back();
-    }
-    const Binding* tag = resolution().Find(name);
+    const Binding* tag = ErrorBindingOf(pattern);
     if (tag == nullptr || tag->kind != BindingKind::kErrorTag) {
       return false;
     }
@@ -6961,7 +6993,7 @@ class Lowerer {
     const bool is_ok = interner_->Text(name) == "Ok";
     const InstId tag = builder_->Extract(types_->u32(), subject, 0);
     const InstId expected = builder_->ConstInt(
-        types_->u32(), is_ok ? 0 : TagOfName(name));
+        types_->u32(), is_ok ? 0 : TagOfBinding(ErrorBindingOf(pattern), name));
     return builder_->Add(Opcode::kEq, types_->bool_type(),
                          {tag, expected});
   }

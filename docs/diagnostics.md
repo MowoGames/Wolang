@@ -239,7 +239,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0138` | a `type` outside an ability with nothing after it | `type Count` |
 | `E0139` | an `extern class` constructed, or given something other than methods | `Actor()` |
 | `E0143` | a name two `need`ed modules both offer is used bare (D246) | `need json` and `need ini`, then `Parse(text)` |
-| `E0144` | `module.Name` where the module offers no such name, or does not offer it (D246) | `json.Nothing(x)` |
+| `E0144` | `module.Name` where the module offers no such name, or does not offer it; also in a `match` pattern (D246) | `json.Nothing(x)` |
 | `E0145` | `self` stored into a field or global from its own `deinit` | `deinit { stash = self }` |
 | `E0147` | a function or closure given to a `@Thread` parameter (`Spawn`, `ParallelFor`) reads or writes a module-level `var`, directly or through a call, and the caller does not state `uses unsafe` (D232) | `Spawn(Work)` where `Work` pushes to a global list |
 | `E0148` | a closure that captures given to a `@Thread` parameter that has no environment to give it (`Spawn`; not `ParallelFor`), even under `uses unsafe` (D232) | `Spawn(\|\| { Print("{n}") })` |

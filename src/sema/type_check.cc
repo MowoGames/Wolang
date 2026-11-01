@@ -632,6 +632,7 @@ class Checker {
   // `module.Name` (D246).
   bool IsModuleQualified(const Expr& field);
   TypeId CheckQualified(ExprId id, const Expr& field);
+  const Binding* PatternBinding(std::span<const Symbol> path, Symbol name);
   TypeId CheckBinding(const Expr& expr, const Binding* binding);
   void CheckAmbiguous(const Expr& use, const Binding* binding);
   void CheckMachine(const Item& item);
@@ -1296,6 +1297,17 @@ TypeId Checker::CheckQualified(ExprId id, const Expr& field) {
   return CheckBinding(field, binding);
 }
 
+const Binding* Checker::PatternBinding(std::span<const Symbol> path, Symbol name) {
+  if (path.size() == 2 && resolution_ != nullptr && resolution_->IsQualifier(path.front()) && !IsLocalName(path.front()) && resolution_->Find(path.front()) == nullptr) {
+    const Binding* found = resolution_->FindQualified(path.front(), path.back());
+    if (found != nullptr) {
+      result_.used_names.push_back(found->real_name);
+    }
+    return found;
+  }
+  return Lookup(name);
+}
+
 TypeId Checker::CheckBinding(const Expr& expr, const Binding* binding) {
   if (binding->kind == BindingKind::kValue && binding->is_mutable &&
       binding->item != Binding::kNoItem) {
@@ -1936,6 +1948,16 @@ TypeId Checker::CheckAssign(ExprId id, const Expr& expr) {
       if (binding != nullptr && !binding->is_mutable &&
           (binding->kind == BindingKind::kLocal ||
            binding->kind == BindingKind::kValue)) {
+        std::string message = "cannot assign to `";
+        message.append(interner_->Text(left.name));
+        message.append("`, which is not `var`");
+        Report(kAssignToLet, std::move(message), expr.span);
+      }
+    } else if (IsModuleQualified(left)) {
+      // `m.limit = 1` writes the module's own `var`; one that is not `var` is
+      // as frozen as a local `const` (D246).
+      const Binding* binding = resolution_->FindQualified(ast_.Get(left.lhs).name, left.name);
+      if (binding != nullptr && binding->kind == BindingKind::kValue && !binding->is_mutable) {
         std::string message = "cannot assign to `";
         message.append(interner_->Text(left.name));
         message.append("`, which is not `var`");
@@ -2985,8 +3007,8 @@ void Checker::CheckFallibleExhaustive(const Expr& expr, TypeId subject) {
   bool has_catch_all = false;
   std::vector<Symbol> covered;
 
-  const auto cover = [&](Symbol name) {
-    const Binding* tag = Lookup(name);
+  const auto cover = [&](std::span<const Symbol> path, Symbol name) {
+    const Binding* tag = PatternBinding(path, name);
     if (tag != nullptr && tag->kind == BindingKind::kErrorTag) {
       covered.push_back(tag->error_name);
       return true;
@@ -3010,7 +3032,7 @@ void Checker::CheckFallibleExhaustive(const Expr& expr, TypeId subject) {
           has_catch_all = true;
           break;
         case PatternKind::kBinding:
-          has_catch_all |= !cover(pattern.name);
+          has_catch_all |= !cover({}, pattern.name);
           break;
         case PatternKind::kVariant:
         case PatternKind::kStruct: {
@@ -3019,7 +3041,7 @@ void Checker::CheckFallibleExhaustive(const Expr& expr, TypeId subject) {
           if (name.is_valid() && interner_->Text(name) == "Ok") {
             has_ok = true;
           } else if (name.is_valid()) {
-            cover(name);
+            cover(path, name);
           }
           break;
         }
@@ -3820,6 +3842,17 @@ void Checker::BindPattern(PatternId id, TypeId type,
           !path.empty()) {
         name = path.back();
       }
+      if (const std::span<const Symbol> written = ast_.Get(pattern.path);
+          written.size() == 2 && resolution_ != nullptr && resolution_->IsQualifier(written.front()) && !IsLocalName(written.front()) &&
+          resolution_->Find(written.front()) == nullptr &&
+          resolution_->FindQualified(written.front(), written.back()) == nullptr) {
+        std::string message = "module `";
+        message.append(interner_->Text(written.front()));
+        message.append("` offers nothing named `");
+        message.append(interner_->Text(written.back()));
+        message.append("`");
+        Report(kUnknownModuleItem, std::move(message), pattern.span, "only names the module marks `offer` can be reached");
+      }
       std::vector<TypeId> carried;
       // `Ok(value)` on a `T!` is the built-in variant: what it carries is
       // the `T`. Without this the binding got an error type, which
@@ -3828,7 +3861,7 @@ void Checker::BindPattern(PatternId id, TypeId type,
       if (types_->KindOf(type) == TypeKind::kFallible &&
           interner_->Text(name) == "Ok") {
         carried.push_back(types_->ElementOf(type));
-      } else if (const Binding* error_tag = types_->KindOf(type) == TypeKind::kFallible ? Lookup(name) : nullptr;
+      } else if (const Binding* error_tag = types_->KindOf(type) == TypeKind::kFallible ? PatternBinding(ast_.Get(pattern.path), name) : nullptr;
                  error_tag != nullptr && error_tag->kind == BindingKind::kErrorTag) {
         const std::vector<ErrorMember> stated = types_->StatedErrorsOf(error_tag->type);
         if (stated.size() == 1 && stated[0].detail.is_valid()) {

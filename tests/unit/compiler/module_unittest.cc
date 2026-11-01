@@ -246,6 +246,47 @@ fun Use2() -> int {
   WOLANG_EXPECT_EQ(fixture.Codes(hidden), "E0144");
 }
 
+WOLANG_TEST(ModuleScopeTest, AQualifiedNameCanBeAssignedOnlyIfItIsAVar) {
+  Fixture fixture;
+  const ModuleId a = fixture.AddModule("a");
+  fixture.AddFile(a, "a.wo", "offer const Limit: int = 3\noffer var Count: int = 0\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId frozen = fixture.AddFile(app, "frozen.wo", "need a\nfun Set() {\n  a.Limit = 4\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(frozen), "E0105");
+
+  const ModuleId app2 = fixture.AddModule("app2");
+  const FileId live = fixture.AddFile(app2, "live.wo", "need a\nfun Bump() {\n  a.Count = 4\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(live), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AQualifiedIntrinsicIsNotACall) {
+  Fixture fixture;
+  const ModuleId mem = fixture.AddModule("mem");
+  fixture.AddFile(mem, "mem.wo", "offer fun SizeOf<T>(value: T) -> int\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId main = fixture.AddFile(app, "main.wo", "need mem\nfun Width(x: s32) -> int {\n  return mem.SizeOf(x)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+
+  const LoweredFile* lowered = fixture.db().Lowered(main);
+  WOLANG_ASSERT_NE(lowered, nullptr);
+  for (const ir::Function& function : lowered->module.functions) {
+    WOLANG_EXPECT(fixture.db().interner().Text(function.name).find("SizeOf") == std::string_view::npos);
+  }
+}
+
+WOLANG_TEST(ModuleScopeTest, AQualifiedErrorNameIsAPattern) {
+  Fixture fixture;
+  const ModuleId a = fixture.AddModule("a");
+  fixture.AddFile(a, "a.wo", "offer error Corrupt, Missing\noffer fun Load(n: int) -> int!(Corrupt, Missing) {\n  if n == 0 {\n    return Corrupt\n  }\n  return n\n}\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId matched = fixture.AddFile(app, "m.wo", "need a\nfun Use() -> int {\n  match a.Load(0) {\n    Ok(v) => return v\n    a.Corrupt => return -1\n    a.Missing => return -2\n  }\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(matched), "");
+
+  const ModuleId app2 = fixture.AddModule("app2");
+  const FileId unknown = fixture.AddFile(app2, "u.wo", "need a\nfun Use() -> int {\n  match a.Load(0) {\n    Ok(v) => return v\n    a.Nope => return -1\n    _ => return -2\n  }\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(unknown), "E0144");
+}
+
 WOLANG_TEST(ModuleScopeTest, AValueNamedLikeAModuleStillMeansTheValue) {
   // The non-firing twin: a parameter called `a` is the value, not the module.
   Fixture fixture;

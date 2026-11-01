@@ -77,6 +77,10 @@ that module offers, with or without a name list: after `need std.json`,
 modules that both offer `Parse`. A local or declaration of the same name
 takes precedence; a name the module does not offer is `E0144`, and a bare
 name that two needed modules both offer is `E0143` where it is used (D246).
+The qualified spelling works wherever the name does: as the target of an
+assignment (`counter.Total = 0` for an offered `var`), as the callee of a
+compiler-known function such as `mem.SizeOf(x)`, and as an error in a
+`match` arm (`json.Corrupt =>`).
 
 **Contextual keywords** are lexed as identifiers and only recognized by the
 parser where they introduce a declaration:
