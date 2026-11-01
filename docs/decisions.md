@@ -3299,3 +3299,13 @@ Not covered: retaining around a call through a field or global (the gap of
 D193), a closure that stores itself in `self` (a cycle), and a kept closure
 built inside `arena {}` that outlives the block. A borrowed value reaching a
 kept slot through a generic `T` is `E0161` too: the type argument is kept.
+
+**D261. The embedding package carries no LLVM.** `wolang_core` linked LLVM's
+component libraries `PUBLIC` and `Wolang::core` is exported, so an installed
+`WolangTargets.cmake` and a host that linked it named libraries the host does
+not have. Ahead-of-time compilation belongs to the driver: `codegen/aot/aot.cc`
+is its own target, `wolang_aot`, which holds the LLVM definitions, include
+directories and libraries. The driver and the tests link it; it is never
+installed or exported, so nothing a host reads mentions LLVM. The amalgamation
+already left `aot.cc` out. `tools/package/test_install.sh` fails when an
+installed target file or `wolang-embed.pc` contains "llvm".
