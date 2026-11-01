@@ -896,7 +896,9 @@ WolangStatus wolang_vm_load_source(WolangVm* vm,
   const FileId file = vm->database.AddFile(
       name == nullptr ? "<host>" : name, source);
   if (file.is_valid()) {
-    LoadStandardFor(vm, name == nullptr ? "<host>" : name);
+    if (std::string_view(source).find("need ") != std::string_view::npos) {
+      LoadStandardFor(vm, name == nullptr ? "<host>" : name);
+    }
     AttachToHost(vm, file);
   }
   if (!file.is_valid()) {
