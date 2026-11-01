@@ -3641,9 +3641,7 @@ class Lowerer {
       // either side knowing about the other.
       if (const Binding* tag = resolution().Find(name);
           tag != nullptr && tag->kind == BindingKind::kErrorTag) {
-        return builder_->ConstInt(
-            types_->u32(),
-            (tag->real_name.is_valid() ? tag->real_name : name).index + 1);
+        return builder_->ConstInt(types_->u32(), TagOfBinding(tag, name));
       }
       // A module-level `var`, read from its storage.
       if (const TypeId held = GlobalType(name); held.is_valid()) {
@@ -6689,6 +6687,19 @@ class Lowerer {
                          {combined, guard});
   }
 
+  // The tag of an error: a hash of `module.Name`, so two modules' `Malformed`
+  // differ and the number is the same in every build (D235).
+  uint32_t TagOfBinding(const Binding* binding, Symbol name) const {
+    if (binding != nullptr && binding->error_name.is_valid()) {
+      return ErrorTag(interner_->Text(binding->error_name));
+    }
+    return name.index + 1;
+  }
+
+  uint32_t TagOfName(Symbol name) const {
+    return TagOfBinding(resolution().Find(name), name);
+  }
+
   // Whether |name| is one of the program's error tags.
   bool IsErrorName(Symbol name) const {
     const Binding* binding = resolution().Find(name);
@@ -6707,7 +6718,7 @@ class Lowerer {
     const bool is_ok = interner_->Text(name) == "Ok";
     const InstId tag = builder_->Extract(types_->u32(), subject, 0);
     const InstId expected = builder_->ConstInt(
-        types_->u32(), is_ok ? 0 : name.index + 1);
+        types_->u32(), is_ok ? 0 : TagOfName(name));
     return builder_->Add(Opcode::kEq, types_->bool_type(),
                          {tag, expected});
   }
