@@ -421,8 +421,10 @@ fun TextsOf(source: text) -> text uses unsafe {
   var out = BuilderNew()
   var k = 0
   while k < tokens.Len() {
-    out.Append(TextOf(source, tokens.At(k)))
-    out.Append("|")
+    if tokens.At(k).kind != Kind.Eof {
+      out.Append(TextOf(source, tokens.At(k)))
+      out.Append("|")
+    }
     k = k + 1
   }
   return out.Release()
