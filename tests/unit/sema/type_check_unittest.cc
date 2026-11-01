@@ -526,6 +526,51 @@ WOLANG_TEST(TypeCheck, AnEscapingClosureCannotTakeAReference) {
   WOLANG_EXPECT(value.Codes().empty());
 }
 
+WOLANG_TEST(TypeCheck, AnEscapingClosureMovesAValueWithADeinit) {
+  Fixture fires(R"(
+struct Res {
+  var id: int
+  deinit {}
+}
+
+fun Make() -> fun() -> int {
+  const r = Res(1)
+  const g: fun() -> int = || r.id
+  const again = r.id
+  return g
+}
+)");
+  WOLANG_EXPECT(fires.HasCode("E0122"));
+
+  Fixture fine(R"(
+struct Res {
+  var id: int
+  deinit {}
+}
+
+fun Make() -> fun() -> int {
+  const r = Res(1)
+  const g: fun() -> int = || r.id
+  return g
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0122"));
+
+  Fixture borrowed(R"(
+struct Res {
+  var id: int
+  deinit {}
+}
+
+fun Use() -> int {
+  const r = Res(1)
+  const g = || r.id
+  return r.id + g()
+}
+)");
+  WOLANG_EXPECT(!borrowed.HasCode("E0122"));
+}
+
 WOLANG_TEST(TypeCheck, ACapturingClosureHeldLocallyIsBorrowed) {
   Fixture fixture(
       "fun Make() -> fun() -> int {\n  const k = 1\n"
