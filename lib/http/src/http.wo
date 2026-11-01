@@ -7,6 +7,7 @@
 // request pays for its allocations once and gives them all back.
 
 need std.io.{Print}
+need std.net.{Connect}
 need std.mem.{BytesFromRaw}
 need std.text.{Bytes, BuilderNew, TextFromRaw}
 need std.time.{HttpDate, Now, WallClock}
@@ -449,25 +450,50 @@ offer fun Serve(connection: s32, handle: fun(Request) -> Response) -> int uses i
 ///
 /// One connection, served until the client stops asking or breaks the
 /// rules: every request is read whole before the handler sees it, and
-/// what arrived after it stays for the next turn (D122).
+/// what arrived after it stays for the next turn (D122). A client that
+/// says nothing for longer than `limits.head_timeout`, or
+/// `limits.idle_timeout` between requests, is closed (D223).
 offer fun ServeWith(
     connection: s32,
     handle: fun(Request) -> Response,
     limits: Limits) -> int uses io, net, time, unsafe {
   var pool = ConnectionsNew(1, limits)
   const slot = pool.Open(connection as int)
+  var poller = PollerNew(1)
+  const polled = poller.IsOpen() && poller.Watch(connection)
+  pool.Stamp(slot, Now().seconds)
   var served = 0
   loop {
+    // Wait for the client a second at a time, so a connection that says
+    // nothing meets the same deadlines `RunServerOn` holds it to, instead
+    // of blocking in `read` for as long as the peer likes (D223).
+    var ready = 1
+    if polled {
+      ready = poller.Wait(1000)
+    }
+    if ready < 0 {
+      break
+    }
+    if ready == 0 {
+      if pool.TimedOut(slot, Now().seconds) {
+        break
+      }
+      continue
+    }
+    const before = pool.Filled(slot)
     const turn = Turn(&mut pool, slot, handle)
+    if turn > 0 || before == 0 && pool.Filled(slot) > 0 {
+      pool.Stamp(slot, Now().seconds)
+    }
     if turn > 0 {
       served = served + 1
-      if !pool.IsClosing(slot) {
-        continue
-      }
     }
-    const _closed = Close(connection)
-    return served
+    if turn < 0 || pool.IsClosing(slot) {
+      break
+    }
   }
+  const _closed = Close(connection)
+  return served
 }
 
 /// One turn on one connection: read what is there, answer every whole
@@ -926,6 +952,30 @@ offer fun RunServerOn(
 }
 
 // ------------------------------------------------------------- tests ---
+
+fun Silent(request: Request) -> Response {
+  return Status(200, "")
+}
+
+@Test
+fun ServeWithClosesAConnectionThatSaysNothing() -> bool uses io, net, time, unsafe {
+  const listener = Listen(18312, 4)
+  if listener < 0 {
+    return false
+  }
+  var client = Connect("127.0.0.1", 18312)
+  if !client.IsOpen() {
+    const _gone = Close(listener)
+    return false
+  }
+  const accepted = Accept(listener)
+  var limits = LimitsDefault()
+  limits.head_timeout = 1
+  const served = ServeWith(accepted, Silent, limits)
+  client.Close()
+  const _closed = Close(listener)
+  return served == 0
+}
 
 @Test
 fun KeepsOrClosesAsTheClientAsked() -> bool uses unsafe {
