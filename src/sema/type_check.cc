@@ -88,6 +88,8 @@ constexpr std::string_view kBadOperand = "E0108";
 constexpr std::string_view kOpenOfferedErrors = "E0150";
 constexpr std::string_view kErrorNotInSet = "E0151";
 constexpr std::string_view kPayloadInOpenSet = "E0152";
+constexpr std::string_view kBodilessUnsafe = "E0153";
+constexpr std::string_view kUnsafeMismatch = "E0154";
 constexpr std::string_view kAmbiguousName = "E0143";
 constexpr std::string_view kUnknownModuleItem = "E0144";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
@@ -3975,6 +3977,20 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
            item.name_span, "remove the body, or remove `extern`");
   }
 
+  if (!item.body.is_valid() && !is_foreign && !HasFlag(item.flags, ItemFlags::kUnsafe) && !(self_type_.is_valid() && resolution_->IsAbility(self_type_))) {
+    for (TypeRefId effect : ast_.Get(item.effects)) {
+      const std::span<const Symbol> path = ast_.Get(ast_.Get(effect).path);
+      if (path.empty() || interner_->Text(path.back()) != "unsafe") {
+        continue;
+      }
+      std::string message = "`";
+      message.append(interner_->Text(item.name));
+      message.append("` has no body, so nothing vouches for its `uses unsafe`");
+      Report(kBodilessUnsafe, std::move(message), item.name_span, "write `unsafe fun` and drop `unsafe` from `uses` (D236)");
+      break;
+    }
+  }
+
   for (ParamId param_id : ast_.Get(item.params)) {
     const Param& param = ast_.Get(param_id);
     const TypeId type = param.type.is_valid()
@@ -4269,6 +4285,13 @@ void Checker::CheckOverride(const Item& item) {
     message.append(interner_->Text(item.name));
     message.append("` overrides a method that is not `virtual`");
     Report(kBadOverride, std::move(message), item.name_span);
+    return;
+  }
+  if (declared && replaces && HasFlag(item.flags, ItemFlags::kUnsafe) && !base->is_unsafe) {
+    std::string message = "`";
+    message.append(interner_->Text(item.name));
+    message.append("` is `unsafe` but the method it overrides is not");
+    Report(kUnsafeMismatch, std::move(message), item.name_span, "a caller that holds the base type would call it without paying for `unsafe`; mark the base `unsafe` too (D236)");
   }
 }
 
@@ -4575,6 +4598,16 @@ void Checker::CheckAbilityConformance(const Item& item, TypeId target) {
           message.append("`");
           Report(kMissingAbilityMethod, std::move(message), item.name_span);
         }
+      }
+      if (required.kind == MemberKind::kMethod && found->is_unsafe && !required.is_unsafe) {
+        std::string message = "`";
+        message.append(Describe(target));
+        message.append(".");
+        message.append(interner_->Text(required.name));
+        message.append("` is `unsafe` but `");
+        message.append(Describe(ability));
+        message.append("` does not say so");
+        Report(kUnsafeMismatch, std::move(message), item.name_span, "a caller that holds the ability would call it without paying for `unsafe` (D236)");
       }
       continue;
     }

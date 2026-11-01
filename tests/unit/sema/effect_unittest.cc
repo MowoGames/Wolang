@@ -285,6 +285,81 @@ offer fun Pick() uses io {
 )"), "E0701");
 }
 
+WOLANG_TEST(EffectRowTest, ABodilessUsesUnsafeIsAnUnsafeFun) {
+  WOLANG_EXPECT_EQ(CodesOf("bodiless-fires", R"(
+fun Free(items: []u8) uses unsafe
+)"), "E0153");
+  WOLANG_EXPECT_EQ(CodesOf("bodiless-twin", R"(
+unsafe fun Free(items: []u8)
+
+offer fun Drop(items: []u8) uses unsafe {
+  Free(items)
+}
+)"), "");
+  WOLANG_EXPECT_EQ(CodesOf("bodiless-extern", R"(
+extern "C" fun abs(n: s32) -> s32 uses unsafe
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, AnUnsafeOverrideNeedsAnUnsafeBase) {
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-override-fires", R"(
+class Actor {
+  virtual fun F() {}
+}
+
+class Pawn : Actor {
+  override unsafe fun F() {}
+}
+)"), "E0154");
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-override-twin", R"(
+class Actor {
+  virtual unsafe fun F() {}
+}
+
+class Pawn : Actor {
+  override unsafe fun F() {}
+}
+)"), "");
+  WOLANG_EXPECT_EQ(CodesOf("safe-override-of-unsafe", R"(
+class Actor {
+  virtual unsafe fun F() {}
+}
+
+class Pawn : Actor {
+  override fun F() {}
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, AnUnsafeAbilityMethodNeedsAnUnsafeRequirement) {
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-ability-fires", R"(
+ability Poke {
+  fun Poke()
+}
+
+struct Pawn {
+  var x: int
+}
+
+extend Pawn as Poke {
+  unsafe fun Poke() {}
+}
+)"), "E0154");
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-ability-twin", R"(
+ability Poke {
+  unsafe fun Poke()
+}
+
+struct Pawn {
+  var x: int
+}
+
+extend Pawn as Poke {
+  unsafe fun Poke() {}
+}
+)"), "");
+}
+
 WOLANG_TEST(EffectRowTest, AnUnsafeFunStillStatesItsOtherEffects) {
   WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-io", R"(
 offer unsafe fun Poke() {
