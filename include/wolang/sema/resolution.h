@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -79,6 +80,8 @@ struct Binding {
   // has in its own module. `name` is then the qualified spelling, which is
   // what keeps two modules' `Parse` apart once a file has both.
   Symbol real_name;
+  // An error name: the qualified `module.Name` its tag is hashed from (D235).
+  Symbol error_name;
 
   friend bool operator==(const Binding& lhs, const Binding& rhs) {
     return lhs.name == rhs.name && lhs.kind == rhs.kind &&
@@ -90,7 +93,8 @@ struct Binding {
            lhs.is_task == rhs.is_task && lhs.has_body == rhs.has_body &&
            lhs.thread_args == rhs.thread_args &&
            lhs.exposes == rhs.exposes &&
-           lhs.real_name == rhs.real_name;
+           lhs.real_name == rhs.real_name &&
+           lhs.error_name == rhs.error_name;
   }
 };
 
@@ -346,6 +350,7 @@ FileResolution ResolveFile(TypeStore* types,
                            StringInterner* interner,
                            const Ast& ast,
                            uint32_t file_index,
+                           std::string_view module,
                            DiagnosticEngine* diagnostics);
 
 }  // namespace wolang

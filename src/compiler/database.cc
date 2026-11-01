@@ -364,9 +364,9 @@ void Database::RegisterQueries() {
         }
 
         DiagnosticEngine diagnostics;
-        FileResolution resolution = ResolveFile(&types_, &interner_,
-                                                parsed->ast, arg,
-                                                &diagnostics);
+        const ModuleId declaring_module = ModuleOf(file);
+        const Module* declaring = declaring_module.is_valid() ? GetModule(declaring_module) : nullptr;
+        FileResolution resolution = ResolveFile(&types_, &interner_, parsed->ast, arg, declaring != nullptr ? std::string_view(declaring->name) : std::string_view(), &diagnostics);
         // Comparable, so editing a body recomputes this but leaves
         // everything downstream of it green.
         return MakeComparableResult(

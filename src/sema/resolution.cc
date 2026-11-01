@@ -895,11 +895,40 @@ TypeId TypeResolver::Resolve(const Ast& ast, TypeRefId id) {
     case TypeRefKind::kOptional:
       return types_->Optional(Resolve(ast, type.element));
 
-    case TypeRefKind::kFallible:
-      // The error set is inferred from the body, so the declared type starts
-      // with an open set and type checking fills it in.
-      return types_->Fallible(Resolve(ast, type.element),
-                              types_->ErrorSet({}));
+    case TypeRefKind::kFallible: {
+      const TypeId element = Resolve(ast, type.element);
+      if (type.args.empty()) {
+        return types_->Fallible(element, types_->OpenErrorSet());
+      }
+
+      std::vector<ErrorMember> stated;
+      for (TypeRefId member_id : ast.Get(type.args)) {
+        if (!ast.Contains(member_id)) {
+          continue;
+        }
+        const TypeRef& member = ast.Get(member_id);
+        const std::span<const Symbol> path = ast.Get(member.path);
+        const Binding* binding = nullptr;
+        if (resolution_ != nullptr && !path.empty()) {
+          binding = path.size() == 2 ? resolution_->FindQualified(path.front(), path.back()) : resolution_->Find(path.back());
+        }
+        if (binding == nullptr || binding->kind != BindingKind::kErrorTag) {
+          std::string message = "no error named `";
+          message.append(path.empty() ? std::string_view("?") : interner_->Text(path.back()));
+          message.append("` is in scope (D235)");
+          diagnostics_->Error(kUnknownType, std::move(message)).Primary(member.span);
+          continue;
+        }
+        if (used_ != nullptr) {
+          used_->push_back(path.back());
+        }
+        for (const ErrorMember& named : types_->StatedErrorsOf(binding->type)) {
+          stated.push_back(named);
+        }
+      }
+
+      return types_->Fallible(element, stated.empty() ? types_->OpenErrorSet() : types_->StatedErrorSet(std::move(stated)));
+    }
 
     case TypeRefKind::kSlice:
       return types_->Slice(Resolve(ast, type.element), is_soa);
@@ -969,6 +998,7 @@ FileResolution ResolveFile(TypeStore* types,
                            StringInterner* interner,
                            const Ast& ast,
                            uint32_t file_index,
+                           std::string_view module,
                            DiagnosticEngine* diagnostics) {
   FileResolution resolution;
   resolution.types = types;
@@ -1040,9 +1070,30 @@ FileResolution ResolveFile(TypeStore* types,
     }
     if (entry.kind == ItemKind::kErrorSet && item != nullptr) {
       for (Symbol name : ast.Get(item->names)) {
+        std::string qualified;
+        if (!module.empty()) {
+          qualified.assign(module);
+          qualified.push_back('.');
+        }
+        qualified.append(interner->Text(name));
+
+        bool has_payload = false;
+        for (ParamId field : ast.Get(item->params)) {
+          has_payload |= ast.Get(field).error == name;
+        }
+
+        ErrorMember member;
+        member.name = interner->Intern(qualified);
+        member.tag = ErrorTag(qualified);
+        if (has_payload) {
+          member.detail = types->Named(interner->Intern("$err." + qualified), file_index, index, /*is_handle=*/true, /*is_foreign=*/false);
+        }
+
         Binding binding;
         binding.name = name;
         binding.kind = BindingKind::kErrorTag;
+        binding.type = types->StatedErrorSet({member});
+        binding.error_name = member.name;
         binding.item = index;
         binding.file = file_index;
         binding.is_public = HasFlag(entry.flags, ItemFlags::kOffer);
@@ -1675,6 +1726,40 @@ void ResolveSignatures(TypeStore* types,
       }
     }
     resolution->relations.push_back(std::move(relation));
+  }
+
+  for (const Binding& binding : resolution->scope) {
+    if (binding.kind != BindingKind::kErrorTag || binding.file != file_index || binding.item == Binding::kNoItem) {
+      continue;
+    }
+    const std::vector<ErrorMember> stated = types->StatedErrorsOf(binding.type);
+    if (stated.size() != 1 || !stated[0].detail.is_valid()) {
+      continue;
+    }
+    const ItemId owner = ResolveItem(ast, binding.item);
+    if (!ast.Contains(owner)) {
+      continue;
+    }
+
+    TypeMembers payload;
+    payload.type = stated[0].detail;
+    uint32_t slot = 0;
+    for (ParamId param_id : ast.Get(ast.Get(owner).params)) {
+      const Param& param = ast.Get(param_id);
+      if (param.error != binding.name) {
+        continue;
+      }
+      Member field;
+      field.name = param.name;
+      field.kind = MemberKind::kField;
+      field.type = param.type.is_valid() ? resolver.Resolve(ast, param.type) : types->error();
+      field.file = file_index;
+      field.item = binding.item;
+      field.slot = slot++;
+      field.is_public = true;
+      payload.members.push_back(std::move(field));
+    }
+    resolution->type_members.push_back(std::move(payload));
   }
 
   // `extend T { ... }` adds to T's table rather than declaring its own.
