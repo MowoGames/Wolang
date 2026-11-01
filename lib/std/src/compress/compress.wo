@@ -131,13 +131,13 @@ const kOrder: [19]int = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 
 /// Reads a deflate stream. There is no cap on the output, so a hostile
 /// stream can expand about a thousandfold; use `InflateLimited` on anything
 /// that came from outside (D227).
-offer fun Inflate(bytes: []u8) -> []u8!Malformed uses unsafe {
+offer fun Inflate(bytes: []u8) -> []mut u8!Malformed uses unsafe {
   return InflateLimited(bytes, 2147483647)?
 }
 
 /// Reads a deflate stream, failing with `Malformed` once the output would
 /// pass `most` bytes -- the guard against a decompression bomb (D227).
-offer fun InflateLimited(bytes: []u8, most: int) -> []u8!Malformed uses unsafe {
+offer fun InflateLimited(bytes: []u8, most: int) -> []mut u8!Malformed uses unsafe {
   var bits = Bits(bytes, 0, 0, 0, true)
   var out = ListNew<u8>()
   loop {
@@ -445,7 +445,7 @@ fun DistanceCode(distance: int) -> int {
 /// One block, fixed codes: a dynamic block saves a few more percent and
 /// costs a Huffman tree builder, which is worth having and is not what
 /// a program reaching for this needs first (D177).
-offer fun Deflate(bytes: []u8) -> []u8 uses unsafe {
+offer fun Deflate(bytes: []u8) -> []mut u8 uses unsafe {
   var writer = Writer(ListNew<u8>(), 0, 0)
   writer.Put(1, 1)
   writer.Put(1, 2)
@@ -546,7 +546,7 @@ fun HashAt(bytes: []u8, at: int, slots: int) -> int {
 // ---------------------------------------------------------------- gzip ---
 
 /// Wraps deflated bytes in a gzip container, which is what a `.gz` is.
-offer fun Gzip(bytes: []u8) -> []u8 uses unsafe {
+offer fun Gzip(bytes: []u8) -> []mut u8 uses unsafe {
   const body = Deflate(bytes)
   var out = ArrayNew<u8>(body.len + 18)
   out[0] = 31
@@ -578,13 +578,13 @@ offer fun Gzip(bytes: []u8) -> []u8 uses unsafe {
 }
 
 /// Reads a gzip container. Unlimited output; see `GunzipLimited` (D227).
-offer fun Gunzip(bytes: []u8) -> []u8!Malformed uses unsafe {
+offer fun Gunzip(bytes: []u8) -> []mut u8!Malformed uses unsafe {
   return GunzipLimited(bytes, 2147483647)?
 }
 
 /// Reads a gzip container, failing with `Malformed` once the output would
 /// pass `most` bytes (D227).
-offer fun GunzipLimited(bytes: []u8, most: int) -> []u8!Malformed uses unsafe {
+offer fun GunzipLimited(bytes: []u8, most: int) -> []mut u8!Malformed uses unsafe {
   if bytes.len < 18 || bytes[0] != 31 || bytes[1] != 139 || bytes[2] != 8 {
     return Malformed
   }
