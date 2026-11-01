@@ -278,7 +278,7 @@ An error can carry data, and the parsers use that to say where.
 
 ```wolang
 need std.io.{Print}
-need std.json.{Parse}
+need std.json.{Malformed, Parse}
 
 fun main() uses io, unsafe {
   match Parse("[1,\n 2,\n @]") {
