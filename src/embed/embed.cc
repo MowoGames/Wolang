@@ -2141,8 +2141,18 @@ static void LetGo(WolangVm* vm, TypeId type, void* storage, bool weak = false) {
   if (!types.IsHandle(held)) {
     return;
   }
+  const uint8_t* at = static_cast<const uint8_t*>(storage);
+  if (types.IsOptional(type)) {
+    static const wolang::FileResolution kNothing;
+    wolang::abi::LayoutStore layouts(types, kNothing);
+    const wolang::abi::Layout& layout = layouts.Of(type);
+    if (*at == 0 || layout.offsets.size() < 2) {
+      return;
+    }
+    at += layout.offsets[1];
+  }
   void* object = nullptr;
-  std::memcpy(&object, storage, sizeof(object));
+  std::memcpy(&object, at, sizeof(object));
   if (object == nullptr) {
     return;
   }
