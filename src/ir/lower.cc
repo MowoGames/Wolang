@@ -2040,7 +2040,17 @@ class Lowerer {
 
     if (types_->KindOf(target) == TypeKind::kFallible && !wrapped) {
       const TypeId held = Erase(types_->ElementOf(target));
+      TypeId pair_set;
+      if (built.is_valid()) {
+        for (const auto& [erased, original] : m_ErrorPairs) {
+          if (erased == Erase(built)) {
+            pair_set = original;
+            break;
+          }
+        }
+      }
       const bool is_error =
+          pair_set.is_valid() ||
           types_->KindOf(from) == TypeKind::kErrorSet ||
           types_->KindOf(source_type) == TypeKind::kErrorSet ||
           (built.is_valid() &&
@@ -2054,7 +2064,9 @@ class Lowerer {
         // its box, and the slot goes where the target keeps that error's
         // (D235).
         std::vector<ErrorMember> given;
-        if (types_->KindOf(from) == TypeKind::kErrorSet) {
+        if (pair_set.is_valid()) {
+          given = types_->StatedErrorsOf(pair_set);
+        } else if (types_->KindOf(from) == TypeKind::kErrorSet) {
           given = types_->StatedErrorsOf(from);
         }
         const bool boxed = given.size() == 1 && given[0].detail.is_valid();
@@ -6043,6 +6055,7 @@ class Lowerer {
           const InstId box = NewObject(stated[0].detail, arguments);
           const InstId slot = builder_->Add(Opcode::kOptionalWrap, optional, {box});
           const InstId pair = builder_->Add(Opcode::kMakeStruct, Erase(binding->type), {builder_->ConstInt(types_->u32(), TagOfBinding(binding, name)), slot});
+          m_ErrorPairs.emplace_back(Erase(binding->type), binding->type);
           m_Fresh.emplace_back(current_function_, pair);
           return pair;
         }
@@ -8502,6 +8515,7 @@ class Lowerer {
   std::vector<Owner> owners_;
   std::vector<std::pair<InstId, TypeId>> m_Temporaries;
   std::vector<std::pair<uint32_t, InstId>> m_Fresh;
+  std::vector<std::pair<TypeId, TypeId>> m_ErrorPairs;
   std::vector<std::pair<TypeId, bool>> m_HoldsCounted;
   // How many enclosing reads are through a name rather than of it.
   int borrow_depth_ = 0;
