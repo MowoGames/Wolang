@@ -205,12 +205,22 @@ wolang bind --reflection --effect World     Intermediate/Build/Generated/Debug/M
 
 - **`mowo.wo`** — an `offer extern class` per reflected class, with its
   base, its methods, and a `Get`/`Set` pair per property. A method that
-  takes or answers a `Vec3`, a `Quat` or a string has a raw form the host
-  answers and a method in an `extend` block that scripts call:
-  `actor.GetActorLocation()` answers a `Vec3`.
+  takes or answers a `Vec3`, a `Quat`, a `Rotator` or a string has a raw
+  form the host answers and a method in an `extend` block that scripts
+  call: `actor.GetActorLocation()` answers a `Vec3`. A string comes back as
+  an owned copy of what the engine held, and a reflected struct whose
+  fields are all numbers is answered the way a vector is. A property of
+  an object type (`X*` or `TObjectPtr<X>`) or of `std::string` has its
+  `Get`/`Set` pair like any other.
+- **Statics** — an engine `static` function is a free `offer fun` in
+  the same package, named after the function; two classes that both have
+  a `Count` get `ActorCount` and `WorldCount`, the class name without its
+  one-letter engine prefix first (D262).
 - **The glue** — an `extern "C"` function per method and accessor, and
   `MowoWolang_Bind_mowo(vm)`, which registers every class and binds every
-  function. A null object answers zero rather than crashing. A property
+  function. A null object, or one `MowoWolangAlive` says the engine has
+  destroyed, answers zero rather than crashing; `--no-alive-check` leaves
+  the second test out (D262). A property
   is reached by its offset, asked for once from the engine's own
   reflection through `MowoWolangPropertyOffset(class, key)`.
 
@@ -220,8 +230,9 @@ The engine supplies four functions the glue declares: that offset, and
 be granted `World` to touch the world at all.
 
 What is left out is printed, one line each: components (which belong on
-the ECS side), properties of types with no binding, functions answering
-a `std::string`, overloads (D218).
+the ECS side), properties and functions of types with no binding, structs
+with a field that is not a number, a struct taken as a parameter, and
+overloads (D218, D262).
 
 ## The program's objects in the host
 

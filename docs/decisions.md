@@ -3309,3 +3309,23 @@ directories and libraries. The driver and the tests link it; it is never
 installed or exported, so nothing a host reads mentions LLVM. The amalgamation
 already left `aot.cc` out. `tools/package/test_install.sh` fails when an
 installed target file or `wolang-embed.pc` contains "llvm".
+
+**D262. The reflection bindings cover statics, text, structs and object fields,
+and ask the host before touching an object.** The generator of D218 left out a
+third of an engine: its `static` functions, anything that answered a
+`std::string`, a struct, a `TObjectPtr`, and a rotator; it built a `Quat` with
+`w` first where the engine takes `x, y, z, w`; and its glue only tested `self`
+for null, so an object the engine had destroyed was called anyway. Now a quaternion
+is `x, y, z, w` and `FRotator` is `Rotator{pitch, yaw, roll}`. `TObjectPtr<X>` is
+an object like `X*`, read through `.Get()`. A `std::string` answer is kept in a
+thread-local string in the glue and handed over as data and length, and the
+wrapper makes an owned copy of it at once, because the next call overwrites the
+buffer; a text property is the same pair of accessors. A reflected struct whose
+fields are all numbers is answered through an out-pointer the way a vector is
+(a struct is never taken as a parameter: it has no constructor to build it
+from). A static function becomes a free `offer fun`, over an `extern "C" fun`
+named `Class_Name`; the name is the engine's, or the class name without its
+one-letter prefix in front of it when two classes have the same one. Every
+call and every property access tests `MowoWolangAlive` first, unless the driver
+is given `--no-alive-check`. The reflection JSON is assumed to give a struct as
+`"kind": "struct"` with `properties` shaped like a class's.

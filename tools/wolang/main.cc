@@ -116,6 +116,7 @@ struct Options {
   std::string bind_glue;
   std::string bind_module = "mowo";
   std::string bind_effect;
+  bool bind_unchecked = false;
   std::vector<std::string> bind_includes;
   // `new` only: a library has no `main` and no `run`.
   bool new_library = false;
@@ -2489,6 +2490,7 @@ int RunBindReflection(const Options& options) {
   bind::ReflectionOptions settings;
   settings.module = options.bind_module;
   settings.effect = options.bind_effect;
+  settings.check_alive = !options.bind_unchecked;
   const bind::ReflectionResult result = bind::GenerateFromReflection(documents, settings);
   if (options.output.empty()) {
     WriteAll(result.source, stdout);
@@ -3094,6 +3096,8 @@ int Run(int argc, char** argv) {
       options.bind_module = argv[++i];
     } else if (argument == "--effect" && i + 1 < argc) {
       options.bind_effect = argv[++i];
+    } else if (argument == "--no-alive-check") {
+      options.bind_unchecked = true;
     } else if (argument == "-I" && i + 1 < argc) {
       options.bind_includes.push_back(argv[++i]);
     } else if (argument.rfind("-I", 0) == 0 && argument.size() > 2) {
