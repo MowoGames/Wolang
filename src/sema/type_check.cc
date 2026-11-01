@@ -88,7 +88,6 @@ constexpr std::string_view kUnreachableState = "W0109";
 constexpr std::string_view kUnknownState = "E0206";
 // `after <delay>` parses and nothing reads it, so it used to fire at once
 // (D243).
-constexpr std::string_view kAfterNotSupported = "E0159";
 constexpr std::string_view kBadOperand = "E0108";
 constexpr std::string_view kOpenOfferedErrors = "E0150";
 constexpr std::string_view kErrorNotInSet = "E0151";
@@ -1890,14 +1889,7 @@ void Checker::CheckMachine(const Item& item) {
       if (transition.delay.is_valid()) {
         // A delay is a number of seconds the generated `Tick(dt)` counts
         // up to; anything that is not a number cannot be counted to (D260).
-        const TypeId seconds = types_->Float(FloatWidth::k32);
-        const TypeId delay = Check(transition.delay, seconds);
-        if (types_->KindOf(delay) != TypeKind::kQuantity &&
-            !Accepts(seconds, delay)) {
-          Report(kAfterNotSupported,
-                 "`after` takes a number of seconds",
-                 transition.span);
-        }
+        Check(transition.delay, types_->Float(FloatWidth::k32));
       }
       bool found = false;
       for (size_t i = 0; i < states.size(); ++i) {

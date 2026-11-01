@@ -657,7 +657,7 @@ fun main() uses io {
 
 A module-level `weak var` works the same way: `weak var current: Node? = null` does not keep the
 object alive, and reading it gives `null` once the object is gone. It is for a `C?` of a class or an
-`extern class` only; a weak local would be `null` by the next line, so it is `E0137`.
+`extern class` only; a weak local would be `null` by the next line, so it does not parse (`E0040`).
 
 ## Threads
 

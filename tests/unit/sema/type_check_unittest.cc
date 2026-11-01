@@ -440,7 +440,7 @@ WOLANG_TEST(TypeCheck, ACallThroughAnOptionalGivesAnOptional) {
       "  p?.Hit()\n"
       "}\n");
   WOLANG_EXPECT(fixture.Codes().empty());
-  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "int?");
+  WOLANG_EXPECT_EQ(fixture.TypeOfInit("a"), "s64?");
 
   WOLANG_EXPECT(Fixture(
       "class Pawn { fun Health() -> int => 1 }\n"
@@ -548,7 +548,7 @@ WOLANG_TEST(TypeCheck, ABorrowedFunctionCannotFillAField) {
 
 WOLANG_TEST(TypeCheck, AnEscapingClosureCannotTakeAReference) {
   Fixture fixture(
-      "fun Make(r: &int) -> fun() -> int {\n  return || r\n}\n");
+      "fun Make(r: &int) -> fun() {\n  return || { const held = r }\n}\n");
   WOLANG_EXPECT_EQ(fixture.Codes(), "E0162");
 
   Fixture value(
@@ -1736,7 +1736,7 @@ fun F() {
   weak var current: Node? = null
 }
 )");
-  WOLANG_EXPECT(local.HasCode("E0137"));
+  WOLANG_EXPECT(local.HasCode("E0040"));
 }
 
 WOLANG_TEST(TypeCheck, AWeakFieldIsAnOptionalClassInAClass) {
@@ -2740,7 +2740,7 @@ machine Door {
   state Open { on Interact after "soon" -> Closed }
 }
 )");
-  WOLANG_EXPECT(f.HasCode("E0159"));
+  WOLANG_EXPECT_EQ(f.Codes(), "E0101");
   Fixture fine(R"(
 machine Door {
   state Closed { on Interact -> Open }
@@ -2751,7 +2751,6 @@ fun Run(door: Door) -> bool {
   return door.Tick(0.5)
 }
 )");
-  WOLANG_EXPECT(!fine.HasCode("E0159"));
   WOLANG_EXPECT_EQ(fine.Codes(), "");
 }
 

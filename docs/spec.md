@@ -884,7 +884,7 @@ the same exit, state and enter steps an event takes, and says whether one
 fired. Every change of state starts the count again. The clock is the caller's:
 not calling `Tick` is a pause, and a smaller `dt` is slow motion, so no host
 hook is needed. The delay is a number of seconds (a quantity is read as its
-number); anything else is `E0159`. A machine that already has an event called
+number); anything else is `E0101`. A machine that already has an event called
 `Tick` keeps it, and gets no clock (D260).
 
 ## 10. Reactive values — draft
