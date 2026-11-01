@@ -802,6 +802,9 @@ void Database::RegisterQueries() {
           result.body.captures.insert(result.body.captures.end(),
                                       body.captures.begin(),
                                       body.captures.end());
+          result.body.escaping.insert(result.body.escaping.end(),
+                                      body.escaping.begin(),
+                                      body.escaping.end());
           result.items.push_back(std::move(body));
         }
         result.resolution = resolution;
@@ -1489,6 +1492,9 @@ void Database::RegisterQueries() {
                   break;
                 case AllocKind::kError:
                   chain += ", which builds the error `" + std::string(interner_.Text(last->what)) + "`";
+                  break;
+                case AllocKind::kClosure:
+                  chain += ", which builds a closure that outlives its call";
                   break;
                 case AllocKind::kNone:
                   break;

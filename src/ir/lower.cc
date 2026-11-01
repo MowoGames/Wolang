@@ -2131,7 +2131,7 @@ class Lowerer {
         for (TypeId param : types_->ArgumentsOf(type)) {
           params.push_back(Erase(param));
         }
-        return types_->Function(params, Erase(types_->ElementOf(type)));
+        return types_->Function(params, Erase(types_->ElementOf(type)), types_->Get(type).is_kept);
       }
       default:
         return type;

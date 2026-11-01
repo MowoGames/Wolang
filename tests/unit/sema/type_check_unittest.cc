@@ -455,19 +455,82 @@ WOLANG_TEST(TypeCheck, AClosureTakesACopyOfWhatItReads) {
   WOLANG_EXPECT(fixture.Codes().empty());
 }
 
-WOLANG_TEST(TypeCheck, ACapturingClosureCannotOutliveItsFrame) {
-  // The other half of D138: what it captured is a copy of this call's
-  // locals, so handing it upwards leaves it pointing at nothing.
+WOLANG_TEST(TypeCheck, ACapturingClosureMayOutliveItsFrame) {
+  // D240: where the result is kept, the closure owns what it captured.
   Fixture returned(
       "fun Make() -> fun(int) -> int {\n  const k = 10\n"
       "  return |n| n + k\n}\n");
-  WOLANG_EXPECT_EQ(returned.Codes(), "E0136");
+  WOLANG_EXPECT(returned.Codes().empty());
 
   // And a closure that captures nothing is a plain function: it may go
   // anywhere.
   Fixture plain(
       "fun Make() -> fun(int) -> int {\n  return |n| n + 1\n}\n");
   WOLANG_EXPECT(plain.Codes().empty());
+}
+
+WOLANG_TEST(TypeCheck, ABorrowedFunctionCannotBeStored) {
+  Fixture fixture(
+      "fun Inc(n: int) -> int => n + 1\n"
+      "var saved: fun(int) -> int = Inc\n"
+      "fun Hold(f: fun(int) -> int) {\n  saved = f\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(), "E0161");
+
+  Fixture kept(
+      "fun Inc(n: int) -> int => n + 1\n"
+      "var saved: fun(int) -> int = Inc\n"
+      "fun Hold(f: keep fun(int) -> int) {\n  saved = f\n}\n");
+  WOLANG_EXPECT(kept.Codes().empty());
+}
+
+WOLANG_TEST(TypeCheck, ABorrowedFunctionCannotBeReturned) {
+  Fixture fixture("fun Pass(f: fun() -> int) -> fun() -> int {\n  return f\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(), "E0161");
+
+  Fixture kept("fun Pass(f: keep fun() -> int) -> fun() -> int {\n  return f\n}\n");
+  WOLANG_EXPECT(kept.Codes().empty());
+}
+
+WOLANG_TEST(TypeCheck, ABorrowedFunctionCannotGoToAKeptParameter) {
+  Fixture fixture(
+      "fun Store(f: keep fun()) {}\n"
+      "fun Relay(f: fun()) {\n  Store(f)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(), "E0161");
+
+  Fixture down(
+      "fun Run(f: fun()) {}\n"
+      "fun Relay(f: fun()) {\n  Run(f)\n}\n");
+  WOLANG_EXPECT(down.Codes().empty());
+
+  Fixture plain(
+      "fun Store(f: keep fun()) {}\n"
+      "fun Nothing() {}\n"
+      "fun Use() {\n  Store(Nothing)\n}\n");
+  WOLANG_EXPECT(plain.Codes().empty());
+}
+
+WOLANG_TEST(TypeCheck, ABorrowedFunctionCannotFillAField) {
+  Fixture fixture(
+      "class Box {\n  var f: fun()\n}\n"
+      "fun Fill(f: fun()) {\n  const b = Box(f)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(), "E0161");
+}
+
+WOLANG_TEST(TypeCheck, AnEscapingClosureCannotTakeAReference) {
+  Fixture fixture(
+      "fun Make(r: &int) -> fun() -> int {\n  return || r\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(), "E0162");
+
+  Fixture value(
+      "fun Make(r: int) -> fun() -> int {\n  return || r\n}\n");
+  WOLANG_EXPECT(value.Codes().empty());
+}
+
+WOLANG_TEST(TypeCheck, ACapturingClosureHeldLocallyIsBorrowed) {
+  Fixture fixture(
+      "fun Make() -> fun() -> int {\n  const k = 1\n"
+      "  const g = || k\n  return g\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(), "E0161");
 }
 
 WOLANG_TEST(TypeCheck, ACaptureOutsideAClosureIsStillAnError) {

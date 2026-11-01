@@ -395,6 +395,10 @@ class TypeStore {
   TypeId Kept(TypeId id);
   TypeId Borrowed(TypeId id);
   bool IsKept(TypeId id) const;
+  // Equal, or the same function type that differs only in whether its
+  // top-level function may be stored. The IR checks edges and calls with it,
+  // because who may keep a value is the checker's rule (D240).
+  bool SameShape(TypeId a, TypeId b) const;
   bool IsFunctionLike(TypeId id) const;
   TypeId Pointer(TypeId element, bool is_mutable);
   TypeId Reference(TypeId element, bool is_mutable);

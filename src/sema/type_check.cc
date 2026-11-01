@@ -65,9 +65,10 @@ constexpr std::string_view kUnboundParameter = "E0133";
 constexpr std::string_view kClosureNeedsTypes = "E0134";
 // A closure body naming a local of the function around it.
 constexpr std::string_view kClosureCaptures = "E0135";
-// A closure that captures, handed somewhere it would outlive its
-// environment (D138).
-constexpr std::string_view kClosureEscapes = "E0136";
+// A borrowed function value in a place that keeps it, and a closure that
+// would keep something that lives in the frame (D240).
+constexpr std::string_view kBorrowedEscapes = "E0161";
+constexpr std::string_view kFrameBoundCapture = "E0162";
 constexpr std::string_view kWaitOutsideTask = "E0301";
 constexpr std::string_view kTaskNotWaited = "E0302";
 constexpr std::string_view kWaitNotWholeExpression = "E0303";
@@ -340,20 +341,40 @@ class Checker {
   // gone. A closure that captures is for passing *down*, which covers a
   // comparator, a callback and a loop body; state that outlives a call
   // is what a class with a method is for (D138).
-  void RefuseEscape(ExprId id, std::string_view what) {
-    if (!ast_.Contains(id)) {
+  void KeepInto(ExprId id, TypeId target, std::string_view what) {
+    if (!ast_.Contains(id) || !target.is_valid() ||
+        !types_->IsFunctionLike(target) || !types_->IsKept(target)) {
+      return;
+    }
+    const TypeId found = result_.TypeOf(id);
+    if (!found.is_valid() || !types_->IsFunctionLike(found) ||
+        types_->IsKept(found)) {
       return;
     }
     const Expr& expr = ast_.Get(id);
-    if (expr.kind != ExprKind::kClosure ||
-        result_.CapturesOf(id).empty()) {
-      return;
-    }
-    std::string message = "a closure that captures cannot be ";
+    std::string message = "this function value is borrowed: it may point "
+                          "into the caller's frame, so it cannot be ";
     message.append(what);
-    Report(kClosureEscapes, std::move(message), expr.span,
-           "what it captured lives in this call's frame; give a type the "
-           "state and a method, or pass the closure down instead");
+    Report(kBorrowedEscapes, std::move(message), expr.span,
+           "write `keep fun(...)` on the parameter it came from, or pass a "
+           "function that lives on");
+  }
+
+  bool IsFrameBound(TypeId type) const {
+    while (types_->IsOptional(type)) {
+      type = types_->ElementOf(type);
+    }
+    switch (types_->KindOf(type)) {
+      case TypeKind::kReference:
+      case TypeKind::kPointer:
+      case TypeKind::kSlice:
+      case TypeKind::kStr:
+        return true;
+      case TypeKind::kFunction:
+        return !types_->IsKept(type);
+      default:
+        return false;
+    }
   }
 
   // The local a closure cannot see by name, or null. What a capture
@@ -391,7 +412,8 @@ class Checker {
 
   // Says that |closure| reads |name| from the function around it. In
   // order and without duplicates: the order is the environment's layout.
-  void Capture(ExprId closure, Symbol name) {
+  void Capture(ExprId closure, Symbol name, TypeId type) {
+    capture_types_.push_back({closure, type});
     for (auto& [id, names] : result_.captures) {
       if (id != closure) {
         continue;
@@ -476,6 +498,7 @@ class Checker {
     bool judge_globals = true;
   };
   std::vector<ClosureFacts> closure_facts_;
+  std::vector<std::pair<ExprId, TypeId>> capture_types_;
   std::vector<PendingThread> pending_threads_;
   // `uses unsafe` on the declaration being checked: the caller takes
   // responsibility for what the threads share.
@@ -802,6 +825,12 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
     return types_->IsNumeric(found);
   }
   if (expected == found) {
+    return true;
+  }
+  // Whether a function value may be stored is the place's business, asked by
+  // `KeepInto`; here two function types are the same type (D240).
+  if (types_->IsFunctionLike(expected) && types_->IsFunctionLike(found) &&
+      types_->Kept(expected) == types_->Kept(found)) {
     return true;
   }
   // An error anywhere is already reported; accepting it keeps the cascade
@@ -1196,7 +1225,7 @@ TypeId Checker::CheckPath(const Expr& expr) {
                "give a type the state and a method");
         return types_->error();
       }
-      Capture(closures_.back(), expr.name);
+      Capture(closures_.back(), expr.name, outer->type);
       return outer->type;
     }
     std::string message = "no value named `";
@@ -1990,8 +2019,10 @@ TypeId Checker::CheckAssign(ExprId id, const Expr& expr) {
                expr.span,
                "the object is being freed; copy the fields you need");
       }
-      RefuseEscape(expr.rhs, "stored");
     }
+  }
+  if (expr.op == TokenKind::kEq) {
+    KeepInto(expr.rhs, target, "stored");
   }
   return types_->void_type();
 }
@@ -2023,9 +2054,6 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
         CheckConstructor(expr, type);
         if (types_->IsHandle(type) && !types_->IsForeignClass(type)) {
           NoteAllocation(AllocKind::kClass, callee_expr.name, expr.span);
-        }
-        for (const ExprId argument : ast_.Get(expr.args)) {
-          RefuseEscape(argument, "stored in a field");
         }
         Record(expr.lhs, type);
         return type;
@@ -2131,11 +2159,15 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
       }
     }
 
+    for (auto& entry : substitution) {
+      entry.second = types_->Kept(entry.second);
+    }
     for (size_t i = 0; i < params.size() && i < found.size(); ++i) {
       const TypeId expected = types_->Substitute(params[i], substitution);
       if (!Accepts(expected, found[i])) {
         ReportMismatch(expected, found[i], ast_.Get(args[i]).span);
       }
+      KeepInto(args[i], expected, "given to a parameter that keeps it");
     }
     CheckBounds(substitution, expr.span);
     // A parameter nothing narrowed stands for itself.
@@ -2184,6 +2216,7 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
     if (expected.is_valid() && !Accepts(expected, found)) {
       ReportMismatch(expected, found, ast_.Get(args[i]).span);
     }
+    KeepInto(args[i], expected, "given to a parameter that keeps it");
   }
   return result;
 }
@@ -2420,6 +2453,10 @@ TypeId Checker::Instantiate(ExprId id, const Expr& expr, TypeId declared) {
     }
   }
 
+  for (auto& entry : substitution) {
+    entry.second = types_->Kept(entry.second);
+  }
+
   std::vector<TypeId> arguments;
   arguments.reserve(parameters.size());
   for (TypeId parameter : parameters) {
@@ -2517,6 +2554,7 @@ void Checker::CheckConstructor(const Expr& expr, TypeId type) {
     if (expected.is_valid() && !Accepts(expected, found)) {
       ReportMismatch(expected, found, ast_.Get(args[i]).span);
     }
+    KeepInto(args[i], expected, "stored in a field");
   }
 }
 
@@ -2777,7 +2815,7 @@ TypeId Checker::CheckField(const Expr& expr) {
                               types_->void_type());
     }
     if (operation == "Connect" || operation == "Disconnect") {
-      return types_->Function({signal->type}, types_->void_type());
+      return types_->Function({types_->Kept(signal->type)}, types_->void_type());
     }
     std::string message = "a signal has `Emit`, `Connect` and "
                           "`Disconnect`, and no `";
@@ -3620,8 +3658,21 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       closures_.pop_back();
       ShowLocals(enclosing);
       PopScope();
-      type = types_->Function(params,
-                              declared.is_valid() ? declared : body);
+      const bool captures = !result_.CapturesOf(id).empty();
+      const bool lands_kept = expected.is_valid() &&
+                              types_->IsFunctionLike(expected) &&
+                              types_->IsKept(expected);
+      type = types_->Function(params, declared.is_valid() ? declared : body, !captures || lands_kept);
+      if (captures && lands_kept) {
+        result_.escaping.push_back(id);
+        NoteAllocation(AllocKind::kClosure, Symbol{}, expr.span);
+        for (const auto& [owner, captured] : capture_types_) {
+          if (owner == id && IsFrameBound(captured)) {
+            Report(kFrameBoundCapture, "a closure that outlives its call cannot take a reference, a pointer, a slice or a borrowed function with it", expr.span, "copy the value out first, or pass the closure down instead");
+            break;
+          }
+        }
+      }
       break;
     }
 
@@ -3834,6 +3885,8 @@ void Checker::CheckStmt(StmtId id) {
         if (declared.is_valid() && !Accepts(declared, value)) {
           ReportMismatch(declared, value, ast_.Get(stmt.expr).span);
           value = declared;
+        } else {
+          KeepInto(stmt.expr, declared, "stored");
         }
       }
       // Without an annotation and without an initializer there is nothing to
@@ -3857,7 +3910,7 @@ void Checker::CheckStmt(StmtId id) {
       }
       wait_allowed_ = true;
       const TypeId found = Check(stmt.expr, return_type_);
-      RefuseEscape(stmt.expr, "returned");
+      KeepInto(stmt.expr, return_type_, "returned");
       if (return_type_.is_valid() && !Accepts(return_type_, found)) {
         ReportMismatch(return_type_, found, ast_.Get(stmt.expr).span);
       }
@@ -4134,6 +4187,7 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
       if (!Accepts(return_type_, found)) {
         ReportMismatch(return_type_, found, ast_.Get(item.body).span);
       }
+      KeepInto(item.body, return_type_, "returned");
     } else {
       // A function body is a statement position: a `wait` as its last
       // expression is as safe as one anywhere else in it.
@@ -4243,6 +4297,7 @@ void Checker::CheckBinding(const Item& item) {
   if (declared.is_valid() && !Accepts(declared, found)) {
     ReportMismatch(declared, found, ast_.Get(item.init).span);
   }
+  KeepInto(item.init, declared, "stored");
 }
 
 // `override` and the method it replaces have to agree that one is replacing

@@ -25,6 +25,7 @@ enum class AllocKind : uint8_t {
   kArray,
   kText,
   kError,
+  kClosure,
 };
 
 // The type of every expression in one declaration, plus the diagnostics found
@@ -80,6 +81,17 @@ struct TypedBody {
   // difference between a use that moves and a use that does not, and only
   // the checker knows which rule it applied.
   std::vector<ExprId> borrows;
+  // Closures that capture and flow into a kept place: their environment is a
+  // counted object on the heap rather than a slot in the frame (D240).
+  std::vector<ExprId> escaping;
+  bool IsEscaping(ExprId closure) const {
+    for (const ExprId id : escaping) {
+      if (id == closure) {
+        return true;
+      }
+    }
+    return false;
+  }
   // `module.Name` expressions that named a module's item rather than a
   // member of a value (D246). Lowering reads this instead of redoing the
   // shadowing rules.

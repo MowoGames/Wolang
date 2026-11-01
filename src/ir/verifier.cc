@@ -407,7 +407,7 @@ class Verifier {
         }
         const TypeId result = types_.ElementOf(target.type);
         if (result.is_valid() && inst.type.is_valid() &&
-            inst.type != result) {
+            !types_.SameShape(inst.type, result)) {
           Fail(At(id) + " takes the result of @" +
                std::string(interner_.Text(target.name)) +
                " as the wrong type");
@@ -506,8 +506,8 @@ class Verifier {
             !function_.Contains(params[j])) {
           continue;
         }
-        if (function_.Get(arguments[j]).type !=
-            function_.Get(params[j]).type) {
+        if (!types_.SameShape(function_.Get(arguments[j]).type,
+                              function_.Get(params[j]).type)) {
           Fail(At(terminator) + " passes " + At(arguments[j]) +
                " where " + At(targets[0]) + " expects the type of " +
                At(params[j]));
@@ -529,7 +529,7 @@ class Verifier {
   // wanted -- which is the one direction that is always safe, and the one
   // the C boundary asks for constantly.
   bool FitsParameter(TypeId found, TypeId wanted) const {
-    if (found == wanted) {
+    if (types_.SameShape(found, wanted)) {
       return true;
     }
     if (types_.KindOf(found) != TypeKind::kPointer ||

@@ -363,6 +363,23 @@ bool TypeStore::IsFunctionLike(TypeId id) const {
          (kind == TypeKind::kOptional && IsFunctionLike(Get(id).element));
 }
 
+bool TypeStore::SameShape(TypeId a, TypeId b) const {
+  if (a == b) {
+    return true;
+  }
+  const TypeKind kind = KindOf(a);
+  if (kind != KindOf(b)) {
+    return false;
+  }
+  if (kind == TypeKind::kOptional) {
+    return SameShape(Get(a).element, Get(b).element);
+  }
+  if (kind != TypeKind::kFunction) {
+    return false;
+  }
+  return Get(a).element == Get(b).element && ArgumentsOf(a) == ArgumentsOf(b);
+}
+
 bool TypeStore::IsKept(TypeId id) const {
   const TypeKind kind = KindOf(id);
   if (kind == TypeKind::kFunction) {
