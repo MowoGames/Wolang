@@ -4,6 +4,7 @@
 #ifndef WOLANG_IR_BUILDER_H_
 #define WOLANG_IR_BUILDER_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -79,7 +80,9 @@ class Builder {
   // environment is allocated once per call and freed when the call ends,
   // and allocating it where the closure is written would leave it
   // undominated by the scope exit that frees it (D138).
-  InstId AddToEntry(Opcode opcode, TypeId type);
+  // Several of them stay in the order they were asked for, so one may use
+  // another.
+  InstId AddToEntry(Opcode opcode, TypeId type, std::vector<InstId> operands = {});
 
 
   InstId Add(Opcode opcode, TypeId type, std::vector<InstId> operands = {});
@@ -131,6 +134,7 @@ class Builder {
   FunctionId function_;
   BlockId current_;
   bool poisoned_ = false;
+  size_t entry_added_ = 0;
   SourceSpan where_;
 };
 

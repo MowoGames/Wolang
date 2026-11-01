@@ -2252,6 +2252,49 @@ fun F(n: int) -> int {
   WOLANG_EXPECT_EQ(f.Run("F", {Fixture::Int(2)}), "4");
 }
 
+WOLANG_TEST(CodegenTest, APayloadMatchOnTheFarSideOfAnOrElseIsHeldOnlyWhenRun) {
+  Fixture f(R"(
+error Bad
+error Worse
+error Odd(code: int)
+
+fun Check(x: int) -> int!(Bad, Worse, Odd) {
+  if x > 100 {
+    return Odd(x)
+  }
+  if x > 50 {
+    return Bad
+  }
+  return x
+}
+
+fun Maybe(x: int) -> int? {
+  if x % 2 == 0 {
+    return x
+  }
+  return null
+}
+
+fun G(n: int) -> int {
+  return Maybe(n) ?? (match Check(n) { Ok(v) => v, Bad => 2, Worse => 3, Odd(c) => c })
+}
+
+fun Sum() -> int {
+  var total = 0
+  var i = 0
+  while i < 110 {
+    total = total + G(i)
+    i = i + 1
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("G", {Fixture::Int(4)}), "4");
+  WOLANG_EXPECT_EQ(f.Run("G", {Fixture::Int(57)}), "2");
+  WOLANG_EXPECT_EQ(f.Run("G", {Fixture::Int(101)}), "101");
+  WOLANG_EXPECT_EQ(f.Run("Sum", {}), "4170");
+}
+
 WOLANG_TEST(CodegenTest, CarriesAValueThroughAnOptional) {
   Fixture f(R"(
 struct Pawn {

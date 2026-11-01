@@ -2533,12 +2533,21 @@ class Lowerer {
                      TypeId type,
                      bool live,
                      bool in_slot = true,
-                     bool is_parameter = false) {
+                     bool is_parameter = false,
+                     bool anywhere = false) {
     if (is_parameter ? !Owns(type) : !Releases(type)) {
       return;
     }
-    const InstId flag =
-        builder_->Add(Opcode::kAlloca, types_->bool_type());
+    // A flag made at the entry starts false, so a path that never held the
+    // value does not let go of one it never had (D235).
+    InstId flag;
+    if (anywhere) {
+      flag = builder_->AddToEntry(Opcode::kAlloca, types_->bool_type());
+      const InstId none = builder_->AddToEntry(Opcode::kConstBool, types_->bool_type());
+      builder_->AddToEntry(Opcode::kStore, TypeId{}, {flag, none});
+    } else {
+      flag = builder_->Add(Opcode::kAlloca, types_->bool_type());
+    }
     builder_->Add(Opcode::kStore, TypeId{},
                   {flag, builder_->ConstBool(live)});
     deferred_.push_back(
@@ -2581,6 +2590,7 @@ class Lowerer {
             ? builder_->Add(Opcode::kLoad, Erase(entry.type), {entry.value})
             : entry.value;
     Destroy(value, entry.type);
+    builder_->Add(Opcode::kStore, TypeId{}, {entry.flag, builder_->ConstBool(false)});
     builder_->Jump(after, {});
     builder_->SetCurrent(after);
   }
@@ -7040,9 +7050,9 @@ class Lowerer {
     if (!value.is_valid() || !IsFreshHandle(value) || !Counts(held)) {
       return;
     }
-    const InstId slot = builder_->Add(Opcode::kAlloca, Erase(held));
+    const InstId slot = builder_->AddToEntry(Opcode::kAlloca, Erase(held));
     builder_->Add(Opcode::kStore, TypeId{}, {slot, value});
-    RememberOwner(Symbol{}, slot, held, /*live=*/true);
+    RememberOwner(Symbol{}, slot, held, /*live=*/true, /*in_slot=*/true, /*is_parameter=*/false, /*anywhere=*/true);
   }
 
   InstId LowerMatch(const Expr& expr, TypeId type) {
