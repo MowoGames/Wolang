@@ -880,6 +880,51 @@ allocation and the PNG inflater is limited to what the header implies
 (D227), so a hostile file cannot trap or balloon. Encoders return storage
 the caller owns.
 
+---
+
+## The `math` package
+
+Vectors, matrices and quaternions for gameplay and rendering code, written in
+Wolang (D263). `Vec2`, `Vec3` and `Vec4` are structs of `float` (`f32`, like
+`std.math`), and the arithmetic is `std.ops` abilities (D239): `a + b`, `a - b`,
+`-a`, `a * b`, `a / b` and `a == b` work on all of them, component by
+component. `Mat3`, `Mat4` and `Quat` meet `Mul` (a matrix or Hamilton product,
+the right side applied first) and `Eq`. Equality is exact; use `NearTo` for a
+tolerance. Anything that takes a square root states `uses unsafe`, as
+`std.math.Sqrt` does.
+
+```wolang
+need math.{Vec3, Mat4Translation, QuatAxisAngle}
+need std.io.{Print}
+
+fun main() uses io, unsafe {
+  const turn = QuatAxisAngle(Vec3(0.0, 0.0, 1.0), 1.5707963)
+  const move = Mat4Translation(Vec3(10.0, 0.0, 0.0))
+  const point = move.TransformPoint(turn.Rotate(Vec3(1.0, 0.0, 0.0)))
+  Print("{point.x} {point.y} {point.z}")
+  const sum = Vec3(1.0, 2.0, 3.0) + Vec3(1.0, 1.0, 1.0)
+  const length = sum.Length()
+  Print("{length}")
+}
+```
+
+| Function | What |
+|---|---|
+| `Dot(other)`, `LengthSquared()`, `Length()`, `Distance(other)` | on `Vec2`, `Vec3`, `Vec4` (`Distance` not on `Vec4`); `Quat` has `Dot` and `Length` |
+| `Cross(other)` | `Vec3` only |
+| `Normalized()` | unit length; the zero vector stays zero (a zero `Quat` gives the identity) |
+| `Scaled(k)`, `Divided(k)` | by a number; `*` and `/` between vectors are per component |
+| `Lerped(other, t)`, `Clamped(low, high)`, `NearTo(other, tolerance)` | per component (`Clamped` on `Vec2`, `Vec3`) |
+| `Mat3Identity()`, `Mat4Identity()` | |
+| `Mat4Translation(by)`, `Mat4Scale(by)`, `Mat4FromMat3(m)` | |
+| `Transform(v)` | `Mat3` times a `Vec3` |
+| `TransformPoint(p)`, `TransformDirection(d)`, `TransformVec4(v)` | `Mat4`; a point gets the translation, a direction does not |
+| `Transposed()`, `Determinant()`, `Upper()` | `Determinant` is `Mat3`, `Upper` takes the `Mat3` out of a `Mat4` |
+| `QuatIdentity()`, `QuatAxisAngle(axis, radians)` | the axis need not be a unit vector |
+| `Rotate(v)`, `Conjugate()`, `Slerp(other, t)`, `ToMat3()`, `ToMat4()` | `Quat`; `Slerp` takes the short way round |
+
+There is no general matrix inverse and no projection matrix yet.
+
 ## How this compares
 
 Go's standard library is bigger — net/http with HTTP/2, crypto/tls,

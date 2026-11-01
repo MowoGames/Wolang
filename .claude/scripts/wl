@@ -9,7 +9,7 @@
 #
 #   wl build   [preset]            configure if needed, then build
 #   wl test    [filter] [preset]   unit tests; a filter runs `--filter <text>`
-#   wl lib     [pkg...]            library @Tests (default: std http game core gfx image)
+#   wl lib     [pkg...]            library @Tests (default: std http game core gfx image math)
 #   wl fuzz    [count] [seed]      the three tiers against each other
 #   wl fmt                         `wolang fmt --check` over what CI checks
 #   wl docs                        the checks CI runs on includes and docs
@@ -97,7 +97,7 @@ cmd_lib() {
   local w status=0 pkgs
   w="$(driver "$PRESET")"
   [ -x "$w" ] || cmd_build >/dev/null || { cmd_build; return 1; }
-  if [ $# -gt 0 ]; then pkgs=("$@"); else pkgs=(std http game core gfx image); fi
+  if [ $# -gt 0 ]; then pkgs=("$@"); else pkgs=(std http game core gfx image math); fi
   for p in "${pkgs[@]}"; do
     if run "lib-$p" "$w" test "lib/$p"; then
       echo "lib/$p ok: $(tail -1 "$LOGS/lib-$p.log")"

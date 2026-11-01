@@ -30,6 +30,7 @@ http = {{ path = "{root}/lib/http" }}
 db = {{ path = "{root}/lib/db" }}
 gfx = {{ path = "{root}/lib/gfx" }}
 image = {{ path = "{root}/lib/image" }}
+math = {{ path = "{root}/lib/math" }}
 game = {{ path = "{root}/lib/game" }}
 """
 
