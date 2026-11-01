@@ -189,6 +189,31 @@ struct Member {
   }
 };
 
+// One error a stated set names (D235). The name is the qualified
+// `module.Name`; the tag is its hash; the detail is the class that boxes its
+// payload, or invalid when it carries none.
+struct ErrorMember {
+  Symbol name;
+  uint32_t tag = 0;
+  TypeId detail;
+};
+
+enum class ErrorFit : uint8_t {
+  kFits,
+  kMissing,
+  kPayloadIntoOpen,
+};
+
+// FNV-1a of the qualified error name, never zero: zero is the tag of success.
+inline uint32_t ErrorTag(std::string_view qualified) {
+  uint32_t hash = 0x811c9dc5u;
+  for (char c : qualified) {
+    hash ^= static_cast<uint8_t>(c);
+    hash *= 0x01000193u;
+  }
+  return hash == 0 ? 1u : hash;
+}
+
 struct Type {
   TypeKind kind = TypeKind::kError;
 
@@ -357,6 +382,10 @@ class TypeStore {
   TypeId Reference(TypeId element, bool is_mutable);
   TypeId Quantity(TypeId numeric, const Dimensions& dimensions);
   TypeId ErrorSet(const std::vector<Symbol>& members);
+  // A stated set (D235): sorted by tag, one entry per name. An empty list is
+  // the open set, which is what `ErrorSet({})` also gives.
+  TypeId StatedErrorSet(std::vector<ErrorMember> members);
+  TypeId OpenErrorSet() { return ErrorSet({}); }
 
   // ------------------------------------------------------------ accessors --
 
@@ -370,6 +399,12 @@ class TypeStore {
   Dimensions DimensionsOf(TypeId id) const;
   // Error set members, as interned names.
   std::vector<Symbol> ErrorMembersOf(TypeId id) const;
+  std::vector<ErrorMember> StatedErrorsOf(TypeId id) const;
+  bool IsOpenErrorSet(TypeId id) const;
+  bool ErrorSetHasPayload(TypeId id) const;
+  // Whether a value of |found| may stand where |expected| is wanted. Names the
+  // members of |found| that |expected| lacks in |missing|.
+  ErrorFit ErrorSetFits(TypeId expected, TypeId found, std::vector<Symbol>* missing) const;
 
   // ------------------------------------------------------------ questions --
 
@@ -430,12 +465,15 @@ class TypeStore {
     std::vector<TypeId> args;
     std::vector<Dimensions::Factor> factors;
     std::vector<Symbol> names;
+    std::vector<uint32_t> tags;
+    std::vector<TypeId> details;
 
     friend bool operator==(const Key& lhs, const Key& rhs) {
       // The ranges are compared through the key's own copies, so two
       // structurally equal types compare equal before either is stored.
       return lhs.SameType(rhs) && lhs.args == rhs.args &&
-             lhs.factors == rhs.factors && lhs.names == rhs.names;
+             lhs.factors == rhs.factors && lhs.names == rhs.names &&
+             lhs.tags == rhs.tags && lhs.details == rhs.details;
     }
 
     bool SameType(const Key& other) const;
@@ -450,6 +488,8 @@ class TypeStore {
   std::vector<TypeId> args_;
   std::vector<Dimensions::Factor> factors_;
   std::vector<Symbol> names_;
+  std::vector<uint32_t> tags_;
+  std::vector<TypeId> details_;
   std::unordered_map<Key, uint32_t, KeyHash> interned_;
 
   TypeId error_;

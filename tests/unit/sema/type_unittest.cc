@@ -194,6 +194,68 @@ WOLANG_TEST(TypeStoreTest, ErrorSetsAreInternedByMembers) {
   WOLANG_EXPECT_EQ(store.Describe(interner, set), "NotFound | Corrupt");
 }
 
+static ErrorMember MakeMember(StringInterner* interner, std::string_view name, TypeId detail) {
+  ErrorMember member;
+  member.name = interner->Intern(name);
+  member.tag = ErrorTag(name);
+  member.detail = detail;
+  return member;
+}
+
+WOLANG_TEST(TypeStoreTest, ErrorTagsAreStableAndNeverZero) {
+  WOLANG_EXPECT_NE(ErrorTag("std.json.Malformed"), ErrorTag("std.yaml.Malformed"));
+  WOLANG_EXPECT_EQ(ErrorTag("a.B"), ErrorTag("a.B"));
+  WOLANG_EXPECT_NE(ErrorTag("a.B"), 0u);
+  WOLANG_EXPECT_NE(ErrorTag(""), 0u);
+}
+
+WOLANG_TEST(TypeStoreTest, StatedErrorSetsAreOrderIndependent) {
+  TypeStore store;
+  StringInterner interner;
+  const ErrorMember a = MakeMember(&interner, "m.A", TypeId{});
+  const ErrorMember b = MakeMember(&interner, "m.B", TypeId{});
+  WOLANG_EXPECT_EQ(store.StatedErrorSet({a, b}), store.StatedErrorSet({b, a}));
+  WOLANG_EXPECT_EQ(store.StatedErrorSet({a, a}), store.StatedErrorSet({a}));
+  WOLANG_EXPECT_NE(store.StatedErrorSet({a}), store.StatedErrorSet({a, b}));
+  WOLANG_EXPECT_EQ(store.StatedErrorsOf(store.StatedErrorSet({a, b})).size(), size_t{2});
+  WOLANG_EXPECT(store.IsOpenErrorSet(store.OpenErrorSet()));
+  WOLANG_EXPECT(!store.IsOpenErrorSet(store.StatedErrorSet({a})));
+}
+
+WOLANG_TEST(TypeStoreTest, ErrorSetFitsFollowsTheSubsetRule) {
+  TypeStore store;
+  StringInterner interner;
+  const TypeId box = store.Named(interner.Intern("$err.m.P"), 0, 0);
+  const ErrorMember a = MakeMember(&interner, "m.A", TypeId{});
+  const ErrorMember b = MakeMember(&interner, "m.B", TypeId{});
+  const ErrorMember p = MakeMember(&interner, "m.P", box);
+  const TypeId open = store.OpenErrorSet();
+  const TypeId only_a = store.StatedErrorSet({a});
+  const TypeId a_and_b = store.StatedErrorSet({a, b});
+  const TypeId only_p = store.StatedErrorSet({p});
+
+  std::vector<Symbol> missing;
+  WOLANG_EXPECT(store.ErrorSetFits(a_and_b, only_a, &missing) == ErrorFit::kFits);
+  WOLANG_EXPECT(missing.empty());
+  WOLANG_EXPECT(store.ErrorSetFits(only_a, a_and_b, &missing) == ErrorFit::kMissing);
+  WOLANG_EXPECT_EQ(missing.size(), size_t{1});
+  WOLANG_EXPECT(store.ErrorSetFits(only_a, open, nullptr) == ErrorFit::kMissing);
+  WOLANG_EXPECT(store.ErrorSetFits(open, a_and_b, nullptr) == ErrorFit::kFits);
+  WOLANG_EXPECT(store.ErrorSetFits(open, only_p, nullptr) == ErrorFit::kPayloadIntoOpen);
+  WOLANG_EXPECT(store.ErrorSetFits(only_p, only_p, nullptr) == ErrorFit::kFits);
+}
+
+WOLANG_TEST(TypeStoreTest, DescribesAStatedSetOfFallible) {
+  TypeStore store;
+  StringInterner interner;
+  const ErrorMember a = MakeMember(&interner, "m.A", TypeId{});
+  const ErrorMember b = MakeMember(&interner, "m.B", TypeId{});
+  const TypeId wide = store.default_int();
+  WOLANG_EXPECT_EQ(store.Describe(interner, store.Fallible(wide, store.StatedErrorSet({a}))), "s64!A");
+  const std::string two = store.Describe(interner, store.Fallible(wide, store.StatedErrorSet({a, b})));
+  WOLANG_EXPECT(two == "s64!(A, B)" || two == "s64!(B, A)");
+}
+
 // --------------------------------------------------------------- quantities --
 
 WOLANG_TEST(DimensionsTest, MultipliesAndDividesExponents) {

@@ -99,6 +99,12 @@ size_t TypeStore::KeyHash::operator()(const Key& key) const {
   for (Symbol name : key.names) {
     hash = HashBytes(&name.index, sizeof(name.index), hash);
   }
+  for (uint32_t tag : key.tags) {
+    hash = HashBytes(&tag, sizeof(tag), hash);
+  }
+  for (TypeId detail : key.details) {
+    hash = HashBytes(&detail.index, sizeof(detail.index), hash);
+  }
   return static_cast<size_t>(hash);
 }
 
@@ -166,6 +172,12 @@ TypeId TypeStore::Intern(Key key) {
     type.args_begin = static_cast<uint32_t>(names_.size());
     type.args_count = static_cast<uint32_t>(key.names.size());
     names_.insert(names_.end(), key.names.begin(), key.names.end());
+    tags_.resize(names_.size(), 0);
+    details_.resize(names_.size());
+    for (size_t i = 0; i < key.tags.size(); ++i) {
+      tags_[type.args_begin + i] = key.tags[i];
+      details_[type.args_begin + i] = key.details[i];
+    }
   }
 
   const auto index = static_cast<uint32_t>(types_.size());
@@ -375,6 +387,25 @@ TypeId TypeStore::ErrorSet(const std::vector<Symbol>& members) {
   return Intern(std::move(key));
 }
 
+TypeId TypeStore::StatedErrorSet(std::vector<ErrorMember> members) {
+  std::sort(members.begin(), members.end(), [](const ErrorMember& lhs, const ErrorMember& rhs) {
+    return lhs.tag != rhs.tag ? lhs.tag < rhs.tag : lhs.name.index < rhs.name.index;
+  });
+  members.erase(std::unique(members.begin(), members.end(), [](const ErrorMember& lhs, const ErrorMember& rhs) {
+    return lhs.name == rhs.name;
+  }), members.end());
+
+  Key key;
+  std::memset(&key.type, 0, sizeof(key.type));
+  key.type.kind = TypeKind::kErrorSet;
+  for (const ErrorMember& member : members) {
+    key.names.push_back(member.name);
+    key.tags.push_back(member.tag);
+    key.details.push_back(member.detail);
+  }
+  return Intern(std::move(key));
+}
+
 const Type& TypeStore::Get(TypeId id) const {
   WOLANG_DCHECK(id.is_valid() && id.index < types_.size());
   if (!id.is_valid() || id.index >= types_.size()) {
@@ -430,6 +461,64 @@ std::vector<Symbol> TypeStore::ErrorMembersOf(TypeId id) const {
     result.push_back(names_[type.args_begin + i]);
   }
   return result;
+}
+
+std::vector<ErrorMember> TypeStore::StatedErrorsOf(TypeId id) const {
+  const Type& type = Get(id);
+  std::vector<ErrorMember> result;
+  if (type.kind != TypeKind::kErrorSet) {
+    return result;
+  }
+  for (uint32_t i = 0; i < type.args_count; ++i) {
+    ErrorMember member;
+    member.name = names_[type.args_begin + i];
+    member.tag = tags_[type.args_begin + i];
+    member.detail = details_[type.args_begin + i];
+    result.push_back(member);
+  }
+  return result;
+}
+
+bool TypeStore::IsOpenErrorSet(TypeId id) const {
+  return KindOf(id) == TypeKind::kErrorSet && Get(id).args_count == 0;
+}
+
+bool TypeStore::ErrorSetHasPayload(TypeId id) const {
+  for (const ErrorMember& member : StatedErrorsOf(id)) {
+    if (member.detail.is_valid()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+ErrorFit TypeStore::ErrorSetFits(TypeId expected, TypeId found, std::vector<Symbol>* missing) const {
+  if (IsOpenErrorSet(expected)) {
+    return ErrorSetHasPayload(found) ? ErrorFit::kPayloadIntoOpen : ErrorFit::kFits;
+  }
+
+  if (IsOpenErrorSet(found)) {
+    return ErrorFit::kMissing;
+  }
+
+  const std::vector<ErrorMember> allowed = StatedErrorsOf(expected);
+  bool fits = true;
+  for (const ErrorMember& member : StatedErrorsOf(found)) {
+    bool listed = false;
+    for (const ErrorMember& candidate : allowed) {
+      if (candidate.name == member.name) {
+        listed = true;
+        break;
+      }
+    }
+    if (!listed) {
+      fits = false;
+      if (missing != nullptr) {
+        missing->push_back(member.name);
+      }
+    }
+  }
+  return fits ? ErrorFit::kFits : ErrorFit::kMissing;
 }
 
 bool TypeStore::IsInteger(TypeId id) const {
@@ -881,7 +970,24 @@ std::string TypeStore::Describe(const StringInterner& interner,
     case TypeKind::kOptional:
       return Describe(interner, type.element) + "?";
     case TypeKind::kFallible:
-      return Describe(interner, type.element) + "!";
+    {
+      std::string text = Describe(interner, type.element) + "!";
+      const std::vector<ErrorMember> stated = StatedErrorsOf(type.base);
+      if (stated.size() > 1) {
+        text.push_back('(');
+      }
+      for (size_t i = 0; i < stated.size(); ++i) {
+        if (i > 0) {
+          text.append(", ");
+        }
+        const std::string_view full = interner.Text(stated[i].name);
+        text.append(full.substr(full.rfind('.') == std::string_view::npos ? 0 : full.rfind('.') + 1));
+      }
+      if (stated.size() > 1) {
+        text.push_back(')');
+      }
+      return text;
+    }
 
     // `[]T` and `[N]T` read left to right: a slice of T, an array of N of
     // them. The brackets say what the shape is before the element does.
