@@ -114,7 +114,7 @@ offer class Heap<T> {
   }
 }
 
-offer fun HeapNew<T>(before: fun(T, T) -> bool) -> Heap<T> uses unsafe {
+offer fun HeapNew<T>(before: keep fun(T, T) -> bool) -> Heap<T> uses unsafe {
   return Heap<T>(ArrayNew<T>(0), 0, before)
 }
 

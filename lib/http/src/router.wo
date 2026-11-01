@@ -27,47 +27,47 @@ offer class Router {
 
   /// Adds a route. Answers nothing: a router is built once, at the top of
   /// a program, so the calls read as a list rather than as a chain.
-  fun Add(method: text, pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Add(method: text, pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     routes.Push(Route(method, pattern, handle))
   }
 
-  fun Get(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Get(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     Add("GET", pattern, handle)
   }
 
-  fun Post(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Post(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     Add("POST", pattern, handle)
   }
 
-  fun Put(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Put(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     Add("PUT", pattern, handle)
   }
 
-  fun Delete(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Delete(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     Add("DELETE", pattern, handle)
   }
 
-  fun Patch(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Patch(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     Add("PATCH", pattern, handle)
   }
 
   /// A route for `HEAD`. Rarely needed: a `GET` route answers `HEAD` by
   /// itself, with the body left off (D122).
-  fun Head(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Head(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     Add("HEAD", pattern, handle)
   }
 
-  fun Options(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Options(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     Add("OPTIONS", pattern, handle)
   }
 
   /// One handler for every method on a pattern.
-  fun Any(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Any(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     Add("*", pattern, handle)
   }
 
   /// What answers when nothing else matches. Without one, `404`.
-  fun Otherwise(handle: fun(Request) -> Response) uses unsafe {
+  fun Otherwise(handle: keep fun(Request) -> Response) uses unsafe {
     fallback = handle
     has_fallback = true
   }

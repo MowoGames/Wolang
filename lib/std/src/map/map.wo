@@ -220,7 +220,7 @@ fun Between(wanted: int, hole: int, at: int, _size: int) -> bool {
   return wanted <= hole || hole < at
 }
 
-offer fun MapNew<K, V>(hash: fun(K) -> int, equals: fun(K, K) -> bool) -> Map<K, V> uses unsafe {
+offer fun MapNew<K, V>(hash: keep fun(K) -> int, equals: keep fun(K, K) -> bool) -> Map<K, V> uses unsafe {
   return Map<K, V>(
       ArrayNew<K>(0),
       ArrayNew<V>(0),
