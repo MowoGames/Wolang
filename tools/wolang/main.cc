@@ -151,6 +151,7 @@ struct Options {
   // `ir` only: print the IR as lowering left it rather than after the
   // passes.
   bool unoptimized = false;
+  bool typed = false;
   // Smaller programs are the ones a disagreement can be read in.
   int fuzz_depth = 3;
   int fuzz_statements = 5;
@@ -232,6 +233,7 @@ void PrintUsage() {
       "  --aot           `fuzz`: build and run each program as a binary "
       "too\n"
       "  --unoptimized   `ir`: print what lowering produced, before passes\n"
+      "  --typed         `ir`: print the form the IR reader takes back (D264)\n"
       "  -o <path>       `build`: where the binary goes\n"
       "  --emit-object   `build`: stop at the object file\n"
       "  --no-debug      `build`: leave out the line information\n"
@@ -473,12 +475,8 @@ int RunSyntaxCommand(const Options& options) {
         // `--unoptimized` prints the IR as lowering left it, which is what
         // a verifier complaint prefixed "lowering:" is about -- the
         // optimized dump may have inlined the instruction away.
-        std::fputs(ir::PrintModule(database.interner(), database.types(),
-                                   options.unoptimized
-                                       ? lowered->unoptimized
-                                       : lowered->module)
-                       .c_str(),
-                   stdout);
+        const ir::Module& dumped = options.unoptimized ? lowered->unoptimized : lowered->module;
+        std::fputs((options.typed ? ir::PrintModuleTyped(database.interner(), database.types(), dumped) : ir::PrintModule(database.interner(), database.types(), dumped)).c_str(), stdout);
         // A verifier complaint is a compiler bug, so it goes to stderr with
         // the IR still on stdout -- the dump is what the bug report needs.
         for (const std::string& problem : lowered->problems) {
@@ -3106,6 +3104,8 @@ int Run(int argc, char** argv) {
       options.from_stdin = true;
     } else if (argument == "--unoptimized") {
       options.unoptimized = true;
+    } else if (argument == "--typed") {
+      options.typed = true;
     } else if (argument == "--source") {
       options.show_source = true;
     } else if (argument == "--filter" && i + 1 < argc) {
