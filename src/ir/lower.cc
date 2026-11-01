@@ -1104,17 +1104,36 @@ class Lowerer {
     if (index != 0xFFFFFFFFu) {
       return index;
     }
+    index = DeclareMethodFrom(owner, member.name, member);
+    Remember(member.file, member.item, index, member.slot);
+    return index;
+  }
+
+  // The host's name for a method of an `extern class`: `Actor_Position`
+  // (D213).
+  Symbol ForeignMethodSymbol(TypeId owner, Symbol name) {
+    std::string symbol = types_->Describe(*interner_, owner);
+    symbol.push_back('_');
+    symbol.append(interner_->Text(name));
+    return interner_->Intern(symbol);
+  }
+
+  // A method declared in another file: lowering is per file, so this file
+  // gets a signature with the receiver first. A bodiless method of an
+  // `extern class` is the host's function, and reaches it by its symbol the
+  // way the declaring file's own calls do (D213).
+  uint32_t DeclareMethodFrom(TypeId owner, Symbol name, const Member& member) {
     std::vector<TypeId> params;
     params.push_back(owner);
     for (TypeId param : types_->ArgumentsOf(member.type)) {
       params.push_back(Erase(param));
     }
-    const TypeId signature =
-        types_->Function(params, Erase(types_->ElementOf(member.type)));
-    index = DeclareExternal(MethodName(owner, member.name), signature,
-                            member.file, member.item, /*is_task=*/false,
-                            /*has_body=*/false, member.slot);
-    Remember(member.file, member.item, index, member.slot);
+    const TypeId signature = types_->Function(params, Erase(types_->ElementOf(member.type)));
+    const uint32_t index = DeclareExternal(MethodName(owner, name), signature, member.file, member.item, /*is_task=*/false, /*has_body=*/false, member.slot);
+    if (types_->IsForeignClass(owner) && !member.has_body && !module_->functions[index].foreign_symbol.is_valid()) {
+      module_->functions[index].foreign_symbol = ForeignMethodSymbol(owner, name);
+      module_->functions[index].type = ForeignSignature(module_->functions[index].type);
+    }
     return index;
   }
 
@@ -1162,10 +1181,7 @@ class Lowerer {
     // A method of an `extern class` is the host's `Actor_Position`, called
     // with the object first (D213).
     if (types_->IsForeignClass(owner) && !item.body.is_valid()) {
-      std::string symbol = types_->Describe(*interner_, owner);
-      symbol.push_back('_');
-      symbol.append(interner_->Text(item.name));
-      function.foreign_symbol = interner_->Intern(symbol);
+      function.foreign_symbol = ForeignMethodSymbol(owner, item.name);
       function.type = ForeignSignature(function.type);
     }
 
@@ -6522,17 +6538,7 @@ class Lowerer {
       // Declared in another file. Lowering is per file, so it gets a
       // declaration here with the receiver in its signature, and the
       // linker resolves it by the declaration it came from.
-      std::vector<TypeId> params;
-      params.push_back(owner);
-      for (TypeId param : types_->ArgumentsOf(member->type)) {
-        params.push_back(Erase(param));
-      }
-      const TypeId signature = types_->Function(
-          params, Erase(types_->ElementOf(member->type)));
-      index = DeclareExternal(MethodName(owner, name), signature,
-                              member->file, member->item,
-                              /*is_task=*/false, /*has_body=*/false,
-                              member->slot);
+      index = DeclareMethodFrom(owner, name, *member);
       Remember(member->file, member->item, index, member->slot);
     }
 

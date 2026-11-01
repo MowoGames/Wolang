@@ -1585,6 +1585,7 @@ void ResolveSignatures(TypeStore* types,
       member.is_virtual = HasFlag(member_entry.flags, ItemFlags::kVirtual);
       member.is_override = HasFlag(member_entry.flags, ItemFlags::kOverride);
       member.is_unsafe = HasFlag(member_entry.flags, ItemFlags::kUnsafe);
+      member.has_body = HasFlag(member_entry.flags, ItemFlags::kHasBody);
       switch (member_entry.kind) {
         case ItemKind::kFunction:
           member.kind = MemberKind::kMethod;

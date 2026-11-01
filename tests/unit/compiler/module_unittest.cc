@@ -348,6 +348,26 @@ fun Use() -> int {
   WOLANG_EXPECT(text.find("Holder<s64>.Item") != std::string::npos);
 }
 
+WOLANG_TEST(ModuleScopeTest, AHostMethodCalledFromAnotherModuleNamesItsSymbol) {
+  Fixture fixture;
+  const ModuleId engine = fixture.AddModule("game.engine");
+  fixture.AddFile(engine, "actor.wo", "offer extern class Actor {\n  fun Health() -> s32\n}\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(game, "main.wo", "need game.engine.{Actor}\nfun Read(a: Actor) -> s32 uses unsafe {\n  return a.Health()\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+
+  const LoweredFile* lowered = fixture.db().Lowered(main);
+  WOLANG_ASSERT_NE(lowered, nullptr);
+  bool names_symbol = false;
+  for (const ir::Function& function : lowered->module.functions) {
+    if (function.foreign_symbol.is_valid() && fixture.db().interner().Text(function.foreign_symbol) == "Actor_Health") {
+      names_symbol = true;
+    }
+  }
+  WOLANG_EXPECT(names_symbol);
+}
+
 WOLANG_TEST(ModuleScopeTest, ResolvesImportsBetweenModules) {
   Fixture fixture;
   const ModuleId math = fixture.AddModule("game.math");
