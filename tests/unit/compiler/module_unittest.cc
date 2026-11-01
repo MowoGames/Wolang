@@ -279,11 +279,11 @@ WOLANG_TEST(ModuleScopeTest, AQualifiedErrorNameIsAPattern) {
   const ModuleId a = fixture.AddModule("a");
   fixture.AddFile(a, "a.wo", "offer error Corrupt, Missing\noffer fun Load(n: int) -> int!(Corrupt, Missing) {\n  if n == 0 {\n    return Corrupt\n  }\n  return n\n}\n");
   const ModuleId app = fixture.AddModule("app");
-  const FileId matched = fixture.AddFile(app, "m.wo", "need a\nfun Use() -> int {\n  match a.Load(0) {\n    Ok(v) => return v\n    a.Corrupt => return -1\n    a.Missing => return -2\n  }\n}\n");
+  const FileId matched = fixture.AddFile(app, "m.wo", "need a\nfun Use() -> int {\n  match a.Load(0) {\n    Ok(v) => { return v }\n    a.Corrupt => { return -1 }\n    a.Missing => { return -2 }\n  }\n}\n");
   WOLANG_EXPECT_EQ(fixture.Codes(matched), "");
 
   const ModuleId app2 = fixture.AddModule("app2");
-  const FileId unknown = fixture.AddFile(app2, "u.wo", "need a\nfun Use() -> int {\n  match a.Load(0) {\n    Ok(v) => return v\n    a.Nope => return -1\n    _ => return -2\n  }\n}\n");
+  const FileId unknown = fixture.AddFile(app2, "u.wo", "need a\nfun Use() -> int {\n  match a.Load(0) {\n    Ok(v) => { return v }\n    a.Nope => { return -1 }\n    _ => { return -2 }\n  }\n}\n");
   WOLANG_EXPECT_EQ(fixture.Codes(unknown), "E0144");
 }
 
