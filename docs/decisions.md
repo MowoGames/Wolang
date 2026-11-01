@@ -3329,3 +3329,16 @@ one-letter prefix in front of it when two classes have the same one. Every
 call and every property access tests `MowoWolangAlive` first, unless the driver
 is given `--no-alive-check`. The reflection JSON is assumed to give a struct as
 `"kind": "struct"` with `properties` shaped like a class's.
+
+**D252. A thread body is followed into every module and every method.** D232 walked
+only the calls inside the thread body's own module and only the functions of
+that module, so a body that called `lib.Bump`, or a method such as
+`counter.Hit()`, reached a module-level `var` without a word. The walk now
+runs over the whole program, the same graph `@Hot` asks about (D237), and a
+method is its own node. A function that states `uses unsafe`, or is an
+`unsafe fun`, stops the walk: its author vouched for what two threads sharing
+it do, as the caller does (D232). A function handed to a `@Thread` parameter
+may be written `Name` or `module.Name` (D246). Not covered: a function held in
+a variable and then handed over, which names nothing the checker can follow, is
+not judged. Refusing it is a later step: it needs to tell a parameter that is
+itself `@Thread` from a local.

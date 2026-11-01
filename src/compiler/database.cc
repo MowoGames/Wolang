@@ -1069,6 +1069,8 @@ void Database::RegisterQueries() {
                 node.what = found.what;
                 node.span = found.span;
                 node.allocates = found.kind != AllocKind::kNone;
+                node.vouches = found.vouches;
+                node.touches = found.touches_global && !found.vouches;
                 collected.emplace_back(node, found.callees);
               }
             }
@@ -1103,6 +1105,25 @@ void Database::RegisterQueries() {
               node.via_item = to_item;
               grew = true;
               break;
+            }
+          }
+        }
+
+        grew = true;
+        for (size_t pass = 0; grew && pass <= program.nodes.size(); ++pass) {
+          grew = false;
+          for (size_t i = 0; i < program.nodes.size(); ++i) {
+            ProgramAllocation::Node& node = program.nodes[i];
+            if (node.touches || node.vouches) {
+              continue;
+            }
+            for (const auto& [to_file, to_item] : edges[i]) {
+              const ProgramAllocation::Node* callee = program.Find(to_file, to_item);
+              if (callee != nullptr && callee->touches) {
+                node.touches = true;
+                grew = true;
+                break;
+              }
             }
           }
         }
@@ -1232,77 +1253,29 @@ void Database::RegisterQueries() {
           }
         }
 
-        // A function handed to a `@Thread` parameter must not reach a
-        // module-level `var`, directly or through what it calls. Same
-        // shape as the effect fixpoint above, but a plain flag and over
-        // every call, declared row or not (D232). Calls into other
-        // modules are not followed: a library vouches for itself.
-        if (const auto* files =
-                db.GetAs<std::vector<FileId>>(ModuleFilesKey(module))) {
-          struct Reach {
-            uint32_t file;
-            uint32_t item;
-            bool touches;
-            const std::vector<std::pair<uint32_t, uint32_t>>* callees;
-          };
-          std::vector<Reach> reach;
-          const CheckedFile* mine = nullptr;
-          for (FileId other : *files) {
-            const auto* checked = db.GetAs<CheckedFile>(TypeCheckKey(other));
-            if (checked == nullptr) {
-              continue;
-            }
-            if (other.index == arg) {
-              mine = checked;
-            }
-            for (const TypedBody& body : checked->items) {
-              if (body.item_index != 0xFFFFFFFFu) {
-                reach.push_back({other.index, body.item_index,
-                                 body.touches_global, &body.all_callees});
-              }
-            }
+        // Code handed to a `@Thread` parameter must not reach a module-level
+        // `var`, directly or through what it calls, in any module. A function
+        // that states `uses unsafe` stops the walk: its author vouched for
+        // what a thread sharing it does (D252). The walk is the program-wide
+        // one and is asked only when this file starts a thread.
+        if (const auto* checked_here = db.GetAs<CheckedFile>(TypeCheckKey(file)); checked_here != nullptr) {
+          bool has_roots = false;
+          for (const TypedBody& body : checked_here->items) {
+            has_roots |= !body.thread_roots.empty();
           }
-          const auto touches = [&reach](const Reach& node) {
-            for (const auto& [to_file, to_item] : *node.callees) {
-              for (const Reach& other : reach) {
-                if (other.file == to_file && other.item == to_item &&
-                    other.touches) {
-                  return true;
-                }
-              }
-            }
-            return false;
-          };
-          bool grew = true;
-          for (size_t pass = 0; grew && pass <= reach.size(); ++pass) {
-            grew = false;
-            for (Reach& node : reach) {
-              if (!node.touches && touches(node)) {
-                node.touches = true;
-                grew = true;
-              }
-            }
-          }
-          if (mine != nullptr) {
-            for (const TypedBody& body : mine->items) {
+          const auto* program = has_roots ? db.GetAs<ProgramAllocation>(QueryKey{QueryKind::kAllocation, 0}) : nullptr;
+          if (program != nullptr) {
+            for (const TypedBody& body : checked_here->items) {
               for (const TypedBody::ThreadRoot& root : body.thread_roots) {
                 bool reaches = root.touches;
                 for (const auto& [to_file, to_item] : root.callees) {
-                  for (const Reach& node : reach) {
-                    reaches |= node.file == to_file && node.item == to_item &&
-                               node.touches;
-                  }
+                  const ProgramAllocation::Node* node = program->Find(to_file, to_item);
+                  reaches |= node != nullptr && node->touches;
                 }
                 if (!reaches) {
                   continue;
                 }
-                diagnostics
-                    .Error(kThreadTouchesGlobal,
-                           "code started on another thread reaches a "
-                           "module-level `var`")
-                    .Primary(root.span,
-                             "two threads would share it unguarded; state "
-                             "`uses unsafe` here to take responsibility");
+                diagnostics.Error(kThreadTouchesGlobal, "code started on another thread reaches a module-level `var`").Primary(root.span, "two threads would share it unguarded; state `uses unsafe` here to take responsibility");
               }
             }
           }

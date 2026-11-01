@@ -241,7 +241,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0143` | a name two `need`ed modules both offer is used bare (D246) | `need json` and `need ini`, then `Parse(text)` |
 | `E0144` | `module.Name` where the module offers no such name, or does not offer it; also in a `match` pattern (D246) | `json.Nothing(x)` |
 | `E0145` | `self` stored into a field or global from its own `deinit` | `deinit { stash = self }` |
-| `E0147` | a function or closure given to a `@Thread` parameter (`Spawn`, `ParallelFor`) reads or writes a module-level `var`, directly or through a call, and the caller does not state `uses unsafe` (D232) | `Spawn(Work)` where `Work` pushes to a global list |
+| `E0147` | a function or closure given to a `@Thread` parameter (`Spawn`, `ParallelFor`) reads or writes a module-level `var`, directly or through a call or a method, in any module, and the caller does not state `uses unsafe`; a callee that states it stops the walk (D232, D252) | `Spawn(Work)` where `Work` pushes to a global list |
 | `E0148` | a closure that captures given to a `@Thread` parameter that has no environment to give it (`Spawn`; not `ParallelFor`), even under `uses unsafe` (D232) | `Spawn(\|\| { Print("{n}") })` |
 | `E0159` | `after <delay>` on a machine transition: it parsed and then fired at once, so it is refused until a machine has a clock (D243) | `on Interact after 3s -> Closed` |
 | `E0150` | an `offer fun` whose result is a bare `T!`: a caller in another module cannot see which errors it holds, so the set is written (D235) | `offer fun F() -> int!` |

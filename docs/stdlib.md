@@ -679,8 +679,10 @@ fun main() uses io, unsafe {
 
 A body started on another thread (`Spawn`, `ParallelFor`: the
 parameters of functions marked `@Thread`) may not read or write a
-module-level `var`, directly or through the functions it calls, unless
-the function making the call states `uses unsafe` (`E0147`), and `Spawn`
+module-level `var`, directly or through the functions and methods it
+calls, in any module, unless the function making the call states
+`uses unsafe` (`E0147`); a function that states it stops the walk
+(D252), and `Spawn`
 takes no capturing closure at all (`E0148`); `ParallelFor`'s closure
 may capture, each thread getting a copy (D232).
 

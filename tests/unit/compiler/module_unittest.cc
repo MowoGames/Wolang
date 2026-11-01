@@ -287,6 +287,47 @@ WOLANG_TEST(ModuleScopeTest, AQualifiedErrorNameIsAPattern) {
   WOLANG_EXPECT_EQ(fixture.Codes(unknown), "E0144");
 }
 
+WOLANG_TEST(ModuleScopeTest, AThreadReachesAGlobalThroughAnotherModule) {
+  Fixture fixture;
+  const ModuleId lib = fixture.AddModule("lib");
+  fixture.AddFile(lib, "lib.wo", "var shared: int = 0\noffer fun Bump() {\n  shared = shared + 1\n}\noffer fun Idle() {\n}\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId shares = fixture.AddFile(app, "shares.wo", "need lib.{Bump}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(Bump)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(shares), "E0147");
+
+  const ModuleId app2 = fixture.AddModule("app2");
+  const FileId idle = fixture.AddFile(app2, "idle.wo", "need lib.{Idle}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(Idle)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(idle), "");
+
+  const ModuleId vouched = fixture.AddModule("vouched");
+  fixture.AddFile(vouched, "v.wo", "var shared: int = 0\noffer fun Bump() uses unsafe {\n  shared = shared + 1\n}\n");
+  const ModuleId app3 = fixture.AddModule("app3");
+  const FileId trusted = fixture.AddFile(app3, "trusted.wo", "need vouched.{Bump}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(Bump)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(trusted), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AThreadReachesAGlobalThroughAMethod) {
+  Fixture fixture;
+  const ModuleId lib = fixture.AddModule("lib");
+  fixture.AddFile(lib, "lib.wo", "var shared: int = 0\noffer class Counter {\n  fun Hit() {\n    shared = shared + 1\n  }\n  fun Len() -> int {\n    return 0\n  }\n}\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId shares = fixture.AddFile(app, "shares.wo", "need lib.{Counter}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go(c: Counter) {\n  Launch(|| { c.Hit() })\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(shares), "E0147");
+
+  const ModuleId app2 = fixture.AddModule("app2");
+  const FileId reads = fixture.AddFile(app2, "reads.wo", "need lib.{Counter}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go(c: Counter) {\n  Launch(|| { c.Len() })\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(reads), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AThreadFunctionMayBeNamedThroughItsModule) {
+  Fixture fixture;
+  const ModuleId lib = fixture.AddModule("lib");
+  fixture.AddFile(lib, "lib.wo", "var shared: int = 0\noffer fun Bump() {\n  shared = shared + 1\n}\n");
+  const ModuleId app = fixture.AddModule("app");
+  const FileId shares = fixture.AddFile(app, "shares.wo", "need lib\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(lib.Bump)\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(shares), "E0147");
+}
+
 WOLANG_TEST(ModuleScopeTest, AValueNamedLikeAModuleStillMeansTheValue) {
   // The non-firing twin: a parameter called `a` is the value, not the module.
   Fixture fixture;

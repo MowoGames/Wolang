@@ -511,6 +511,9 @@ class Checker {
 
   void NoteGlobalTouch() {
     result_.touches_global = true;
+    if (!alloc_open_.empty()) {
+      alloc_open_.back().touches_global = true;
+    }
     for (ClosureFacts& facts : closure_facts_) {
       if (InsideClosure(facts.closure)) {
         facts.touches = true;
@@ -541,13 +544,25 @@ class Checker {
     }
   }
 
+  // The binding a name or a `module.Name` refers to, when it is a plain
+  // reference: a function handed to a thread may be spelled either way
+  // (D252).
+  const Binding* NamedFunction(const Expr& expr) {
+    if (expr.kind == ExprKind::kPath) {
+      return Lookup(expr.name);
+    }
+    if (expr.kind == ExprKind::kField && IsModuleQualified(expr)) {
+      return resolution_->FindQualified(ast_.Get(expr.lhs).name, expr.name);
+    }
+    return nullptr;
+  }
+
   // Looks at the arguments of a call to a `@Thread` function.
   void CollectThreadArguments(const Expr& call) {
-    if (!ast_.Contains(call.lhs) ||
-        ast_.Get(call.lhs).kind != ExprKind::kPath) {
+    if (!ast_.Contains(call.lhs)) {
       return;
     }
-    const Binding* callee = Lookup(ast_.Get(call.lhs).name);
+    const Binding* callee = NamedFunction(ast_.Get(call.lhs));
     if (callee == nullptr || callee->thread_args == 0) {
       return;
     }
@@ -559,8 +574,8 @@ class Checker {
       if (value.kind == ExprKind::kClosure) {
         pending_threads_.push_back(
             {argument, callee->thread_args, !caller_unsafe_});
-      } else if (value.kind == ExprKind::kPath && !caller_unsafe_) {
-        const Binding* named = Lookup(value.name);
+      } else if (!caller_unsafe_) {
+        const Binding* named = NamedFunction(value);
         if (named != nullptr && named->kind == BindingKind::kFunction &&
             named->item != Binding::kNoItem) {
           TypedBody::ThreadRoot root;
@@ -4241,6 +4256,9 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
     }
   }
 
+  if (framed) {
+    alloc_open_.back().vouches = caller_unsafe_;
+  }
   return_type_ = previous_return;
   in_task_ = previous_task;
   caller_unsafe_ = previous_unsafe;

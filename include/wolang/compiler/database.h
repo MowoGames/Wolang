@@ -123,13 +123,18 @@ struct ProgramAllocation {
     bool has_via = false;
     uint32_t via_file = 0;
     uint32_t via_item = 0;
+    // Whether it reaches a module-level `var`, by itself or through what it
+    // calls, stopping at any function that states `uses unsafe` (D252).
+    bool touches = false;
+    bool vouches = false;
 
     friend bool operator==(const Node& lhs, const Node& rhs) {
       return lhs.file == rhs.file && lhs.item == rhs.item &&
              lhs.kind == rhs.kind && lhs.what == rhs.what &&
              lhs.span == rhs.span && lhs.allocates == rhs.allocates &&
              lhs.has_via == rhs.has_via && lhs.via_file == rhs.via_file &&
-             lhs.via_item == rhs.via_item;
+             lhs.via_item == rhs.via_item && lhs.touches == rhs.touches &&
+             lhs.vouches == rhs.vouches;
     }
   };
   std::vector<Node> nodes;

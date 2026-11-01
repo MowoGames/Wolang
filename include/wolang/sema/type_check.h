@@ -74,6 +74,12 @@ struct TypedBody {
     Symbol what;
     SourceSpan span;
     std::vector<std::pair<uint32_t, uint32_t>> callees;
+    // Whether this function or method names a module-level `var`, and
+    // whether it states `uses unsafe` (or is `unsafe fun`), which takes
+    // responsibility for what a thread sharing it does. Read by the
+    // program-wide walk that judges what a `@Thread` body reaches (D252).
+    bool touches_global = false;
+    bool vouches = false;
   };
   std::vector<Allocation> allocation;
   // Expressions that were accepted as an implicit borrow: an owned
