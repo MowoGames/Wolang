@@ -90,6 +90,7 @@ constexpr std::string_view kErrorNotInSet = "E0151";
 constexpr std::string_view kPayloadInOpenSet = "E0152";
 constexpr std::string_view kBodilessUnsafe = "E0153";
 constexpr std::string_view kUnsafeMismatch = "E0154";
+constexpr std::string_view kUnknownEffect = "E0158";
 constexpr std::string_view kAmbiguousName = "E0143";
 constexpr std::string_view kUnknownModuleItem = "E0144";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
@@ -494,8 +495,22 @@ class Checker {
     }
   }
 
+  std::vector<TypedBody::Allocation> alloc_open_;
+
+  void NoteAllocation(AllocKind kind, Symbol what, SourceSpan span) {
+    if (alloc_open_.empty() || alloc_open_.back().kind != AllocKind::kNone) {
+      return;
+    }
+    alloc_open_.back().kind = kind;
+    alloc_open_.back().what = what;
+    alloc_open_.back().span = span;
+  }
+
   void NoteCall(uint32_t file, uint32_t item) {
     result_.all_callees.emplace_back(file, item);
+    if (!alloc_open_.empty()) {
+      alloc_open_.back().callees.emplace_back(file, item);
+    }
     for (ClosureFacts& facts : closure_facts_) {
       if (InsideClosure(facts.closure)) {
         facts.callees.emplace_back(file, item);
@@ -1045,6 +1060,9 @@ TypeId Checker::CheckLiteral(const Expr& expr, TypeId expected) {
           Record(part, types_->str());
         }
       }
+      if (interpolated) {
+        NoteAllocation(AllocKind::kText, Symbol(), expr.span);
+      }
       return interpolated ? types_->string_type() : types_->str();
     }
 
@@ -1589,10 +1607,12 @@ TypeId Checker::CheckBinary(ExprId id, const Expr& expr, TypeId expected) {
       if (expr.op == TokenKind::kPlus &&
           (IsTextLike(left) || IsTextLike(right))) {
         if (IsTextLike(left) && IsTextLike(right)) {
-          return types_->KindOf(left) == TypeKind::kString ||
-                         types_->KindOf(right) == TypeKind::kString
-                     ? types_->string_type()
-                     : types_->str();
+          const bool owned = types_->KindOf(left) == TypeKind::kString ||
+                             types_->KindOf(right) == TypeKind::kString;
+          if (owned) {
+            NoteAllocation(AllocKind::kText, Symbol(), expr.span);
+          }
+          return owned ? types_->string_type() : types_->str();
         }
         if (!types_->IsError(left) && !types_->IsError(right)) {
           std::string message =
@@ -2001,6 +2021,9 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
         }
         const TypeId type = Instantiate(id, expr, binding->type);
         CheckConstructor(expr, type);
+        if (types_->IsHandle(type) && !types_->IsForeignClass(type)) {
+          NoteAllocation(AllocKind::kClass, callee_expr.name, expr.span);
+        }
         for (const ExprId argument : ast_.Get(expr.args)) {
           RefuseEscape(argument, "stored in a field");
         }
@@ -2184,6 +2207,8 @@ TypeId Checker::CheckErrorCall(const Expr& expr, const Binding* binding) {
     return tag_type;
   }
 
+  NoteAllocation(AllocKind::kError, ast_.Get(expr.lhs).name, expr.span);
+
   const std::span<const Member> fields = resolution_->MembersOf(detail);
   if (fields.size() != args.size()) {
     std::string message = "expected ";
@@ -2256,6 +2281,14 @@ void Checker::RecordCallEffects(ExprId callee, ExprId call) {
           : Lookup(name);
   if (binding == nullptr || binding->item == Binding::kNoItem) {
     return;
+  }
+  if (binding->kind == BindingKind::kFunction && !binding->has_body && !binding->is_foreign) {
+    const std::string_view spelled = interner_->Text(binding->real_name.is_valid() ? binding->real_name : name);
+    if (spelled == "ArrayNew" || spelled == "SoaNew") {
+      NoteAllocation(AllocKind::kArray, name, ast_.Get(callee).span);
+    } else if (binding->type.is_valid() && types_->KindOf(binding->type) == TypeKind::kFunction && types_->KindOf(types_->ElementOf(binding->type)) == TypeKind::kString) {
+      NoteAllocation(AllocKind::kText, name, ast_.Get(callee).span);
+    }
   }
   if (binding->is_task && call != started_) {
     std::string message = "`";
@@ -3965,6 +3998,12 @@ void Checker::CheckForeignType(TypeId type, SourceSpan span, bool is_result) {
 void Checker::CheckFunction(const Item& item, uint32_t owner) {
   PushScope();
 
+  const bool framed = owner != Binding::kNoItem;
+  if (framed) {
+    alloc_open_.emplace_back();
+    alloc_open_.back().item = owner;
+  }
+
   const size_t pushed = PushGenerics(item, owner);
   // A method of an `extern class` with no body is the host's, like an
   // `extern` function; one an `extend` gives a body is Wolang's.
@@ -4024,6 +4063,12 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
     const std::span<const Symbol> path = ast_.Get(ast_.Get(effect).path);
     caller_unsafe_ |= !path.empty() &&
                       interner_->Text(path.back()) == "unsafe";
+    if (!path.empty() && !resolution_->FindEffect(path.back(), *interner_).is_valid()) {
+      std::string message = "`";
+      message.append(interner_->Text(path.back()));
+      message.append("` is not an effect");
+      Report(kUnknownEffect, std::move(message), ast_.Get(effect).span, interner_->Text(path.back()) == "alloc" ? "`alloc` is no longer an effect: `@Hot` works out what allocates (D237)" : "`uses` takes `io`, `rand`, `time`, `net`, `gpu`, `unsafe`, `panic` or an `effect` you declared");
+    }
   }
   const bool previous_deinit = in_deinit_;
   in_deinit_ = item.kind == ItemKind::kDeinit;
@@ -4101,6 +4146,10 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   in_task_ = previous_task;
   caller_unsafe_ = previous_unsafe;
   in_deinit_ = previous_deinit;
+  if (framed) {
+    result_.allocation.push_back(std::move(alloc_open_.back()));
+    alloc_open_.pop_back();
+  }
   resolver_.PopTypeParameters(pushed);
   PopScope();
 }

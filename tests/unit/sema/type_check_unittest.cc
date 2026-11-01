@@ -2934,5 +2934,12 @@ WOLANG_TEST(TypeCheck, APayloadBindsInAMatchArm) {
   WOLANG_EXPECT_EQ(f.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheck, UsesNamesAnEffect) {
+  WOLANG_EXPECT(Fixture("fun F() uses alloc {}").HasCode("E0158"));
+  WOLANG_EXPECT(Fixture("fun F() uses Nope {}").HasCode("E0158"));
+  WOLANG_EXPECT(!Fixture("fun F() uses io {}").HasCode("E0158"));
+  WOLANG_EXPECT(!Fixture("effect Telemetry\nfun F() uses Telemetry {}").HasCode("E0158"));
+}
+
 }  // namespace
 }  // namespace wolang

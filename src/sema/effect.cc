@@ -10,9 +10,7 @@ namespace wolang {
 namespace {
 
 constexpr std::string_view kBuiltinNames[] = {
-    "alloc", "io",     "rand",  "time",
-    "net",   "gpu",    "unsafe", "panic",
-    "async",
+    "io", "rand", "time", "net", "gpu", "unsafe", "panic", "async",
 };
 
 static_assert(std::size(kBuiltinNames) ==

@@ -171,10 +171,9 @@ WOLANG_TEST(Workspace, ACapabilityGrantLimitsWhatAPackageMayDo) {
   TempTree tree("sandbox");
   tree.Write("wolang.toml",
              "[package]\nname = \"mod\"\n"
-             "[build]\ncapabilities = \"io, alloc\"\n");
+             "[build]\ncapabilities = \"io\"\n");
   tree.Write("src/main.wo",
              "fun Log() uses io {}\n"
-             "fun Grow() uses alloc {}\n"
              "fun Roll() uses rand {}\n"
              "fun Pure() -> int => 1\n");
 

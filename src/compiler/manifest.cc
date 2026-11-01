@@ -545,7 +545,9 @@ void ManifestParser::ApplyBuildField(const Field& field, Manifest* manifest) {
       while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) {
         name.remove_suffix(1);
       }
-      if (!name.empty()) {
+      if (name == "alloc") {
+        Report(kInvalidValue, "`alloc` is no longer a capability: every package allocates, and `@Hot` is what checks it (D237)", Span(field.value_offset, field.value.size()));
+      } else if (!name.empty()) {
         manifest->capabilities.emplace_back(name);
       }
       begin = end + 1;

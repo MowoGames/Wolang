@@ -576,9 +576,65 @@ WOLANG_TEST(ModuleScopeTest, AHotFunctionMayNotAllocate) {
   const ModuleId game = fixture.AddModule("game");
   const FileId main = fixture.AddFile(
       game, "main.wo",
-      "@Hot\nfun Tick() { Grow() }\nfun Grow() uses alloc {}\n");
+      "class Box {}\n@Hot\nfun Tick() { Grow() }\nfun Grow() { const b = Box() }\n");
 
-  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0702");
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0155");
+}
+
+WOLANG_TEST(ModuleScopeTest, AHotFunctionThatDoesNotAllocateIsFine) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "struct P { var x: int }\n@Hot\nfun Tick() -> int { const p = P(1)\n return p.x + 1 }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AHotPathReachesAnotherModulesMethod) {
+  Fixture fixture;
+  const ModuleId col = fixture.AddModule("col");
+  fixture.AddFile(
+      col, "col.wo",
+      "offer class Node {}\n"
+      "offer class Bag {\n"
+      "  fun Push() { const n = Node() }\n"
+      "  fun Len() -> int => 0\n"
+      "}\n");
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "need col.{Bag}\n"
+      "@Hot\nfun Tick(b: Bag) { b.Push() }\n");
+  const ModuleId calm = fixture.AddModule("calm");
+  const FileId quiet = fixture.AddFile(
+      calm, "main.wo",
+      "need col.{Bag}\n"
+      "@Hot\nfun Tick(b: Bag) -> int { return b.Len() }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0155");
+  WOLANG_EXPECT_EQ(fixture.Codes(quiet), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AHotPathMayNotFormatText) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "@Hot\nfun Tick(n: int) -> text { return \"{n}\" }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0155");
+}
+
+WOLANG_TEST(ModuleScopeTest, AHotPathMayNotTakeStorage) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(
+      game, "main.wo",
+      "unsafe fun ArrayNew<T>(count: int) -> []T\n"
+      "@Hot\nfun Tick() uses unsafe { const a = ArrayNew<int>(4) }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(main), "E0155");
 }
 
 WOLANG_TEST(ModuleScopeTest, AComptimeFunctionHasNoEffects) {

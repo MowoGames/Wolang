@@ -18,6 +18,15 @@
 
 namespace wolang {
 
+// What a body allocates by itself, for the `@Hot` check (D237).
+enum class AllocKind : uint8_t {
+  kNone,
+  kClass,
+  kArray,
+  kText,
+  kError,
+};
+
 // The type of every expression in one declaration, plus the diagnostics found
 // while working them out.
 struct TypedBody {
@@ -54,6 +63,18 @@ struct TypedBody {
     std::vector<std::pair<uint32_t, uint32_t>> callees;
   };
   std::vector<ThreadRoot> thread_roots;
+  // What one function or method allocates directly (the first site wins) and
+  // every function it names or calls, closures and local functions inside it
+  // included. `item` is its index in the item tree. Read by the program-wide
+  // allocation query, which is what `@Hot` asks (D237).
+  struct Allocation {
+    uint32_t item = 0xFFFFFFFFu;
+    AllocKind kind = AllocKind::kNone;
+    Symbol what;
+    SourceSpan span;
+    std::vector<std::pair<uint32_t, uint32_t>> callees;
+  };
+  std::vector<Allocation> allocation;
   // Expressions that were accepted as an implicit borrow: an owned
   // `String` where a `str` was wanted (D15b). Recorded because it is the
   // difference between a use that moves and a use that does not, and only

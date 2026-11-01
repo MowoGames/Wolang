@@ -211,6 +211,7 @@ constexpr std::string_view kUndeclaredEffect = "E0701";
 constexpr std::string_view kUnstatedPublicEffect = "E0704";
 constexpr std::string_view kForbiddenEffect = "E0702";
 constexpr std::string_view kUnsafeForbidden = "E0801";
+constexpr std::string_view kHotAllocates = "E0155";
 // What a function started on another thread may not reach (D232).
 constexpr std::string_view kThreadTouchesGlobal = "E0147";
 constexpr std::string_view kUngrantedCapability = "E0703";
@@ -227,6 +228,16 @@ const EffectRow* ModuleEffectRows::Find(uint32_t file, uint32_t item) const {
     }
   }
   return nullptr;
+}
+
+const ProgramAllocation::Node* ProgramAllocation::Find(uint32_t file, uint32_t item) const {
+  const auto it = std::lower_bound(nodes.begin(), nodes.end(), std::make_pair(file, item), [](const Node& node, const std::pair<uint32_t, uint32_t>& key) {
+    return node.file != key.first ? node.file < key.first : node.item < key.second;
+  });
+  if (it == nodes.end() || it->file != file || it->item != item) {
+    return nullptr;
+  }
+  return &*it;
 }
 
 Database::Database() {
@@ -1002,6 +1013,75 @@ void Database::RegisterQueries() {
         return MakeComparableResult(std::move(result));
       });
 
+  // What allocates, across the whole program: a direct site in a body, or a
+  // call to something that allocates, closed over modules. Asked only when
+  // some declaration is `@Hot`, so a program without one pays nothing (D237).
+  engine_.Register(
+      QueryKind::kAllocation,
+      [this](QueryEngine& db, uint32_t) -> QueryResult {
+        db.Get(WorkspaceKey());
+        ProgramAllocation program;
+        std::vector<std::pair<ProgramAllocation::Node, std::vector<std::pair<uint32_t, uint32_t>>>> collected;
+
+        for (size_t m = 0; m < modules_.size(); ++m) {
+          const auto* files = db.GetAs<std::vector<FileId>>(ModuleFilesKey(ModuleId{static_cast<uint32_t>(m)}));
+          if (files == nullptr) {
+            continue;
+          }
+          for (FileId file : *files) {
+            const auto* checked = db.GetAs<CheckedFile>(TypeCheckKey(file));
+            if (checked == nullptr) {
+              continue;
+            }
+            for (const TypedBody& body : checked->items) {
+              for (const TypedBody::Allocation& found : body.allocation) {
+                ProgramAllocation::Node node;
+                node.file = file.index;
+                node.item = found.item;
+                node.kind = found.kind;
+                node.what = found.what;
+                node.span = found.span;
+                node.allocates = found.kind != AllocKind::kNone;
+                collected.emplace_back(node, found.callees);
+              }
+            }
+          }
+        }
+
+        std::sort(collected.begin(), collected.end(), [](const auto& lhs, const auto& rhs) {
+          return lhs.first.file != rhs.first.file ? lhs.first.file < rhs.first.file : lhs.first.item < rhs.first.item;
+        });
+        std::vector<std::vector<std::pair<uint32_t, uint32_t>>> edges;
+        for (auto& entry : collected) {
+          program.nodes.push_back(entry.first);
+          edges.push_back(std::move(entry.second));
+        }
+
+        bool grew = true;
+        for (size_t pass = 0; grew && pass <= program.nodes.size(); ++pass) {
+          grew = false;
+          for (size_t i = 0; i < program.nodes.size(); ++i) {
+            ProgramAllocation::Node& node = program.nodes[i];
+            if (node.allocates) {
+              continue;
+            }
+            for (const auto& [to_file, to_item] : edges[i]) {
+              const ProgramAllocation::Node* callee = program.Find(to_file, to_item);
+              if (callee == nullptr || !callee->allocates) {
+                continue;
+              }
+              node.allocates = true;
+              node.has_via = true;
+              node.via_file = to_file;
+              node.via_item = to_item;
+              grew = true;
+              break;
+            }
+          }
+        }
+        return MakeComparableResult(std::move(program));
+      });
+
   // rows -- does not depend on the module-wide answer it feeds.
   engine_.Register(
       QueryKind::kEffectDiagnostics,
@@ -1067,7 +1147,6 @@ void Database::RegisterQueries() {
           if (HasFlag(item.flags, ItemFlags::kComptime)) {
             // A `comptime` function runs inside the compiler, where none of
             // these exist.
-            add(BuiltinEffect::kAlloc);
             add(BuiltinEffect::kIo);
             add(BuiltinEffect::kRand);
             add(BuiltinEffect::kTime);
@@ -1088,10 +1167,9 @@ void Database::RegisterQueries() {
               add(BuiltinEffect::kTime);
               add(BuiltinEffect::kNet);
             } else if (name == "Hot") {
-              add(BuiltinEffect::kAlloc);
               // A hot path does not suspend: a frame that yields is a frame
-              // that missed. This is what putting `async` in the row buys --
-              // the check is the same one that catches an allocation.
+              // that missed. What it allocates is worked out separately
+              // (D237).
               add(BuiltinEffect::kAsync);
             }
           }
@@ -1345,6 +1423,90 @@ void Database::RegisterQueries() {
               .Primary(ast.Get(id).name_span,
                        "add it to the `uses` list");
         }
+
+        // `@Hot` forbids allocation, which is worked out program-wide rather
+        // than stated in a row (D237).
+        std::vector<uint32_t> hot;
+        for (uint32_t index = 0; index < tree->entries.size(); ++index) {
+          if (tree->entries[index].kind != ItemKind::kFunction) {
+            continue;
+          }
+          const ItemId id = ResolveItem(ast, index);
+          if (!ast.Contains(id)) {
+            continue;
+          }
+          for (AttributeId attribute : ast.Get(ast.Get(id).attributes)) {
+            if (interner_.Text(ast.Get(attribute).name) == "Hot") {
+              hot.push_back(index);
+              break;
+            }
+          }
+        }
+        if (!hot.empty()) {
+          const auto* program = db.GetAs<ProgramAllocation>(QueryKey{QueryKind::kAllocation, 0});
+          const auto name_of = [&](uint32_t file_index, uint32_t item_index) {
+            const auto* other = db.GetAs<ItemTree>(ItemTreeKey(FileId{file_index}));
+            if (other == nullptr || item_index >= other->entries.size()) {
+              return std::string("?");
+            }
+            const ItemTreeEntry& entry = other->entries[item_index];
+            std::string name(interner_.Text(entry.name));
+            if (entry.parent != ItemTreeEntry::kNoParent && entry.parent < other->entries.size()) {
+              name = std::string(interner_.Text(other->entries[entry.parent].name)) + "." + name;
+            }
+            return name;
+          };
+          for (uint32_t index : hot) {
+            const ProgramAllocation::Node* node = program != nullptr ? program->Find(arg, index) : nullptr;
+            if (node == nullptr || !node->allocates) {
+              continue;
+            }
+            const ItemId id = ResolveItem(ast, index);
+
+            std::string chain = "`" + name_of(node->file, node->item) + "`";
+            const ProgramAllocation::Node* last = node;
+            for (int links = 0; last->has_via && links < 6; ++links) {
+              const ProgramAllocation::Node* next = program->Find(last->via_file, last->via_item);
+              if (next == nullptr) {
+                break;
+              }
+              chain += links == 0 ? " calls `" : ", which calls `";
+              chain += name_of(next->file, next->item) + "`";
+              last = next;
+            }
+            if (last->has_via) {
+              chain += ", and so on";
+            } else {
+              switch (last->kind) {
+                case AllocKind::kClass:
+                  chain += ", which constructs `" + std::string(interner_.Text(last->what)) + "`";
+                  break;
+                case AllocKind::kArray:
+                  chain += ", which takes storage with `" + std::string(interner_.Text(last->what)) + "`";
+                  break;
+                case AllocKind::kText:
+                  chain += ", which builds text";
+                  break;
+                case AllocKind::kError:
+                  chain += ", which builds the error `" + std::string(interner_.Text(last->what)) + "`";
+                  break;
+                case AllocKind::kNone:
+                  break;
+              }
+            }
+
+            std::string message = "`";
+            message.append(interner_.Text(ast.Get(id).name));
+            message.append("` is `@Hot` and allocates");
+            auto&& builder = diagnostics.Error(kHotAllocates, std::move(message));
+            builder.Primary(ast.Get(id).name_span, "a hot path does not allocate");
+            builder.Note(std::move(chain));
+            if (last->span.is_valid() && last->span.file.index == arg) {
+              builder.Secondary(last->span, "allocates here");
+            }
+          }
+        }
+
         for (const Diagnostic& diagnostic : diagnostics.diagnostics()) {
           result.push_back(diagnostic);
         }
