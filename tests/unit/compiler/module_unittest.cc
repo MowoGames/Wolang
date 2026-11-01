@@ -311,11 +311,11 @@ WOLANG_TEST(ModuleScopeTest, AThreadReachesAGlobalThroughAMethod) {
   const ModuleId lib = fixture.AddModule("lib");
   fixture.AddFile(lib, "lib.wo", "var shared: int = 0\noffer class Counter {\n  fun Hit() {\n    shared = shared + 1\n  }\n  fun Len() -> int {\n    return 0\n  }\n}\n");
   const ModuleId app = fixture.AddModule("app");
-  const FileId shares = fixture.AddFile(app, "shares.wo", "need lib.{Counter}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go(c: Counter) {\n  Launch(|| { c.Hit() })\n}\n");
+  const FileId shares = fixture.AddFile(app, "shares.wo", "need lib.{Counter}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(|| {\n    const c = Counter()\n    c.Hit()\n  })\n}\n");
   WOLANG_EXPECT_EQ(fixture.Codes(shares), "E0147");
 
   const ModuleId app2 = fixture.AddModule("app2");
-  const FileId reads = fixture.AddFile(app2, "reads.wo", "need lib.{Counter}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go(c: Counter) {\n  Launch(|| { c.Len() })\n}\n");
+  const FileId reads = fixture.AddFile(app2, "reads.wo", "need lib.{Counter}\n@Thread\nfun Launch(body: fun()) {\n  body()\n}\nfun Go() {\n  Launch(|| {\n    const c = Counter()\n    const n = c.Len()\n  })\n}\n");
   WOLANG_EXPECT_EQ(fixture.Codes(reads), "");
 }
 
