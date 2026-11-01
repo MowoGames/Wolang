@@ -19,7 +19,8 @@ _Static_assert(offsetof(WolangValue, text) == 16, "text at 16");
 _Static_assert(offsetof(WolangValue, length) == 24, "length at 24");
 _Static_assert(sizeof(((WolangValue*)0)->kind) == 4, "kind is 32 bits");
 _Static_assert(offsetof(WolangVmOptions, size) == 0, "size first");
-_Static_assert(WOLANG_ABI_VERSION == ((1u << 16) | 2u), "ABI 1.2");
+_Static_assert(WOLANG_ABI_VERSION == ((1u << 16) | 3u), "ABI 1.3");
+_Static_assert(offsetof(WolangHostClass, size) == 0, "size first");
 
 // Called from EmbedTest so the object is linked, and so the test sees the
 // size the C compiler computed rather than the C++ one.

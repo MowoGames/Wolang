@@ -23,7 +23,7 @@ namespace codegen {
 // What `<library>_abi_version()` answers: the embedding ABI the library
 // was built to match, kept equal to WOLANG_ABI_VERSION in wolang.h by a
 // test (D241).
-inline constexpr uint32_t kLibraryAbiVersion = (1u << 16) | 2u;
+inline constexpr uint32_t kLibraryAbiVersion = (1u << 16) | 3u;
 
 // Ahead-of-time compilation: the same IR, through LLVM, into an object
 // file.

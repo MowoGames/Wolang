@@ -137,6 +137,26 @@ destroy: it reads `null` afterwards instead of a dangling pointer. An
 object passed into a call is lent for the length of it. A script cannot
 construct an `extern class` or give it fields (`E0139`).
 
+`alive` alone cannot tell an object from a new one built at the same address.
+A host that reuses addresses registers its class with a token, through the
+size-prefixed `WolangHostClass` (D254), before it loads the program:
+
+```c
+WolangHostClass actor = {0};
+actor.size = sizeof(actor);
+actor.name = "Actor";
+actor.retain = ActorRetain;
+actor.release = ActorRelease;
+actor.alive = ActorAlive;
+actor.token = ActorToken;   // uint64_t ActorToken(void* object, void* user)
+actor.user = engine;
+wolang_vm_register_class_ex(vm, &actor);
+```
+
+A `weak var` then remembers the token the object had when it was stored, and
+reads `null` when `alive` says yes but `token` answers something else. The
+token is asked only of an object `alive` says is there.
+
 ## The ABI keeps its shape
 
 `wolang.h` defines `WOLANG_ABI_VERSION` (major in the high 16 bits, minor in

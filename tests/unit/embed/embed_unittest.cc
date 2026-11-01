@@ -116,6 +116,7 @@ struct FakeActor {
   int32_t Health = 100;
   int32_t References = 0;
   bool Alive = true;
+  uint64_t Serial = 1;
 };
 
 static void FakeRetain(void* object, void* user) {
@@ -132,12 +133,102 @@ static int32_t FakeAlive(void* object, void* user) {
   return static_cast<FakeActor*>(object)->Alive ? 1 : 0;
 }
 
+static uint64_t FakeToken(void* object, void* user) {
+  return static_cast<FakeActor*>(object)->Serial;
+}
+
 static int32_t Actor_Health(void* actor) {
   return static_cast<FakeActor*>(actor)->Health;
 }
 
 static void Actor_Hurt(void* actor, int32_t amount) {
   static_cast<FakeActor*>(actor)->Health -= amount;
+}
+
+static const char* const kWatchSource = R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+class Tracker {
+  weak var seen: Actor? = null
+}
+
+var tracker: Tracker = Tracker(null)
+
+weak var global_seen: Actor? = null
+
+offer fun Watch(pawn: Actor) {
+  tracker.seen = pawn
+  global_seen = pawn
+}
+
+offer fun FieldSees() -> bool {
+  return tracker.seen != null
+}
+
+offer fun GlobalSees() -> bool {
+  return global_seen != null
+}
+)";
+
+static void CheckAReusedAddress(bool with_token) {
+  WolangVm* vm = wolang_vm_create();
+  int32_t calls = 0;
+  WolangHostClass host;
+  std::memset(&host, 0, sizeof(host));
+  host.size = sizeof(host);
+  host.name = "Actor";
+  host.retain = &FakeRetain;
+  host.release = &FakeRelease;
+  host.alive = &FakeAlive;
+  host.token = with_token ? &FakeToken : nullptr;
+  host.user = &calls;
+  WOLANG_EXPECT_EQ(wolang_vm_register_class_ex(vm, &host), kWolangOk);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "reused.wo", kWatchSource), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  FakeActor actor;
+  WolangValue argument = wolang_handle(&actor);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Watch", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "FieldSees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 1);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "GlobalSees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 1);
+
+  actor.Serial += 1;
+  const int32_t expected = with_token ? 0 : 1;
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "FieldSees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, expected);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "GlobalSees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, expected);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+
+  actor.Alive = false;
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "FieldSees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 0);
+  wolang_vm_destroy(vm);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+}
+
+WOLANG_TEST(EmbedTest, ATokenTellsAReusedAddressFromTheObjectBefore) {
+  CheckAReusedAddress(true);
+}
+
+WOLANG_TEST(EmbedTest, WithoutATokenAReusedAddressLooksAlive) {
+  CheckAReusedAddress(false);
+}
+
+WOLANG_TEST(EmbedTest, AHostClassStructMustSayItsSize) {
+  WolangVm* vm = wolang_vm_create();
+  WolangHostClass host;
+  std::memset(&host, 0, sizeof(host));
+  host.name = "Actor";
+  WOLANG_EXPECT_EQ(wolang_vm_register_class_ex(vm, &host), kWolangError);
+  host.size = sizeof(host);
+  WOLANG_EXPECT_EQ(wolang_vm_register_class_ex(vm, &host), kWolangOk);
+  wolang_vm_destroy(vm);
 }
 
 WOLANG_TEST(EmbedTest, AModuleLevelWeakVarDoesNotKeepAHostObject) {

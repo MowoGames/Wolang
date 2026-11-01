@@ -24,6 +24,9 @@ inline uint64_t HostTag(std::string_view name) {
 using HostRetain = void (*)(void* object, void* user);
 using HostRelease = void (*)(void* object, void* user);
 using HostAlive = int32_t (*)(void* object, void* user);
+// A number that tells two objects apart that lived at the same address, one
+// after the other; asked only of an object |HostAlive| says is there (D254).
+using HostToken = uint64_t (*)(void* object, void* user);
 
 extern "C" {
 
@@ -34,6 +37,18 @@ void wolang_host_retain(uint64_t tag, void* object);
 void wolang_host_release(uint64_t tag, void* object);
 // 1 and a reference taken when the object is still there, 0 when it is not.
 int32_t wolang_host_upgrade(uint64_t tag, void* object);
+
+// A class that gives its objects a token (D254). Registered before any weak
+// reference to one is made: what a weak slot holds depends on it.
+void wolang_host_register_token(uint64_t tag, HostToken token);
+// What a weak slot holds for |object|: the object itself when the class has no
+// token, a small cell remembering the object and its token when it has.
+uint64_t wolang_host_weak_make(uint64_t tag, uint64_t object);
+// The object a weak slot refers to, with a reference taken, or 0 when it is
+// gone or its address belongs to another object now.
+uint64_t wolang_host_weak_upgrade(uint64_t tag, uint64_t slot);
+// Gives back what |wolang_host_weak_make| made.
+void wolang_host_weak_free(uint64_t tag, uint64_t slot);
 
 }  // extern "C"
 

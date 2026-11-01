@@ -323,6 +323,9 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_host_retain", reinterpret_cast<void*>(&wolang_host_retain)},
       {"wolang_host_release", reinterpret_cast<void*>(&wolang_host_release)},
       {"wolang_host_upgrade", reinterpret_cast<void*>(&wolang_host_upgrade)},
+      {"wolang_host_weak_make", reinterpret_cast<void*>(&wolang_host_weak_make)},
+      {"wolang_host_weak_upgrade", reinterpret_cast<void*>(&wolang_host_weak_upgrade)},
+      {"wolang_host_weak_free", reinterpret_cast<void*>(&wolang_host_weak_free)},
   };
   for (const BuiltinEntry& entry : kTable) {
     if (entry.name == name) {

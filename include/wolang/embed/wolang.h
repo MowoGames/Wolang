@@ -30,7 +30,7 @@ extern "C" {
 // the low. A host compares it with `wolang_abi_version()` at load, since
 // the library it links may not be the one it compiled against (D241). A
 // different major is a different ABI; a larger minor only adds.
-#define WOLANG_ABI_VERSION ((1u << 16) | 2u)
+#define WOLANG_ABI_VERSION ((1u << 16) | 3u)
 
 uint32_t wolang_abi_version(void);
 
@@ -239,6 +239,27 @@ WolangStatus wolang_vm_register_class(WolangVm* vm,
                                  WolangHostRelease release,
                                  WolangHostAlive alive,
                                  void* user);
+
+// A host class with a token, for a weak reference that survives the address
+// being reused (D254). |size| is `sizeof(WolangHostClass)`, so a struct that
+// grows later is still read correctly. |token| may be null, and then a weak
+// reference behaves as `wolang_vm_register_class` makes it.
+//
+// |token| answers a number that tells two objects apart that lived at the
+// same address one after the other: an index and a serial, say. It is asked
+// only of an object |alive| says is there. Register the class before the
+// program is loaded: what a weak slot holds depends on it. Added in ABI 1.3.
+typedef uint64_t (*WolangHostToken)(void* object, void* user);
+typedef struct WolangHostClass {
+  uint32_t size;
+  const char* name;
+  WolangHostRetain retain;
+  WolangHostRelease release;
+  WolangHostAlive alive;
+  WolangHostToken token;
+  void* user;
+} WolangHostClass;
+WolangStatus wolang_vm_register_class_ex(WolangVm* vm, const WolangHostClass* host_class);
 
 // The arguments the program sees in `std.env.Args`.
 void wolang_vm_set_args(WolangVm* vm, int32_t count, const char* const* args);

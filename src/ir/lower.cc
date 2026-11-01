@@ -895,7 +895,7 @@ class Lowerer {
       const InstId value = Coerce(given, ValueType(given), field_type);
       const InstId address = builder_->FieldAddress(
           types_->Pointer(field_type, /*is_mutable=*/true), object, index);
-      builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+      builder_->Add(Opcode::kStore, TypeId{}, {address, IsWeakField(type, index) ? WeakStored(value, field_type) : value});
       if (IsWeakField(type, index)) {
         WeakRetainValue(value, field_type);
         if (IsFreshHandle(value)) {
@@ -2710,20 +2710,46 @@ class Lowerer {
     return builder_->Call(callee, result, {AsDeclared(callee, 0, handle)});
   }
 
+  bool IsWeakForeign(TypeId optional) {
+    return types_->IsForeignClass(types_->ElementOf(Erase(optional)));
+  }
+
   // A weak reference to a host object costs the host nothing: whether it
-  // is still there is asked when it is read.
+  // is still there is asked when it is read. What the slot holds is made by
+  // |WeakStored|, so there is nothing to count here (D254).
   void WeakRetainValue(InstId value, TypeId optional) {
-    if (types_->IsForeignClass(types_->ElementOf(Erase(optional)))) {
+    if (IsWeakForeign(optional)) {
       return;
     }
     OnSome(value, optional, [&](InstId inner) { CallObjectRuntime("wolang_object_weak_retain", inner, types_->void_type()); });
   }
 
   void WeakReleaseValue(InstId value, TypeId optional) {
-    if (types_->IsForeignClass(types_->ElementOf(Erase(optional)))) {
+    if (IsWeakForeign(optional)) {
+      const TypeId held = types_->ElementOf(Erase(optional));
+      OnSome(value, optional, [&](InstId inner) { CallHostRuntime("wolang_host_weak_free", held, inner, types_->void_type()); });
       return;
     }
     OnSome(value, optional, [&](InstId inner) { CallObjectRuntime("wolang_object_weak_release", inner, types_->void_type()); });
+  }
+
+  // What a weak slot holds for |value|. A script object is stored as it is.
+  // A host object is stored as what the host's token makes of it, so that a
+  // new object at the same address is not taken for the old one (D254).
+  InstId WeakStored(InstId value, TypeId optional) {
+    if (!IsWeakForeign(optional)) {
+      return value;
+    }
+    const TypeId erased = Erase(optional);
+    const TypeId held = types_->ElementOf(erased);
+    const InstId slot = builder_->Add(Opcode::kAlloca, erased);
+    builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->ConstNull(erased)});
+    OnSome(value, optional, [&](InstId inner) {
+      const InstId cell = CallHostRuntime("wolang_host_weak_make", held, inner, types_->u64());
+      const InstId bits = builder_->Add(Opcode::kCast, Erase(held), {cell});
+      builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->Add(Opcode::kOptionalWrap, erased, {bits})});
+    });
+    return builder_->Add(Opcode::kLoad, erased, {slot});
   }
 
   // What a weak field holds, as a strong reference when the object is
@@ -2734,13 +2760,24 @@ class Lowerer {
     builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->ConstNull(optional)});
     OnSome(value, optional, [&](InstId inner) {
       const TypeId held = types_->ElementOf(Erase(optional));
-      const InstId alive = types_->IsForeignClass(held) ? CallHostRuntime("wolang_host_upgrade", held, inner, s32) : CallObjectRuntime("wolang_object_upgrade", inner, s32);
-      const InstId yes = builder_->Add(Opcode::kNe, types_->bool_type(), {alive, builder_->ConstInt(s32, 0)});
+      const bool foreign = types_->IsForeignClass(held);
+      InstId object = inner;
+      InstId yes;
+      if (foreign) {
+        const TypeId word = types_->u64();
+        const InstId found = CallHostRuntime("wolang_host_weak_upgrade", held, inner, word);
+        yes = builder_->Add(Opcode::kNe, types_->bool_type(), {found, builder_->ConstInt(word, 0)});
+        object = builder_->Add(Opcode::kCast, Erase(held), {found});
+      }
+      else {
+        const InstId alive = CallObjectRuntime("wolang_object_upgrade", inner, s32);
+        yes = builder_->Add(Opcode::kNe, types_->bool_type(), {alive, builder_->ConstInt(s32, 0)});
+      }
       const BlockId keep = builder_->AddBlock("upgrade.alive");
       const BlockId after = builder_->AddBlock("upgrade.after");
       builder_->Branch(yes, keep, after);
       builder_->SetCurrent(keep);
-      builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->Add(Opcode::kOptionalWrap, optional, {inner})});
+      builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->Add(Opcode::kOptionalWrap, optional, {object})});
       builder_->Jump(after, {});
       builder_->SetCurrent(after);
     });
@@ -4551,7 +4588,7 @@ class Lowerer {
       builder.Mutable(address).payload.integer = global.token;
       const InstId value =
           builder.Call(global.initializer, global.type, {});
-      builder.Add(Opcode::kStore, TypeId{}, {address, value});
+      builder.Add(Opcode::kStore, TypeId{}, {address, global.weak ? WeakStored(value, global.type) : value});
       if (global.weak) {
         // The initializer answers a strong reference; the global keeps only
         // the weak count, so the strong one is let go (D253).
@@ -5302,7 +5339,7 @@ class Lowerer {
 
     if (IsWeakPlace(place)) {
       const InstId old = builder_->Add(Opcode::kLoad, stored, {address});
-      builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+      builder_->Add(Opcode::kStore, TypeId{}, {address, WeakStored(value, stored)});
       InvalidateDerived(place);
       WeakRetainValue(value, stored);
       WeakReleaseValue(old, stored);

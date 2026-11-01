@@ -659,6 +659,22 @@ WolangStatus wolang_vm_register_class(WolangVm* vm, const char* name, WolangHost
   return kWolangOk;
 }
 
+WolangStatus wolang_vm_register_class_ex(WolangVm* vm, const WolangHostClass* host_class) {
+  if (vm == nullptr || host_class == nullptr || host_class->name == nullptr || host_class->size < offsetof(WolangHostClass, user) + sizeof(void*)) {
+    return kWolangError;
+  }
+  const VmTurn turn(vm);
+  wolang::runtime::SpaceClass entry;
+  entry.Tag = wolang::runtime::HostTag(host_class->name);
+  entry.Retain = host_class->retain;
+  entry.Release = host_class->release;
+  entry.Alive = host_class->alive;
+  entry.Token = host_class->token;
+  entry.User = host_class->user;
+  wolang::runtime::SpaceRegisterClass(vm->globals.get(), entry);
+  return kWolangOk;
+}
+
 WolangVm* wolang_vm_create(void) {
   return new WolangVm();
 }
@@ -2130,8 +2146,12 @@ static void LetGo(WolangVm* vm, TypeId type, void* storage, bool weak = false) {
     return;
   }
   if (types.IsForeignClass(held)) {
-    if (!weak) {
-      wolang::runtime::wolang_host_release(wolang::runtime::HostTag(types.Describe(vm->database.interner(), held)), object);
+    const uint64_t tag = wolang::runtime::HostTag(types.Describe(vm->database.interner(), held));
+    if (weak) {
+      wolang::runtime::wolang_host_weak_free(tag, reinterpret_cast<uint64_t>(object));
+    }
+    else {
+      wolang::runtime::wolang_host_release(tag, object);
     }
     return;
   }

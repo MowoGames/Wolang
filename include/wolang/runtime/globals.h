@@ -50,6 +50,7 @@ struct SpaceClass {
   HostRelease Release = nullptr;
   HostAlive Alive = nullptr;
   void* User = nullptr;
+  HostToken Token = nullptr;
 };
 
 using SpaceWriteHook = int64_t (*)(void* user, int32_t fd, const uint8_t* bytes, uint64_t count);
