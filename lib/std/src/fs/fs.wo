@@ -100,7 +100,7 @@ offer fun WriteAll(path: text, bytes: []u8) -> bool uses io, unsafe {
 
 // A view of the first `length` bytes of `buffer`. A slice of a slice,
 // which is a language construct and allocates nothing.
-fun BytesOf(buffer: []u8, length: int) -> []u8 {
+fun BytesOf(buffer: []mut u8, length: int) -> []mut u8 {
   if length <= 0 {
     return buffer[0..0]
   }

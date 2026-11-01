@@ -6,7 +6,7 @@
 // (D91). Written in Wolang over `ArrayNew` and `Free`, which is what the
 // generics and destructors were for.
 
-need std.mem.{ArrayNew, Free, Prefix}
+need std.mem.{ArrayNew, Free, PrefixMut}
 need std.iter.{Iterable, Iterator}
 
 /// A sequence that grows.
