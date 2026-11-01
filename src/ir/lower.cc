@@ -85,6 +85,9 @@ class Lowerer {
     // (D138).
     std::vector<Symbol> captures;
     TypeId environment;
+    // Where the captures start in the environment: after the drop address
+    // an escaping closure keeps first (D240).
+    uint32_t first_field = 0;
   };
 
 
@@ -2440,6 +2443,10 @@ class Lowerer {
       return;
     }
     const TypeId type = Erase(raw);
+    if (IsKeptFunction(type)) {
+      ReleaseEnvironment(builder_->Extract(types_->u64(), value, 1));
+      return;
+    }
     if (HoldsCounted(type) || HoldsOwned(type)) {
       builder_->Call(ValueDropFor(type), types_->void_type(), {value});
       return;
@@ -2739,9 +2746,48 @@ class Lowerer {
     return types_->KindOf(held) == TypeKind::kOptional && Counts(types_->ElementOf(held));
   }
 
+  // A function value that may be stored: its second word is an environment
+  // that is either absent or a counted object (D240).
+  bool IsKeptFunction(TypeId raw) {
+    const TypeId held = Erase(Apply(raw));
+    return held.is_valid() && types_->KindOf(held) == TypeKind::kFunction && types_->Get(held).is_kept;
+  }
+
   // Whether a value of |raw| carries a reference that is counted.
   bool Counts(TypeId raw) {
-    return raw.is_valid() && (IsCountedHandle(raw) || IsOptionalHandle(raw) || IsFallibleCounted(raw) || HoldsCounted(raw));
+    return raw.is_valid() && (IsCountedHandle(raw) || IsKeptFunction(raw) || IsOptionalHandle(raw) || IsFallibleCounted(raw) || HoldsCounted(raw));
+  }
+
+  void RetainEnvironment(InstId environment) {
+    const Symbol name = interner_->Intern("wolang_object_retain");
+    const uint32_t retain = DeclareExternal(name, types_->Function({types_->u64()}, types_->void_type()));
+    module_->functions[retain].foreign_symbol = name;
+    builder_->Call(retain, types_->void_type(), {AsDeclared(retain, 0, environment)});
+  }
+
+  // One reference to an environment goes. The last one runs the drop whose
+  // address the environment keeps in its first field, which lets go of what
+  // the closure captured and gives the storage back (D240).
+  void ReleaseEnvironment(InstId environment) {
+    const TypeId i32 = types_->Int(IntWidth::k32, /*is_signed=*/true);
+    const Symbol released = interner_->Intern("wolang_object_release");
+    const uint32_t release = DeclareExternal(released, types_->Function({types_->u64()}, i32));
+    module_->functions[release].foreign_symbol = released;
+    const InstId last = builder_->Call(release, i32, {AsDeclared(release, 0, environment)});
+    const InstId gone = builder_->Add(Opcode::kNe, types_->bool_type(), {last, builder_->ConstInt(i32, 0)});
+    const BlockId destroy = builder_->AddBlock("env.last");
+    const BlockId after = builder_->AddBlock("env.after");
+    builder_->Branch(gone, destroy, after);
+
+    builder_->SetCurrent(destroy);
+    const TypeId header = types_->Tuple({types_->u64()});
+    const TypeId pointer = types_->Pointer(header, /*is_mutable=*/true);
+    const InstId opened = builder_->Add(Opcode::kCast, pointer, {environment});
+    const InstId field = builder_->FieldAddress(types_->Pointer(types_->u64(), /*is_mutable=*/true), opened, 0);
+    const InstId code = builder_->Add(Opcode::kLoad, types_->u64(), {field});
+    builder_->Add(Opcode::kCallIndirect, types_->void_type(), {code, environment});
+    builder_->Jump(after, {});
+    builder_->SetCurrent(after);
   }
 
   // The boxes of the errors with data a `T!` can hold, in the order of its
@@ -3079,6 +3125,10 @@ class Lowerer {
     if (!value.is_valid() || !Counts(raw)) {
       return;
     }
+    if (IsKeptFunction(raw)) {
+      RetainEnvironment(builder_->Extract(types_->u64(), value, 1));
+      return;
+    }
     if (IsOptionalHandle(raw)) {
       const TypeId optional = Erase(raw);
       OnSome(value, optional, [&](InstId inner) { RetainValue(inner, types_->ElementOf(optional)); });
@@ -3173,6 +3223,10 @@ class Lowerer {
     // is a crash (D193).
     const TypeId held = Erase(raw);
     const TypeKind kind = types_->KindOf(held);
+    if (IsKeptFunction(held)) {
+      RetainEnvironment(builder_->Extract(types_->u64(), value, 1));
+      return;
+    }
     if (kind != TypeKind::kNamed && kind != TypeKind::kInstance) {
       return;
     }
@@ -7324,6 +7378,7 @@ class Lowerer {
     // function being lowered, by the names the checker recorded (D138).
     std::vector<Symbol> captures;
     std::vector<TypeId> captured_types;
+    std::vector<TypeId> captured_raw;
     std::vector<InstId> captured_values;
     for (const Symbol captured : typed().CapturesOf(id)) {
       const Local* local = Find(captured);
@@ -7340,8 +7395,10 @@ class Lowerer {
       }
       captures.push_back(captured);
       captured_types.push_back(held);
+      captured_raw.push_back(local->type);
       captured_values.push_back(value);
     }
+    const bool escaping = !captures.empty() && typed().IsEscaping(id);
 
     std::string name = "closure$";
     name.append(std::to_string(closure_serial_++));
@@ -7355,7 +7412,12 @@ class Lowerer {
     // the value (D138).
     TypeId environment;
     if (!captures.empty()) {
-      environment = types_->Tuple(captured_types);
+      std::vector<TypeId> held_types;
+      if (escaping) {
+        held_types.push_back(types_->u64());
+      }
+      held_types.insert(held_types.end(), captured_types.begin(), captured_types.end());
+      environment = types_->Tuple(held_types);
       std::vector<TypeId> params;
       params.push_back(types_->Pointer(environment, /*is_mutable=*/true));
       for (const TypeId held : types_->ArgumentsOf(signature)) {
@@ -7373,6 +7435,9 @@ class Lowerer {
 
     closures_.push_back(PendingClosure{id, index, substitution_, self_type_,
                                        here_, captures, environment});
+    if (escaping) {
+      closures_.back().first_field = 1;
+    }
 
     // The value is the pair every function value is: the code, and what
     // it closed over. A closure that captures nothing closed over
@@ -7382,6 +7447,32 @@ class Lowerer {
     const InstId code = builder_->Add(Opcode::kFuncAddress, types_->u64());
     builder_->Mutable(code).payload.callee = index;
     InstId closed = builder_->ConstInt(types_->u64(), 0);
+    if (escaping) {
+      const uint32_t drop = EnvironmentDrop(name, environment, captured_raw);
+      const InstId storage = builder_->Add(Opcode::kNew, types_->Pointer(environment, /*is_mutable=*/true));
+      const InstId drop_code = builder_->Add(Opcode::kFuncAddress, types_->u64());
+      builder_->Mutable(drop_code).payload.callee = drop;
+      builder_->Add(Opcode::kStore, TypeId{}, {builder_->FieldAddress(types_->Pointer(types_->u64(), /*is_mutable=*/true), storage, 0), drop_code});
+      for (size_t i = 0; i < captured_values.size(); ++i) {
+        InstId kept = captured_values[i];
+        const TypeId raw = captured_raw[i];
+        if (types_->KindOf(raw) == TypeKind::kString) {
+          kept = ConcatText(kept, builder_->ConstString(types_->str(), std::string()));
+        } else if (Owns(raw)) {
+          if (const InstId flag = FlagOf(captures[i]); flag.is_valid()) {
+            builder_->Add(Opcode::kStore, TypeId{}, {flag, builder_->ConstBool(false)});
+          }
+        } else if (Counts(raw)) {
+          RetainValue(kept, raw);
+        }
+        const InstId field = builder_->FieldAddress(types_->Pointer(captured_types[i], /*is_mutable=*/true), storage, static_cast<uint32_t>(i + 1));
+        builder_->Add(Opcode::kStore, TypeId{}, {field, kept});
+      }
+      closed = builder_->Add(Opcode::kCast, types_->u64(), {storage});
+      const InstId made = builder_->Add(Opcode::kMakeStruct, signature, {code, closed});
+      m_Fresh.emplace_back(current_function_, made);
+      return made;
+    }
     if (!captures.empty()) {
       // On the heap rather than in the frame: the environment's *address*
       // is what travels, and a frame slot has no address in the
@@ -7408,6 +7499,43 @@ class Lowerer {
       FreeAtScopeExit(storage);
     }
     return builder_->Add(Opcode::kMakeStruct, signature, {code, closed});
+  }
+
+  // `closure$N$drop`: what the last release of an escaping closure's
+  // environment runs. It lets go of each capture and gives the storage back
+  // (D240).
+  uint32_t EnvironmentDrop(const std::string& closure, TypeId environment, const std::vector<TypeId>& raw_types) {
+    Function drop;
+    drop.name = interner_->Intern(closure + "$drop");
+    const TypeId pointer = types_->Pointer(environment, /*is_mutable=*/true);
+    drop.type = types_->Function({pointer}, types_->void_type());
+    const auto index = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(drop));
+
+    Builder builder(module_, FunctionId{index});
+    builder.types = types_;
+    Builder* const outer = builder_;
+    const uint32_t outer_function = current_function_;
+    builder_ = &builder;
+    current_function_ = index;
+
+    const BlockId entry = builder.AddBlock("entry");
+    builder.SetCurrent(entry);
+    const InstId self = builder.AddParam(entry, pointer);
+    const std::vector<TypeId> inside = types_->ArgumentsOf(environment);
+    for (size_t i = 0; i < raw_types.size() && i + 1 < inside.size(); ++i) {
+      if (!Releases(raw_types[i])) {
+        continue;
+      }
+      const InstId address = builder.FieldAddress(types_->Pointer(inside[i + 1], /*is_mutable=*/true), self, static_cast<uint32_t>(i + 1));
+      Destroy(builder.Add(Opcode::kLoad, inside[i + 1], {address}), raw_types[i]);
+    }
+    FreeObject(self);
+    builder.ReturnVoid();
+
+    builder_ = outer;
+    current_function_ = outer_function;
+    return index;
   }
 
   // The body of one, as an ordinary function of its parameters.
@@ -7448,15 +7576,17 @@ class Lowerer {
         const InstId held = builder.AddParam(entry, params.front());
         const std::vector<TypeId> inside =
             types_->ArgumentsOf(work.environment);
-        for (size_t i = 0; i < work.captures.size() && i < inside.size();
+        for (size_t i = 0; i < work.captures.size() &&
+                           i + work.first_field < inside.size();
              ++i) {
+          const size_t at = i + work.first_field;
           const InstId field = builder.FieldAddress(
-              types_->Pointer(inside[i], /*is_mutable=*/true), held,
-              static_cast<uint32_t>(i));
+              types_->Pointer(inside[at], /*is_mutable=*/true), held,
+              static_cast<uint32_t>(at));
           const InstId value =
-              builder.Add(Opcode::kLoad, inside[i], {field});
+              builder.Add(Opcode::kLoad, inside[at], {field});
           PushLocal(
-              Local{work.captures[i], InstId{}, value, inside[i]});
+              Local{work.captures[i], InstId{}, value, inside[at]});
         }
         params.erase(params.begin());
       }

@@ -195,6 +195,43 @@ fun main() uses unsafe {
   WOLANG_EXPECT_EQ(program.Output(), "exit 30");
 }
 
+WOLANG_TEST(AotTest, AnEscapingClosureOwnsWhatItCaptured) {
+  if (!Links()) {
+    return;
+  }
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+var drops: int = 0
+
+class Cell {
+  var n: int = 0
+  fun Bump() -> int {
+    n = n + 1
+    return n
+  }
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Make() -> fun() -> int {
+  const cell = Cell(0)
+  return || cell.Bump()
+}
+
+fun main() uses unsafe {
+  var total = 0
+  {
+    const counter = Make()
+    total = counter() * 10 + counter()
+  }
+  exit((total * 10 + drops) as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 121");
+}
+
 WOLANG_TEST(AotTest, PayloadErrorsAgree) {
   if (!Links()) {
     return;

@@ -832,6 +832,149 @@ fun Probe() -> int {
   WOLANG_EXPECT_EQ(f.Run("Probe"), "44");
 }
 
+WOLANG_TEST(CodegenTest, AnEscapingClosureOwnsWhatItCaptured) {
+  // D240: a closure handed upwards owns its environment. The cell it
+  // captured lives as long as the closure does and goes with it.
+  Fixture f(R"(
+extern "C" fun wolang_objects_live() -> s64
+
+var drops: int = 0
+
+class Cell {
+  var n: int = 0
+  fun Bump() -> int {
+    n = n + 1
+    return n
+  }
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Make() -> fun() -> int {
+  const cell = Cell(0)
+  return || cell.Bump()
+}
+
+fun Run() -> int uses unsafe {
+  drops = 0
+  const before = wolang_objects_live() as int
+  var total = 0
+  {
+    const counter = Make()
+    total = counter() * 100
+    total = total + counter() * 10
+    total = total + counter()
+  }
+  return total * 10000 + drops * 100 + ((wolang_objects_live() as int) - before)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "1230100");
+}
+
+WOLANG_TEST(CodegenTest, AKeptClosureInAGlobalIsReleasedWhenReplaced) {
+  Fixture f(R"(
+var drops: int = 0
+
+class Cell {
+  var n: int = 0
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Zero() -> int => 0
+
+var saved: fun() -> int = Zero
+
+fun Constant(k: int) -> fun() -> int {
+  const cell = Cell(k)
+  return || cell.n
+}
+
+fun Run() -> int {
+  drops = 0
+  var total = 0
+  for i in 1..4 {
+    saved = Constant(i * 10)
+    total = total + saved()
+  }
+  saved = Zero
+  return total * 100 + drops
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "6003");
+}
+
+WOLANG_TEST(CodegenTest, ClosuresMadeInALoopKeepTheirOwnCaptures) {
+  Fixture f(R"(
+class Box {
+  var held: fun() -> int
+}
+
+fun Constant(k: int) -> fun() -> int {
+  return || k
+}
+
+fun Run() -> int {
+  var total = 0
+  const first = Box(Constant(1))
+  const second = Box(Constant(2))
+  for i in 0..3 {
+    const made = Box(Constant(i + 10))
+    total = total + made.held()
+  }
+  total = total + first.held() * 100 + second.held() * 1000
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "2133");
+}
+
+WOLANG_TEST(CodegenTest, AnEscapingClosureMovesAValueWithADeinit) {
+  Fixture f(R"(
+var drops: int = 0
+
+struct Res {
+  var id: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Make(id: int) -> fun() -> int {
+  const r = Res(id)
+  return || r.id
+}
+
+fun Run() -> int {
+  drops = 0
+  var held = 0
+  {
+    const g = Make(7)
+    held = drops * 10 + g()
+  }
+  return held * 10 + drops
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "71");
+}
+
+WOLANG_TEST(CodegenTest, AnEscapingClosureCopiesAnOwnedText) {
+  Fixture f(R"(
+fun Greeter(name: text) -> fun() -> int {
+  const copy = name + "!"
+  return || copy.len
+}
+
+fun Run() -> int {
+  const g = Greeter("abc")
+  return g() * 10 + g()
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "44");
+}
+
 WOLANG_TEST(CodegenTest, SaysWhatItCannotCompile) {
   // A tier that compiles what it can has to say what it did not, or "why
   // is this slow" has no answer.

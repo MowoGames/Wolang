@@ -805,6 +805,9 @@ void Database::RegisterQueries() {
           result.body.escaping.insert(result.body.escaping.end(),
                                       body.escaping.begin(),
                                       body.escaping.end());
+          result.body.captured_types.insert(result.body.captured_types.end(),
+                                            body.captured_types.begin(),
+                                            body.captured_types.end());
           result.items.push_back(std::move(body));
         }
         result.resolution = resolution;

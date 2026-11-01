@@ -413,7 +413,7 @@ class Checker {
   // Says that |closure| reads |name| from the function around it. In
   // order and without duplicates: the order is the environment's layout.
   void Capture(ExprId closure, Symbol name, TypeId type) {
-    capture_types_.push_back({closure, type});
+    result_.captured_types.push_back({closure, name, type});
     for (auto& [id, names] : result_.captures) {
       if (id != closure) {
         continue;
@@ -498,7 +498,6 @@ class Checker {
     bool judge_globals = true;
   };
   std::vector<ClosureFacts> closure_facts_;
-  std::vector<std::pair<ExprId, TypeId>> capture_types_;
   std::vector<PendingThread> pending_threads_;
   // `uses unsafe` on the declaration being checked: the caller takes
   // responsibility for what the threads share.
@@ -3666,8 +3665,8 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       if (captures && lands_kept) {
         result_.escaping.push_back(id);
         NoteAllocation(AllocKind::kClosure, Symbol{}, expr.span);
-        for (const auto& [owner, captured] : capture_types_) {
-          if (owner == id && IsFrameBound(captured)) {
+        for (const TypedBody::CapturedType& held : result_.captured_types) {
+          if (held.closure == id && IsFrameBound(held.type)) {
             Report(kFrameBoundCapture, "a closure that outlives its call cannot take a reference, a pointer, a slice or a borrowed function with it", expr.span, "copy the value out first, or pass the closure down instead");
             break;
           }

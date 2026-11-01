@@ -84,6 +84,12 @@ struct TypedBody {
   // Closures that capture and flow into a kept place: their environment is a
   // counted object on the heap rather than a slot in the frame (D240).
   std::vector<ExprId> escaping;
+  struct CapturedType {
+    ExprId closure;
+    Symbol name;
+    TypeId type;
+  };
+  std::vector<CapturedType> captured_types;
   bool IsEscaping(ExprId closure) const {
     for (const ExprId id : escaping) {
       if (id == closure) {
