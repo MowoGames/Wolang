@@ -953,7 +953,7 @@ offer fun RunServerOn(
 
 // ------------------------------------------------------------- tests ---
 
-fun Silent(request: Request) -> Response {
+fun Silent(_request: Request) -> Response {
   return Status(200, "")
 }
 
