@@ -2186,6 +2186,34 @@ fun Moved(n: int) uses io {
   WOLANG_EXPECT_EQ(f.Codes(), "E0122");
 }
 
+WOLANG_TEST(TypeCheckTest, FormattingAnOwnedTextInALoopIsABorrow) {
+  Fixture borrowed(R"(
+fun Shout(n: int) -> int {
+  const t = "value {n}"
+  var total = 0
+  for i in 0..3 {
+    const line = "{t} {i}"
+    total = total + 1
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT(!borrowed.HasCode("E0122"));
+
+  Fixture moved(R"(
+fun Shout(n: int) -> int {
+  const t = "value {n}"
+  var total = 0
+  for i in 0..3 {
+    const moved = t
+    total = total + 1
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT(moved.HasCode("E0122"));
+}
+
 WOLANG_TEST(TypeCheckTest, ABorrowDoesNotMove) {
   Fixture f(R"(
 offer fun Print(message: text) uses io

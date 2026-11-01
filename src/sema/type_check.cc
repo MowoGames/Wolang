@@ -1087,8 +1087,13 @@ TypeId Checker::CheckLiteral(const Expr& expr, TypeId expected) {
         if (piece.kind != ExprKind::kStringText) {
           // An interpolated expression can be anything that formats; its own
           // type is checked without an expectation.
-          Check(part, TypeId{});
+          const TypeId shown = Check(part, TypeId{});
           interpolated = true;
+          // Formatting reads an owned string and leaves it where it was, so
+          // the flow analysis must not take it for a move (D193).
+          if (types_->KindOf(shown) == TypeKind::kString) {
+            result_.borrows.push_back(part);
+          }
         } else {
           Record(part, types_->str());
         }
@@ -4511,6 +4516,11 @@ bool Checker::ReachesByValue(TypeId type, TypeId target, int depth) const {
 void Checker::CheckBaseChain(const Item& item, TypeId type) {
   if (!type.is_valid()) {
     return;
+  }
+  // The base was resolved once for the relations, by a resolver that records
+  // no use; naming it here is what keeps its `need` from looking unused.
+  if (item.super_type.is_valid()) {
+    resolver_.Resolve(ast_, item.super_type);
   }
   TypeId current = resolution_->BaseOf(type);
   for (size_t depth = 0; current.is_valid(); ++depth) {

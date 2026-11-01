@@ -398,6 +398,19 @@ WOLANG_TEST(ModuleScopeTest, ANameUsedInTypePositionCounts) {
   WOLANG_EXPECT_EQ(fixture.Warnings(main), "");
 }
 
+WOLANG_TEST(ModuleScopeTest, ABaseClassCountsAsUsed) {
+  Fixture fixture;
+  const ModuleId engine = fixture.AddModule("game.engine");
+  fixture.AddFile(engine, "actor.wo", "offer class Actor {}\noffer fun Spare() {}\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId main = fixture.AddFile(game, "main.wo", "need game.engine.{Actor}\nclass Pawn : Actor {}\n");
+  WOLANG_EXPECT_EQ(fixture.Warnings(main), "");
+
+  const FileId unused = fixture.AddFile(game, "other.wo", "need game.engine.{Actor, Spare}\nclass Pawn2 : Actor {}\n");
+  WOLANG_EXPECT_EQ(fixture.Warnings(unused), "W0101");
+}
+
 WOLANG_TEST(ModuleScopeTest, ABareNeedIsNeverUnused) {
   // `need a.b` brings in a whole module, so there is no one name to blame.
   Fixture fixture;
