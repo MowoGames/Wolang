@@ -2731,23 +2731,55 @@ fun Twice() -> int {
   WOLANG_EXPECT(!fine.HasCode("E0122"));
 }
 
-// `after` parsed and was then ignored, so the transition fired at once
-// (D243).
-WOLANG_TEST(TypeCheck, AfterOnATransitionIsRefused) {
+// A delay is a number of seconds that the generated `Tick(dt)` counts up
+// to (D260); one that is not a number cannot be counted to (D243).
+WOLANG_TEST(TypeCheck, AfterTakesANumberOfSeconds) {
   Fixture f(R"(
 machine Door {
   state Closed { on Interact -> Open }
-  state Open { on Interact after 3s -> Closed }
+  state Open { on Interact after "soon" -> Closed }
 }
 )");
   WOLANG_EXPECT(f.HasCode("E0159"));
   Fixture fine(R"(
 machine Door {
   state Closed { on Interact -> Open }
-  state Open { on Interact -> Closed }
+  state Open { on Interact after 3.0 -> Closed }
+}
+
+fun Run(door: Door) -> bool {
+  return door.Tick(0.5)
 }
 )");
   WOLANG_EXPECT(!fine.HasCode("E0159"));
+  WOLANG_EXPECT_EQ(fine.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, ATickOnAMachineWithoutAfterIsNotAMember) {
+  Fixture f(R"(
+machine Door {
+  state Closed { on Interact -> Open }
+  state Open { on Interact -> Closed }
+}
+
+fun Run(door: Door) -> bool {
+  return door.Tick(0.5)
+}
+)");
+  WOLANG_EXPECT(f.HasCode("E0112"));
+}
+
+WOLANG_TEST(TypeCheck, SelfIsTheMachineInItsBlocks) {
+  Fixture f(R"(
+machine Door {
+  state Closed {
+    enter { const again: Self = self }
+    on Interact -> Open
+  }
+  state Open { on Interact -> Closed }
+}
+)");
+  WOLANG_EXPECT(!f.HasCode("E0156"));
 }
 
 WOLANG_TEST(TypeCheckTest, MovingAnOwningFieldOutOfItsOwnerIsE0149) {

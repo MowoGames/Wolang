@@ -872,8 +872,16 @@ machine Door {
 ```
 
 Checked for unreachable states and for transitions that can never fire.
-`on Event after 3s -> State` is reserved for a machine that is given time by
-a generated `Tick(dt)`; it is `E0159` until then (D243).
+`on Event after 2.0 -> State` fires once the machine has been in its state for
+that many seconds. A machine with an `after` gets a generated
+`Tick(dt: float) -> bool`: it adds `dt` to the time spent in the current state
+and takes the first transition of that state whose delay has run out, through
+the same exit, state and enter steps an event takes, and says whether one
+fired. Every change of state starts the count again. The clock is the caller's:
+not calling `Tick` is a pause, and a smaller `dt` is slow motion, so no host
+hook is needed. The delay is a number of seconds (a quantity is read as its
+number); anything else is `E0159`. A machine that already has an event called
+`Tick` keeps it, and gets no clock (D260).
 
 ## 10. Reactive values — draft
 

@@ -570,6 +570,33 @@ fun main() uses io {
 
 An unreachable state is warning `W0109`.
 
+A transition can wait: `on Timeout after 2.0 -> Closed` fires once the machine
+has been in its state for two seconds. The machine is given its time by a
+generated `Tick(dt)`, so the game decides what a second is: not calling it is
+a pause, and a smaller `dt` is slow motion.
+
+```wolang
+need std.io.{Print}
+
+machine Door {
+  state Closed {
+    on Interact -> Open
+  }
+  state Open {
+    on Interact -> Closed
+    on Timeout after 2.0 -> Closed
+  }
+}
+
+fun main() uses io {
+  var door = Door()
+  const _opened = door.Interact()
+  const early = door.Tick(1.0)
+  const due = door.Tick(1.5)
+  Print("{early} {due} {door.IsClosed()}")  // false true true
+}
+```
+
 ## Memory
 
 ```wolang

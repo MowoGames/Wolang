@@ -2714,6 +2714,78 @@ fun EveryFlipFires() -> int {
   WOLANG_EXPECT_EQ(f.Run("EveryFlipFires", {}), "11");
 }
 
+WOLANG_TEST(CodegenTest, AMachineIsGivenItsTimeByTick) {
+  // `after` counts time the caller hands over: `Tick(dt)` adds to how long
+  // the machine has been in its state and takes the first transition whose
+  // delay has run out. Changing state starts the count again (D260).
+  Fixture f(R"(
+machine Door {
+  state Closed {
+    on Interact -> Open
+  }
+  state Open {
+    on Interact -> Closed
+    on Timeout after 2.0 -> Closed
+  }
+}
+
+fun One(yes: bool) -> int {
+  if yes {
+    return 1
+  }
+  return 0
+}
+
+fun NotYet() -> int {
+  const door = Door()
+  const _opened = door.Interact()
+  const early = door.Tick(1.0)
+  return One(early) * 10 + One(door.IsOpen())
+}
+
+fun WhenItsDue() -> int {
+  const door = Door()
+  const _opened = door.Interact()
+  const _first = door.Tick(1.0)
+  const due = door.Tick(1.5)
+  return One(due) * 10 + One(door.IsClosed())
+}
+
+fun ASmallStepAddsUp() -> int {
+  const door = Door()
+  const _opened = door.Interact()
+  var fired = 0
+  for _step in 0..4 {
+    if door.Tick(0.5) {
+      fired = fired + 1
+    }
+  }
+  return fired * 10 + One(door.IsClosed())
+}
+
+fun ChangingStateStartsTheCountAgain() -> int {
+  const door = Door()
+  const _opened = door.Interact()
+  const _spent = door.Tick(1.5)
+  const _closed = door.Interact()
+  const _reopened = door.Interact()
+  const early = door.Tick(1.5)
+  return One(early) * 10 + One(door.IsOpen())
+}
+
+fun ClosedHasNothingToCount() -> int {
+  const door = Door()
+  const fired = door.Tick(100.0)
+  return One(fired) * 10 + One(door.IsClosed())
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("NotYet", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("WhenItsDue", {}), "11");
+  WOLANG_EXPECT_EQ(f.Run("ASmallStepAddsUp", {}), "11");
+  WOLANG_EXPECT_EQ(f.Run("ChangingStateStartsTheCountAgain", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("ClosedHasNothingToCount", {}), "1");
+}
+
 WOLANG_TEST(CodegenTest, PassesArgumentsPastTheRegisters) {
   // Eight integer registers carry arguments on arm64 and six on x86-64,
   // and the dev tier indexed its table of them without checking -- so a

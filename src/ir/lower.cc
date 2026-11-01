@@ -1336,7 +1336,11 @@ class Lowerer {
       }
       Function function;
       function.name = MethodName(machine, member.name);
-      function.type = types_->Function({machine}, answer);
+      std::vector<TypeId> parameters = {machine};
+      if (IsMachineTick(machine, member.name)) {
+        parameters.push_back(types_->Float(FloatWidth::k32));
+      }
+      function.type = types_->Function(parameters, answer);
       function.self_type = machine;
       function.source_file = member.file;
       function.source_item = member.item;
@@ -1438,6 +1442,12 @@ class Lowerer {
     builder.SetCurrent(entry);
     self_ = builder.AddParam(entry, machine);
 
+    if (IsMachineTick(machine, method.name)) {
+      const InstId dt = builder.AddParam(entry, types_->Float(FloatWidth::k32));
+      LowerMachineTick(machine, states, dt);
+      return;
+    }
+
     const std::string_view name = interner_->Text(method.name);
     const bool predicate = name.size() > 2 && name.substr(0, 2) == "Is";
     const TypeId state_type = types_->Int(IntWidth::k32, true);
@@ -1510,6 +1520,7 @@ class Lowerer {
                   {state_address,
                    builder.ConstInt(state_type,
                                     static_cast<uint64_t>(targets[i]))});
+      ResetMachineClock(machine);
       for (uint32_t step : PathTo(states, froms[i], method.name)) {
         CallMachineBlock(machine, ast().Get(states[step]).name,
                          /*is_enter=*/true);
@@ -1528,12 +1539,126 @@ class Lowerer {
     builder_ = nullptr;
   }
 
+  // The generated `Tick(dt)` of a machine with an `after`: the time in this
+  // state goes up by |dt|, and the first transition of the current state
+  // whose delay has run out is taken, through the same exit, state and
+  // enter steps an event takes. The caller owns the clock, so a pause is
+  // not calling this and slow motion is a smaller |dt| (D260).
+  void LowerMachineTick(TypeId machine,
+                        const std::vector<StateId>& states,
+                        InstId dt) {
+    Builder& builder = *builder_;
+    PushLocal(Local{self_name_, InstId{}, self_, machine});
+
+    const TypeId seconds = types_->Float(FloatWidth::k32);
+    const TypeId state_type = types_->Int(IntWidth::k32, true);
+    const InstId clock_address = builder.FieldAddress(
+        types_->Pointer(seconds, true), self_,
+        MachineSlot(machine, MemberKind::kMachineClock));
+    const InstId elapsed =
+        builder.Add(Opcode::kLoad, seconds, {clock_address});
+    const InstId total = builder.Add(Opcode::kAdd, seconds, {elapsed, dt});
+    builder.Add(Opcode::kStore, TypeId{}, {clock_address, total});
+
+    const InstId state_address = builder.FieldAddress(
+        types_->Pointer(state_type, true), self_,
+        MachineStateIndex(machine));
+    const InstId current =
+        builder.Add(Opcode::kLoad, state_type, {state_address});
+
+    for (uint32_t i = 0; i < states.size(); ++i) {
+      const State& state = ast().Get(states[i]);
+      for (TransitionId transition_id : ast().Get(state.transitions)) {
+        if (!ast().Contains(transition_id)) {
+          continue;
+        }
+        const Transition& transition = ast().Get(transition_id);
+        if (!ast().Contains(transition.delay)) {
+          continue;
+        }
+
+        const BlockId check = builder.AddBlock("tick.check");
+        const BlockId fire = builder.AddBlock("tick.fire");
+        const BlockId next = builder.AddBlock("tick.next");
+        const InstId here = builder.Add(
+            Opcode::kEq, types_->bool_type(),
+            {current,
+             builder.ConstInt(state_type, static_cast<uint64_t>(i))});
+        builder.Branch(here, check, next);
+
+        builder.SetCurrent(check);
+        InstId limit = Value(transition.delay);
+        const TypeId found = ValueType(limit);
+        if (found.is_valid() && found != seconds) {
+          limit = builder.Add(Opcode::kCast, seconds, {limit});
+        }
+        const InstId due =
+            builder.Add(Opcode::kLe, types_->bool_type(), {limit, total});
+        builder.Branch(due, fire, next);
+
+        builder.SetCurrent(fire);
+        CallMachineBlock(machine, state.name, /*is_enter=*/false);
+        builder.Add(
+            Opcode::kStore, TypeId{},
+            {state_address,
+             builder.ConstInt(
+                 state_type,
+                 static_cast<uint64_t>(Settle(states, transition.target)))});
+        ResetMachineClock(machine);
+        for (uint32_t step : PathFrom(states, transition.target)) {
+          CallMachineBlock(machine, ast().Get(states[step]).name,
+                           /*is_enter=*/true);
+        }
+        builder.Return(builder.ConstBool(true));
+
+        builder.SetCurrent(next);
+      }
+    }
+
+    builder.Return(builder.ConstBool(false));
+    Finish();
+  }
+
+  // Only a machine that has an `after` has a clock, and only then is a
+  // method named `Tick` the generated one rather than an event (D260).
+  bool IsMachineTick(TypeId machine, Symbol name) {
+    return interner_->Text(name) == "Tick" &&
+           MachineSlot(machine, MemberKind::kMachineClock) != kNoSlot;
+  }
+
+  void ResetMachineClock(TypeId machine) {
+    const uint32_t slot = MachineSlot(machine, MemberKind::kMachineClock);
+    if (slot == kNoSlot) {
+      return;
+    }
+    const TypeId seconds = types_->Float(FloatWidth::k32);
+    const InstId address = builder_->FieldAddress(
+        types_->Pointer(seconds, true), self_, slot);
+    builder_->Add(Opcode::kStore, TypeId{},
+                  {address, builder_->ConstFloat(seconds, 0.0)});
+  }
+
+  static constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
+
+  uint32_t MachineSlot(TypeId machine, MemberKind kind) {
+    uint32_t index = 0;
+    for (const Member& member : resolution().MembersOf(machine)) {
+      if (!HasStorage(member.kind)) {
+        continue;
+      }
+      if (member.kind == kind) {
+        return index;
+      }
+      ++index;
+    }
+    return kNoSlot;
+  }
+
   // The states entered by taking |event| out of state |from|: the target,
   // and then whatever `always` leads on from it.
   std::vector<uint32_t> PathTo(const std::vector<StateId>& states,
                                uint32_t from,
                                Symbol event) {
-    std::vector<uint32_t> path;
     const State& state = ast().Get(states[from]);
     for (TransitionId transition_id : ast().Get(state.transitions)) {
       if (!ast().Contains(transition_id)) {
@@ -1543,22 +1668,29 @@ class Lowerer {
       if (transition.event != event) {
         continue;
       }
-      uint32_t at = IndexOfState(states, transition.target);
-      // `always` is followed until it stops or comes back round: a cycle
-      // of them would otherwise be a loop with no way out.
-      for (size_t guard = 0; guard <= states.size(); ++guard) {
-        if (at >= states.size() ||
-            std::find(path.begin(), path.end(), at) != path.end()) {
-          break;
-        }
-        path.push_back(at);
-        const uint32_t next = AlwaysFrom(states, at);
-        if (next == at || next >= states.size()) {
-          break;
-        }
-        at = next;
+      return PathFrom(states, transition.target);
+    }
+    return {};
+  }
+
+  // The states entered by arriving at |target|, and then whatever `always`
+  // leads on from it. `always` is followed until it stops or comes back
+  // round: a cycle of them would otherwise be a loop with no way out.
+  std::vector<uint32_t> PathFrom(const std::vector<StateId>& states,
+                                 Symbol target) {
+    std::vector<uint32_t> path;
+    uint32_t at = IndexOfState(states, target);
+    for (size_t guard = 0; guard <= states.size(); ++guard) {
+      if (at >= states.size() ||
+          std::find(path.begin(), path.end(), at) != path.end()) {
+        break;
       }
-      break;
+      path.push_back(at);
+      const uint32_t next = AlwaysFrom(states, at);
+      if (next == at || next >= states.size()) {
+        break;
+      }
+      at = next;
     }
     return path;
   }

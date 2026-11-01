@@ -31,7 +31,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0153`, `E0154` | a bodiless `uses unsafe` that should be `unsafe fun`, an `unsafe fun` that overrides or implements a safe method | D236 |
 | `E0155` | a `@Hot` function that allocates, directly or through what it calls | D237 |
 | `E0156`, `E0157` | `Self` outside a type, an ability that takes `Self` used as a value | D239 |
-| `E0159` | `after` on a machine transition | D243 |
+| `E0159` | an `after` whose delay is not a number of seconds | D243, D260 |
 | `E0160` | an `@Operator` ability that is not one operator-shaped method | D239 |
 | `E0161`, `E0162` | a borrowed function value in a place that keeps it, an escaping closure that takes a reference, pointer, slice or borrowed function | D240 |
 | `E0164` | a script class that derives from an `extern class` | D256 |
@@ -244,7 +244,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0145` | `self` stored into a field or global from its own `deinit` | `deinit { stash = self }` |
 | `E0147` | a function or closure given to a `@Thread` parameter (`Spawn`, `ParallelFor`) reads or writes a module-level `var`, directly or through a call or a method, in any module, and the caller does not state `uses unsafe`; a callee that states it stops the walk (D232, D252) | `Spawn(Work)` where `Work` pushes to a global list |
 | `E0148` | a closure that captures given to a `@Thread` parameter that has no environment to give it (`Spawn`; not `ParallelFor`), even under `uses unsafe` (D232) | `Spawn(\|\| { Print("{n}") })` |
-| `E0159` | `after <delay>` on a machine transition: it parsed and then fired at once, so it is refused until a machine has a clock (D243) | `on Interact after 3s -> Closed` |
+| `E0159` | `after <delay>` where the delay is not a number or a quantity: the generated `Tick(dt)` counts seconds up to it (D243, D260) | `on Interact after "soon" -> Closed` |
 | `E0150` | an `offer fun` whose result is a bare `T!`: a caller in another module cannot see which errors it holds, so the set is written (D235) | `offer fun F() -> int!` |
 | `E0151` | an error returned, or passed on with `?`, that the stated set does not contain; or a `?` from a bare `T!` into a stated set (D235) | `fun F() -> int!(A) { return B }` |
 | `E0152` | an error that carries data where the result is a bare `T!`, which has no room for it; name it in the set (D235) | `fun F() -> int! { return P(1) }` with `error P(x: int)` |

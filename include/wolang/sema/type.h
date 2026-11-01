@@ -108,6 +108,9 @@ enum class MemberKind : uint8_t {
   // Which state a `machine` is in: one field, written by the transitions
   // and read by the predicates.
   kMachineState,
+  // How long a machine has been in its state, in seconds, for the transitions
+  // that say `after` (D260). Written by `Tick` and by every change of state.
+  kMachineClock,
   // What a signal holds: how many handlers there are, how many it has
   // room for, and where they are. Written by the compiler, like the ready
   // bit below and for the same reason.

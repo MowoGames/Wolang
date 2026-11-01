@@ -459,6 +459,7 @@ void MachineMembers(const Ast& ast,
   // Every event mentioned by any state, once: the method is the event, and
   // which state is in is what decides what it does.
   std::vector<Symbol> events;
+  bool has_delay = false;
   for (StateId state_id : ast.Get(ast.Get(id).states)) {
     if (!ast.Contains(state_id)) {
       continue;
@@ -469,6 +470,7 @@ void MachineMembers(const Ast& ast,
         continue;
       }
       const Transition& transition = ast.Get(transition_id);
+      has_delay = has_delay || ast.Contains(transition.delay);
       if (!transition.event.is_valid()) {
         continue;  // `always`, which fires on the way in.
       }
@@ -488,6 +490,36 @@ void MachineMembers(const Ast& ast,
     method.name = event;
     method.kind = MemberKind::kMethod;
     method.type = types->Function({}, types->bool_type());
+    method.file = file_index;
+    method.item = machine;
+    method.slot = slot++;
+    method.is_public = true;
+    members->push_back(std::move(method));
+  }
+
+  // A machine with an `after` is given its time by the caller: `Tick(dt)`
+  // adds to how long it has been in this state and fires the first
+  // transition whose delay has run out. Pausing is not calling it, slow
+  // motion is scaling `dt` (D260).
+  const Symbol tick = interner->Intern("Tick");
+  if (has_delay && std::find(events.begin(), events.end(), tick) ==
+                       events.end()) {
+    const TypeId seconds = types->Float(FloatWidth::k32);
+
+    Member clock;
+    clock.name = Symbol{};
+    clock.kind = MemberKind::kMachineClock;
+    clock.type = seconds;
+    clock.file = file_index;
+    clock.item = machine;
+    clock.is_mutable = true;
+    clock.is_public = false;
+    members->push_back(std::move(clock));
+
+    Member method;
+    method.name = tick;
+    method.kind = MemberKind::kMethod;
+    method.type = types->Function({seconds}, types->bool_type());
     method.file = file_index;
     method.item = machine;
     method.slot = slot++;

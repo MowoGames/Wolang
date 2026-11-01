@@ -1829,11 +1829,16 @@ void Checker::CheckMachine(const Item& item) {
       }
       const Transition& transition = ast_.Get(transition_id);
       if (transition.delay.is_valid()) {
-        // Reserved for a machine given time by a generated `Tick(dt)`;
-        // refuse it rather than run it as if there were no delay (D243).
-        Report(kAfterNotSupported,
-               "`after` is not supported on a transition yet",
-               transition.span);
+        // A delay is a number of seconds the generated `Tick(dt)` counts
+        // up to; anything that is not a number cannot be counted to (D260).
+        const TypeId seconds = types_->Float(FloatWidth::k32);
+        const TypeId delay = Check(transition.delay, seconds);
+        if (types_->KindOf(delay) != TypeKind::kQuantity &&
+            !Accepts(seconds, delay)) {
+          Report(kAfterNotSupported,
+                 "`after` takes a number of seconds",
+                 transition.span);
+        }
       }
       bool found = false;
       for (size_t i = 0; i < states.size(); ++i) {
@@ -1873,6 +1878,11 @@ void Checker::CheckMachine(const Item& item) {
   const TypeId previous_self = self_type_;
   const Binding* binding = Lookup(item.name);
   self_type_ = binding != nullptr ? binding->type : TypeId{};
+  size_t pushed = 0;
+  if (self_name_.is_valid() && self_type_.is_valid()) {
+    resolver_.PushTypeParameter(self_name_, self_type_);
+    ++pushed;
+  }
   for (StateId state_id : states) {
     if (!ast_.Contains(state_id)) {
       continue;
@@ -1884,6 +1894,7 @@ void Checker::CheckMachine(const Item& item) {
       }
     }
   }
+  resolver_.PopTypeParameters(pushed);
   self_type_ = previous_self;
 }
 
