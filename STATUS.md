@@ -4,9 +4,9 @@
 > below; if it disagrees with the code, the code is right and this file
 > needs fixing.
 
-**Date:** 2026-10-31
+**Date:** 2026-11-01
 **Waves are closed through the 11th**; after that the work was "a complete
-language" without waves, and everything below belongs to it (D119–D248). **Released as 1.1.0.**
+language" without waves, and everything below belongs to it (D119–D264). **1.2.0 is on `feature/1.2.0`, awaiting CI on the other platforms; 1.1.0 is the last release.**
 
 ## In short
 
@@ -22,9 +22,52 @@ that they do.
 | Platforms | macOS arm64/x86-64, Linux x86-64/arm64, Windows x86-64 (clang-cl) |
 | Cross targets | `--target`: Windows COFF, Linux ELF, WebAssembly, RISC-V |
 | std | 35 modules (see [docs/stdlib.md](docs/stdlib.md)) |
-| Packages | `http` (server and client), `db` (storage), `gfx` (window/GPU/sound/gamepads), `image` (PNG/QOI/BMP), `tls`, `game`, `core` |
-| Tests | 834 unit tests + 263 library tests, a three-tier fuzzer, a check of every example in the docs |
+| Packages | `http` (server and client), `db` (storage), `gfx` (window/GPU/sound/gamepads), `image` (PNG/QOI/BMP), `tls`, `game`, `core`, `math` (vectors, matrices, quaternions) |
+| Tests | 963 unit tests + 317 library tests, a three-tier fuzzer, a check of every example in the docs |
 | Server | 53,900 requests/s on one thread, 58,900 on eight |
+
+## Done since 31.10: 1.2.0 (D235–D264)
+
+Verified on Windows x86-64 only: 963 unit tests, 317 library tests, 76 doc
+programs, `wl fuzz 200` on seeds 16586, 4242 and 11040, `wl ci`, and the
+unit suites and libraries under the `asan` preset. See
+[docs/plans/1.2.0-status.md](docs/plans/1.2.0-status.md) for what was not checked.
+
+**Language.** `int` is 64 bits (D238). `Self` and operator abilities
+(D239). Errors carry data, and a `T!(A, B)` states its set; an offered
+function must state it (D235). `unsafe fun` is the caller's promise and
+`uses unsafe` on a bodiless function is `E0153` (D236). `@Hot` checks what
+a body allocates and the `alloc` effect is gone (D237). `keep` marks a
+parameter the callee may store, and an escaping closure owns a counted
+environment (D240). `[]T` is read-only and `[]mut T` writable (D251).
+Module-level `weak var` is weak (D253). `after` works in a `machine` through
+a generated `Tick` (D260). `a?.Method()` is an optional. Qualified names work
+in patterns, as intrinsic callees and as assignment targets (D246).
+`E0147` follows calls into other modules and methods (D252). `var a: s8 =
+-128`, `"{t}"` in a loop, an alias from another package, `extend` of a
+foreign class and a false unused-import warning for a base class are fixed.
+
+**Embedding.** C ABI 1.1 to 1.3: functions are named by module (D259), a
+lone file can `need` (D259), `Print` reaches the host writer, each VM has its
+own bindings, classes and writers (D257), a failed reload keeps the old
+program (D255), a host can make and fill a script object and read the
+program's classes (D258), and a host class can give its objects a token so a
+reused address is not mistaken for the old object (D254).
+
+**Tools.** The embedding package carries no LLVM (D261). The binding
+generator binds statics, text, structs and object fields (D262). The IR has
+a typed text form and a reader (D264). `tools/selfhost/lexer` is a throwaway
+lexer for Wolang in Wolang, with the gaps it found listed in
+[docs/plans/self-hosting.md](docs/plans/self-hosting.md).
+
+**Library.** `math`: `Vec2`/`Vec3`/`Vec4`, `Mat3`/`Mat4`, `Quat` (D263).
+`std.map.IntMapNew` and `TextMapNew`, `Builder.AppendLine`, `SortBy`.
+`ServeWith` closes a connection that says nothing for `head_timeout`.
+
+**Breaking.** `int` is 64 bits; AOT objects from 1.1 do not link with 1.2;
+text hash values changed; error tags hash the qualified name; `[]T` is
+read-only; `unsafe fun` replaces a bodiless `uses unsafe`; the `alloc`
+effect is gone; `E0136` and `E0159` are retired.
 
 ## Done since 27.10: the audit and 1.1.0 (D221–D248)
 
@@ -515,43 +558,34 @@ These are the ones that shape everything else.
 
 ## Not done yet
 
-**Next: 1.2.0.** Progress is in [docs/plans/1.2.0-status.md](docs/plans/1.2.0-status.md);
-what the engine needs is in [docs/plans/engine-needs.md](docs/plans/engine-needs.md).
-Built on `feature/1.2.0`: `int` is 64 bits (D238, all three steps), `Self`
-with operator abilities (D239: `a + b` on a struct is a call to
-`std.ops.Add`, in all three tiers), and errors that carry data with stated
-sets (D235, written but not yet built or tested: see the status file).
-Not built yet, from
-[docs/plans/pre-1.0.md](docs/plans/pre-1.0.md): `unsafe fun` (D236), allocation checked by
-`@Hot` (D237), escaping closures with `keep` (D240, F1–F2; F0 is in). Then the
-libraries that need them: `math` (vectors with operators), `font`, `audio`,
-`gpu`, an immediate-mode `ui`, `app`. The plan is
-[docs/plans/1.2.0.md](docs/plans/1.2.0.md); self-hosting follows it (D250,
-[docs/plans/self-hosting.md](docs/plans/self-hosting.md)).
+**Next: self-hosting** (D250, [docs/plans/self-hosting.md](docs/plans/self-hosting.md)),
+stage by stage, and **1.3.0**. Cut from 1.2.0 on purpose: `font`, `audio`,
+`gpu`, an immediate-mode `ui` and `app`. They bind devices and platform
+services that could not be run on the machine this release was built on.
 
-Known gaps found on the way, for 1.2.0:
+From [docs/plans/engine-needs.md](docs/plans/engine-needs.md), still open:
+host-held objects do not migrate on reload (item 6): a reload that would
+change one is refused with a note instead; the engine's suggested additions
+(replication, a debug protocol, an execution budget, coroutines tied to the
+game clock, serialization, sandboxing, AOT without a system `cc`,
+published benchmarks) each need a decision first.
 
-- `var a: s8 = -128` traps "negation overflowed" in every tier (the
-  literal is negated after being read as positive).
-- `"{t}"` of an owned `Text` inside a loop is `E0122` on the second
-  iteration, though the same use in straight-line code is accepted.
-- `E0147` does not follow calls into other modules, method calls or
-  function values in variables; the interpreter runs a spawned body
-  inline, so it can never see a race (D97, D232).
-- A capturing closure passed down and stored by the callee dangles until
-  `keep` lands (F1).
-- Qualified names do not work in patterns, as intrinsic callees or as the
-  target of an assignment to another module's var (D246).
-- There is no read-only slice; `Bytes` is `unsafe` instead (D233).
-- An install built with the AOT back end names LLVM's component
-  libraries in its CMake package and its embedding library, so a host
-  linking it needs that LLVM too; the embedding package should be built
-  without it, or link LLVM privately.
-- The blocking `Serve`/`ServeWith` HTTP path has no deadline; only the
-  polled `RunServerOn` does.
-- Written but never compiled or run here: the Windows paths of UDP and
-  the new `gfx` features, the Cocoa ones, the arm64 emitter changes and
-  everything changed in `aot.cc` — CI is what runs them.
+Known gaps:
+
+- A name that is not imported, used as an error in a `match` arm, reports
+  `E0201` (not exhaustive) and not an unknown-name error.
+- A function held in a variable and handed to a `@Thread` parameter is not
+  judged by `E0147` (D252).
+- `"{MakeText()}"` leaks its temporary: a text piece is never fresh.
+- A payload error held in a `const` before it reaches a `T!` leaks its box.
+- A closure that stores itself in `self` is a cycle (D240); a kept closure
+  made inside an `arena` block must not outlive it.
+- Windows `asan` runs everything except `AotTest`, whose link step is not
+  given the sanitizer runtime (`<linker failed>`); CI runs `asan` on macOS.
+- `docs/api/*.md` still show the old signatures for `keep` and `unsafe`.
+- Written but never compiled or run here: the Windows paths of UDP and the
+  `gfx` features, the Cocoa ones, the arm64 emitter and JIT paths for 64-bit
+  `int`, and everything changed in `aot.cc`. CI is what runs them.
 
 ### Older open items
 
