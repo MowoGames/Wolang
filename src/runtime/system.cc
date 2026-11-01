@@ -3,6 +3,8 @@
 
 #include "wolang/runtime/system.h"
 
+#include "wolang/runtime/globals.h"
+
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -42,6 +44,10 @@ extern "C" int64_t wolang_fd_read(int32_t fd, uint8_t* buffer, uint64_t count) {
 }
 
 extern "C" int64_t wolang_fd_write(int32_t fd, const uint8_t* buffer, uint64_t count) {
+  if (int64_t answered = 0; (fd == 1 || fd == 2) && wolang::runtime::SpaceWrite(fd, buffer, count, &answered)) {
+    return answered;
+  }
+
   if (const WolangFdWriteHook hook = sm_FdWriteHook.load(); hook != nullptr && (fd == 1 || fd == 2)) {
     const int64_t handled = hook(sm_FdWriteUser.load(), fd, buffer, count);
     if (handled >= 0) {

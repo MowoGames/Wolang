@@ -1172,3 +1172,56 @@ WOLANG_TEST(EmbedTest, PrintFromStdReachesTheHostsWriter) {
   CheckPrintReachesTheHost(true);
   CheckPrintReachesTheHost(false);
 }
+
+namespace {
+
+int32_t test_host_triple(int32_t value) {
+  return value * 3;
+}
+
+void AppendTo(void* user, const char* bytes, uint64_t length) {
+  static_cast<std::string*>(user)->append(bytes, static_cast<size_t>(length));
+}
+
+}  // namespace
+
+WOLANG_TEST(EmbedTest, TwoVmsHaveTheirOwnBindingsAndWriters) {
+  const char* source = R"(
+need std.io
+
+extern "C" fun test_host_scale(value: s32) -> s32
+
+offer fun Scale(value: int) -> int uses unsafe {
+  return test_host_scale(value as s32) as int
+}
+
+offer fun Say() -> int uses io {
+  io.Print("hi")
+  return 1
+}
+)";
+  std::string first_out;
+  std::string second_out;
+  WolangVm* first = wolang_vm_create();
+  WolangVm* second = wolang_vm_create();
+  wolang_vm_set_writer(first, &AppendTo, &first_out);
+  wolang_vm_set_writer(second, &AppendTo, &second_out);
+  WOLANG_EXPECT_EQ(wolang_vm_bind(first, "test_host_scale", reinterpret_cast<void*>(&test_host_double)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_bind(second, "test_host_scale", reinterpret_cast<void*>(&test_host_triple)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(first, "scale.wo", source), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(second, "scale.wo", source), 0);
+
+  WolangValue argument = wolang_int(5);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(first, "Scale", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 10);
+  WOLANG_EXPECT_EQ(wolang_vm_call(second, "Scale", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 15);
+
+  WOLANG_EXPECT_EQ(wolang_vm_call(second, "Say", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(first_out, std::string());
+  WOLANG_EXPECT_EQ(second_out, std::string("hi"));
+
+  wolang_vm_destroy(first);
+  wolang_vm_destroy(second);
+}

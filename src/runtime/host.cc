@@ -7,6 +7,8 @@
 #include <mutex>
 #include <vector>
 
+#include "wolang/runtime/globals.h"
+
 namespace wolang {
 namespace runtime {
 
@@ -29,6 +31,10 @@ static std::vector<HostClass>& Classes() {
 }
 
 static HostClass FindHostClass(uint64_t tag) {
+  SpaceClass owned;
+  if (SpaceClassOf(tag, &owned)) {
+    return HostClass{owned.Tag, owned.Retain, owned.Release, owned.Alive, owned.User};
+  }
   const std::lock_guard<std::mutex> held(Lock());
   for (const HostClass& entry : Classes()) {
     if (entry.Tag == tag) {

@@ -205,6 +205,11 @@ struct WolangVm {
   uint64_t generation = 0;
   // The packages loaded as mods, and what each was granted (D217).
   std::vector<std::pair<std::string, std::vector<std::string>>> sandboxes;
+  // Where this vm's output goes when its host asked for it (D257).
+  WolangWriter writer = nullptr;
+  void* writer_user = nullptr;
+  WolangWriter reporter = nullptr;
+  void* reporter_user = nullptr;
 };
 
 namespace {
@@ -216,7 +221,7 @@ std::string DocumentationFor(WolangVm* vm, FileId file, Symbol name);
 
 // Hands |text| to the host's writer, or to standard output when there is
 // none (D140).
-void Written(const std::string& text);
+void Written(WolangVm* vm, const std::string& text);
 
 // Everything the program has to say about itself, rendered the way the
 // command-line compiler renders it.
@@ -634,7 +639,14 @@ WolangStatus wolang_vm_register_class(WolangVm* vm, const char* name, WolangHost
   if (vm == nullptr || name == nullptr) {
     return kWolangError;
   }
-  wolang::runtime::wolang_host_register(wolang::runtime::HostTag(name), retain, release, alive, user);
+  const VmTurn turn(vm);
+  wolang::runtime::SpaceClass entry;
+  entry.Tag = wolang::runtime::HostTag(name);
+  entry.Retain = retain;
+  entry.Release = release;
+  entry.Alive = alive;
+  entry.User = user;
+  wolang::runtime::SpaceRegisterClass(vm->globals.get(), entry);
   return kWolangOk;
 }
 
@@ -909,11 +921,10 @@ const char* wolang_vm_function_module(const WolangVm* vm, int32_t index) {
 
 WolangStatus wolang_vm_bind(WolangVm* vm, const char* symbol, void* function) {
   const VmTurn turn(vm);
-  (void)vm;
-  if (symbol == nullptr || function == nullptr) {
+  if (vm == nullptr || symbol == nullptr || function == nullptr) {
     return kWolangError;
   }
-  wolang::runtime::RegisterSymbol(symbol, function);
+  wolang::runtime::SpaceBindSymbol(vm->globals.get(), symbol, function);
   return kWolangOk;
 }
 
@@ -982,7 +993,7 @@ static wolang::interp::Outcome Debugged(WolangVm* vm, const Callable* entry, con
   wolang::interp::Output printed;
   const wolang::interp::Outcome outcome = wolang::interp::RunNamed(vm->database.interner(), vm->database.types(), lowered != nullptr ? lowered->unoptimized : *entry->module, entry->symbol, boxed, limits, &printed, vm->foreign.get(), &layouts, modules);
   if (!printed.text.empty()) {
-    Written(printed.text);
+    Written(vm, printed.text);
   }
   return outcome;
 }
@@ -1027,7 +1038,7 @@ static WolangStatus Invoke(WolangVm* vm, const Callable* entry, const std::vecto
         entry->symbol, boxed, limits, &printed, vm->foreign.get(),
         &layouts, vm->linked);
     if (!printed.text.empty()) {
-      Written(printed.text);
+      Written(vm, printed.text);
     }
   }
 
@@ -1659,42 +1670,28 @@ WolangStatus wolang_vm_set_global(WolangVm* vm,
 
 namespace {
 
-// Where a program's output goes when a host asked for it.
-WolangWriter host_writer = nullptr;
-void* host_writer_user = nullptr;
-WolangWriter host_reporter = nullptr;
-void* host_reporter_user = nullptr;
-
-// What `std.io` calls. Registered under `write`, which the runtime's
-// symbol table answers before the loader is asked -- so a program that
-// prints reaches the host without knowing it (D137).
-extern "C" int64_t WriteThroughHost(int32_t fd,
-                                    const char* bytes,
-                                    uint64_t count) {
-  if (fd == 1 && host_writer != nullptr) {
-    host_writer(host_writer_user, bytes, count);
-    return static_cast<int64_t>(count);
-  }
-  if (fd == 2 && host_reporter != nullptr) {
-    host_reporter(host_reporter_user, bytes, count);
-    return static_cast<int64_t>(count);
-  }
-  return static_cast<int64_t>(
-      ::fwrite(bytes, 1, static_cast<size_t>(count),
-               fd == 2 ? stderr : stdout));
-}
-
+// What `std.io` calls, through the symbol `write` and through
+// `wolang_fd_write`. Both reach the writer of the vm whose turn it is,
+// found in the space that turn entered (D257).
 int64_t FdWriteThroughHost(void* user, int32_t fd, const uint8_t* bytes, uint64_t count) {
-  (void)user;
-  if (fd == 1 && host_writer != nullptr) {
-    host_writer(host_writer_user, reinterpret_cast<const char*>(bytes), count);
+  WolangVm* vm = static_cast<WolangVm*>(user);
+  if (fd == 1 && vm->writer != nullptr) {
+    vm->writer(vm->writer_user, reinterpret_cast<const char*>(bytes), count);
     return static_cast<int64_t>(count);
   }
-  if (fd == 2 && host_reporter != nullptr) {
-    host_reporter(host_reporter_user, reinterpret_cast<const char*>(bytes), count);
+  if (fd == 2 && vm->reporter != nullptr) {
+    vm->reporter(vm->reporter_user, reinterpret_cast<const char*>(bytes), count);
     return static_cast<int64_t>(count);
   }
   return -1;
+}
+
+extern "C" int64_t WriteThroughHost(int32_t fd, const char* bytes, uint64_t count) {
+  int64_t answered = 0;
+  if (wolang::runtime::SpaceWrite(fd, reinterpret_cast<const uint8_t*>(bytes), count, &answered)) {
+    return answered;
+  }
+  return static_cast<int64_t>(::fwrite(bytes, 1, static_cast<size_t>(count), fd == 2 ? stderr : stdout));
 }
 
 }  // namespace
@@ -1704,9 +1701,9 @@ int64_t FdWriteThroughHost(void* user, int32_t fd, const uint8_t* bytes, uint64_
 extern "C++" {
 namespace {
 
-void Written(const std::string& text) {
-  if (host_writer != nullptr) {
-    host_writer(host_writer_user, text.data(), text.size());
+void Written(WolangVm* vm, const std::string& text) {
+  if (vm != nullptr && vm->writer != nullptr) {
+    vm->writer(vm->writer_user, text.data(), text.size());
     return;
   }
   std::fwrite(text.data(), 1, text.size(), stdout);
@@ -1715,25 +1712,29 @@ void Written(const std::string& text) {
 }  // namespace
 }  // extern "C++"
 
-void wolang_vm_set_writer(WolangVm* vm, WolangWriter writer, void* user) {
-  const VmTurn turn(vm);
-  (void)vm;
-  host_writer = writer;
-  host_writer_user = user;
-  wolang::runtime::RegisterSymbol(
-      "write", reinterpret_cast<void*>(&WriteThroughHost));
-  wolang::runtime::wolang_set_fd_write_hook(&FdWriteThroughHost, nullptr);
+static void InstallWriter(WolangVm* vm) {
+  wolang::runtime::SpaceBindSymbol(vm->globals.get(), "write", reinterpret_cast<void*>(&WriteThroughHost));
+  wolang::runtime::SpaceSetWriteHook(vm->globals.get(), &FdWriteThroughHost, vm);
 }
 
-void wolang_vm_set_reporter(WolangVm* vm, WolangWriter reporter,
-                            void* user) {
+void wolang_vm_set_writer(WolangVm* vm, WolangWriter writer, void* user) {
+  if (vm == nullptr) {
+    return;
+  }
   const VmTurn turn(vm);
-  (void)vm;
-  host_reporter = reporter;
-  host_reporter_user = user;
-  wolang::runtime::RegisterSymbol(
-      "write", reinterpret_cast<void*>(&WriteThroughHost));
-  wolang::runtime::wolang_set_fd_write_hook(&FdWriteThroughHost, nullptr);
+  vm->writer = writer;
+  vm->writer_user = user;
+  InstallWriter(vm);
+}
+
+void wolang_vm_set_reporter(WolangVm* vm, WolangWriter reporter, void* user) {
+  if (vm == nullptr) {
+    return;
+  }
+  const VmTurn turn(vm);
+  vm->reporter = reporter;
+  vm->reporter_user = user;
+  InstallWriter(vm);
 }
 
 // -------------------------------------------------------------- limits ---

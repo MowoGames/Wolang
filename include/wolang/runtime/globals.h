@@ -5,6 +5,9 @@
 #define WOLANG_RUNTIME_GLOBALS_H_
 
 #include <cstdint>
+#include <string_view>
+
+#include "wolang/runtime/host.h"
 
 namespace wolang {
 namespace runtime {
@@ -37,6 +40,26 @@ GlobalSpace* GlobalSpaceCreate();
 void GlobalSpaceDestroy(GlobalSpace* space);
 GlobalSpace* GlobalSpaceEnter(GlobalSpace* space);
 GlobalSpace* GlobalSpaceCurrent();
+
+// What a vm binds is its own, and so are its host classes and its writer: a
+// lookup asks the space this thread has entered first and the process after
+// (D257). Threads a program starts inherit the space like its globals.
+struct SpaceClass {
+  uint64_t Tag = 0;
+  HostRetain Retain = nullptr;
+  HostRelease Release = nullptr;
+  HostAlive Alive = nullptr;
+  void* User = nullptr;
+};
+
+using SpaceWriteHook = int64_t (*)(void* user, int32_t fd, const uint8_t* bytes, uint64_t count);
+
+void SpaceBindSymbol(GlobalSpace* space, std::string_view name, void* address);
+void* SpaceSymbol(std::string_view name);
+void SpaceRegisterClass(GlobalSpace* space, const SpaceClass& entry);
+bool SpaceClassOf(uint64_t tag, SpaceClass* out);
+void SpaceSetWriteHook(GlobalSpace* space, SpaceWriteHook hook, void* user);
+bool SpaceWrite(int32_t fd, const uint8_t* bytes, uint64_t count, int64_t* result);
 
 // While it lives, |space| is the current one on this thread.
 class GlobalSpaceScope {
