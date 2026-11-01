@@ -16,12 +16,21 @@
 #include <unistd.h>
 #endif
 
+#include <atomic>
 #include <cstdint>
 
 namespace wolang {
 namespace runtime {
 
 static constexpr int32_t kRealtime = 0;
+
+static std::atomic<WolangFdWriteHook> sm_FdWriteHook{nullptr};
+static std::atomic<void*> sm_FdWriteUser{nullptr};
+
+extern "C" void wolang_set_fd_write_hook(WolangFdWriteHook hook, void* user) {
+  sm_FdWriteUser.store(user);
+  sm_FdWriteHook.store(hook);
+}
 
 extern "C" int64_t wolang_fd_read(int32_t fd, uint8_t* buffer, uint64_t count) {
 #if defined(_WIN32)
@@ -33,6 +42,13 @@ extern "C" int64_t wolang_fd_read(int32_t fd, uint8_t* buffer, uint64_t count) {
 }
 
 extern "C" int64_t wolang_fd_write(int32_t fd, const uint8_t* buffer, uint64_t count) {
+  if (const WolangFdWriteHook hook = sm_FdWriteHook.load(); hook != nullptr && (fd == 1 || fd == 2)) {
+    const int64_t handled = hook(sm_FdWriteUser.load(), fd, buffer, count);
+    if (handled >= 0) {
+      return handled;
+    }
+  }
+
 #if defined(_WIN32)
   const uint32_t clamped = count > 0x7FFFFFFFu ? 0x7FFFFFFFu : static_cast<uint32_t>(count);
   return _write(fd, buffer, clamped);

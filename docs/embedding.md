@@ -78,12 +78,12 @@ and pointing `CMAKE_PREFIX_PATH` at it is enough.
 
 | | |
 | --- | --- |
-| **Load** | `wolang_vm_load` takes a package directory or a `.wo` file; `wolang_vm_load_source` takes text under a name of your choosing. A second call adds to what is loaded. |
+| **Load** | `wolang_vm_load` takes a package directory or a `.wo` file; `wolang_vm_load_source` takes text under a name of your choosing. A second call adds to what is loaded. A lone file or a piece of source sits in a package named `host` that can `need` the standard library, found through `WOLANG_STD` or a `lib/std` above the file (D259). |
 | **Call** | `wolang_vm_call` by name, or `wolang_vm_function` once and `wolang_call` per frame. The compiled tier runs what it can and the interpreter runs the rest, which is why calls are fast without asking. |
-| **Ask** | `wolang_vm_function_count`/`_name` list what the package *offered*; `wolang_function_arity`, `_parameter`, `_result` and `_doc` say what one takes, answers and is for. |
+| **Ask** | `wolang_vm_function_count`/`_name`/`_module` list what the package *offered* and the module that offered it, so two packages that both offer `Tick` are told apart as `sample.mover.Tick` and `sample.camera.Tick`; a bare `Tick` that two modules offer is refused (D259); `wolang_function_arity`, `_parameter`, `_result` and `_doc` say what one takes, answers and is for. |
 | **Configure** | `wolang_vm_get_global`/`_set_global` read and write the program's module-level `var`s. A script's `var gravity: f32 = -9.8` is a setting the host owns. |
 | **Extend** | `wolang_vm_bind` makes a host function reachable: the script declares `extern "C" fun host_log(message: *u8, length: u64)` and calls it. |
-| **Capture** | `wolang_vm_set_writer` sends the program's output to the host's console instead of standard output; `wolang_vm_set_reporter` does the same for diagnostics. |
+| **Capture** | `wolang_vm_set_writer` sends the program's output to the host's console instead of standard output; `wolang_vm_set_reporter` does the same for diagnostics. `std.io.Print` and `Eprint` reach them too, in every tier (D259). |
 | **Contain** | `wolang_vm_set_step_limit` stops a call after so many instructions, for scripts the host did not write. It keeps calls on the interpreter, which is the trade. |
 | **Debug** | `wolang_vm_debug_listen` opens a port an editor attaches to with the Debug Adapter Protocol; breakpoints stop the host's call where it is. See [debugging](debugging.md). |
 | **Reload** | `wolang_vm_reload` loads everything again and keeps the program's state; `wolang_vm_file_count`/`_name` say which files to watch. |
@@ -143,7 +143,7 @@ construct an `extern class` or give it fields (`E0139`).
 the low) and the library answers `wolang_abi_version()`. A host compares the
 two once at load, because the library it links is not always the one it was
 compiled against: a different major is a different ABI, a larger minor only
-adds (D241).
+adds (D241). Minor 1 adds `wolang_vm_function_module` (D259).
 
 ```c
 if ((wolang_abi_version() >> 16) != (WOLANG_ABI_VERSION >> 16)) {

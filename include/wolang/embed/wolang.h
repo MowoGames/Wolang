@@ -30,7 +30,7 @@ extern "C" {
 // the low. A host compares it with `wolang_abi_version()` at load, since
 // the library it links may not be the one it compiled against (D241). A
 // different major is a different ABI; a larger minor only adds.
-#define WOLANG_ABI_VERSION ((1u << 16) | 0u)
+#define WOLANG_ABI_VERSION ((1u << 16) | 1u)
 
 uint32_t wolang_abi_version(void);
 
@@ -165,6 +165,12 @@ int32_t wolang_vm_has(const WolangVm* vm, const char* name);
 // or a console in a host would list.
 int32_t wolang_vm_function_count(const WolangVm* vm);
 const char* wolang_vm_function_name(const WolangVm* vm, int32_t index);
+
+// The module that offers function |index|, such as `sample.mover`. A name
+// can be given to `wolang_vm_call` and `wolang_vm_has` bare (`Tick`) or with
+// its module (`sample.mover.Tick`); a bare name two of the host's modules
+// both offer is refused (D259). Added in ABI 1.1.
+const char* wolang_vm_function_module(const WolangVm* vm, int32_t index);
 
 // -------------------------------------------------------------- bindings ---
 

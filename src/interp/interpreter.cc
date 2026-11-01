@@ -930,6 +930,11 @@ class Interpreter {
         return Value::Int(result, described.int_width, described.is_signed);
       case TypeKind::kPointer:
         return Value::Int(result, IntWidth::k64, /*is_signed=*/false);
+      case TypeKind::kOptional:
+        if (types_.KindOf(types_.ElementOf(returned)) != TypeKind::kPointer && !types_.IsHandle(types_.ElementOf(returned))) {
+          return Trap(outcome, TrapKind::kUndefinedValue, "@" + symbol, "returns something with no representation in C");
+        }
+        return result == 0 ? Value::Absent() : Value::Present(Value::Int(result, IntWidth::k64, /*is_signed=*/false));
       default:
         return Trap(outcome, TrapKind::kUndefinedValue, "@" + symbol,
                     "returns something with no representation in C");
