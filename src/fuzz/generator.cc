@@ -626,7 +626,7 @@ class Writer {
     const std::string bad = Expression(t, depth - 1, false);
     const std::string worse = Expression(t, depth - 1, false);
     return "(match Check_" + name + "(" + checked + ") { Ok(" + v + ") => " +
-           v + ", Bad => " + bad + ", Worse => " + worse + " })";
+           v + ", Bad => " + bad + ", Worse => " + worse + ", Odd(_c) => " + bad + " })";
   }
 
   // A number made from a text's length, so that building one is observed.
@@ -969,15 +969,16 @@ class Writer {
         "  var f: f64 = 0.0\n}\n\n");
     out_.append(
         "enum Shape {\n  Dot,\n  Circle(r: int),\n  Box(w: s8, h: u64),\n}\n\n");
-    out_.append("error Bad\nerror Worse\n\n");
+    out_.append("error Bad\nerror Worse\nerror Odd(code: int)\n\n");
     for (Ty t : kHelperTypes) {
       const std::string name = TyName(t);
       out_.append("fun Maybe_" + name + "(x: " + name + ") -> " + name +
                   "? {\n  if x > 100 {\n    return null\n  }\n"
                   "  return x\n}\n\n");
       out_.append("fun Check_" + name + "(x: " + name + ") -> " + name +
-                  "! {\n  if x > 100 {\n    return Bad\n  }\n"
+                  "!(Bad, Worse, Odd) {\n  if x > 100 {\n    return Bad\n  }\n"
                   "  if x < 5 {\n    return Worse\n  }\n"
+                  "  if x == 7 {\n    return Odd(1)\n  }\n"
                   "  return x - 5\n}\n\n");
     }
     out_.append(

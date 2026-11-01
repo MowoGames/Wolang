@@ -95,25 +95,15 @@ WOLANG_TEST(Formatter, NormalizesSpacingAndIndentation) {
 }
 
 WOLANG_TEST(Formatter, WritesStatedErrorSetsAndPayloads) {
-  Pass pass("error A,B(line:int)
-fun f()->int!(A,B){return 1}
-fun g()->int!A{return 1}
-");
+  Pass pass("error A,B(line:int)\nfun f()->int!(A,B){return 1}\nfun g()->int!A{return 1}\n");
   WOLANG_EXPECT_EQ(pass.formatted(),
-                   "error A, B(line: int)
-"
-                   "fun f() -> int!(A, B) {
-"
-                   "  return 1
-"
-                   "}
-"
-                   "fun g() -> int!A {
-"
-                   "  return 1
-"
-                   "}
-");
+                   "error A, B(line: int)\n"
+                   "fun f() -> int!(A, B) {\n"
+                   "  return 1\n"
+                   "}\n"
+                   "fun g() -> int!A {\n"
+                   "  return 1\n"
+                   "}\n");
 }
 
 WOLANG_TEST(Formatter, DropsSemicolonsAndExtraBlankLines) {

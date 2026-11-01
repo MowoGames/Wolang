@@ -751,14 +751,17 @@ fun Run(threads: int) uses unsafe {
 }
 
 WOLANG_TEST(LowerTest, AnErrorTagIsAHashOfItsQualifiedName) {
-  Fixture f("error Corrupt, Missing
+  Fixture f(R"(
+error Corrupt, Missing
+
 fun A() -> int! {
   return Corrupt
 }
+
 fun B() -> int! {
   return Missing
 }
-");
+)");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   WOLANG_EXPECT(f.Function("A").find(std::to_string(ErrorTag("Corrupt"))) != std::string::npos);
   WOLANG_EXPECT(f.Function("B").find(std::to_string(ErrorTag("Missing"))) != std::string::npos);

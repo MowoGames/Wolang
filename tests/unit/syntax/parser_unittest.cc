@@ -638,12 +638,9 @@ WOLANG_TEST(Parser, FallibleAndOptionalTypesArePostfix) {
 
 WOLANG_TEST(Parser, StatedErrorSets) {
   Fixture fixture(
-      "fun A() -> int!Small
-"
-      "fun B() -> int!(Small, json.Malformed)
-"
-      "fun C() -> int?!(Small)
-");
+      "fun A() -> int!Small\n"
+      "fun B() -> int!(Small, json.Malformed)\n"
+      "fun C() -> int?!(Small)\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT(fixture.TreeContains("(type Small)"));
   WOLANG_EXPECT(fixture.TreeContains("(type json.Malformed)"));
@@ -651,19 +648,14 @@ WOLANG_TEST(Parser, StatedErrorSets) {
 
 WOLANG_TEST(Parser, ABangAtTheEndOfALineStatesNoErrors) {
   Fixture fixture(
-      "fun A() -> int!
-"
-      "Small
-");
-  WOLANG_EXPECT(!fixture.TreeContains("(type Small)
-        (type int)"));
-  WOLANG_EXPECT(fixture.TreeContains("(fallible
-"));
+      "fun A() -> int!\n"
+      "Small\n");
+  WOLANG_EXPECT(!fixture.TreeContains("(type Small)\n        (type int)"));
+  WOLANG_EXPECT(fixture.TreeContains("(fallible\n"));
 }
 
 WOLANG_TEST(Parser, ErrorsCarryData) {
-  Fixture fixture("error Plain, Bad(line: int, why: text)
-");
+  Fixture fixture("error Plain, Bad(line: int, why: text)\n");
   WOLANG_EXPECT(fixture.Codes().empty());
   WOLANG_EXPECT(fixture.TreeContains("(names Plain Bad)"));
   WOLANG_EXPECT(fixture.TreeContains("line"));
@@ -671,8 +663,7 @@ WOLANG_TEST(Parser, ErrorsCarryData) {
 }
 
 WOLANG_TEST(Parser, AnEmptyStatedSetIsAnError) {
-  Fixture fixture("fun A() -> int!()
-");
+  Fixture fixture("fun A() -> int!()\n");
   WOLANG_EXPECT(!fixture.Codes().empty());
 }
 
