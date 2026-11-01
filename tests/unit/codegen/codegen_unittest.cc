@@ -963,7 +963,7 @@ fun Run() -> int {
 WOLANG_TEST(CodegenTest, AnEscapingClosureCopiesAnOwnedText) {
   Fixture f(R"(
 fun Greeter(name: text) -> fun() -> int {
-  const copy = name + "!"
+  const copy = "{name}!"
   return || copy.len
 }
 
