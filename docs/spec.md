@@ -710,8 +710,14 @@ sandboxed package may not declare `extern` (`E0705`), and an `extern`
 declaration states the capability its primitive needs — `uses io`, `uses
 net` — which, unlike `unsafe`, a wrapper that declares it does not absorb.
 
-A wrapper with a body that declares `uses unsafe` absorbs it, but a primitive
-with no body (or an `extern`) re-exports `unsafe` to every caller (D221).
+A wrapper with a body that declares `uses unsafe` absorbs it: the author
+vouches for it. An `unsafe fun` does the opposite. Its body may do unsafe things
+without stating it, and every call or naming of it charges `unsafe` to the
+caller, as an `extern` does, because its safety depends on what the caller
+passes. A primitive with no body is written `unsafe fun`; `uses unsafe` on one
+is `E0153`. An `unsafe fun` cannot override or implement a method that is not
+one (`E0154`) (D236). `unsafe` before `fun`, `task`, `virtual`, `override` or
+`extern` is the modifier; `unsafe {` is still the block.
 Naming a function as a value, not only calling it, charges its whole row to
 the enclosing function, comptime included (D222).
 

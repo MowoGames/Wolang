@@ -654,6 +654,11 @@ fun main() uses io, unsafe {
 `wolang bind header.h` writes the declarations for you, and a package's
 manifest says which library to link.
 
+Your own code can make the same promise. `unsafe fun Poke(at: *mut u8)` has a
+body that may touch memory, and whoever calls it states `uses unsafe`, as for
+`extern`. `uses unsafe` on an ordinary function is the opposite: the author
+checked it and takes the responsibility, so callers do not have to.
+
 ## Testing
 
 ```wolang

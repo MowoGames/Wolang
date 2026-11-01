@@ -3244,3 +3244,17 @@ never zero, the same in every tier, every build and every reload. This replaces
 D13's "inferred" and "no data", and D90's "named by the symbol". The value of a
 payload error before it is put into a `T!` is the tag and the slot, and it is not
 counted on its own.
+
+**D236. `unsafe fun` is a promise the caller makes; `uses unsafe` is one the
+author made.** A body that states `uses unsafe` vouches for itself and absorbs
+it (D35, D221). Some bodies cannot: a function whose safety depends on the
+pointer or length it is given is only as safe as its caller. `unsafe fun` says
+so. Its body may do unsafe things without stating it, and every call or naming
+of it (D222) charges `unsafe` to the caller, as `extern` does, whatever its body
+or its `uses` clause says. A bodiless primitive is written `unsafe fun`: `uses
+unsafe` there said one thing and meant the other (`E0153`). An `unsafe fun`
+cannot override or implement a method that is not one (`E0154`), because a call
+through the base would skip the promise; the other way round is allowed. `unsafe`
+before `fun`, `task`, `virtual`, `override` or `extern` is the modifier; `unsafe
+{` is still the block. `std.mem`, `TextFromRaw`, `ParallelFor`, `AtomicAdd`,
+`socket.Read` and `gfx.TextFromC` are `unsafe fun`.
