@@ -575,15 +575,31 @@ void Database::RegisterQueries() {
         const auto merge = [&resolution](const FileResolution& other,
                                         uint32_t other_file) {
           for (const TypeMembers& table : other.type_members) {
-            bool known = false;
-            for (const TypeMembers& mine : resolution.type_members) {
-              if (mine.type == table.type) {
-                known = true;
+            TypeMembers* mine = nullptr;
+            for (TypeMembers& candidate : resolution.type_members) {
+              if (candidate.type == table.type) {
+                mine = &candidate;
                 break;
               }
             }
-            if (!known) {
+            if (mine == nullptr) {
               resolution.type_members.push_back(table);
+              continue;
+            }
+
+            // An `extend` in one file builds a table of only its own methods;
+            // the declaring file's fields and flags must join it, not lose to
+            // it (D246).
+            mine->is_value |= table.is_value;
+            mine->is_ability |= table.is_ability;
+            mine->takes_self |= table.takes_self;
+            if (mine->parameters.empty()) {
+              mine->parameters = table.parameters;
+            }
+            for (const Member& member : table.members) {
+              if (std::find(mine->members.begin(), mine->members.end(), member) == mine->members.end()) {
+                mine->members.push_back(member);
+              }
             }
           }
 
@@ -649,22 +665,27 @@ void Database::RegisterQueries() {
           // A name imported from |other_file| gets its signature from that
           // file's own pass, because an item index only means anything
           // within the file it came from.
-          for (Binding& binding : resolution.scope) {
-            if (binding.file != other_file || binding.type.is_valid() ||
-                binding.item == Binding::kNoItem ||
+          // A type name arrives as an opaque declaration, which is right for
+          // a struct and wrong for an alias: `MeshAsset = text` must be the
+          // `text` the declaring file settled on (D246).
+          const auto settle = [&other, other_file](Binding& binding) {
+            if (binding.file != other_file || binding.item == Binding::kNoItem ||
                 binding.item >= other.item_types.size()) {
-              continue;
+              return;
             }
-            binding.type = other.item_types[binding.item];
+            if (binding.type.is_valid() && binding.kind != BindingKind::kType) {
+              return;
+            }
+            const TypeId declared = other.item_types[binding.item];
+            if (declared.is_valid()) {
+              binding.type = declared;
+            }
+          };
+          for (Binding& binding : resolution.scope) {
+            settle(binding);
           }
           for (FileResolution::Qualified& entry : resolution.qualified) {
-            Binding& binding = entry.binding;
-            if (binding.file != other_file || binding.type.is_valid() ||
-                binding.item == Binding::kNoItem ||
-                binding.item >= other.item_types.size()) {
-              continue;
-            }
-            binding.type = other.item_types[binding.item];
+            settle(entry.binding);
           }
         };
 

@@ -398,6 +398,32 @@ WOLANG_TEST(ModuleScopeTest, ANameUsedInTypePositionCounts) {
   WOLANG_EXPECT_EQ(fixture.Warnings(main), "");
 }
 
+WOLANG_TEST(ModuleScopeTest, AnAliasFromAnotherModuleIsItsTarget) {
+  Fixture fixture;
+  const ModuleId assets = fixture.AddModule("game.assets");
+  fixture.AddFile(assets, "mesh.wo", "offer type MeshAsset = text\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId fits = fixture.AddFile(game, "fits.wo", "need game.assets.{MeshAsset}\nfun Name(m: MeshAsset) -> text { return m }\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(fits), "");
+
+  const FileId clashes = fixture.AddFile(game, "clashes.wo", "need game.assets.{MeshAsset}\nfun Count(m: MeshAsset) -> int { return m }\n");
+  WOLANG_EXPECT(!fixture.Codes(clashes).empty());
+}
+
+WOLANG_TEST(ModuleScopeTest, ExtendingAForeignClassSeesItsFields) {
+  Fixture fixture;
+  const ModuleId engine = fixture.AddModule("game.engine");
+  fixture.AddFile(engine, "pawn.wo", "offer class Pawn {\n  var health: int\n}\n");
+
+  const ModuleId game = fixture.AddModule("game");
+  const FileId reads = fixture.AddFile(game, "heal.wo", "need game.engine.{Pawn}\nextend Pawn {\n  fun Health() -> int { return self.health }\n}\n");
+  WOLANG_EXPECT_EQ(fixture.Codes(reads), "");
+
+  const FileId misses = fixture.AddFile(game, "miss.wo", "need game.engine.{Pawn}\nextend Pawn {\n  fun Mana() -> int { return self.mana }\n}\n");
+  WOLANG_EXPECT(!fixture.Codes(misses).empty());
+}
+
 WOLANG_TEST(ModuleScopeTest, ABaseClassCountsAsUsed) {
   Fixture fixture;
   const ModuleId engine = fixture.AddModule("game.engine");
