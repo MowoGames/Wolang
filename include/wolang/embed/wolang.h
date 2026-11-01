@@ -30,7 +30,7 @@ extern "C" {
 // the low. A host compares it with `wolang_abi_version()` at load, since
 // the library it links may not be the one it compiled against (D241). A
 // different major is a different ABI; a larger minor only adds.
-#define WOLANG_ABI_VERSION ((1u << 16) | 1u)
+#define WOLANG_ABI_VERSION ((1u << 16) | 2u)
 
 uint32_t wolang_abi_version(void);
 
@@ -208,6 +208,27 @@ WolangStatus wolang_vm_object_get(WolangVm* vm,
                           WolangValue object,
                           const char* field,
                           WolangValue* out);
+
+// Makes an object of the program's class |class_name| with every field zero,
+// and sets one of its numeric or flag fields. The host owns the reference it
+// is given and lets go of it with `wolang_vm_object_release`. A class with
+// virtual methods, or with a field only a script can fill (text, a class, an
+// array), is refused: make it in a script function and call that instead
+// (D258). Added in ABI 1.2.
+WolangStatus wolang_vm_object_new(WolangVm* vm, const char* class_name, WolangValue* out);
+WolangStatus wolang_vm_object_set(WolangVm* vm, WolangValue object, const char* field, WolangValue value);
+
+// The classes the host's own files declare, their stored fields in
+// declaration order with the kind of each, and the attributes written on a
+// class (`Replicated` for `@Replicated`). The names stay valid for as long as
+// the vm does. Added in ABI 1.2.
+int32_t wolang_vm_class_count(const WolangVm* vm);
+const char* wolang_vm_class_name(const WolangVm* vm, int32_t index);
+int32_t wolang_vm_class_field_count(const WolangVm* vm, const char* class_name);
+const char* wolang_vm_class_field_name(const WolangVm* vm, const char* class_name, int32_t index);
+WolangKind wolang_vm_class_field_kind(const WolangVm* vm, const char* class_name, int32_t index);
+int32_t wolang_vm_class_attribute_count(const WolangVm* vm, const char* class_name);
+const char* wolang_vm_class_attribute_name(const WolangVm* vm, const char* class_name, int32_t index);
 
 typedef void (*WolangHostRetain)(void* object, void* user);
 typedef void (*WolangHostRelease)(void* object, void* user);

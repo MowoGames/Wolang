@@ -1327,6 +1327,222 @@ WolangKind KindOf(const wolang::TypeStore& types, TypeId type) {
 
 }  // namespace
 
+// ------------------------------------------------------------- classes ---
+
+// A class the host's own files declare, and where to read its attributes.
+struct ClassInfo {
+  std::string Name;
+  const wolang::ParsedFile* Parsed = nullptr;
+  const wolang::Item* Declared = nullptr;
+};
+
+static std::vector<ClassInfo> ClassesOf(WolangVm* vm) {
+  std::vector<ClassInfo> classes;
+  for (FileId file : vm->own) {
+    const wolang::ParsedFile* parsed = vm->database.Parse(file);
+    if (parsed == nullptr) {
+      continue;
+    }
+    for (const wolang::ItemId id : parsed->ast.Get(parsed->ast.root())) {
+      const wolang::Item& item = parsed->ast.Get(id);
+      if (item.kind != wolang::ItemKind::kClass) {
+        continue;
+      }
+      ClassInfo info;
+      info.Name = std::string(vm->database.interner().Text(item.name));
+      info.Parsed = parsed;
+      info.Declared = &item;
+      classes.push_back(std::move(info));
+    }
+  }
+  return classes;
+}
+
+static const ClassInfo* ClassNamed(const std::vector<ClassInfo>& classes, const char* name) {
+  for (const ClassInfo& info : classes) {
+    if (name != nullptr && info.Name == name) {
+      return &info;
+    }
+  }
+  return nullptr;
+}
+
+static const char* Kept(WolangVm* vm, const std::string& text) {
+  vm->answers.push_back(text);
+  return vm->answers.back().c_str();
+}
+
+// The stored fields of the class called |name|, or none when the program
+// has no such class.
+static std::vector<const wolang::Member*> FieldsOfClass(WolangVm* vm, const std::string& name, TypeId* type, bool* header) {
+  *header = false;
+  *type = FindClassNamed(vm->database, name);
+  if (!type->is_valid()) {
+    return {};
+  }
+  const CheckedFile* checked = vm->database.Checked(FileId{vm->database.types().Get(*type).declaring_file});
+  if (checked == nullptr) {
+    return {};
+  }
+  return StoredMembers(checked->resolution, *type, header);
+}
+
+// A field the host can fill from a number or a flag, and that reads as a
+// sensible value while it is zero (D258).
+static bool Settable(const wolang::TypeStore& types, TypeId type) {
+  const TypeKind kind = types.KindOf(type);
+  return kind == TypeKind::kBool || kind == TypeKind::kInt || kind == TypeKind::kChar || kind == TypeKind::kFloat;
+}
+
+WolangStatus wolang_vm_object_new(WolangVm* vm, const char* class_name, WolangValue* out) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || !vm->ok || class_name == nullptr || out == nullptr) {
+    return kWolangError;
+  }
+  TypeId type;
+  bool header = false;
+  const std::vector<const wolang::Member*> stored = FieldsOfClass(vm, class_name, &type, &header);
+  if (!type.is_valid()) {
+    vm->errors = std::string("wolang: no class called `") + class_name + "`\n";
+    return kWolangError;
+  }
+  const wolang::TypeStore& types = vm->database.types();
+  if (header) {
+    vm->errors = std::string("wolang: `") + class_name + "` has virtual methods; make it in a script function\n";
+    return kWolangError;
+  }
+  for (const wolang::Member* member : stored) {
+    if (!Settable(types, member->type) && !types.IsOptional(member->type)) {
+      vm->errors = std::string("wolang: `") + class_name + "` holds fields only a script function can fill\n";
+      return kWolangError;
+    }
+  }
+
+  const CheckedFile* checked = vm->database.Checked(FileId{types.Get(type).declaring_file});
+  wolang::abi::LayoutStore layouts(vm->database.types(), checked->resolution);
+  vm->database.ShareMembers(&layouts);
+  void* object = wolang::runtime::wolang_object_alloc(std::max(layouts.ObjectOf(type).size, 1u));
+  if (object == nullptr) {
+    return kWolangError;
+  }
+  *out = ObjectOf(vm, reinterpret_cast<uint64_t>(object), type);
+  Handed(vm, *out);
+  return kWolangOk;
+}
+
+WolangStatus wolang_vm_object_set(WolangVm* vm, WolangValue object, const char* field, WolangValue value) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || !vm->ok || object.kind != kWolangObject || object.handle == nullptr || field == nullptr) {
+    return kWolangError;
+  }
+  TypeId type;
+  bool header = false;
+  const std::vector<const wolang::Member*> stored = FieldsOfClass(vm, std::string(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length)), &type, &header);
+  if (!type.is_valid()) {
+    return kWolangError;
+  }
+  wolang::TypeStore& types = vm->database.types();
+  const wolang::Symbol name = vm->database.interner().Lookup(field);
+  for (size_t i = 0; i < stored.size(); ++i) {
+    if (stored[i]->name != name) {
+      continue;
+    }
+    if (!Settable(types, stored[i]->type) || value.kind == kWolangText || value.kind == kWolangObject || value.kind == kWolangHandle) {
+      vm->errors = std::string("wolang: `") + field + "` takes a number or a flag from the host\n";
+      return kWolangError;
+    }
+    const CheckedFile* checked = vm->database.Checked(FileId{types.Get(type).declaring_file});
+    wolang::abi::LayoutStore layouts(types, checked->resolution);
+    vm->database.ShareMembers(&layouts);
+    const wolang::abi::Layout& layout = layouts.ObjectOf(type);
+    const size_t index = i + (header ? 1 : 0);
+    if (index >= layout.offsets.size()) {
+      return kWolangError;
+    }
+    wolang::interp::Encode(types, &layouts, Boxed(vm, value, stored[i]->type), stored[i]->type, static_cast<uint8_t*>(object.handle) + layout.offsets[index]);
+    return kWolangOk;
+  }
+  vm->errors = std::string("wolang: no field called `") + field + "`\n";
+  return kWolangError;
+}
+
+int32_t wolang_vm_class_count(const WolangVm* vm) {
+  const VmTurn turn(vm);
+  return vm == nullptr ? 0 : static_cast<int32_t>(ClassesOf(const_cast<WolangVm*>(vm)).size());
+}
+
+const char* wolang_vm_class_name(const WolangVm* vm, int32_t index) {
+  const VmTurn turn(vm);
+  if (vm == nullptr) {
+    return "";
+  }
+  WolangVm* mutable_vm = const_cast<WolangVm*>(vm);
+  const std::vector<ClassInfo> classes = ClassesOf(mutable_vm);
+  return index < 0 || static_cast<size_t>(index) >= classes.size() ? "" : Kept(mutable_vm, classes[static_cast<size_t>(index)].Name);
+}
+
+int32_t wolang_vm_class_field_count(const WolangVm* vm, const char* class_name) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || class_name == nullptr) {
+    return 0;
+  }
+  TypeId type;
+  bool header = false;
+  return static_cast<int32_t>(FieldsOfClass(const_cast<WolangVm*>(vm), class_name, &type, &header).size());
+}
+
+const char* wolang_vm_class_field_name(const WolangVm* vm, const char* class_name, int32_t index) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || class_name == nullptr) {
+    return "";
+  }
+  WolangVm* mutable_vm = const_cast<WolangVm*>(vm);
+  TypeId type;
+  bool header = false;
+  const std::vector<const wolang::Member*> stored = FieldsOfClass(mutable_vm, class_name, &type, &header);
+  return index < 0 || static_cast<size_t>(index) >= stored.size() ? "" : Kept(mutable_vm, std::string(mutable_vm->database.interner().Text(stored[static_cast<size_t>(index)]->name)));
+}
+
+WolangKind wolang_vm_class_field_kind(const WolangVm* vm, const char* class_name, int32_t index) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || class_name == nullptr) {
+    return kWolangVoid;
+  }
+  WolangVm* mutable_vm = const_cast<WolangVm*>(vm);
+  TypeId type;
+  bool header = false;
+  const std::vector<const wolang::Member*> stored = FieldsOfClass(mutable_vm, class_name, &type, &header);
+  return index < 0 || static_cast<size_t>(index) >= stored.size() ? kWolangVoid : KindOf(mutable_vm->database.types(), stored[static_cast<size_t>(index)]->type);
+}
+
+int32_t wolang_vm_class_attribute_count(const WolangVm* vm, const char* class_name) {
+  const VmTurn turn(vm);
+  if (vm == nullptr) {
+    return 0;
+  }
+  const std::vector<ClassInfo> classes = ClassesOf(const_cast<WolangVm*>(vm));
+  const ClassInfo* info = ClassNamed(classes, class_name);
+  return info == nullptr ? 0 : static_cast<int32_t>(info->Parsed->ast.Get(info->Declared->attributes).size());
+}
+
+const char* wolang_vm_class_attribute_name(const WolangVm* vm, const char* class_name, int32_t index) {
+  const VmTurn turn(vm);
+  if (vm == nullptr) {
+    return "";
+  }
+  WolangVm* mutable_vm = const_cast<WolangVm*>(vm);
+  const std::vector<ClassInfo> classes = ClassesOf(mutable_vm);
+  const ClassInfo* info = ClassNamed(classes, class_name);
+  if (info == nullptr) {
+    return "";
+  }
+  const auto attributes = info->Parsed->ast.Get(info->Declared->attributes);
+  if (index < 0 || static_cast<size_t>(index) >= attributes.size()) {
+    return "";
+  }
+  return Kept(mutable_vm, std::string(mutable_vm->database.interner().Text(info->Parsed->ast.Get(attributes[static_cast<size_t>(index)]).name)));
+}
+
 WolangFunction* wolang_vm_function(WolangVm* vm, const char* name) {
   const VmTurn turn(vm);
   if (Find(vm, name) == nullptr) {

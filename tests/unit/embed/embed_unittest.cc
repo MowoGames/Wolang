@@ -1331,3 +1331,86 @@ offer fun Say() -> int uses io {
   wolang_vm_destroy(vm);
   std::filesystem::remove(path);
 }
+
+WOLANG_TEST(EmbedTest, AHostMakesAndFillsAScriptObject) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "shapes.wo", R"(
+@Replicated
+class Spot {
+  var x: int
+  var y: float
+  var lit: bool
+}
+
+class Label {
+  var name: text
+}
+
+class Base {
+  virtual fun Id() -> int {
+    return 1
+  }
+  var n: int
+}
+
+offer fun SumX(spot: Spot) -> int => spot.x
+
+offer fun IsLit(spot: Spot) -> bool => spot.lit
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  WolangValue spot = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_object_new(vm, "Spot", &spot), 0);
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(spot.kind), static_cast<int32_t>(kWolangObject));
+  WOLANG_EXPECT_EQ(wolang_vm_object_set(vm, spot, "x", wolang_int(7)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_set(vm, spot, "y", wolang_float(2.5)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_set(vm, spot, "lit", wolang_bool(1)), 0);
+  WOLANG_EXPECT(wolang_vm_object_set(vm, spot, "nope", wolang_int(1)) != 0);
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "SumX", &spot, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 7);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "IsLit", &spot, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 1);
+  WOLANG_EXPECT_EQ(wolang_vm_object_get(vm, spot, "y", &answer), 0);
+  WOLANG_EXPECT_EQ(answer.number, 2.5);
+
+  WolangValue refused = wolang_void();
+  WOLANG_EXPECT(wolang_vm_object_new(vm, "Label", &refused) != 0);
+  WOLANG_EXPECT(wolang_vm_object_new(vm, "Base", &refused) != 0);
+  WOLANG_EXPECT(wolang_vm_object_new(vm, "Missing", &refused) != 0);
+  WOLANG_EXPECT(wolang_vm_object_set(vm, spot, "x", wolang_text("a", 1)) != 0);
+
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, spot), 0);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, TheHostCanReadClassesFieldsAndAttributes) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "reflect.wo", R"(
+@Replicated
+class Spot {
+  var x: int
+  var y: float
+  var name: text
+}
+
+class Plain {
+  var n: int
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_class_count(vm), 2);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_name(vm, 0)), "Spot");
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_name(vm, 1)), "Plain");
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_name(vm, 2)), "");
+  WOLANG_EXPECT_EQ(wolang_vm_class_field_count(vm, "Spot"), 3);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_field_name(vm, "Spot", 1)), "y");
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(wolang_vm_class_field_kind(vm, "Spot", 0)), static_cast<int32_t>(kWolangInt));
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(wolang_vm_class_field_kind(vm, "Spot", 1)), static_cast<int32_t>(kWolangFloat));
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(wolang_vm_class_field_kind(vm, "Spot", 2)), static_cast<int32_t>(kWolangText));
+  WOLANG_EXPECT_EQ(wolang_vm_class_attribute_count(vm, "Spot"), 1);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_attribute_name(vm, "Spot", 0)), "Replicated");
+  WOLANG_EXPECT_EQ(wolang_vm_class_attribute_count(vm, "Plain"), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_class_field_count(vm, "Missing"), 0);
+  wolang_vm_destroy(vm);
+}

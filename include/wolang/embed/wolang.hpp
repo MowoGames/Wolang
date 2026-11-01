@@ -146,6 +146,18 @@ class Vm {
     return names;
   }
 
+  // The classes the program declares, which is what an editor lists
+  // beside the functions (D258).
+  std::vector<std::string> Classes() const {
+    std::vector<std::string> names;
+    const int32_t count = wolang_vm_class_count(held_);
+    names.reserve(static_cast<size_t>(count < 0 ? 0 : count));
+    for (int32_t i = 0; i < count; ++i) {
+      names.emplace_back(wolang_vm_class_name(held_, i));
+    }
+    return names;
+  }
+
   Function Lookup(const std::string& name) const {
     return Function(wolang_vm_function(held_, name.c_str()));
   }

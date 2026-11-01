@@ -143,7 +143,9 @@ construct an `extern class` or give it fields (`E0139`).
 the low) and the library answers `wolang_abi_version()`. A host compares the
 two once at load, because the library it links is not always the one it was
 compiled against: a different major is a different ABI, a larger minor only
-adds (D241). Minor 1 adds `wolang_vm_function_module` (D259).
+adds (D241). Minor 1 adds `wolang_vm_function_module` (D259). Minor 2 adds
+`wolang_vm_object_new`, `wolang_vm_object_set` and the `wolang_vm_class_*`
+reflection calls (D258).
 
 ```c
 if ((wolang_abi_version() >> 16) != (WOLANG_ABI_VERSION >> 16)) {
@@ -253,6 +255,27 @@ wolang_vm_object_release(vm, enemy);
 `wolang_vm_object_retain` takes another reference, for a host that keeps
 the object in two places.
 
+A host can also make an object and fill it (D258):
+
+```c
+WolangValue spot;
+wolang_vm_object_new(vm, "Spot", &spot);
+wolang_vm_object_set(vm, spot, "x", wolang_int(7));
+wolang_vm_object_release(vm, spot);
+```
+
+Every field starts as zero. Only a numeric, boolean or optional field can be
+left that way safely, so a class with a `text`, class or array field, or with
+virtual methods, is refused: make it in a script function and call that.
+`wolang_vm_class_count`/`_name`, `wolang_vm_class_field_count`/`_name`/`_kind`
+and `wolang_vm_class_attribute_count`/`_name` list the program's classes, the
+stored fields of each and the attributes written on it (`Replicated` for
+`@Replicated`), so a host need not scan the source.
+
+Each vm has its own bindings, host classes and writers (D257). Two vms in one
+process may bind the same symbol to different functions and print to different
+places; a lookup asks the vm whose call it is, then the process.
+
 ## Mods
 
 A script the host wrote is trusted: it can declare `extern "C"` and reach
@@ -314,6 +337,14 @@ health it had. When `Player` gained a field, the player keeps the fields
 that are still there, and the new one starts from what the initializer
 gave it. A `var` or a field whose type changed starts again from its
 initializer, and `wolang_vm_notes` has a line saying so.
+
+A reload that cannot work changes nothing (D255). The new program is
+loaded beside the old one first, without starting anything. If it does not
+compile, `wolang_vm_reload` answers an error, `wolang_vm_errors` says why, and
+the program that was running keeps running. The same goes for a program that
+would change the class of an object the host holds: the host's objects are not
+rebuilt, so the reload is refused with a line naming the class, and goes
+through once the host has let go of the object.
 
 Function handles from `wolang_vm_function` survive a reload and call the
 new code. The program as it was is kept until the vm is destroyed —
