@@ -517,11 +517,12 @@ These are the ones that shape everything else.
 
 **Next: 1.2.0.** Progress is in [docs/plans/1.2.0-status.md](docs/plans/1.2.0-status.md);
 what the engine needs is in [docs/plans/engine-needs.md](docs/plans/engine-needs.md).
-Built on `feature/1.2.0`: `int` is 64 bits (D238, all three steps) and `Self`
+Built on `feature/1.2.0`: `int` is 64 bits (D238, all three steps), `Self`
 with operator abilities (D239: `a + b` on a struct is a call to
-`std.ops.Add`, in all three tiers). Not built yet, from
-[docs/plans/pre-1.0.md](docs/plans/pre-1.0.md): errors carry data and offered
-functions state their sets (D235), `unsafe fun` (D236), allocation checked by
+`std.ops.Add`, in all three tiers), and errors that carry data with stated
+sets (D235, written but not yet built or tested: see the status file).
+Not built yet, from
+[docs/plans/pre-1.0.md](docs/plans/pre-1.0.md): `unsafe fun` (D236), allocation checked by
 `@Hot` (D237), escaping closures with `keep` (D240, F1–F2; F0 is in). Then the
 libraries that need them: `math` (vectors with operators), `font`, `audio`,
 `gpu`, an immediate-mode `ui`, `app`. The plan is

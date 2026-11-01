@@ -94,8 +94,9 @@ fun Half(x: int) -> int? {
 error TooBig
 error Negative
 
-// `T!` may fail, and the errors are inferred from the body.
-fun Root(x: int) -> int! {
+// `T!` may fail. Naming the errors, `T!(A, B)`, lets the compiler check that a
+// `match` covers each one.
+fun Root(x: int) -> int!(Negative, TooBig) {
   if x < 0 {
     return Negative
   }

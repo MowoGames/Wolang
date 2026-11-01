@@ -389,8 +389,8 @@ immutable form. Visibility is module-private by default,
 `offer` across modules, `priv` within one file. Methods are statically dispatched
 unless declared `virtual`, and overriding requires `override`.
 
-`match` must be exhaustive. Error handling is `Result<T, E>` with the `?`
-operator; there are no exceptions. Invariant violations are faults: they stop
+`match` must be exhaustive. Error handling is `T!` with the `?`
+operator (§4.3); there are no exceptions. Invariant violations are faults: they stop
 the coroutine or actor rather than unwinding.
 
 ## 4. Types — normative
@@ -405,7 +405,7 @@ the coroutine or actor rather than unwinding.
 | Slices | `[]T`, a borrowed view: no allocation. An array converts to one |
 | Collections | `List<T>`, `Map<K, V>`, `Set<T>` — library types in `std.list`, `std.map`, `std.set` |
 | Optionals | `T?`; there is no `Option<T>` type. References are non-nullable by default |
-| Fallible | `T!`, a value or one of an inferred set of errors |
+| Fallible | `T!`, a value or any error; `T!A` and `T!(A, B)`, a value or one of the errors named |
 | Ownership | `Owned<T>`, `Shared<T>` (library classes in `std.own`); a weak reference is `weak var` (D207) |
 | Functions | `fun(int) -> bool`, closures |
 
@@ -452,20 +452,21 @@ match count {
 
 ### 4.3 Errors
 
-`T!` means "a `T`, or one of the errors this function can produce". The error
-set is inferred from the body, so `?` never needs a conversion between error
-types. Both markers are postfix, so a type reads left to right and they
+`T!` means "a `T`, or any error". `T!A` and `T!(A, B)` state which errors: a
+stated set. `?` never needs a conversion between error types, because a set that
+is stated must contain what the body passes on, and the compiler checks that
+(`E0151`). Both markers are postfix, so a type reads left to right and they
 combine:
 
 ```wolang
 error NotFound, Corrupt
+error Malformed(line: int, column: int)
 
-fun Find(id: int) -> Pawn?             // may be absent
-fun Load(path: text) -> Level! uses io // may fail
-fun Lookup(key: text) -> Pawn?!        // either
+fun Find(id: int) -> Pawn?                // may be absent
+fun Lookup(key: text) -> Pawn?!(NotFound) // either
 
-fun Load(path: text) -> Level! uses io {
-  const bytes = ReadFile(path)?        // errors join the set
+fun Load(path: text) -> Level!(NotFound, Corrupt) uses io {
+  const bytes = ReadFile(path)?           // its errors must be in the set
   if bytes.len == 0 { return Corrupt }
   return Parse(bytes)
 }
@@ -477,8 +478,17 @@ match Load(p) {
 }
 ```
 
-An error is a tag without data. When an error has to carry a payload, write
-`Result<T, E>` explicitly.
+A `match` over a stated set must name every error in it, or have a `_` arm
+(`E0201`). A `match` over a bare `T!` must have a `_` arm, because the errors it
+may hold are not written anywhere. An offered function states its set
+(`E0150`): a caller in another module cannot read the body.
+
+An error may carry data: `error Malformed(line: int, column: int)`. It is built
+with its arguments, `return Malformed(3, 14)`, and a `match` arm binds them,
+`Malformed(line, column) => ..`; a bare `Malformed =>` ignores them. An error
+with data goes into a `T!` whose set names it (`E0152` for a bare `T!`), because
+the data is kept beside the tag. An error is told apart from another of the same
+name by its module: `json.Malformed` and `yaml.Malformed` are different errors.
 
 ### 4.3a Numeric conversions
 

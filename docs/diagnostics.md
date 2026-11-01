@@ -27,6 +27,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0143`, `E0144` | module-qualified names | D246 |
 | `E0145` | `self` stored from its own `deinit` | D229 |
 | `E0147`, `E0148` | what crosses a thread | D232 |
+| `E0150`, `E0151`, `E0152` | an offered function that does not state its errors, an error outside a stated set, an error with data in a bare `T!` | D235 |
 | `E0156`, `E0157` | `Self` outside a type, an ability that takes `Self` used as a value | D239 |
 | `E0159` | `after` on a machine transition | D243 |
 | `E0160` | an `@Operator` ability that is not one operator-shaped method | D239 |
@@ -239,6 +240,9 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0147` | a function or closure given to a `@Thread` parameter (`Spawn`, `ParallelFor`) reads or writes a module-level `var`, directly or through a call, and the caller does not state `uses unsafe` (D232) | `Spawn(Work)` where `Work` pushes to a global list |
 | `E0148` | a closure that captures given to a `@Thread` parameter that has no environment to give it (`Spawn`; not `ParallelFor`), even under `uses unsafe` (D232) | `Spawn(\|\| { Print("{n}") })` |
 | `E0159` | `after <delay>` on a machine transition: it parsed and then fired at once, so it is refused until a machine has a clock (D243) | `on Interact after 3s -> Closed` |
+| `E0150` | an `offer fun` whose result is a bare `T!`: a caller in another module cannot see which errors it holds, so the set is written (D235) | `offer fun F() -> int!` |
+| `E0151` | an error returned, or passed on with `?`, that the stated set does not contain; or a `?` from a bare `T!` into a stated set (D235) | `fun F() -> int!(A) { return B }` |
+| `E0152` | an error that carries data where the result is a bare `T!`, which has no room for it; name it in the set (D235) | `fun F() -> int! { return P(1) }` with `error P(x: int)` |
 | `E0156` | `Self` where there is no type for it to be: outside an ability, an `extend` and a type's own body (D239) | `fun F(x: Self)` |
 | `E0157` | an ability whose method names `Self` used as the type of a value; use it as a bound instead (D239) | `const e: Eq = a`, `fun F(e: Eq)` |
 | `E0160` | an `@Operator` ability that is not exactly one method named `Plus`, `Minus`, `Times`, `Divide`, `Negate`, `Equals` or `Compare` with that operator's shape (D239) | `@Operator ability A { fun Frob(o: Self) -> Self }` |

@@ -272,6 +272,22 @@ fun main() uses io, unsafe {
 }
 ```
 
+## Report where a parse failed
+
+An error can carry data, and the parsers use that to say where.
+
+```wolang
+need std.io.{Print}
+need std.json.{Parse}
+
+fun main() uses io, unsafe {
+  match Parse("[1,\n 2,\n @]") {
+    Ok(_value) => { Print("fine") },
+    Malformed(line, column) => { Print("line {line}, column {column}") },
+  }
+}
+```
+
 ## Keep state on disk
 
 ```wolang

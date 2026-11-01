@@ -3225,3 +3225,22 @@ tiers have nothing new to agree on. The ability is required, not just the
 method's name: relaxing that later breaks nothing, and tightening it would.
 Numbers meet every operator ability, `bool` and `char` meet `Equals` and
 `Compare`, and `text` meets `Equals`, so a bound like `<T: Add>` takes `int`.
+
+**D235. An error can carry data, and a set is written or open.** `error
+Malformed(line: int, column: int)` is an error with a payload. A function states
+which errors it gives back, `-> Value!(Malformed, TooDeep)`, or writes `T!` and
+means *any*. Inference was promised and never built: every `T!` accepted every
+error, so a `match` that missed one compiled and trapped. A written set is
+checked: returning or `?`-passing an error outside it is `E0151`. A `match` over
+it is exhaustive (`E0201`). An open `T!` needs a catch-all arm. An offered
+function states its set (`E0150`), for the reason it states its effects: a caller
+in another module cannot see the body. A payload is boxed in a counted object,
+one optional slot per payload error the set names, in tag order, so a set with no
+payload errors keeps today's two-field layout. An open `T!` carries no payload
+(`E0152`), because its layout cannot depend on a body, and a payload error is
+built only where a `T!` is wanted: alone it has nowhere to keep its data. Errors
+are told apart by declaration, not by name: a tag is FNV-1a of `module.Name`,
+never zero, the same in every tier, every build and every reload. This replaces
+D13's "inferred" and "no data", and D90's "named by the symbol". The value of a
+payload error before it is put into a `T!` is the tag and the slot, and it is not
+counted on its own.

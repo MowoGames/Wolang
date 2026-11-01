@@ -336,7 +336,9 @@ exhausting the stack (D227).
 TOML 1.0 as it is used: strings in four styles, numbers in four bases,
 booleans, dates as text, arrays, inline tables, dotted keys, `[table]`
 and `[[array of tables]]`. Arrays and inline tables nested deeper than 64
-answer `Malformed` instead of exhausting the stack (D227).
+answer `Malformed` instead of exhausting the stack (D227). `Malformed` carries
+the `line` and `column` the document went wrong at, counted from one, in `json`,
+`toml` and `yaml` (D235): `Malformed(line, column) => ..`.
 
 ```wolang
 need std.doc.{AsText, Get, Null}

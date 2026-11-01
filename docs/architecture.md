@@ -147,6 +147,15 @@ a removed block is emptied rather than erased, because an id is an index.
 cases are separate vectors, the same layout the AST uses. `Builder` is what
 keeps them consistent — a hand written lowering gets that wrong.
 
+**A `T!` in the IR** is a tag, the value, and one optional counted slot for each
+error its set names that carries data, in tag order (D235). A set with none of
+those is the tag and the value, as before. A tag is FNV-1a of `module.Name`, so
+two modules' `Malformed` differ and the number is the same in every build. A
+payload is a class `$err.module.Name` made by the resolver; building the error
+makes one object, putting it in a `T!` moves it to its slot, and `?` moves the
+slot to the caller's own. No opcode is new: the verifier and the back ends read
+the layout.
+
 **Erasure at the boundary.** Dimensions and open literal types are
 checking-time notions, and neither exists in the IR: `Length` is `f32` and a
 bare `1.0` has settled. Erasing once, at lowering, is what makes "unit safe
