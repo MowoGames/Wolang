@@ -140,7 +140,7 @@ class Reader {
 }
 
 /// Reads the first document of `input`.
-offer fun Parse(input: text) -> Value! uses unsafe {
+offer fun Parse(input: text) -> Value!Malformed uses unsafe {
   const documents = ParseAll(input)?
   if documents.Len() == 0 {
     return Value.Null
@@ -149,7 +149,7 @@ offer fun Parse(input: text) -> Value! uses unsafe {
 }
 
 /// Every document in a stream, which is what `---` separates.
-offer fun ParseAll(input: text) -> List<Value>! uses unsafe {
+offer fun ParseAll(input: text) -> List<Value>!Malformed uses unsafe {
   var reader = Reader(SplitLines(input), 0, ListNew<Field>(), 0)
   var documents = ListNew<Value>()
   loop {

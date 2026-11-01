@@ -78,7 +78,7 @@ offer class Image {
 
 /// A transparent black picture of the given size, or `TooLarge`, or
 /// `Malformed` when a side is not positive.
-offer fun ImageNew(width: int, height: int) -> Image! uses unsafe {
+offer fun ImageNew(width: int, height: int) -> Image!(Malformed, TooLarge) uses unsafe {
   if width < 1 || height < 1 {
     return Malformed
   }
@@ -466,7 +466,7 @@ fun PngPixel(raw: []u8, row: int, x: int, info: &PngInfo, dest: []u8, at: int) -
 /// header and its Adler-32 are checked, and the inflater is held to the
 /// size the header implies, so a small file cannot inflate into a large
 /// one (D227, D245).
-offer fun PngDecode(data: []u8) -> Image! uses unsafe {
+offer fun PngDecode(data: []u8) -> Image!(Malformed, TooLarge, Unsupported) uses unsafe {
   if !Has(data, 0, 8) {
     return Malformed
   }
@@ -802,7 +802,7 @@ fun Delta(a: int, b: int) -> int {
 
 /// Reads a QOI file, all six operations. Anything after the last pixel
 /// is ignored; running out of bytes before the last pixel is `Malformed`.
-offer fun QoiDecode(data: []u8) -> Image! uses unsafe {
+offer fun QoiDecode(data: []u8) -> Image!(Malformed, TooLarge) uses unsafe {
   if !Has(data, 0, 14) {
     return Malformed
   }
@@ -1008,7 +1008,7 @@ offer fun QoiEncode(image: &Image) -> []u8 uses unsafe {
 /// Reads a BMP: 24 or 32 bits, uncompressed, bottom-up or top-down, with
 /// a 40-byte or larger header. A 32-bit file's fourth byte is taken as
 /// alpha. Palettes, RLE and bit fields are `Unsupported`.
-offer fun BmpDecode(data: []u8) -> Image! uses unsafe {
+offer fun BmpDecode(data: []u8) -> Image!(Malformed, TooLarge, Unsupported) uses unsafe {
   if !Has(data, 0, 26) {
     return Malformed
   }

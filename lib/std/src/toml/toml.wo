@@ -91,7 +91,7 @@ fun Fail(cursor: Cursor) -> Step {
 }
 
 /// Reads a document.
-offer fun Parse(input: text) -> Value! uses unsafe {
+offer fun Parse(input: text) -> Value!Malformed uses unsafe {
   var cursor = Cursor(Bytes(input), 0)
   var root = Object()
   // Where `name = value` goes: the root, or the table a header named.

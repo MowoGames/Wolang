@@ -58,7 +58,7 @@ fun Fail(cursor: Cursor) -> Step {
 }
 
 /// Reads one value from `input`.
-offer fun Parse(input: text) -> Value! uses unsafe {
+offer fun Parse(input: text) -> Value!Malformed uses unsafe {
   const start = Cursor(Bytes(input), 0)
   const step = ParseValue(SkipSpace(start), 0)
   if !step.ok {
