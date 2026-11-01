@@ -3380,6 +3380,48 @@ fun Firsts() -> int {
   WOLANG_EXPECT_EQ(f.Run("Firsts", {}), "709");
 }
 
+WOLANG_TEST(CodegenTest, AModuleLevelWeakVarDoesNotKeepItsObject) {
+  Fixture f(R"(
+extern "C" fun wolang_objects_live() -> s64
+
+class Thing {
+  var id: int = 0
+}
+
+weak var current: Thing? = null
+
+fun Live() -> int uses unsafe {
+  return wolang_objects_live() as int
+}
+
+fun Reads() -> int {
+  const thing = Thing(7)
+  current = thing
+  return current?.id ?? -1
+}
+
+fun Outlives() -> int {
+  current = Thing(9)
+  return current?.id ?? -1
+}
+
+fun Stays() -> int uses unsafe {
+  const before = Live()
+  var seen = 0
+  for i in 0..5 {
+    const thing = Thing(i)
+    current = thing
+    seen = seen + (current?.id ?? 100)
+  }
+  current = null
+  return (Live() - before) * 1000 + seen
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Reads", {}), "7");
+  WOLANG_EXPECT_EQ(f.Run("Outlives", {}), "-1");
+  WOLANG_EXPECT_EQ(f.Run("Stays", {}), "10");
+}
+
 WOLANG_TEST(CodegenTest, AWeakFieldDoesNotKeepItsObject) {
   Fixture f(R"(
 extern "C" fun wolang_objects_live() -> s64

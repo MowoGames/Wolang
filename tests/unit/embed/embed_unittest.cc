@@ -140,6 +140,42 @@ static void Actor_Hurt(void* actor, int32_t amount) {
   static_cast<FakeActor*>(actor)->Health -= amount;
 }
 
+WOLANG_TEST(EmbedTest, AModuleLevelWeakVarDoesNotKeepAHostObject) {
+  WolangVm* vm = wolang_vm_create();
+  int32_t calls = 0;
+  WOLANG_EXPECT_EQ(wolang_vm_register_class(vm, "Actor", &FakeRetain, &FakeRelease, &FakeAlive, &calls), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "weak_global.wo", R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+weak var seen: Actor? = null
+
+offer fun Watch(pawn: Actor) {
+  seen = pawn
+}
+
+offer fun Sees() -> bool {
+  return seen != null
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  FakeActor actor;
+  WolangValue argument = wolang_handle(&actor);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Watch", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Sees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 1);
+
+  actor.Alive = false;
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Sees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 0);
+  wolang_vm_destroy(vm);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+}
+
 WOLANG_TEST(EmbedTest, ScriptsUseTheHostsObjects) {
   WolangVm* vm = wolang_vm_create();
   int32_t calls = 0;

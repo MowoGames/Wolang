@@ -1694,6 +1694,51 @@ class Pawn : Actor {
   WOLANG_EXPECT_EQ(script.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheck, AModuleLevelWeakVarHoldsAnOptionalClass) {
+  Fixture fine(R"(
+class Node {
+  var id: int = 0
+}
+
+weak var current: Node? = null
+
+fun Set(node: Node) {
+  current = node
+}
+)");
+  WOLANG_EXPECT_EQ(fine.Codes(), "");
+
+  Fixture host(R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+weak var pawn: Actor? = null
+)");
+  WOLANG_EXPECT_EQ(host.Codes(), "");
+
+  Fixture not_optional(R"(
+class Node {}
+
+weak var current: Node = Node()
+)");
+  WOLANG_EXPECT(not_optional.HasCode("E0137"));
+
+  Fixture not_class(R"(
+weak var count: int? = null
+)");
+  WOLANG_EXPECT(not_class.HasCode("E0137"));
+
+  Fixture local(R"(
+class Node {}
+
+fun F() {
+  weak var current: Node? = null
+}
+)");
+  WOLANG_EXPECT(local.HasCode("E0137"));
+}
+
 WOLANG_TEST(TypeCheck, AWeakFieldIsAnOptionalClassInAClass) {
   Fixture fine(R"(
 class Node {

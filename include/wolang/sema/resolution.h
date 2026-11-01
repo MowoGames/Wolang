@@ -79,6 +79,9 @@ struct Binding {
   // Whether the declaration is `unsafe fun`: naming it costs the caller the
   // `unsafe` effect, whatever its body does (D236).
   bool is_unsafe_fun = false;
+  // Whether a module-level `var` is `weak`: it holds a `C?` without keeping the
+  // object alive, and a read upgrades it (D253).
+  bool is_weak = false;
   // For a name reached as `module.Name` (D246): the spelling the declaration
   // has in its own module. `name` is then the qualified spelling, which is
   // what keeps two modules' `Parse` apart once a file has both.
@@ -97,6 +100,7 @@ struct Binding {
            lhs.thread_args == rhs.thread_args &&
            lhs.exposes == rhs.exposes &&
            lhs.is_unsafe_fun == rhs.is_unsafe_fun &&
+           lhs.is_weak == rhs.is_weak &&
            lhs.real_name == rhs.real_name &&
            lhs.error_name == rhs.error_name;
   }

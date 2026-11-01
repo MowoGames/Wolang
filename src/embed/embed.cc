@@ -2030,6 +2030,7 @@ struct GlobalSlot {
   TypeId Type;
   void* Storage = nullptr;
   const CheckedFile* Checked = nullptr;
+  bool Weak = false;
 };
 
 // Every module-level `var` the host's own files declare, with storage in
@@ -2054,6 +2055,7 @@ static std::vector<GlobalSlot> GlobalsOf(WolangVm* vm, bool every_file = false) 
       slot.Type = binding.type;
       slot.Storage = wolang::runtime::wolang_global_address(token, size);
       slot.Checked = checked;
+      slot.Weak = binding.is_weak;
       slots.push_back(std::move(slot));
     }
   }
@@ -2110,7 +2112,7 @@ static std::string Shape(Database& database, TypeId type) {
 // old program had takes its place. What this does not know how to give
 // back -- a struct holding objects -- is left, which costs memory and
 // nothing else.
-static void LetGo(WolangVm* vm, TypeId type, void* storage) {
+static void LetGo(WolangVm* vm, TypeId type, void* storage, bool weak = false) {
   const wolang::TypeStore& types = vm->database.types();
   if (types.KindOf(type) == TypeKind::kString) {
     const uint8_t* data = nullptr;
@@ -2128,7 +2130,13 @@ static void LetGo(WolangVm* vm, TypeId type, void* storage) {
     return;
   }
   if (types.IsForeignClass(held)) {
-    wolang::runtime::wolang_host_release(wolang::runtime::HostTag(types.Describe(vm->database.interner(), held)), object);
+    if (!weak) {
+      wolang::runtime::wolang_host_release(wolang::runtime::HostTag(types.Describe(vm->database.interner(), held)), object);
+    }
+    return;
+  }
+  if (weak) {
+    wolang::runtime::wolang_object_weak_release(object);
     return;
   }
   if (wolang::runtime::wolang_object_release(object) == 1) {
@@ -2141,7 +2149,7 @@ static void LetGo(WolangVm* vm, TypeId type, void* storage) {
 // (D259).
 static void ReleaseGlobals(WolangVm* vm) {
   for (const GlobalSlot& slot : GlobalsOf(vm, true)) {
-    LetGo(vm, slot.Type, slot.Storage);
+    LetGo(vm, slot.Type, slot.Storage, slot.Weak);
   }
 }
 
@@ -2222,7 +2230,7 @@ static void Carry(WolangVm* vm, Database& before, const std::vector<GlobalSlot>&
     if (Shape(before, match->Type) == Shape(vm->database, now.Type)) {
       wolang::abi::LayoutStore layouts(vm->database.types(), now.Checked->resolution);
       vm->database.ShareMembers(&layouts);
-      LetGo(vm, now.Type, now.Storage);
+      LetGo(vm, now.Type, now.Storage, now.Weak);
       std::memcpy(now.Storage, match->Storage, std::max(layouts.SizeOf(now.Type), 1u));
       continue;
     }

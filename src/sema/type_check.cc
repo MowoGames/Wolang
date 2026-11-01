@@ -4356,6 +4356,21 @@ void Checker::CheckBinding(const Item& item) {
            "signature cannot be read off a body");
   }
 
+  // A class field is checked with its class; a module-level `var` is checked
+  // here, and a `weak` local has nowhere to put the weak count (D253).
+  if (HasFlag(item.flags, ItemFlags::kWeak) && !self_type_.is_valid()) {
+    const bool optional = declared.is_valid() && types_->KindOf(declared) == TypeKind::kOptional;
+    const TypeId pointee = optional ? types_->ElementOf(declared) : TypeId{};
+    const TypeKind kind = pointee.is_valid() ? types_->KindOf(pointee) : TypeKind::kError;
+    const bool counted = (kind == TypeKind::kNamed || kind == TypeKind::kInstance) && types_->IsHandle(pointee);
+    if (!at_module_level_ || !HasFlag(item.flags, ItemFlags::kMutable) || !counted) {
+      std::string message = "`weak` is for a module-level `var` that holds a `C?` of a class; `";
+      message.append(interner_->Text(item.name));
+      message.append("` is not one");
+      Report(kBadWeak, std::move(message), item.name_span, "write `weak var name: Node? = null` at module level");
+    }
+  }
+
   // References are second class: a parameter or a local may hold one, a
   // field may not. That is what gives memory safety without a borrow
   // checker -- a reference can never outlive the frame it was made in.

@@ -3869,8 +3869,11 @@ class Lowerer {
       // A module-level `var`, read from its storage.
       if (const TypeId held = GlobalType(name); held.is_valid()) {
         const InstId address = GlobalAddress(name);
-        return Coerce(builder_->Add(Opcode::kLoad, held, {address}), held,
-                      type);
+        InstId loaded = builder_->Add(Opcode::kLoad, held, {address});
+        if (IsWeakGlobal(name)) {
+          loaded = Upgrade(loaded, held);
+        }
+        return Coerce(loaded, held, type);
       }
       // A module-level constant, read through the function it became.
       if (const InstId constant = ConstantValue(name, type);
@@ -4549,6 +4552,12 @@ class Lowerer {
       const InstId value =
           builder.Call(global.initializer, global.type, {});
       builder.Add(Opcode::kStore, TypeId{}, {address, value});
+      if (global.weak) {
+        // The initializer answers a strong reference; the global keeps only
+        // the weak count, so the strong one is let go (D253).
+        WeakRetainValue(value, global.type);
+        ReleaseValue(value, global.type);
+      }
     }
     builder.ReturnVoid();
     builder_ = outer;
@@ -4592,7 +4601,18 @@ class Lowerer {
         // what the runtime's storage already holds -- so there is nothing
         // to call, and calling the initializer that was never given a
         // body trapped with "no body to run" (D136).
-        item.init.is_valid()});
+        item.init.is_valid(), HasFlag(item.flags, ItemFlags::kWeak)});
+  }
+
+  // Whether |name| is a module-level `var` that holds its object weakly (D253).
+  bool IsWeakGlobal(Symbol name) {
+    for (const Global& global : globals_) {
+      if (global.name == name) {
+        return global.weak;
+      }
+    }
+    const Binding* binding = resolution().Find(name);
+    return binding != nullptr && binding->kind == BindingKind::kValue && binding->is_mutable && binding->is_weak;
   }
 
   // What |name| holds, or an invalid id when it is not a global.
@@ -4869,6 +4889,7 @@ class Lowerer {
     // many elements there are.
     TypeId soa_record;
     bool Global = false;
+    bool WeakGlobal = false;
 
     bool readable() const {
       return slot.is_valid() || pointer.is_valid() || value.is_valid();
@@ -4904,6 +4925,7 @@ class Lowerer {
           place.pointer = address;
           place.root_type = Erase(TypeOf(id));
           place.Global = true;
+          place.WeakGlobal = IsWeakGlobal(expr.name);
           return place;
         }
         // Inside a method a bare name may be a field of the enclosing
@@ -4929,6 +4951,7 @@ class Lowerer {
             place.pointer = address;
             place.root_type = Erase(TypeOf(id));
             place.Global = true;
+            place.WeakGlobal = IsWeakGlobal(named);
             return place;
           }
         }
@@ -5377,6 +5400,9 @@ class Lowerer {
   }
 
   bool IsWeakPlace(const Place& place) {
+    if (place.path.empty() && place.WeakGlobal) {
+      return true;
+    }
     if (place.path.empty() || place.path.back().index.is_valid() || place.soa_record.is_valid()) {
       return false;
     }
@@ -8320,6 +8346,8 @@ class Lowerer {
     // Whether the source gave it one. A `var` with none is its type's
     // zero, which the runtime's storage already is (D136).
     bool has_initializer = true;
+    // `weak var`: a `C?` that does not keep its object alive (D253).
+    bool weak = false;
   };
   std::vector<Global> globals_;
   // Whether the function being lowered is a `task`.

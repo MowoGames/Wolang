@@ -1143,6 +1143,7 @@ FileResolution ResolveFile(TypeStore* types,
     binding.is_task = HasFlag(entry.flags, ItemFlags::kAsync);
     binding.has_body = HasFlag(entry.flags, ItemFlags::kHasBody);
     binding.is_unsafe_fun = HasFlag(entry.flags, ItemFlags::kUnsafe);
+    binding.is_weak = HasFlag(entry.flags, ItemFlags::kWeak);
     if (item != nullptr && entry.kind == ItemKind::kFunction) {
       for (AttributeId attribute_id : ast.Get(item->attributes)) {
         const Attribute& attribute = ast.Get(attribute_id);
