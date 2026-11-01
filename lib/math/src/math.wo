@@ -1,3 +1,4 @@
+need std.ops.{Add, Sub, Mul, Div, Neg, Eq}
 need std.math.{Sqrt, Sin, Cos, Atan2, Lerp, Near, MinFloat, MaxFloat, AbsFloat}
 
 offer struct Vec2 {
