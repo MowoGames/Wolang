@@ -17,8 +17,9 @@ need std.doc.{Array, AsBool, AsInt, AsNumber, AsText, Field, Get, Null, Object, 
 need std.list.{List, ListNew}
 need std.text.{Builder, Bytes, BuilderNew, Length, Repeat, Trim}
 
-/// What a document that is not one answers with.
-offer error Malformed
+/// What a document that is not one answers with, and where: the line and
+/// the column, both counted from one (D235).
+offer error Malformed(line: int, column: int)
 
 // Where the reader is.
 struct Cursor {
@@ -90,6 +91,32 @@ fun Fail(cursor: Cursor) -> Step {
   return Step(Value.Null, cursor, false)
 }
 
+fun LineOf(bytes: []u8, at: int) -> int {
+  var line = 1
+  var i = 0
+  while i < at && i < bytes.len {
+    if bytes[i] == 10 {
+      line = line + 1
+    }
+    i = i + 1
+  }
+  return line
+}
+
+fun ColumnOf(bytes: []u8, at: int) -> int {
+  var column = 1
+  var i = 0
+  while i < at && i < bytes.len {
+    if bytes[i] == 10 {
+      column = 1
+    } else {
+      column = column + 1
+    }
+    i = i + 1
+  }
+  return column
+}
+
 /// Reads a document.
 offer fun Parse(input: text) -> Value!Malformed uses unsafe {
   var cursor = Cursor(Bytes(input), 0)
@@ -112,16 +139,16 @@ offer fun Parse(input: text) -> Value!Malformed uses unsafe {
       }
       const header = ParsePath(SkipBlanks(cursor))
       if !header.ok {
-        return Malformed
+        return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
       }
       cursor = SkipBlanks(header.cursor)
       if Peek(cursor) != 93 {
-        return Malformed
+        return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
       }
       cursor.at = cursor.at + 1
       if doubled {
         if Peek(cursor) != 93 {
-          return Malformed
+          return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
         }
         cursor.at = cursor.at + 1
       }
@@ -136,16 +163,16 @@ offer fun Parse(input: text) -> Value!Malformed uses unsafe {
 
     const key = ParsePath(cursor)
     if !key.ok {
-      return Malformed
+      return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
     }
     cursor = SkipBlanks(key.cursor)
     if Peek(cursor) != 61 {
-      return Malformed
+      return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
     }
     cursor.at = cursor.at + 1
     const step = ParseValue(SkipBlanks(cursor), 0)
     if !step.ok {
-      return Malformed
+      return Malformed(LineOf(cursor.bytes, cursor.at), ColumnOf(cursor.bytes, cursor.at))
     }
     cursor = step.cursor
     root = Assign(root, &path, &key.path, step.value)
@@ -992,6 +1019,18 @@ fun WriteInline(fields: List<Field>) -> text uses unsafe {
 }
 
 // ------------------------------------------------------------- tests ---
+
+@Test
+fun SaysWhereADocumentWentWrong() -> bool uses unsafe {
+  match Parse("a = 1\nb") {
+    Malformed(line, column) => {
+      return line == 2 && column >= 1
+    }
+    _ => {
+      return false
+    }
+  }
+}
 
 @Test
 fun ReadsAManifest() -> bool uses unsafe {

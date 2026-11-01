@@ -21,8 +21,9 @@ need std.doc.{Array, AsBool, AsInt, AsNumber, AsText, Field, Get, Null, Object, 
 need std.list.{List, ListNew}
 need std.text.{Builder, Bytes, BuilderNew, Length, Repeat, Substring, Trim}
 
-/// What a document that is not one answers with.
-offer error Malformed
+/// What a document that is not one answers with, and the line it went wrong
+/// on and a column in it, both counted from one (D235).
+offer error Malformed(line: int, column: int)
 
 // ------------------------------------------------------------- lines ---
 //
@@ -165,7 +166,7 @@ offer fun ParseAll(input: text) -> List<Value>!Malformed uses unsafe {
       if Length(rest) != 0 {
         const scalar = ReadScalar(rest)
         if !scalar.ok {
-          return Malformed
+          return Malformed(reader.at, 4)
         }
         documents.Push(scalar.value)
         continue
@@ -182,7 +183,7 @@ offer fun ParseAll(input: text) -> List<Value>!Malformed uses unsafe {
     }
     const step = ReadNode(&mut reader, reader.Current().indent)
     if !step.ok {
-      return Malformed
+      return Malformed(reader.at + 1, 1)
     }
     documents.Push(step.value)
   }
@@ -1597,6 +1598,18 @@ fun NestedMappings(levels: int) -> text uses unsafe {
   builder.Append(Repeat(" ", levels))
   builder.Append("v: 1\n")
   return builder.Release()
+}
+
+@Test
+fun SaysWhereADocumentWentWrong() -> bool uses unsafe {
+  match Parse("a: " + Repeat("[", 300)) {
+    Malformed(line, column) => {
+      return line >= 1 && column >= 1
+    }
+    _ => {
+      return false
+    }
+  }
 }
 
 @Test
