@@ -262,6 +262,7 @@ class Parser {
   SourceSpan CollectDocComments();
   void ParseAttributes(std::vector<AttributeId>* out);
   ItemFlags ParseModifiers(Symbol* abi);
+  bool StartsUnsafeFunction();
   AstRange<ItemId> ParseItemBlock(SourceSpan open);
 
   ItemId ParseImport(Item item, size_t start);
@@ -533,7 +534,7 @@ void Parser::SkipToItemBoundary() {
     if (At(TokenKind::kRightBrace)) {
       return;
     }
-    if (Peek().starts_line() && StartsItem(PeekKind())) {
+    if (Peek().starts_line() && (StartsItem(PeekKind()) || StartsUnsafeFunction())) {
       return;
     }
     Advance();
@@ -677,6 +678,23 @@ void Parser::ParseAttributes(std::vector<AttributeId>* out) {
   }
 }
 
+bool Parser::StartsUnsafeFunction() {
+  if (!At(TokenKind::kKwUnsafe)) {
+    return false;
+  }
+
+  switch (PeekKind(1)) {
+    case TokenKind::kKwFun:
+    case TokenKind::kKwTask:
+    case TokenKind::kKwVirtual:
+    case TokenKind::kKwOverride:
+    case TokenKind::kKwExtern:
+      return true;
+    default:
+      return false;
+  }
+}
+
 ItemFlags Parser::ParseModifiers(Symbol* abi) {
   ItemFlags flags = ItemFlags::kNone;
   const auto add = [&](ItemFlags flag, std::string_view spelling) {
@@ -713,6 +731,13 @@ ItemFlags Parser::ParseModifiers(Symbol* abi) {
         continue;
       case TokenKind::kKwComptime:
         add(ItemFlags::kComptime, "comptime");
+        Advance();
+        continue;
+      case TokenKind::kKwUnsafe:
+        if (!StartsUnsafeFunction()) {
+          break;
+        }
+        add(ItemFlags::kUnsafe, "unsafe");
         Advance();
         continue;
       case TokenKind::kKwExtern:
@@ -1691,7 +1716,7 @@ StmtId Parser::ParseStatement() {
   }
 
   // Nested declarations.
-  if (StartsItem(PeekKind()) ||
+  if (StartsItem(PeekKind()) || StartsUnsafeFunction() ||
       (PeekKind(1) == TokenKind::kIdentifier &&
        (AtContextual(ContextualKeyword::kMachine) ||
         AtContextual(ContextualKeyword::kDimension) ||

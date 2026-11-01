@@ -132,6 +132,9 @@ enum class ItemFlags : uint16_t {
   kHasBody = 1 << 13,
   // `weak var`: a field that does not keep what it points at alive.
   kWeak = 1 << 14,
+  // `unsafe fun`: the function vouches for what it does, and a caller that
+  // names it pays for `unsafe` (D236).
+  kUnsafe = 1 << 15,
 };
 
 enum class ExprKind : uint8_t {

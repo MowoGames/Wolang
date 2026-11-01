@@ -342,6 +342,9 @@ class Formatter {
     if (HasFlag(item.flags, ItemFlags::kOverride)) {
       Put("override ");
     }
+    if (HasFlag(item.flags, ItemFlags::kUnsafe)) {
+      Put("unsafe ");
+    }
     if (HasFlag(item.flags, ItemFlags::kDerived)) {
       Put("derived ");
     }

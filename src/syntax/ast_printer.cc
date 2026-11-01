@@ -301,6 +301,7 @@ class Printer {
         {ItemFlags::kDerived, "derived"},
         {ItemFlags::kWeak, "weak"},
         {ItemFlags::kExtern, "extern"},
+        {ItemFlags::kUnsafe, "unsafe"},
         {ItemFlags::kHasError, "has-error"},
     };
     for (const auto& entry : kPrinterNames) {

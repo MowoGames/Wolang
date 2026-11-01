@@ -106,6 +106,18 @@ WOLANG_TEST(Formatter, WritesStatedErrorSetsAndPayloads) {
                    "}\n");
 }
 
+WOLANG_TEST(Formatter, KeepsUnsafeFun) {
+  Pass pass("offer   unsafe fun F(){}\nclass A{virtual unsafe fun G(){}}\nclass B:A{override unsafe fun G(){}}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(),
+                   "offer unsafe fun F() {}\n"
+                   "class A {\n"
+                   "  virtual unsafe fun G() {}\n"
+                   "}\n"
+                   "class B : A {\n"
+                   "  override unsafe fun G() {}\n"
+                   "}\n");
+}
+
 WOLANG_TEST(Formatter, DropsSemicolonsAndExtraBlankLines) {
   Pass pass("fun f() {\n  const a = 1;\n\n\n  const b = 2;\n}\n");
   WOLANG_EXPECT_EQ(pass.formatted(),

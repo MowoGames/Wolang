@@ -863,6 +863,26 @@ WOLANG_TEST(Parser, ExternFunctions) {
   WOLANG_EXPECT(tree.find("(abi C)") != std::string::npos);
 }
 
+WOLANG_TEST(Parser, UnsafeFunIsAModifier) {
+  Fixture fixture(
+      "offer unsafe fun Poke(p: *mut u8) {}\n"
+      "class A { virtual unsafe fun F() {} }\n"
+      "class B : A { override unsafe fun F() {} }\n"
+      "fun g() {\n  unsafe fun Local() {}\n}");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.TreeContains("(fun Poke offer unsafe"));
+  WOLANG_EXPECT(fixture.TreeContains("(fun F virtual unsafe"));
+  WOLANG_EXPECT(fixture.TreeContains("(fun F override unsafe"));
+  WOLANG_EXPECT(fixture.TreeContains("(fun Local unsafe"));
+}
+
+WOLANG_TEST(Parser, UnsafeBlockIsStillABlock) {
+  Fixture fixture("fun g() {\n  unsafe {\n    const a = 1\n  }\n}");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(!fixture.TreeContains("unsafe fun"));
+  WOLANG_EXPECT(!fixture.TreeContains(" unsafe"));
+}
+
 WOLANG_TEST(Parser, ComptimeDeclarations) {
   Fixture fixture("comptime const Table = Build()\ncomptime fun Check() {}");
   WOLANG_EXPECT(fixture.Codes().empty());

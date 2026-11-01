@@ -60,6 +60,7 @@ class SignatureWriter {
         {ItemFlags::kOverride, "override"}, {ItemFlags::kComptime, "comptime"},
         {ItemFlags::kDerived, "derived"}, {ItemFlags::kMutable, "mut"},
         {ItemFlags::kWeak, "weak"},
+        {ItemFlags::kUnsafe, "unsafe"},
         {ItemFlags::kExtern, "extern"},   {ItemFlags::kAbilityImpl, "for"},
     };
     for (const auto& entry : kItemNames) {

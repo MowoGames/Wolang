@@ -1062,7 +1062,8 @@ int RunRepl(const Options& options) {
                                     "ability ",  "component ", "tag ",
                                     "type ",     "extern ",    "offer ",
                                     "machine ",  "system ",    "effect ",
-                                    "@",         "extend ",    "need "};
+                                    "@",         "extend ",    "need ",
+                                    "unsafe fun "};
     for (const char* start : kStarts) {
       if (line.rfind(start, 0) == 0) {
         return true;
