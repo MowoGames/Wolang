@@ -417,6 +417,34 @@ fun main() uses io, unsafe {
 }
 ```
 
+A closure that is returned or stored owns what it took with it.
+
+```wolang
+need std.io.{Print}
+
+class Counter {
+  var n: int = 0
+
+  fun Bump() -> int {
+    n = n + 1
+    return n
+  }
+}
+
+fun Ticker() -> fun() -> int {
+  const counter = Counter(0)
+  return || counter.Bump()
+}
+
+fun main() uses io {
+  const tick = Ticker()
+  Print("{tick()} {tick()}")    // 1 2
+}
+```
+
+A function parameter may be called and passed down. To store it, write `keep`:
+`fun OnPress(handler: keep fun())`.
+
 ## Effects
 
 A signature says what a function may do, and the compiler checks the

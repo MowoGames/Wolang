@@ -472,6 +472,39 @@ fun main() uses io, unsafe {
 }
 ```
 
+## Keep a callback
+
+A function parameter may be called and passed down. To store it, say `keep`.
+The closure then owns what it captured, and it is released with the object.
+
+```wolang
+need std.io.{Print}
+
+class Counter {
+  var n: int = 0
+
+  fun Bump() -> int {
+    n = n + 1
+    return n
+  }
+}
+
+class Button {
+  var id: int
+  var handler: fun() -> int
+}
+
+fun NewButton(id: int, handler: keep fun() -> int) -> Button {
+  return Button(id, handler)
+}
+
+fun main() uses io {
+  const counter = Counter(0)
+  const button = NewButton(1, || counter.Bump())
+  Print("{button.handler()} {button.handler()}")
+}
+```
+
 ## Threads
 
 ```wolang

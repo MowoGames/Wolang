@@ -33,6 +33,7 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0156`, `E0157` | `Self` outside a type, an ability that takes `Self` used as a value | D239 |
 | `E0159` | `after` on a machine transition | D243 |
 | `E0160` | an `@Operator` ability that is not one operator-shaped method | D239 |
+| `E0161`, `E0162` | a borrowed function value in a place that keeps it, an escaping closure that takes a reference, pointer, slice or borrowed function | D240 |
 
 | `E0149` | an owning field moved out of the value that holds it | D233 |
 | `E0201` | pattern matching | implemented (wave 4) |
@@ -252,6 +253,8 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0158` | a name in a `uses` clause that is no effect: a typo, or `alloc`, which is not one any more (D237) | `fun F() uses alloc {}` |
 | `E0156` | `Self` where there is no type for it to be: outside an ability, an `extend` and a type's own body (D239) | `fun F(x: Self)` |
 | `E0157` | an ability whose method names `Self` used as the type of a value; use it as a bound instead (D239) | `const e: Eq = a`, `fun F(e: Eq)` |
+| `E0161` | a function value from a parameter that is not `keep` stored, returned, or given to a `keep` parameter, field or kept local (D240) | `fun Hold(f: fun()) { saved = f }` |
+| `E0162` | a closure that outlives its call taking a reference, a pointer, a slice or a borrowed function with it (D240) | `fun M(r: &int) -> fun() -> int { return \|\| r }` |
 | `E0160` | an `@Operator` ability that is not exactly one method named `Plus`, `Minus`, `Times`, `Divide`, `Negate`, `Equals` or `Compare` with that operator's shape (D239) | `@Operator ability A { fun Frob(o: Self) -> Self }` |
 
 | `E0149` | a value with a `deinit` taken out of a field of the struct or enum that owns it (D233) | `Take(o.r)` where `o: Outer` holds `r: Res` |

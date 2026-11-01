@@ -147,6 +147,15 @@ a removed block is emptied rather than erased, because an id is an index.
 cases are separate vectors, the same layout the AST uses. `Builder` is what
 keeps them consistent — a hand written lowering gets that wrong.
 
+**A closure that escapes** (D240) has an environment on the heap: a counted
+object whose first field is the address of `closure$N$drop` and whose other
+fields are the captures. A kept function value is counted like a class handle:
+retaining it retains the environment (the second word, null for a plain
+function), and the last release calls the drop through that address. A closure
+that does not escape keeps its frame environment, with no header and no count.
+The IR type of a function value carries whether it may be kept; the verifier
+treats the two as one shape, since who may keep a value is the checker's rule.
+
 **A `T!` in the IR** is a tag, the value, and one optional counted slot for each
 error its set names that carries data, in tag order (D235). A set with none of
 those is the tag and the value, as before. A tag is FNV-1a of `module.Name`, so

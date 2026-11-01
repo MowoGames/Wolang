@@ -3275,3 +3275,27 @@ not name, virtual dispatch past the base method, ability-bound calls inside a
 generic body. `uses alloc` and the `alloc` capability are gone; a name in `uses`
 that is no effect is `E0158` (so `alloc` is one), and `alloc` in `capabilities`
 is `E0053`.
+
+**D240. A closure that outlives its call owns what it captured.** A function
+value stays two words: the code and an environment. A function-typed parameter
+is borrowed: the environment may be in the caller's frame, so storing it,
+returning it or giving it to a `keep` parameter is `E0161`. `keep fun(...)` on a
+parameter says the callee may keep it. A function type anywhere else (a field, a
+global, a result, a local annotation, a type argument) is kept already, and
+`keep` there is `E0046`. A function name, and a literal that captures nothing,
+are kept; a literal that captures is kept only where its expected type is, and
+then its environment is a counted heap object (`Tuple{drop address, captures}`).
+The last release runs the drop, which lets go of each capture and frees the
+object. A value that flows into a kept place is retained, one that leaves is
+released, so a kept function value is counted like a class handle. A closure
+that does not escape is what it was: a frame environment, no header, no count.
+What an escaping closure takes is copied (plain values), retained (counted
+values), copied again (owned `Text`) or moved (a value with a `deinit`; the name
+around it is then `E0122`, and the drop runs the `deinit`, which D229 left
+undone). A reference, a pointer, a slice or a borrowed function cannot be taken
+along (`E0162`). `E0136` is retired. The C ABI is unchanged: a C callback takes
+the code word, and a capturing closure to an `extern` parameter stays refused.
+Not covered: retaining around a call through a field or global (the gap of
+D193), a closure that stores itself in `self` (a cycle), and a kept closure
+built inside `arena {}` that outlives the block. A borrowed value reaching a
+kept slot through a generic `T` is `E0161` too: the type argument is kept.

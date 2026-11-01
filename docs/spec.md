@@ -1022,16 +1022,54 @@ fun Loud(words: []text, limit: int) -> int uses unsafe {
 }
 ```
 
-The copies live in the frame of the call that made the closure, which is
-why a closure that captures may be passed *down* but not handed upwards:
-returning one, assigning one to a module-level `var` or putting one in a
-field is an error (`E0136`). A closure that captures nothing is an
-ordinary function value and may go anywhere.
+A function value is *borrowed* where it is a parameter's type, and *kept*
+everywhere else: a field, a global, a result, a local annotation. A borrowed
+value may point into the caller's frame, so a function may call it and pass it
+down, and nothing more: storing it, returning it or giving it to a `keep`
+parameter is `E0161`. `keep fun(...)` on a parameter says the function may keep
+the value. A closure that captures nothing, and a named function, are kept
+wherever they go.
 
-State that outlives a call is what a type with a method is for. That is
-not a workaround: an environment with a lifetime of its own is an
-allocation someone has to own, and a class is where this language says
-who.
+```wolang
+class Counter {
+  var n: int = 0
+
+  fun Bump() -> int {
+    n = n + 1
+    return n
+  }
+}
+
+class Button {
+  var id: int
+  var handler: fun() -> int
+}
+
+fun NewButton(id: int, handler: keep fun() -> int) -> Button {
+  return Button(id, handler)
+}
+
+fun main() {
+  const counter = Counter(0)
+  const button = NewButton(1, || counter.Bump())
+  const _a = button.handler()
+  const _b = button.handler()
+}
+```
+
+A closure that captures, and lands in a kept place, owns what it took. Its
+environment is a counted object on the heap, and the last holder to let go of
+the function value lets go of each capture. Plain values are copied, counted
+values (a class, a function) are retained, an owned `text` is copied again, and
+a value with a `deinit` is moved in: the name around it is then `E0122`, and the
+`deinit` runs when the closure goes. A reference, a pointer, a slice or a
+borrowed function cannot go along (`E0162`), because what they point at is
+gone. A closure that does not land in a kept place is what it always was: its
+copies live in the frame, with no header and no count (D240).
+
+A closure shares nothing with the function that made it, since it took copies;
+state both must see is what a class with a method is for, as `Counter` is
+above.
 
 A function value is two words: where the code is, and what it closed
 over. A plain function closed over nothing, and a call through a value
