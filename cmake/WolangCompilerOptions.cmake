@@ -45,6 +45,14 @@ function(wolang_configure_target target)
     if(WOLANG_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE -Werror)
     endif()
+    if(WIN32)
+      # The same reason as the clang-cl branch: the C library's own calls
+      # are used deliberately, so -Werror must not trip on their deprecation,
+      # and the Windows headers must not define min and max.
+      target_compile_definitions(${target} PRIVATE
+          NOMINMAX WIN32_LEAN_AND_MEAN
+          _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+    endif()
     if(WOLANG_ENABLE_SANITIZERS)
       target_compile_options(${target} PRIVATE
           -fsanitize=${WOLANG_SANITIZER_LIST} -fno-omit-frame-pointer)
