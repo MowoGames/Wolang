@@ -85,6 +85,9 @@ constexpr std::string_view kUnknownState = "E0206";
 // (D243).
 constexpr std::string_view kAfterNotSupported = "E0159";
 constexpr std::string_view kBadOperand = "E0108";
+constexpr std::string_view kOpenOfferedErrors = "E0150";
+constexpr std::string_view kErrorNotInSet = "E0151";
+constexpr std::string_view kPayloadInOpenSet = "E0152";
 constexpr std::string_view kAmbiguousName = "E0143";
 constexpr std::string_view kUnknownModuleItem = "E0144";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
@@ -243,11 +246,60 @@ class Checker {
     return types_->Describe(*interner_, id);
   }
 
+  std::string ErrorList(const std::vector<Symbol>& names) const {
+    std::string text;
+    for (Symbol name : names) {
+      const std::string_view full = interner_->Text(name);
+      const size_t dot = full.rfind('.');
+      if (!text.empty()) {
+        text.append(", ");
+      }
+      text.push_back('`');
+      text.append(dot == std::string_view::npos ? full : full.substr(dot + 1));
+      text.push_back('`');
+    }
+    return text;
+  }
+
+  // Reports why |found| errors do not fit |expected|'s set, if they do not
+  // (D235). True when something was reported.
+  bool ReportErrorSets(TypeId expected_set, TypeId found_set, SourceSpan span) {
+    std::vector<Symbol> missing;
+    const ErrorFit fit = types_->ErrorSetFits(expected_set, found_set, &missing);
+    if (fit == ErrorFit::kFits) {
+      return false;
+    }
+    if (fit == ErrorFit::kPayloadIntoOpen) {
+      std::vector<Symbol> carrying;
+      for (const ErrorMember& member : types_->StatedErrorsOf(found_set)) {
+        if (member.detail.is_valid()) {
+          carrying.push_back(member.name);
+        }
+      }
+      Report(kPayloadInOpenSet, "an error that carries data, " + ErrorList(carrying) + ", needs a result that names it", span, "write the result as `T!(...)` with the error in the list (D235)");
+      return true;
+    }
+    if (missing.empty()) {
+      Report(kErrorNotInSet, "this result may fail with errors the signature does not state", span, "state them: `T!(A, B)` (D235)");
+      return true;
+    }
+    Report(kErrorNotInSet, "the error " + ErrorList(missing) + " is not in the set the signature states", span, "add it to the list: `T!(..., " + ErrorList(missing) + ")` (D235)");
+    return true;
+  }
+
   // Reports a mismatch unless either side is already an error type, which is
   // what stops one real problem from producing a cascade.
   void ReportMismatch(TypeId expected, TypeId found, SourceSpan span) {
     if (types_->IsError(expected) || types_->IsError(found)) {
       return;
+    }
+    if (types_->KindOf(expected) == TypeKind::kFallible) {
+      const TypeKind found_kind = types_->KindOf(found);
+      const bool carries = found_kind == TypeKind::kErrorSet || (found_kind == TypeKind::kFallible && Accepts(types_->ElementOf(expected), types_->ElementOf(found)));
+      const TypeId found_set = found_kind == TypeKind::kErrorSet ? found : types_->Get(found).base;
+      if (carries && ReportErrorSets(types_->Get(expected).base, found_set, span)) {
+        return;
+      }
     }
     std::string message = "expected `";
     message.append(Describe(expected));
@@ -597,6 +649,9 @@ class Checker {
   void NarrowOnNullCheck(ExprId condition);
   TypeId CheckMatch(const Expr& expr, TypeId expected);
   void CheckExhaustive(const Expr& expr, TypeId subject);
+  void CheckFallibleExhaustive(const Expr& expr, TypeId subject);
+  TypeId CheckErrorCall(const Expr& expr, const Binding* binding);
+  bool OpensItsErrors(TypeId type) const;
   void CheckAbilityConformance(const Item& item, TypeId target);
 
   // Reports a value type that contains itself, which would have no size.
@@ -754,8 +809,14 @@ bool Checker::Accepts(TypeId expected, TypeId found) const {
   // inferred from the body (D90), so any error set fits here and the
   // inference is what works out which ones a signature really carries.
   if (types_->KindOf(expected) == TypeKind::kFallible) {
-    return types_->KindOf(found) == TypeKind::kErrorSet ||
-           Accepts(types_->ElementOf(expected), found);
+    const TypeId expected_set = types_->Get(expected).base;
+    if (types_->KindOf(found) == TypeKind::kErrorSet) {
+      return types_->ErrorSetFits(expected_set, found, nullptr) == ErrorFit::kFits;
+    }
+    if (types_->KindOf(found) == TypeKind::kFallible) {
+      return Accepts(types_->ElementOf(expected), types_->ElementOf(found)) && types_->ErrorSetFits(expected_set, types_->Get(found).base, nullptr) == ErrorFit::kFits;
+    }
+    return Accepts(types_->ElementOf(expected), found);
   }
   // A literal adapts to any numeric type of the right family.
   if (types_->KindOf(found) == TypeKind::kIntLiteral) {
@@ -1184,9 +1245,13 @@ TypeId Checker::CheckBinding(const Expr& expr, const Binding* binding) {
   }
   if (binding->kind == BindingKind::kErrorTag) {
     // An error tag is a value of the error set it belongs to.
-    return types_->ErrorSet({binding->real_name.is_valid()
-                                 ? binding->real_name
-                                 : binding->name});
+    if (types_->ErrorSetHasPayload(binding->type) && &expr != callee_path_) {
+      std::string message = "`";
+      message.append(interner_->Text(binding->real_name.is_valid() ? binding->real_name : binding->name));
+      message.append("` carries data; write it with its arguments");
+      Report(kMismatchedTypes, std::move(message), expr.span, "an error with a payload is built as `Name(...)` (D235)");
+    }
+    return binding->type.is_valid() ? binding->type : types_->error();
   }
   // Naming a function as a value reaches it as surely as calling it does,
   // so it costs the same effects; the callee of a call is charged by
@@ -1925,6 +1990,9 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
       if (!qualified_callee) {
         CheckAmbiguous(callee_expr, binding);
       }
+      if (binding != nullptr && binding->kind == BindingKind::kErrorTag) {
+        return CheckErrorCall(expr, binding);
+      }
       if (binding != nullptr && binding->kind == BindingKind::kType) {
         if (qualified_callee) {
           result_.qualified.push_back(expr.lhs);
@@ -2093,6 +2161,44 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
     }
   }
   return result;
+}
+
+TypeId Checker::CheckErrorCall(const Expr& expr, const Binding* binding) {
+  const Expr* previous_callee = callee_path_;
+  callee_path_ = &ast_.Get(expr.lhs);
+  const TypeId tag_type = Check(expr.lhs, TypeId{});
+  callee_path_ = previous_callee;
+
+  const std::vector<ErrorMember> stated = types_->StatedErrorsOf(binding->type);
+  const TypeId detail = stated.size() == 1 ? stated[0].detail : TypeId{};
+  const std::span<const ExprId> args = ast_.Get(expr.args);
+  if (!detail.is_valid()) {
+    for (ExprId arg : args) {
+      Check(arg, TypeId{});
+    }
+    if (!args.empty()) {
+      Report(kWrongArguments, "this error carries no data, so it takes no arguments", expr.span, "declare its fields: `error Name(field: Type)` (D235)");
+    }
+    return tag_type;
+  }
+
+  const std::span<const Member> fields = resolution_->MembersOf(detail);
+  if (fields.size() != args.size()) {
+    std::string message = "expected ";
+    message.append(std::to_string(fields.size()));
+    message.append(fields.size() == 1 ? " argument, found " : " arguments, found ");
+    message.append(std::to_string(args.size()));
+    Report(kWrongArguments, std::move(message), expr.span);
+  }
+
+  for (size_t i = 0; i < args.size(); ++i) {
+    const TypeId expected = i < fields.size() ? fields[i].type : TypeId{};
+    const TypeId found = Check(args[i], expected);
+    if (expected.is_valid() && !Accepts(expected, found)) {
+      ReportMismatch(expected, found, ast_.Get(args[i]).span);
+    }
+  }
+  return tag_type;
 }
 
 TypeId Checker::CheckIndex(const Expr& expr) {
@@ -2785,8 +2891,122 @@ TypeId Checker::CheckIf(const Expr& expr, TypeId expected) {
 // A `match` has to cover every value its subject can take, because a value
 // that falls through has nowhere to go. Only bool, optionals and enums have a
 // value set the compiler can enumerate; anything else needs a catch-all arm.
+void Checker::CheckFallibleExhaustive(const Expr& expr, TypeId subject) {
+  bool has_ok = false;
+  bool has_catch_all = false;
+  std::vector<Symbol> covered;
+
+  const auto cover = [&](Symbol name) {
+    const Binding* tag = Lookup(name);
+    if (tag != nullptr && tag->kind == BindingKind::kErrorTag) {
+      covered.push_back(tag->error_name);
+      return true;
+    }
+    return false;
+  };
+
+  for (MatchArmId arm_id : ast_.Get(expr.arms)) {
+    const MatchArm& arm = ast_.Get(arm_id);
+    if (arm.guard.is_valid()) {
+      continue;
+    }
+    for (PatternId pattern_id : ast_.Get(arm.patterns)) {
+      if (!ast_.Contains(pattern_id)) {
+        continue;
+      }
+      const Pattern& pattern = ast_.Get(pattern_id);
+      switch (pattern.kind) {
+        case PatternKind::kWildcard:
+        case PatternKind::kRest:
+          has_catch_all = true;
+          break;
+        case PatternKind::kBinding:
+          has_catch_all |= !cover(pattern.name);
+          break;
+        case PatternKind::kVariant:
+        case PatternKind::kStruct: {
+          const std::span<const Symbol> path = ast_.Get(pattern.path);
+          const Symbol name = path.empty() ? pattern.name : path.back();
+          if (name.is_valid() && interner_->Text(name) == "Ok") {
+            has_ok = true;
+          } else if (name.is_valid()) {
+            cover(name);
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
+
+  if (has_catch_all) {
+    return;
+  }
+
+  std::string missing;
+  const auto add = [&missing](std::string_view what) {
+    if (!missing.empty()) {
+      missing.append(", ");
+    }
+    missing.append(what);
+  };
+  if (!has_ok) {
+    add("`Ok(..)`");
+  }
+
+  const TypeId set = types_->Get(subject).base;
+  if (types_->IsOpenErrorSet(set)) {
+    add("the errors (a `_` arm, or state them with `T!(A, B)`)");
+  } else {
+    std::vector<Symbol> absent;
+    for (const ErrorMember& member : types_->StatedErrorsOf(set)) {
+      bool seen = false;
+      for (Symbol name : covered) {
+        seen |= name == member.name;
+      }
+      if (!seen) {
+        absent.push_back(member.name);
+      }
+    }
+    if (!absent.empty()) {
+      add(ErrorList(absent));
+    }
+  }
+
+  if (missing.empty()) {
+    return;
+  }
+  std::string message = "`match` does not cover every value of `";
+  message.append(Describe(subject));
+  message.append("`");
+  Report(kNonExhaustive, std::move(message), expr.span, "add an arm for " + missing + ", or a `_` arm");
+}
+
+bool Checker::OpensItsErrors(TypeId type) const {
+  switch (types_->KindOf(type)) {
+    case TypeKind::kFallible:
+      return types_->IsOpenErrorSet(types_->Get(type).base) || OpensItsErrors(types_->ElementOf(type));
+    case TypeKind::kOptional:
+      return OpensItsErrors(types_->ElementOf(type));
+    case TypeKind::kTuple:
+      for (TypeId element : types_->ArgumentsOf(type)) {
+        if (OpensItsErrors(element)) {
+          return true;
+        }
+      }
+      return false;
+    default:
+      return false;
+  }
+}
+
 void Checker::CheckExhaustive(const Expr& expr, TypeId subject) {
   if (types_->IsError(subject)) {
+    return;
+  }
+  if (types_->KindOf(subject) == TypeKind::kFallible) {
+    CheckFallibleExhaustive(expr, subject);
     return;
   }
 
@@ -3194,6 +3414,9 @@ TypeId Checker::Check(ExprId id, TypeId expected, bool keep_open) {
       type = types_->IsFallible(inner) || types_->IsOptional(inner)
                  ? types_->ElementOf(inner)
                  : inner;
+      if (types_->IsFallible(inner) && types_->IsFallible(return_type_)) {
+        ReportErrorSets(types_->Get(return_type_).base, types_->Get(inner).base, expr.span);
+      }
       break;
     }
 
@@ -3503,6 +3726,14 @@ void Checker::BindPattern(PatternId id, TypeId type,
       if (types_->KindOf(type) == TypeKind::kFallible &&
           interner_->Text(name) == "Ok") {
         carried.push_back(types_->ElementOf(type));
+      } else if (const Binding* error_tag = types_->KindOf(type) == TypeKind::kFallible ? Lookup(name) : nullptr;
+                 error_tag != nullptr && error_tag->kind == BindingKind::kErrorTag) {
+        const std::vector<ErrorMember> stated = types_->StatedErrorsOf(error_tag->type);
+        if (stated.size() == 1 && stated[0].detail.is_valid()) {
+          for (const Member& field : resolution_->MembersOf(stated[0].detail)) {
+            carried.push_back(field.type);
+          }
+        }
       } else if (const Member* member = resolution_->FindMember(
                      types_->StripWrappers(type), name);
                  member != nullptr && member->kind == MemberKind::kVariant &&
@@ -3780,6 +4011,9 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
                                       : types_->void_type();
   if (item.type.is_valid()) {
     RefuseSelfAbilityValue(return_type_, ast_.Get(item.type).span);
+    if (HasFlag(item.flags, ItemFlags::kOffer) && OpensItsErrors(return_type_)) {
+      Report(kOpenOfferedErrors, "an offered function states the errors it may return", ast_.Get(item.type).span, "write `T!(A, B)` naming them, so callers can match every case (D235)");
+    }
   }
 
   // Every type parameter has to appear in the signature.

@@ -2832,5 +2832,107 @@ ability Odd {
   WOLANG_EXPECT_EQ(twin.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheck, AnOfferedFunctionMustStateItsErrors) {
+  Fixture open("error A\noffer fun F() -> int! {\n  return 1\n}\n");
+  WOLANG_EXPECT(open.HasCode("E0150"));
+
+  Fixture stated("error A\noffer fun F() -> int!(A) {\n  return A\n}\n");
+  WOLANG_EXPECT(!stated.HasCode("E0150"));
+
+  Fixture private_open("error A\nfun F() -> int! {\n  return 1\n}\n");
+  WOLANG_EXPECT(!private_open.HasCode("E0150"));
+}
+
+WOLANG_TEST(TypeCheck, AReturnedErrorMustBeInTheStatedSet) {
+  Fixture outside("error A, B\nfun F() -> int!(A) {\n  return B\n}\n");
+  WOLANG_EXPECT(outside.HasCode("E0151"));
+
+  Fixture inside("error A, B\nfun F() -> int!(A) {\n  return A\n}\n");
+  WOLANG_EXPECT_EQ(inside.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, TryChecksTheStatedSetOfTheCaller) {
+  Fixture open_callee(
+      "error A\n"
+      "fun G() -> int! {\n  return A\n}\n"
+      "fun F() -> int!(A) {\n  return G()?\n}\n");
+  WOLANG_EXPECT(open_callee.HasCode("E0151"));
+
+  Fixture stated_callee(
+      "error A\n"
+      "fun G() -> int!A {\n  return A\n}\n"
+      "fun F() -> int!(A) {\n  return G()?\n}\n");
+  WOLANG_EXPECT(!stated_callee.HasCode("E0151"));
+}
+
+WOLANG_TEST(TypeCheck, AnErrorWithDataNeedsASetThatNamesIt) {
+  Fixture open("error P(x: int)\nfun F() -> int! {\n  return P(1)\n}\n");
+  WOLANG_EXPECT(open.HasCode("E0152"));
+
+  Fixture stated("error P(x: int)\nfun F() -> int!(P) {\n  return P(1)\n}\n");
+  WOLANG_EXPECT(!stated.HasCode("E0152"));
+  WOLANG_EXPECT_EQ(stated.Codes(), "");
+}
+
+WOLANG_TEST(TypeCheck, AnErrorWithDataIsBuiltWithItsArguments) {
+  Fixture bare("error P(x: int)\nfun F() -> int!(P) {\n  const e = P\n  return 1\n}\n");
+  WOLANG_EXPECT(bare.HasCode("E0101"));
+
+  Fixture wrong("error P(x: int)\nfun F() -> int!(P) {\n  return P(true)\n}\n");
+  WOLANG_EXPECT(wrong.HasCode("E0101"));
+}
+
+WOLANG_TEST(TypeCheck, ANamedErrorMustExist) {
+  Fixture unknown("fun F() -> int!(Nope) {\n  return 1\n}\n");
+  WOLANG_EXPECT(unknown.HasCode("E0110"));
+
+  Fixture known("error A\nfun F() -> int!(A) {\n  return 1\n}\n");
+  WOLANG_EXPECT(!known.HasCode("E0110"));
+}
+
+WOLANG_TEST(TypeCheck, MatchOnAResultMustCoverItsErrors) {
+  Fixture open(
+      "error Small\n"
+      "fun Root(x: int) -> int! {\n  return Small\n}\n"
+      "fun Use() -> int {\n"
+      "  return match Root(1) {\n    Ok(v) => v\n    Small => 0\n  }\n"
+      "}\n");
+  WOLANG_EXPECT(open.HasCode("E0201"));
+
+  Fixture open_with_catch_all(
+      "error Small\n"
+      "fun Root(x: int) -> int! {\n  return Small\n}\n"
+      "fun Use() -> int {\n"
+      "  return match Root(1) {\n    Ok(v) => v\n    _ => 0\n  }\n"
+      "}\n");
+  WOLANG_EXPECT(!open_with_catch_all.HasCode("E0201"));
+
+  Fixture stated_missing(
+      "error Small, Big\n"
+      "fun Root(x: int) -> int!(Small, Big) {\n  return Small\n}\n"
+      "fun Use() -> int {\n"
+      "  return match Root(1) {\n    Ok(v) => v\n    Small => 0\n  }\n"
+      "}\n");
+  WOLANG_EXPECT(stated_missing.HasCode("E0201"));
+
+  Fixture stated_covered(
+      "error Small, Big\n"
+      "fun Root(x: int) -> int!(Small, Big) {\n  return Small\n}\n"
+      "fun Use() -> int {\n"
+      "  return match Root(1) {\n    Ok(v) => v\n    Small => 0\n    Big => 1\n  }\n"
+      "}\n");
+  WOLANG_EXPECT(!stated_covered.HasCode("E0201"));
+}
+
+WOLANG_TEST(TypeCheck, APayloadBindsInAMatchArm) {
+  Fixture f(
+      "error P(x: int, why: text)\n"
+      "fun Make() -> int!(P) {\n  return P(7, \"no\")\n}\n"
+      "fun Use() -> int {\n"
+      "  return match Make() {\n    Ok(v) => v\n    P(x, why) => x\n  }\n"
+      "}\n");
+  WOLANG_EXPECT_EQ(f.Codes(), "");
+}
+
 }  // namespace
 }  // namespace wolang
