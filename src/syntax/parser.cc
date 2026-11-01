@@ -329,6 +329,7 @@ class Parser {
   TypeRefId ParseTypeNoSuffix();
   AstRange<TypeRefId> ParseGenericArguments();
   AstRange<Symbol> ParseDottedPath();
+  AstRange<TypeRefId> ParseErrorList();
   // Consumes the `>` that closes a generic list, splitting a `>>` token.
   bool EatAngleClose();
   bool AtAngleClose() const;
@@ -1438,6 +1439,7 @@ ItemId Parser::ParseErrorSet(Item item, size_t start) {
   item.kind = ItemKind::kErrorSet;
 
   std::vector<Symbol> names;
+  std::vector<ParamId> payload;
   for (;;) {
     SourceSpan name_span;
     const Symbol name = ExpectIdentifier(&name_span);
@@ -1449,11 +1451,21 @@ ItemId Parser::ParseErrorSet(Item item, size_t start) {
       item.name_span = name_span;
     }
     names.push_back(name);
+
+    if (At(TokenKind::kLeftParen) && !Peek().starts_line()) {
+      const AstRange<ParamId> fields = ParseParameterList(true);
+      for (ParamId field : ast_->Get(fields)) {
+        ast_->GetMutable(field).error = name;
+        payload.push_back(field);
+      }
+    }
+
     if (!Eat(TokenKind::kComma)) {
       break;
     }
   }
   item.names = ast_->AddRange(std::span<const Symbol>(names));
+  item.params = ast_->AddRange(std::span<const ParamId>(payload));
   item.span = SpanFrom(start);
   return ast_->Add(std::move(item));
 }
@@ -2757,6 +2769,26 @@ PatternId Parser::ParsePattern() {
 
 // ---------------------------------------------------------------- types -----
 
+AstRange<TypeRefId> Parser::ParseErrorList() {
+  std::vector<TypeRefId> members;
+  const bool grouped = Eat(TokenKind::kLeftParen);
+  for (;;) {
+    const size_t start = pos_;
+    TypeRef member;
+    member.kind = TypeRefKind::kPath;
+    member.path = ParseDottedPath();
+    member.span = SpanFrom(start);
+    members.push_back(ast_->Add(member));
+    if (!grouped || !Eat(TokenKind::kComma)) {
+      break;
+    }
+  }
+  if (grouped) {
+    ExpectToken(TokenKind::kRightParen);
+  }
+  return ast_->AddRange(std::span<const TypeRefId>(members));
+}
+
 AstRange<Symbol> Parser::ParseDottedPath() {
   std::vector<Symbol> segments;
   for (;;) {
@@ -3022,6 +3054,10 @@ TypeRefId Parser::ParseType() {
       TypeRef fallible;
       fallible.kind = TypeRefKind::kFallible;
       fallible.element = inner;
+      if (!Peek().starts_line() &&
+          (At(TokenKind::kLeftParen) || At(TokenKind::kIdentifier))) {
+        fallible.args = ParseErrorList();
+      }
       fallible.span = SpanFrom(start);
       inner = ast_->Add(fallible);
       continue;

@@ -621,6 +621,19 @@ class Formatter {
           }
           first = false;
           Put(Name(name));
+
+          bool first_field = true;
+          for (ParamId field : ast_.Get(item.params)) {
+            if (ast_.Get(field).error != name) {
+              continue;
+            }
+            Put(first_field ? "(" : ", ");
+            first_field = false;
+            EmitParam(field);
+          }
+          if (!first_field) {
+            Put(")");
+          }
         }
         break;
       }
@@ -1516,6 +1529,20 @@ class Formatter {
       case TypeRefKind::kFallible:
         EmitType(type.element);
         Put("!");
+        if (type.args.size() == 1) {
+          EmitType(ast_.Get(type.args)[0]);
+        } else if (!type.args.empty()) {
+          Put("(");
+          bool first_error = true;
+          for (TypeRefId error : ast_.Get(type.args)) {
+            if (!first_error) {
+              Put(", ");
+            }
+            first_error = false;
+            EmitType(error);
+          }
+          Put(")");
+        }
         return;
       case TypeRefKind::kSlice:
         Put("[]");

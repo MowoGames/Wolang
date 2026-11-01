@@ -118,6 +118,18 @@ class SignatureWriter {
       case TypeRefKind::kFallible:
         PutType(type.element);
         out_.push_back('!');
+        if (!type.args.empty()) {
+          out_.push_back('(');
+          bool first_error = true;
+          for (TypeRefId error : ast_.Get(type.args)) {
+            if (!first_error) {
+              out_.push_back(',');
+            }
+            first_error = false;
+            PutType(error);
+          }
+          out_.push_back(')');
+        }
         return;
       case TypeRefKind::kSlice:
         out_.push_back('[');
@@ -237,6 +249,10 @@ class SignatureWriter {
       const Param& param = ast_.Get(id);
       if (param.is_mutable) {
         Put("mut ");
+      }
+      if (param.error.is_valid()) {
+        out_.push_back('@');
+        PutName(param.error);
       }
       PutName(param.name);
       out_.push_back(':');

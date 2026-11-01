@@ -636,6 +636,46 @@ WOLANG_TEST(Parser, FallibleAndOptionalTypesArePostfix) {
                 std::string::npos);
 }
 
+WOLANG_TEST(Parser, StatedErrorSets) {
+  Fixture fixture(
+      "fun A() -> int!Small
+"
+      "fun B() -> int!(Small, json.Malformed)
+"
+      "fun C() -> int?!(Small)
+");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.TreeContains("(type Small)"));
+  WOLANG_EXPECT(fixture.TreeContains("(type json.Malformed)"));
+}
+
+WOLANG_TEST(Parser, ABangAtTheEndOfALineStatesNoErrors) {
+  Fixture fixture(
+      "fun A() -> int!
+"
+      "Small
+");
+  WOLANG_EXPECT(!fixture.TreeContains("(type Small)
+        (type int)"));
+  WOLANG_EXPECT(fixture.TreeContains("(fallible
+"));
+}
+
+WOLANG_TEST(Parser, ErrorsCarryData) {
+  Fixture fixture("error Plain, Bad(line: int, why: text)
+");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.TreeContains("(names Plain Bad)"));
+  WOLANG_EXPECT(fixture.TreeContains("line"));
+  WOLANG_EXPECT(fixture.TreeContains("why"));
+}
+
+WOLANG_TEST(Parser, AnEmptyStatedSetIsAnError) {
+  Fixture fixture("fun A() -> int!()
+");
+  WOLANG_EXPECT(!fixture.Codes().empty());
+}
+
 WOLANG_TEST(Parser, SliceAndArrayTypes) {
   Fixture fixture(
       "fun Sum(xs: []float) -> float\n"

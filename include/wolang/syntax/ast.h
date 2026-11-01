@@ -389,7 +389,8 @@ struct TypeRef {
   TypeRefFlags flags = TypeRefFlags::kNone;
   SourceSpan span;
   AstRange<Symbol> path;
-  // Generic arguments, tuple elements, or function parameter types.
+  // Generic arguments, tuple elements, function parameter types, or the
+  // errors a `T!(A, B)` states (D235; empty means any error).
   AstRange<TypeRefId> args;
   // The inner type of an optional, fallible, pointer, reference, slice,
   // array, `mut`, `with` or `without`, or the return type of a function type.
@@ -426,6 +427,8 @@ struct Param {
   TypeRefId type;
   ExprId default_value;
   AstRange<AttributeId> attributes;
+  // The error whose payload this field belongs to (D235); invalid elsewhere.
+  Symbol error;
   bool is_mutable = false;
 };
 
