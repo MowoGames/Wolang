@@ -27,6 +27,24 @@ constexpr std::string_view kVersionMismatch = "E0053";
 
 namespace fs = std::filesystem;
 
+// How a path or a revision goes into a command line. `cmd.exe` takes only
+// double quotes and has no /dev/null, which is why a fetch never got past
+// the first `git` on Windows (D286).
+#if defined(_WIN32)
+constexpr char kQuote = '"';
+constexpr std::string_view kDiscardErrors = "2>NUL";
+#else
+constexpr char kQuote = '\'';
+constexpr std::string_view kDiscardErrors = "2>/dev/null";
+#endif
+
+std::string ShellQuoted(const std::string& value) {
+  std::string quoted(1, kQuote);
+  quoted.append(value);
+  quoted.push_back(kQuote);
+  return quoted;
+}
+
 // Exceptions are disabled, so every filesystem call uses its error_code
 // overload and failures are reported rather than thrown.
 bool Exists(const fs::path& path) {
@@ -229,27 +247,34 @@ class Loader {
     std::string command = "git clone --quiet --depth 1 ";
     // A revision that is a commit cannot be cloned shallowly by name, so
     // a full clone is the fallback.
-    command.append("--branch '");
-    command.append(dependency.revision);
-    command.append("' '");
-    command.append(dependency.git);
-    command.append("' '");
-    command.append(top.string());
-    command.append("' 2>/dev/null");
+    command.append("--branch ");
+    command.append(ShellQuoted(dependency.revision));
+    command.append(" ");
+    command.append(ShellQuoted(dependency.git));
+    command.append(" ");
+    command.append(ShellQuoted(top.string()));
+    command.append(" ");
+    command.append(kDiscardErrors);
     int status = std::system(command.c_str());
     if (status != 0) {
-      std::string full = "git clone --quiet '";
-      full.append(dependency.git);
-      full.append("' '");
-      full.append(top.string());
-      full.append("' 2>/dev/null");
+      // The failed attempt may have left a directory that a clone refuses
+      // to use.
+      fs::remove_all(top, failed);
+      fs::create_directories(top, failed);
+      std::string full = "git clone --quiet ";
+      full.append(ShellQuoted(dependency.git));
+      full.append(" ");
+      full.append(ShellQuoted(top.string()));
+      full.append(" ");
+      full.append(kDiscardErrors);
       status = std::system(full.c_str());
       if (status == 0) {
-        std::string at = "git -C '";
-        at.append(top.string());
-        at.append("' checkout --quiet '");
-        at.append(dependency.revision);
-        at.append("' 2>/dev/null");
+        std::string at = "git -C ";
+        at.append(ShellQuoted(top.string()));
+        at.append(" checkout --quiet ");
+        at.append(ShellQuoted(dependency.revision));
+        at.append(" ");
+        at.append(kDiscardErrors);
         status = std::system(at.c_str());
       }
     }
@@ -268,9 +293,10 @@ class Loader {
   // The commit a checkout is at, or the revision that was asked for.
   std::string RevisionOf(const fs::path& checkout,
                          const ManifestDependency& dependency) const {
-    std::string command = "git -C '";
-    command.append(checkout.string());
-    command.append("' rev-parse HEAD 2>/dev/null");
+    std::string command = "git -C ";
+    command.append(ShellQuoted(checkout.string()));
+    command.append(" rev-parse HEAD ");
+    command.append(kDiscardErrors);
     FILE* pipe = WOLANG_POPEN(command.c_str(), "r");
     if (pipe == nullptr) {
       return dependency.revision;
