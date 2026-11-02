@@ -6,18 +6,43 @@ need gfx.{Open, Window}
 extern "C" fun wolang_gpu_ready() -> s32
 extern "C" fun wolang_gpu_version() -> *u8
 extern "C" fun wolang_gpu_error() -> s32
-extern "C" fun wolang_gpu_clear(red: f32, green: f32, blue: f32, alpha: f32, depth: f32, mask: s32)
+extern "C" fun wolang_gpu_clear(
+    red: f32,
+    green: f32,
+    blue: f32,
+    alpha: f32,
+    depth: f32,
+    mask: s32)
 extern "C" fun wolang_gpu_viewport(x: s32, y: s32, width: s32, height: s32)
 extern "C" fun wolang_gpu_blend(enabled: s32, source: s32, destination: s32)
 extern "C" fun wolang_gpu_depth(test: s32, write: s32, compare: s32)
 extern "C" fun wolang_gpu_cull(mode: s32)
-extern "C" fun wolang_gpu_scissor(enabled: s32, x: s32, y: s32, width: s32, height: s32)
+extern "C" fun wolang_gpu_scissor(
+    enabled: s32,
+    x: s32,
+    y: s32,
+    width: s32,
+    height: s32)
 extern "C" fun wolang_gpu_buffer_new() -> u32
-extern "C" fun wolang_gpu_vertex_data(buffer: u32, data: *f32, count: s64, dynamic: s32)
-extern "C" fun wolang_gpu_index_data(buffer: u32, data: *u32, count: s64, dynamic: s32)
+extern "C" fun wolang_gpu_vertex_data(
+    buffer: u32,
+    data: *f32,
+    count: s64,
+    dynamic: s32)
+extern "C" fun wolang_gpu_index_data(
+    buffer: u32,
+    data: *u32,
+    count: s64,
+    dynamic: s32)
 extern "C" fun wolang_gpu_buffer_delete(buffer: u32)
 extern "C" fun wolang_gpu_layout_new() -> u32
-extern "C" fun wolang_gpu_layout_attribute(layout: u32, buffer: u32, index: s32, count: s32, stride: s32, offset: s32)
+extern "C" fun wolang_gpu_layout_attribute(
+    layout: u32,
+    buffer: u32,
+    index: s32,
+    count: s32,
+    stride: s32,
+    offset: s32)
 extern "C" fun wolang_gpu_layout_indices(layout: u32, buffer: u32)
 extern "C" fun wolang_gpu_layout_delete(layout: u32)
 extern "C" fun wolang_gpu_program_new(vertex: *u8, fragment: *u8) -> u32
@@ -25,19 +50,45 @@ extern "C" fun wolang_gpu_program_log() -> *u8
 extern "C" fun wolang_gpu_program_use(program: u32)
 extern "C" fun wolang_gpu_program_delete(program: u32)
 extern "C" fun wolang_gpu_uniform(program: u32, name: *u8) -> s32
-extern "C" fun wolang_gpu_uniform_float(location: s32, count: s32, a: f32, b: f32, c: f32, d: f32)
+extern "C" fun wolang_gpu_uniform_float(
+    location: s32,
+    count: s32,
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32)
 extern "C" fun wolang_gpu_uniform_int(location: s32, value: s32)
 extern "C" fun wolang_gpu_uniform_matrix(location: s32, matrix: *f32)
-extern "C" fun wolang_gpu_texture_new(width: s32, height: s32, rgba: *u8, filter: s32, wrap: s32) -> u32
-extern "C" fun wolang_gpu_texture_update(texture: u32, x: s32, y: s32, width: s32, height: s32, rgba: *u8)
+extern "C" fun wolang_gpu_texture_new(
+    width: s32,
+    height: s32,
+    rgba: *u8,
+    filter: s32,
+    wrap: s32) -> u32
+extern "C" fun wolang_gpu_texture_update(
+    texture: u32,
+    x: s32,
+    y: s32,
+    width: s32,
+    height: s32,
+    rgba: *u8)
 extern "C" fun wolang_gpu_texture_bind(unit: s32, texture: u32)
 extern "C" fun wolang_gpu_texture_delete(texture: u32)
 extern "C" fun wolang_gpu_target_new(texture: u32) -> u32
 extern "C" fun wolang_gpu_target_bind(target: u32)
 extern "C" fun wolang_gpu_target_delete(target: u32)
 extern "C" fun wolang_gpu_draw(layout: u32, mode: s32, first: s32, count: s32)
-extern "C" fun wolang_gpu_draw_indexed(layout: u32, mode: s32, count: s32, first: s32)
-extern "C" fun wolang_gpu_read(x: s32, y: s32, width: s32, height: s32, rgba: *mut u8) -> s32
+extern "C" fun wolang_gpu_draw_indexed(
+    layout: u32,
+    mode: s32,
+    count: s32,
+    first: s32)
+extern "C" fun wolang_gpu_read(
+    x: s32,
+    y: s32,
+    width: s32,
+    height: s32,
+    rgba: *mut u8) -> s32
 
 offer error CompileFailed(log: text)
 
@@ -71,38 +122,11 @@ offer const kCullNone: int = 0
 offer const kCullBack: int = 1
 offer const kCullFront: int = 2
 
-offer const kSpriteVertex: text = r"#version 330 core
-layout(location = 0) in vec2 a_position;
-layout(location = 1) in vec2 a_uv;
-layout(location = 2) in vec4 a_colour;
-uniform mat4 u_view;
-out vec2 v_uv;
-out vec4 v_colour;
-void main() {
-  v_uv = a_uv;
-  v_colour = a_colour;
-  gl_Position = u_view * vec4(a_position, 0.0, 1.0);
-}
-"
+offer const kSpriteVertex: text = "#version 330 core\r\nlayout(location = 0) in vec2 a_position;\r\nlayout(location = 1) in vec2 a_uv;\r\nlayout(location = 2) in vec4 a_colour;\r\nuniform mat4 u_view;\r\nout vec2 v_uv;\r\nout vec4 v_colour;\r\nvoid main() \{\r\n  v_uv = a_uv;\r\n  v_colour = a_colour;\r\n  gl_Position = u_view * vec4(a_position, 0.0, 1.0);\r\n}\r\n"
 
-offer const kSpriteFragment: text = r"#version 330 core
-in vec2 v_uv;
-in vec4 v_colour;
-uniform sampler2D u_texture;
-out vec4 o_colour;
-void main() {
-  o_colour = texture(u_texture, v_uv) * v_colour;
-}
-"
+offer const kSpriteFragment: text = "#version 330 core\r\nin vec2 v_uv;\r\nin vec4 v_colour;\r\nuniform sampler2D u_texture;\r\nout vec4 o_colour;\r\nvoid main() \{\r\n  o_colour = texture(u_texture, v_uv) * v_colour;\r\n}\r\n"
 
-offer const kSolidFragment: text = r"#version 330 core
-in vec2 v_uv;
-in vec4 v_colour;
-out vec4 o_colour;
-void main() {
-  o_colour = v_colour;
-}
-"
+offer const kSolidFragment: text = "#version 330 core\r\nin vec2 v_uv;\r\nin vec4 v_colour;\r\nout vec4 o_colour;\r\nvoid main() \{\r\n  o_colour = v_colour;\r\n}\r\n"
 
 offer fun WithHeader(source: text) -> text uses unsafe {
   if Contains(source, "#version") {
@@ -138,7 +162,13 @@ offer struct Target {
 
 offer ability Backend {
   fun Name() -> text
-  fun Clear(red: float, green: float, blue: float, alpha: float, depth: float, mask: int) uses unsafe
+  fun Clear(
+      red: float,
+      green: float,
+      blue: float,
+      alpha: float,
+      depth: float,
+      mask: int) uses unsafe
   fun Viewport(x: int, y: int, width: int, height: int) uses unsafe
   fun Blend(enabled: bool, source: int, destination: int) uses unsafe
   fun Depth(test: bool, write: bool, compare: int) uses unsafe
@@ -149,7 +179,13 @@ offer ability Backend {
   fun IndexData(buffer: int, data: []u32, dynamic: bool) uses unsafe
   fun BufferDelete(buffer: int) uses unsafe
   fun LayoutNew() -> int uses unsafe
-  fun LayoutAttribute(layout: int, buffer: int, index: int, count: int, stride: int, offset: int) uses unsafe
+  fun LayoutAttribute(
+      layout: int,
+      buffer: int,
+      index: int,
+      count: int,
+      stride: int,
+      offset: int) uses unsafe
   fun LayoutIndices(layout: int, buffer: int) uses unsafe
   fun LayoutDelete(layout: int) uses unsafe
   fun ProgramNew(vertex: text, fragment: text) -> int uses unsafe
@@ -157,11 +193,28 @@ offer ability Backend {
   fun ProgramUse(program: int) uses unsafe
   fun ProgramDelete(program: int) uses unsafe
   fun Uniform(program: int, name: text) -> int uses unsafe
-  fun UniformFloat(location: int, count: int, a: float, b: float, c: float, d: float) uses unsafe
+  fun UniformFloat(
+      location: int,
+      count: int,
+      a: float,
+      b: float,
+      c: float,
+      d: float) uses unsafe
   fun UniformInt(location: int, value: int) uses unsafe
   fun UniformMatrix(location: int, values: []f32) uses unsafe
-  fun TextureNew(width: int, height: int, rgba: []u8, linear: bool, repeat: bool) -> int uses unsafe
-  fun TextureUpdate(texture: int, x: int, y: int, width: int, height: int, rgba: []u8) uses unsafe
+  fun TextureNew(
+      width: int,
+      height: int,
+      rgba: []u8,
+      linear: bool,
+      repeat: bool) -> int uses unsafe
+  fun TextureUpdate(
+      texture: int,
+      x: int,
+      y: int,
+      width: int,
+      height: int,
+      rgba: []u8) uses unsafe
   fun TextureBind(unit: int, texture: int) uses unsafe
   fun TextureDelete(texture: int) uses unsafe
   fun TargetNew(texture: int) -> int uses unsafe
@@ -208,7 +261,13 @@ offer class OpenGl {
 extend OpenGl as Backend {
   fun Name() -> text => "opengl"
 
-  fun Clear(red: float, green: float, blue: float, alpha: float, depth: float, mask: int) uses unsafe {
+  fun Clear(
+      red: float,
+      green: float,
+      blue: float,
+      alpha: float,
+      depth: float,
+      mask: int) uses unsafe {
     wolang_gpu_clear(red, green, blue, alpha, depth, mask as s32)
   }
 
@@ -229,7 +288,12 @@ extend OpenGl as Backend {
   }
 
   fun Scissor(enabled: bool, x: int, y: int, width: int, height: int) uses unsafe {
-    wolang_gpu_scissor(Flag(enabled), x as s32, y as s32, width as s32, height as s32)
+    wolang_gpu_scissor(
+        Flag(enabled),
+        x as s32,
+        y as s32,
+        width as s32,
+        height as s32)
   }
 
   fun BufferNew() -> int uses unsafe {
@@ -240,14 +304,22 @@ extend OpenGl as Backend {
     if data.len == 0 {
       return
     }
-    wolang_gpu_vertex_data(buffer as u32, &data[0], data.len as s64, Flag(dynamic))
+    wolang_gpu_vertex_data(
+        buffer as u32,
+        &data[0],
+        data.len as s64,
+        Flag(dynamic))
   }
 
   fun IndexData(buffer: int, data: []u32, dynamic: bool) uses unsafe {
     if data.len == 0 {
       return
     }
-    wolang_gpu_index_data(buffer as u32, &data[0], data.len as s64, Flag(dynamic))
+    wolang_gpu_index_data(
+        buffer as u32,
+        &data[0],
+        data.len as s64,
+        Flag(dynamic))
   }
 
   fun BufferDelete(buffer: int) uses unsafe {
@@ -258,8 +330,20 @@ extend OpenGl as Backend {
     return wolang_gpu_layout_new() as int
   }
 
-  fun LayoutAttribute(layout: int, buffer: int, index: int, count: int, stride: int, offset: int) uses unsafe {
-    wolang_gpu_layout_attribute(layout as u32, buffer as u32, index as s32, count as s32, stride as s32, offset as s32)
+  fun LayoutAttribute(
+      layout: int,
+      buffer: int,
+      index: int,
+      count: int,
+      stride: int,
+      offset: int) uses unsafe {
+    wolang_gpu_layout_attribute(
+        layout as u32,
+        buffer as u32,
+        index as s32,
+        count as s32,
+        stride as s32,
+        offset as s32)
   }
 
   fun LayoutIndices(layout: int, buffer: int) uses unsafe {
@@ -297,7 +381,13 @@ extend OpenGl as Backend {
     return location
   }
 
-  fun UniformFloat(location: int, count: int, a: float, b: float, c: float, d: float) uses unsafe {
+  fun UniformFloat(
+      location: int,
+      count: int,
+      a: float,
+      b: float,
+      c: float,
+      d: float) uses unsafe {
     wolang_gpu_uniform_float(location as s32, count as s32, a, b, c, d)
   }
 
@@ -312,19 +402,46 @@ extend OpenGl as Backend {
     wolang_gpu_uniform_matrix(location as s32, &values[0])
   }
 
-  fun TextureNew(width: int, height: int, rgba: []u8, linear: bool, repeat: bool) -> int uses unsafe {
+  fun TextureNew(
+      width: int,
+      height: int,
+      rgba: []u8,
+      linear: bool,
+      repeat: bool) -> int uses unsafe {
     if rgba.len < width * height * 4 {
-      return wolang_gpu_texture_new(width as s32, height as s32, 0 as *u8, Flag(linear), Flag(repeat)) as int
+      return wolang_gpu_texture_new(
+          width as s32,
+          height as s32,
+          0 as *u8,
+          Flag(linear),
+          Flag(repeat)) as int
     }
 
-    return wolang_gpu_texture_new(width as s32, height as s32, &rgba[0], Flag(linear), Flag(repeat)) as int
+    return wolang_gpu_texture_new(
+        width as s32,
+        height as s32,
+        &rgba[0],
+        Flag(linear),
+        Flag(repeat)) as int
   }
 
-  fun TextureUpdate(texture: int, x: int, y: int, width: int, height: int, rgba: []u8) uses unsafe {
+  fun TextureUpdate(
+      texture: int,
+      x: int,
+      y: int,
+      width: int,
+      height: int,
+      rgba: []u8) uses unsafe {
     if rgba.len < width * height * 4 {
       return
     }
-    wolang_gpu_texture_update(texture as u32, x as s32, y as s32, width as s32, height as s32, &rgba[0])
+    wolang_gpu_texture_update(
+        texture as u32,
+        x as s32,
+        y as s32,
+        width as s32,
+        height as s32,
+        &rgba[0])
   }
 
   fun TextureBind(unit: int, texture: int) uses unsafe {
@@ -352,7 +469,11 @@ extend OpenGl as Backend {
   }
 
   fun DrawIndexed(layout: int, mode: int, count: int, first: int) uses unsafe {
-    wolang_gpu_draw_indexed(layout as u32, mode as s32, count as s32, first as s32)
+    wolang_gpu_draw_indexed(
+        layout as u32,
+        mode as s32,
+        count as s32,
+        first as s32)
   }
 
   fun Read(x: int, y: int, width: int, height: int, out: []mut u8) -> bool uses unsafe {
@@ -360,7 +481,12 @@ extend OpenGl as Backend {
       return false
     }
 
-    return wolang_gpu_read(x as s32, y as s32, width as s32, height as s32, &out[0]) != 0
+    return wolang_gpu_read(
+        x as s32,
+        y as s32,
+        width as s32,
+        height as s32,
+        &out[0]) != 0
   }
 
   fun Error() -> int uses unsafe {
@@ -450,13 +576,36 @@ offer class Null {
 }
 
 offer fun NullNew() -> Null uses unsafe {
-  return Null(1, ListNew<int>(), ListNew<int>(), ListNew<int>(), ListNew<int>(), ListNew<int>(), ListNew<text>(), 0, "", ListNew<text>(), 0, 0, 0.0, 0.0, 0.0, 0.0, 0)
+  return Null(
+      1,
+      ListNew<int>(),
+      ListNew<int>(),
+      ListNew<int>(),
+      ListNew<int>(),
+      ListNew<int>(),
+      ListNew<text>(),
+      0,
+      "",
+      ListNew<text>(),
+      0,
+      0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0)
 }
 
 extend Null as Backend {
   fun Name() -> text => "null"
 
-  fun Clear(red: float, green: float, blue: float, alpha: float, _depth: float, mask: int) uses unsafe {
+  fun Clear(
+      red: float,
+      green: float,
+      blue: float,
+      alpha: float,
+      _depth: float,
+      mask: int) uses unsafe {
     clear_red = red
     clear_green = green
     clear_blue = blue
@@ -512,7 +661,13 @@ extend Null as Backend {
     return id
   }
 
-  fun LayoutAttribute(layout: int, buffer: int, index: int, count: int, stride: int, offset: int) uses unsafe {
+  fun LayoutAttribute(
+      layout: int,
+      buffer: int,
+      index: int,
+      count: int,
+      stride: int,
+      offset: int) uses unsafe {
     Need(layouts, layout, "layout")
     Need(buffers, buffer, "buffer")
     Record("attribute {layout} {buffer} {index} {count} {stride} {offset}")
@@ -582,7 +737,13 @@ extend Null as Backend {
     return -1
   }
 
-  fun UniformFloat(location: int, count: int, _a: float, _b: float, _c: float, _d: float) uses unsafe {
+  fun UniformFloat(
+      location: int,
+      count: int,
+      _a: float,
+      _b: float,
+      _c: float,
+      _d: float) uses unsafe {
     if bound_program == 0 {
       errors = errors + 1
       Record("error uniform without program")
@@ -609,7 +770,12 @@ extend Null as Backend {
     Record("uniform-matrix {location}")
   }
 
-  fun TextureNew(width: int, height: int, _rgba: []u8, _linear: bool, _repeat: bool) -> int uses unsafe {
+  fun TextureNew(
+      width: int,
+      height: int,
+      _rgba: []u8,
+      _linear: bool,
+      _repeat: bool) -> int uses unsafe {
     if width < 1 || height < 1 {
       errors = errors + 1
       Record("error texture size")
@@ -623,7 +789,13 @@ extend Null as Backend {
     return id
   }
 
-  fun TextureUpdate(texture: int, x: int, y: int, width: int, height: int, rgba: []u8) uses unsafe {
+  fun TextureUpdate(
+      texture: int,
+      x: int,
+      y: int,
+      width: int,
+      height: int,
+      rgba: []u8) uses unsafe {
     Need(textures, texture, "texture")
     if rgba.len < width * height * 4 {
       errors = errors + 1
@@ -732,8 +904,20 @@ offer class Device {
     return Layout(backend.LayoutNew())
   }
 
-  fun LayoutAttribute(layout: Layout, buffer: Buffer, index: int, count: int, stride: int, offset: int) uses unsafe {
-    backend.LayoutAttribute(layout.id, buffer.id, index, count, stride * 4, offset * 4)
+  fun LayoutAttribute(
+      layout: Layout,
+      buffer: Buffer,
+      index: int,
+      count: int,
+      stride: int,
+      offset: int) uses unsafe {
+    backend.LayoutAttribute(
+        layout.id,
+        buffer.id,
+        index,
+        count,
+        stride * 4,
+        offset * 4)
   }
 
   fun LayoutIndices(layout: Layout, buffer: Buffer) uses unsafe {
@@ -744,7 +928,7 @@ offer class Device {
     backend.LayoutDelete(layout.id)
   }
 
-  fun ProgramNew(vertex: text, fragment: text) -> Program!(CompileFailed) uses unsafe {
+  fun ProgramNew(vertex: text, fragment: text) -> Program!CompileFailed uses unsafe {
     const id = backend.ProgramNew(WithHeader(vertex), WithHeader(fragment))
     if id == 0 {
       return CompileFailed(backend.ProgramLog())
@@ -789,11 +973,25 @@ offer class Device {
     backend.UniformMatrix(location, values)
   }
 
-  fun TextureNew(width: int, height: int, rgba: []u8, linear: bool, repeat: bool) -> Texture uses unsafe {
-    return Texture(backend.TextureNew(width, height, rgba, linear, repeat), width, height)
+  fun TextureNew(
+      width: int,
+      height: int,
+      rgba: []u8,
+      linear: bool,
+      repeat: bool) -> Texture uses unsafe {
+    return Texture(
+        backend.TextureNew(width, height, rgba, linear, repeat),
+        width,
+        height)
   }
 
-  fun TextureUpdate(texture: Texture, x: int, y: int, width: int, height: int, rgba: []u8) uses unsafe {
+  fun TextureUpdate(
+      texture: Texture,
+      x: int,
+      y: int,
+      width: int,
+      height: int,
+      rgba: []u8) uses unsafe {
     backend.TextureUpdate(texture.id, x, y, width, height, rgba)
   }
 
@@ -818,7 +1016,15 @@ offer class Device {
     backend.TargetDelete(target.id)
   }
 
-  fun Begin(target: Target?, width: int, height: int, red: float, green: float, blue: float, alpha: float, clear_depth: bool) uses unsafe {
+  fun Begin(
+      target: Target?,
+      width: int,
+      height: int,
+      red: float,
+      green: float,
+      blue: float,
+      alpha: float,
+      clear_depth: bool) uses unsafe {
     var id = 0
     var w = width
     var h = height
@@ -904,7 +1110,7 @@ fun Quad() -> []mut f32 uses unsafe {
 
 @Test
 fun WrapsAShaderWithItsHeaderOnlyOnce() -> bool uses unsafe {
-  const bare = WithHeader("void main() \{\}")
+  const bare = WithHeader("void main() \{}")
   if !Contains(bare, "#version 330 core") || !Contains(bare, "void main") {
     return false
   }
@@ -914,7 +1120,11 @@ fun WrapsAShaderWithItsHeaderOnlyOnce() -> bool uses unsafe {
 
 @Test
 fun KnowsTheBuiltInShaders() -> bool uses unsafe {
-  return Contains(kSpriteVertex, "u_view") && Contains(kSpriteFragment, "u_texture") && Contains(kSolidFragment, "o_colour") && Contains(kSpriteVertex, "void main")
+  return Contains(kSpriteVertex, "u_view") && Contains(
+      kSpriteFragment,
+      "u_texture") && Contains(kSolidFragment, "o_colour") && Contains(
+      kSpriteVertex,
+      "void main")
 }
 
 @Test
@@ -930,16 +1140,18 @@ fun BuildsAMeshAndDrawsIt() -> bool uses unsafe {
       device.ProgramUse(program)
       device.Draw(layout, kTriangles, 0, 6)
       device.ProgramDelete(program)
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
   device.LayoutDelete(layout)
   device.BufferDelete(buffer)
   Free(vertices)
 
-  return device.Error() == 0 && null_backend.Count(null_backend.buffers) == 0 && null_backend.Count(null_backend.layouts) == 0 && null_backend.Count(null_backend.programs) == 0 && device.Name() == "null"
+  return device.Error() == 0 && null_backend.Count(null_backend.buffers) == 0 && null_backend.Count(
+      null_backend.layouts) == 0 && null_backend.Count(null_backend.programs) == 0 && device.Name(
+      ) == "null"
 }
 
 @Test
@@ -953,7 +1165,9 @@ fun RecordsEveryCallInOrder() -> bool uses unsafe {
     return false
   }
 
-  return null_backend.log.At(0) == "bind-target 0" && null_backend.log.At(1) == "viewport 0 0 640 480" && null_backend.log.At(2) == "clear mask=3" && null_backend.log.At(3) == "blend true 2 3" && null_backend.log.At(4) == "bind-target 0"
+  return null_backend.log.At(0) == "bind-target 0" && null_backend.log.At(1) == "viewport 0 0 640 480" && null_backend.log.At(
+      2) == "clear mask=3" && null_backend.log.At(3) == "blend true 2 3" && null_backend.log.At(
+      4) == "bind-target 0"
 }
 
 @Test
@@ -962,13 +1176,13 @@ fun RefusesAShaderWithNoMainAndSaysWhy() -> bool uses unsafe {
   match device.ProgramNew("nothing here", kSolidFragment) {
     Ok(_) => {
       return false
-    },
+    }
     CompileFailed(log) => {
       return log == "vertex: no main"
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -978,13 +1192,13 @@ fun RefusesAFragmentShaderWithNoMain() -> bool uses unsafe {
   match device.ProgramNew(kSpriteVertex, "nothing") {
     Ok(_) => {
       return false
-    },
+    }
     CompileFailed(log) => {
       return log == "fragment: no main"
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -993,11 +1207,13 @@ fun FindsOnlyTheUniformsAShaderDeclares() -> bool uses unsafe {
   var device = DeviceNew(NullNew())
   match device.ProgramNew(kSpriteVertex, kSpriteFragment) {
     Ok(program) => {
-      return device.Uniform(program, "u_view") >= 0 && device.Uniform(program, "u_texture") >= 0 && device.Uniform(program, "u_nope") == -1
-    },
+      return device.Uniform(program, "u_view") >= 0 && device.Uniform(
+          program,
+          "u_texture") >= 0 && device.Uniform(program, "u_nope") == -1
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -1036,10 +1252,10 @@ fun AcceptsUniformsOnceAProgramIsInUse() -> bool uses unsafe {
       device.SetVec4(1, 1.0, 2.0, 3.0, 4.0)
       device.SetInt(1, 7)
       device.SetMatrix(1, values)
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
   Free(values)
 
@@ -1064,7 +1280,8 @@ fun HoldsTexturesAndTargets() -> bool uses unsafe {
   device.TextureDelete(texture)
   Free(pixels)
 
-  return device.Error() == 0 && null_backend.Count(null_backend.textures) == 0 && null_backend.Count(null_backend.targets) == 0 && null_backend.log.At(5) == "viewport 0 0 2 2"
+  return device.Error() == 0 && null_backend.Count(null_backend.textures) == 0 && null_backend.Count(
+      null_backend.targets) == 0 && null_backend.log.At(5) == "viewport 0 0 2 2"
 }
 
 @Test
@@ -1103,10 +1320,10 @@ fun DrawsIndexed() -> bool uses unsafe {
     Ok(program) => {
       device.ProgramUse(program)
       device.DrawIndexed(layout, kTriangles, 6, 0)
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
   Free(vertices)
   Free(order)
@@ -1122,7 +1339,8 @@ fun SetsStateWithoutAContext() -> bool uses unsafe {
   device.Depth(true, true, kLessOrEqual)
   device.Scissor(true, 1, 2, 3, 4)
 
-  return null_backend.log.Len() == 3 && null_backend.log.At(0) == "cull 1" && null_backend.log.At(2) == "scissor true 1 2 3 4"
+  return null_backend.log.Len() == 3 && null_backend.log.At(0) == "cull 1" && null_backend.log.At(
+      2) == "scissor true 1 2 3 4"
 }
 
 @Test
@@ -1137,9 +1355,9 @@ fun SaysNoWhenThereIsNoWindow() -> bool uses unsafe {
   match OpenGlStart(window) {
     null => {
       return true
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 }

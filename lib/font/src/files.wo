@@ -44,7 +44,8 @@ offer fun SystemFontFile(name: text) -> text? uses io, unsafe {
 }
 
 offer fun Available() -> bool uses io, unsafe {
-  return SystemFontFile("arial") != null || SystemFontFile("DejaVuSans") != null || SystemFontFile("Helvetica") != null
+  return SystemFontFile("arial") != null || SystemFontFile("DejaVuSans") != null || SystemFontFile(
+      "Helvetica") != null
 }
 
 offer fun FontLoadFile(path: text) -> Font!(Malformed, TooLarge, Unsupported, Missing) uses io, unsafe {
@@ -70,20 +71,38 @@ offer fun SampleFont() -> Font!(Malformed, TooLarge, Unsupported) uses unsafe {
 
 fun SampleOf() -> Font? uses unsafe {
   match SampleFont() {
-    Ok(font) => { return font },
-    Malformed => { return null },
-    TooLarge => { return null },
-    Unsupported => { return null },
+    Ok(font) => {
+      return font
+    }
+    Malformed => {
+      return null
+    }
+    TooLarge => {
+      return null
+    }
+    Unsupported => {
+      return null
+    }
   }
 }
 
 fun LoadCode(path: text) -> int uses io, unsafe {
   match FontLoadFile(path) {
-    Ok(_font) => { return 0 },
-    Malformed => { return 1 },
-    TooLarge => { return 2 },
-    Unsupported => { return 3 },
-    Missing => { return 4 },
+    Ok(_font) => {
+      return 0
+    }
+    Malformed => {
+      return 1
+    }
+    TooLarge => {
+      return 2
+    }
+    Unsupported => {
+      return 3
+    }
+    Missing => {
+      return 4
+    }
   }
 }
 
@@ -95,9 +114,11 @@ fun AnUnknownSystemFontIsNull() -> bool uses io, unsafe {
 @Test
 fun AvailableAgreesWithTheFontSearch() -> bool uses io, unsafe {
   if Available() {
-    return SystemFontFile("arial") != null || SystemFontFile("DejaVuSans") != null || SystemFontFile("Helvetica") != null
+    return SystemFontFile("arial") != null || SystemFontFile("DejaVuSans") != null || SystemFontFile(
+        "Helvetica") != null
   }
-  return SystemFontFile("arial") == null && SystemFontFile("DejaVuSans") == null && SystemFontFile("Helvetica") == null
+  return SystemFontFile("arial") == null && SystemFontFile("DejaVuSans") == null && SystemFontFile(
+      "Helvetica") == null
 }
 
 @Test
@@ -117,7 +138,10 @@ fun LoadsAFontFromAFileAndRefusesOthers() -> bool uses io, unsafe {
 @Test
 fun TheSampleFontHasLettersDigitsAndPunctuation() -> bool uses unsafe {
   if const font = SampleOf() {
-    return font.UnitsPerEm() == 16 && font.GlyphIndex(65) != 0 && font.GlyphIndex(97) == font.GlyphIndex(65) && font.GlyphIndex(48) != 0 && font.GlyphIndex(33) != 0 && font.GlyphIndex(32) != 0 && font.GlyphIndex(126) == 0 && font.GlyphIndex(19999) == 0
+    return font.UnitsPerEm() == 16 && font.GlyphIndex(65) != 0 && font.GlyphIndex(
+        97) == font.GlyphIndex(65) && font.GlyphIndex(48) != 0 && font.GlyphIndex(
+        33) != 0 && font.GlyphIndex(32) != 0 && font.GlyphIndex(126) == 0 && font.GlyphIndex(
+        19999) == 0
   }
   return false
 }
@@ -125,7 +149,10 @@ fun TheSampleFontHasLettersDigitsAndPunctuation() -> bool uses unsafe {
 @Test
 fun TheSampleFontMeasuresInWholePixels() -> bool uses unsafe {
   if const font = SampleOf() {
-    return Near(Measure(font, "HELLO", 16.0), 60.0, 0.01) && Near(Measure(font, "A B", 16.0), 32.0, 0.01) && Near(LineHeight(font, 16.0), 18.0, 0.01)
+    return Near(Measure(font, "HELLO", 16.0), 60.0, 0.01) && Near(
+        Measure(font, "A B", 16.0),
+        32.0,
+        0.01) && Near(LineHeight(font, 16.0), 18.0, 0.01)
   }
   return false
 }
@@ -134,8 +161,16 @@ fun TheSampleFontMeasuresInWholePixels() -> bool uses unsafe {
 fun TheSampleFontDrawsAnExactPixelPattern() -> bool uses unsafe {
   if const font = SampleOf() {
     match Rasterize(font, font.GlyphIndex(84), 16.0) {
-      Ok(glyph) => { return glyph.At(1, 1) == 255 && glyph.At(10, 1) == 255 && glyph.At(11, 1) == 0 && glyph.At(1, 3) == 0 && glyph.At(5, 3) == 255 && glyph.At(6, 3) == 255 && glyph.At(7, 3) == 0 },
-      _ => { return false },
+      Ok(glyph) => {
+        return glyph.At(1, 1) == 255 && glyph.At(10, 1) == 255 && glyph.At(
+            11,
+            1) == 0 && glyph.At(1, 3) == 0 && glyph.At(5, 3) == 255 && glyph.At(
+            6,
+            3) == 255 && glyph.At(7, 3) == 0
+      }
+      _ => {
+        return false
+      }
     }
   }
   return false

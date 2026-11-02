@@ -31,7 +31,16 @@ offer fun LineHeight(font: Font, size: float) -> float {
   return (font.Ascent() - font.Descent() + font.LineGap()) as float * scale
 }
 
-fun EmitLine(items: List<Placement>, glyphs: List<int>, codes: List<int>, kerns: List<float>, advances: List<float>, from: int, to: int, line: int, baseline: float) -> float uses unsafe {
+fun EmitLine(
+    items: List<Placement>,
+    glyphs: List<int>,
+    codes: List<int>,
+    kerns: List<float>,
+    advances: List<float>,
+    from: int,
+    to: int,
+    line: int,
+    baseline: float) -> float uses unsafe {
   var x = 0.0
   var j = from
   var reach = 0.0
@@ -81,7 +90,16 @@ offer fun LayoutText(font: Font, value: text, size: float, wrap: float) -> Layou
   while i < n {
     const code = codes.At(i)
     if code == 10 {
-      const reach = EmitLine(items, glyphs, codes, kerns, advances, start, i, line, ascent + line as float * height)
+      const reach = EmitLine(
+          items,
+          glyphs,
+          codes,
+          kerns,
+          advances,
+          start,
+          i,
+          line,
+          ascent + line as float * height)
       widest = MaxOf(widest, reach)
       line = line + 1
       start = i + 1
@@ -98,7 +116,16 @@ offer fun LayoutText(font: Font, value: text, size: float, wrap: float) -> Layou
         if last_break > start {
           cut = last_break
         }
-        const reach = EmitLine(items, glyphs, codes, kerns, advances, start, cut, line, ascent + line as float * height)
+        const reach = EmitLine(
+            items,
+            glyphs,
+            codes,
+            kerns,
+            advances,
+            start,
+            cut,
+            line,
+            ascent + line as float * height)
         widest = MaxOf(widest, reach)
         line = line + 1
         start = cut
@@ -118,7 +145,16 @@ offer fun LayoutText(font: Font, value: text, size: float, wrap: float) -> Layou
     }
   }
   if start < n || n == 0 || line == 0 {
-    const reach = EmitLine(items, glyphs, codes, kerns, advances, start, n, line, ascent + line as float * height)
+    const reach = EmitLine(
+        items,
+        glyphs,
+        codes,
+        kerns,
+        advances,
+        start,
+        n,
+        line,
+        ascent + line as float * height)
     widest = MaxOf(widest, reach)
     line = line + 1
   }
@@ -136,14 +172,26 @@ offer fun Measure(font: Font, value: text, size: float) -> float uses unsafe {
   return LayoutText(font, value, size, 0.0).width
 }
 
-offer fun DrawText(target: Image, font: Font, value: text, size: float, x: int, y: int, colour: u32) uses unsafe {
+offer fun DrawText(
+    target: Image,
+    font: Font,
+    value: text,
+    size: float,
+    x: int,
+    y: int,
+    colour: u32) uses unsafe {
   const layout = LayoutText(font, value, size, 0.0)
   var i = 0
   while i < layout.Count() {
     const place = layout.At(i)
     match Rasterize(font, place.glyph, size) {
-      Ok(glyph) => DrawGlyph(target, glyph, x + (place.x + 0.5) as int, y + place.y as int, colour),
-      _ => {},
+      Ok(glyph) => DrawGlyph(
+          target,
+          glyph,
+          x + (place.x + 0.5) as int,
+          y + place.y as int,
+          colour)
+      _ => {}
     }
     i = i + 1
   }
@@ -159,7 +207,13 @@ fun LayoutOf(which: int, value: text, size: float, wrap: float) -> Layout? uses 
 @Test
 fun MeasuresAdvancesAndKerning() -> bool uses unsafe {
   if const font = Fixture(0) {
-    return Near(Measure(font, "A", 1000.0), 600.0, 0.01) && Near(Measure(font, "AB", 1000.0), 1350.0, 0.01) && Near(Measure(font, "BA", 1000.0), 1400.0, 0.01) && Near(Measure(font, "AB", 100.0), 135.0, 0.01) && Measure(font, "", 100.0) == 0.0
+    return Near(Measure(font, "A", 1000.0), 600.0, 0.01) && Near(
+        Measure(font, "AB", 1000.0),
+        1350.0,
+        0.01) && Near(Measure(font, "BA", 1000.0), 1400.0, 0.01) && Near(
+        Measure(font, "AB", 100.0),
+        135.0,
+        0.01) && Measure(font, "", 100.0) == 0.0
   }
   return false
 }
@@ -167,7 +221,10 @@ fun MeasuresAdvancesAndKerning() -> bool uses unsafe {
 @Test
 fun ComputesTheLineHeightFromTheMetrics() -> bool uses unsafe {
   if const font = Fixture(0) {
-    return Near(LineHeight(font, 1000.0), 1100.0, 0.01) && Near(LineHeight(font, 100.0), 110.0, 0.01)
+    return Near(LineHeight(font, 1000.0), 1100.0, 0.01) && Near(
+        LineHeight(font, 100.0),
+        110.0,
+        0.01)
   }
   return false
 }
@@ -177,7 +234,13 @@ fun PlacesEachGlyphAfterTheOneBefore() -> bool uses unsafe {
   if const layout = LayoutOf(0, "AB", 1000.0, 0.0) {
     const first = layout.At(0)
     const second = layout.At(1)
-    return layout.Count() == 2 && layout.lines == 1 && first.glyph == 2 && first.code == 65 && first.x == 0.0 && Near(second.x, 550.0, 0.01) && second.glyph == 3 && Near(first.y, 800.0, 0.01) && Near(layout.height, 1100.0, 0.01)
+    return layout.Count() == 2 && layout.lines == 1 && first.glyph == 2 && first.code == 65 && first.x == 0.0 && Near(
+        second.x,
+        550.0,
+        0.01) && second.glyph == 3 && Near(first.y, 800.0, 0.01) && Near(
+        layout.height,
+        1100.0,
+        0.01)
   }
   return false
 }
@@ -185,7 +248,13 @@ fun PlacesEachGlyphAfterTheOneBefore() -> bool uses unsafe {
 @Test
 fun StartsANewLineAtANewlineCharacter() -> bool uses unsafe {
   if const layout = LayoutOf(0, "A\nA", 1000.0, 0.0) {
-    return layout.lines == 2 && layout.Count() == 2 && layout.At(1).line == 1 && Near(layout.At(1).y, 1900.0, 0.01) && Near(layout.height, 2200.0, 0.01) && Near(layout.width, 600.0, 0.01)
+    return layout.lines == 2 && layout.Count() == 2 && layout.At(1).line == 1 && Near(
+        layout.At(1).y,
+        1900.0,
+        0.01) && Near(layout.height, 2200.0, 0.01) && Near(
+        layout.width,
+        600.0,
+        0.01)
   }
   return false
 }
@@ -194,7 +263,11 @@ fun StartsANewLineAtANewlineCharacter() -> bool uses unsafe {
 fun WrapsAtSpacesWhenALineIsTooLong() -> bool uses unsafe {
   if const wrapped = LayoutOf(0, "A A A", 1000.0, 1400.0) {
     if const loose = LayoutOf(0, "A A A", 1000.0, 0.0) {
-      return wrapped.lines == 3 && Near(wrapped.width, 600.0, 0.01) && wrapped.At(wrapped.Count() - 1).line == 2 && loose.lines == 1 && Near(loose.width, 2400.0, 0.01)
+      return wrapped.lines == 3 && Near(wrapped.width, 600.0, 0.01) && wrapped.At(
+          wrapped.Count() - 1).line == 2 && loose.lines == 1 && Near(
+          loose.width,
+          2400.0,
+          0.01)
     }
   }
   return false
@@ -219,7 +292,11 @@ fun AnEmptyTextIsOneEmptyLine() -> bool uses unsafe {
 @Test
 fun LaysOutACodePointOutsideTheBasicPlane() -> bool uses unsafe {
   if const font = Fixture(1) {
-    return Near(Measure(font, "😀", 2048.0), 500.0, 0.01) && LayoutText(font, "😀.", 2048.0, 0.0).Count() == 2
+    return Near(Measure(font, "😀", 2048.0), 500.0, 0.01) && LayoutText(
+        font,
+        "😀.",
+        2048.0,
+        0.0).Count() == 2
   }
   return false
 }

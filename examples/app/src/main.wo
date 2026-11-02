@@ -20,7 +20,15 @@ extend Hello as Game {
   }
 
   fun Draw(_alpha: float) uses unsafe {
-    device.Begin(null, width, height, 0.5 + 0.5 * Sin(time), 0.2, 0.4, 1.0, false)
+    device.Begin(
+        null,
+        width,
+        height,
+        0.5 + 0.5 * Sin(time),
+        0.2,
+        0.4,
+        1.0,
+        false)
     device.End()
   }
 
@@ -61,16 +69,17 @@ fun main() uses io, unsafe {
         Ok(beep) => {
           var game = Hello(app.device, app.output.mixer, beep, 640, 480, 0.0)
           const frames = app.Run(game)
-          Print("{frames} frames, backend {app.device.Name()}, sound {app.HasSound()}")
-        },
+          Print(
+              "{frames} frames, backend {app.device.Name()}, sound {app.HasSound()}")
+        }
         _ => {
           Print("could not make the tone")
-        },
+        }
       }
       app.Close()
-    },
+    }
     _ => {
       Print("could not start")
-    },
+    }
   }
 }

@@ -46,20 +46,25 @@ offer class Glyph {
         while y < height {
           var x = 0
           while x < width {
-            image.Set(x, y, Pack(red, green, blue, coverage[y * width + x] as int))
+            image.Set(
+                x,
+                y,
+                Pack(red, green, blue, coverage[y * width + x] as int))
             x = x + 1
           }
           y = y + 1
         }
         return image
-      },
-      _ => { return null },
+      }
+      _ => {
+        return null
+      }
     }
   }
 }
 
 fun Pack(red: int, green: int, blue: int, alpha: int) -> u32 {
-  return (alpha as u32) << 24 | (red as u32) << 16 | (green as u32) << 8 | blue as u32
+  return alpha as u32 << 24 | red as u32 << 16 | green as u32 << 8 | blue as u32
 }
 
 fun Add(acc: []mut float, index: int, value: float) {
@@ -78,7 +83,14 @@ fun Segment(edges: List<float>, x0: float, y0: float, x1: float, y1: float) uses
   edges.Push(y1)
 }
 
-fun Quad(edges: List<float>, x0: float, y0: float, cx: float, cy: float, x1: float, y1: float) uses unsafe {
+fun Quad(
+    edges: List<float>,
+    x0: float,
+    y0: float,
+    cx: float,
+    cy: float,
+    x1: float,
+    y1: float) uses unsafe {
   const dx = x0 - 2.0 * cx + x1
   const dy = y0 - 2.0 * cy + y1
   var n = Ceil(Sqrt(Sqrt(dx * dx + dy * dy) * 2.5)) as int
@@ -167,7 +179,14 @@ offer fun Flatten(outline: Outline, scale: float, edges: List<float>) uses unsaf
   }
 }
 
-offer fun AccumulateLine(acc: []mut float, w: int, h: int, ax: float, ay: float, bx: float, by: float) {
+offer fun AccumulateLine(
+    acc: []mut float,
+    w: int,
+    h: int,
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float) {
   if ay == by {
     return
   }
@@ -296,7 +315,14 @@ offer fun Rasterize(font: Font, glyph: int, size: float) -> Glyph!(Malformed, To
   }
   i = 0
   while i < edges.Len() {
-    AccumulateLine(acc, width, height, edges.At(i) - origin_x as float, origin_y as float - edges.At(i + 1), edges.At(i + 2) - origin_x as float, origin_y as float - edges.At(i + 3))
+    AccumulateLine(
+        acc,
+        width,
+        height,
+        edges.At(i) - origin_x as float,
+        origin_y as float - edges.At(i + 1),
+        edges.At(i + 2) - origin_x as float,
+        origin_y as float - edges.At(i + 3))
     i = i + 4
   }
   var coverage = ArrayNew<u8>(width * height)
@@ -308,7 +334,7 @@ offer fun Rasterize(font: Font, glyph: int, size: float) -> Glyph!(Malformed, To
     if level > 1.0 {
       level = 1.0
     }
-    coverage[i] = ((level * 255.0 + 0.5) as int) as u8
+    coverage[i] = (level * 255.0 + 0.5) as int as u8
     i = i + 1
   }
   Free(acc)
@@ -326,7 +352,14 @@ offer fun DrawGlyph(target: Image, glyph: Glyph, x: int, y: int, colour: u32) {
     while column < glyph.width {
       const level = glyph.coverage[row * glyph.width + column] as int
       if level > 0 {
-        BlendPixel(target, x + glyph.left + column, y - glyph.top + row, red, green, blue, level * base_alpha / 255)
+        BlendPixel(
+            target,
+            x + glyph.left + column,
+            y - glyph.top + row,
+            red,
+            green,
+            blue,
+            level * base_alpha / 255)
       }
       column = column + 1
     }
@@ -334,7 +367,14 @@ offer fun DrawGlyph(target: Image, glyph: Glyph, x: int, y: int, colour: u32) {
   }
 }
 
-offer fun BlendPixel(target: Image, x: int, y: int, red: int, green: int, blue: int, alpha: int) {
+offer fun BlendPixel(
+    target: Image,
+    x: int,
+    y: int,
+    red: int,
+    green: int,
+    blue: int,
+    alpha: int) {
   if !target.Contains(x, y) || alpha <= 0 {
     return
   }
@@ -357,8 +397,12 @@ offer fun BlendPixel(target: Image, x: int, y: int, red: int, green: int, blue: 
 fun RasterOf(which: int, glyph: int, size: float) -> Glyph? uses unsafe {
   if const font = Fixture(which) {
     match Rasterize(font, glyph, size) {
-      Ok(bitmap) => { return bitmap },
-      _ => { return null },
+      Ok(bitmap) => {
+        return bitmap
+      }
+      _ => {
+        return null
+      }
     }
   }
   return null
@@ -367,10 +411,18 @@ fun RasterOf(which: int, glyph: int, size: float) -> Glyph? uses unsafe {
 fun RasterCode(glyph: int, size: float) -> int uses unsafe {
   if const font = Fixture(0) {
     match Rasterize(font, glyph, size) {
-      Ok(_bitmap) => { return 0 },
-      Malformed => { return 1 },
-      TooLarge => { return 2 },
-      BadSize => { return 3 },
+      Ok(_bitmap) => {
+        return 0
+      }
+      Malformed => {
+        return 1
+      }
+      TooLarge => {
+        return 2
+      }
+      BadSize => {
+        return 3
+      }
     }
   }
   return -1
@@ -378,8 +430,12 @@ fun RasterCode(glyph: int, size: float) -> int uses unsafe {
 
 fun Blank(width: int, height: int) -> Image? uses unsafe {
   match ImageNew(width, height) {
-    Ok(image) => { return image },
-    _ => { return null },
+    Ok(image) => {
+      return image
+    }
+    _ => {
+      return null
+    }
   }
 }
 
@@ -391,7 +447,11 @@ fun Near(a: float, b: float, tolerance: float) -> bool {
 fun FillsAPixelAlignedBoxExactly() -> bool uses unsafe {
   if const bitmap = RasterOf(0, 0, 100.0) {
     const total = bitmap.Total()
-    return bitmap.left == 9 && bitmap.top == 71 && bitmap.width == 42 && bitmap.height == 72 && total >= 2800 * 255 - 28 && total <= 2800 * 255 + 28 && bitmap.At(1, 1) == 255 && bitmap.At(40, 70) == 255 && bitmap.At(41, 70) == 0 && bitmap.At(0, 0) == 0 && bitmap.At(-1, 5) == 0 && bitmap.At(5, 500) == 0
+    return bitmap.left == 9 && bitmap.top == 71 && bitmap.width == 42 && bitmap.height == 72 && total >= 2800 * 255 - 28 && total <= 2800 * 255 + 28 && bitmap.At(
+        1,
+        1) == 255 && bitmap.At(40, 70) == 255 && bitmap.At(41, 70) == 0 && bitmap.At(
+        0,
+        0) == 0 && bitmap.At(-1, 5) == 0 && bitmap.At(5, 500) == 0
   }
   return false
 }
@@ -400,7 +460,9 @@ fun FillsAPixelAlignedBoxExactly() -> bool uses unsafe {
 fun CoversTheAreaUnderACurve() -> bool uses unsafe {
   if const bitmap = RasterOf(0, 2, 100.0) {
     const total = bitmap.Total()
-    return total > 1300 * 255 && total < 1370 * 255 && bitmap.At(26, 40) == 255 && bitmap.At(26, 0) == 0
+    return total > 1300 * 255 && total < 1370 * 255 && bitmap.At(26, 40) == 255 && bitmap.At(
+        26,
+        0) == 0
   }
   return false
 }
@@ -409,7 +471,9 @@ fun CoversTheAreaUnderACurve() -> bool uses unsafe {
 fun LeavesAHoleEmpty() -> bool uses unsafe {
   if const bitmap = RasterOf(1, 1, 20.48) {
     const total = bitmap.Total()
-    return total > 12 * 252 && total < 12 * 258 && bitmap.At(3, 3) <= 5 && bitmap.At(1, 4) >= 250
+    return total > 12 * 252 && total < 12 * 258 && bitmap.At(3, 3) <= 5 && bitmap.At(
+        1,
+        4) >= 250
   }
   return false
 }
@@ -417,14 +481,21 @@ fun LeavesAHoleEmpty() -> bool uses unsafe {
 @Test
 fun AnEmptyGlyphHasNoBitmapButAnAdvance() -> bool uses unsafe {
   if const bitmap = RasterOf(0, 1, 100.0) {
-    return bitmap.width == 0 && bitmap.height == 0 && bitmap.Total() == 0 && Near(bitmap.advance, 30.0, 0.01)
+    return bitmap.width == 0 && bitmap.height == 0 && bitmap.Total() == 0 && Near(
+        bitmap.advance,
+        30.0,
+        0.01)
   }
   return false
 }
 
 @Test
 fun RefusesASizeThatIsNotPositiveOrTooBig() -> bool uses unsafe {
-  return RasterCode(0, 100.0) == 0 && RasterCode(0, 0.0) == 3 && RasterCode(0, -5.0) == 3 && RasterCode(0, 500000.0) == 3 && RasterCode(0, 50000.0) == 2 && RasterCode(99, 10.0) == 1
+  return RasterCode(0, 100.0) == 0 && RasterCode(0, 0.0) == 3 && RasterCode(
+      0,
+      -5.0) == 3 && RasterCode(0, 500000.0) == 3 && RasterCode(0, 50000.0) == 2 && RasterCode(
+      99,
+      10.0) == 1
 }
 
 @Test
@@ -436,7 +507,10 @@ fun SpreadsACrossingBetweenTwoCells() -> bool uses unsafe {
     i = i + 1
   }
   AccumulateLine(acc, 4, 2, 1.5, 0.0, 1.5, 2.0)
-  const crossed = Near(acc[1], 0.5, 0.001) && Near(acc[2], 0.5, 0.001) && Near(acc[5], 0.5, 0.001) && Near(acc[6], 0.5, 0.001) && Near(acc[0], 0.0, 0.001)
+  const crossed = Near(acc[1], 0.5, 0.001) && Near(acc[2], 0.5, 0.001) && Near(
+      acc[5],
+      0.5,
+      0.001) && Near(acc[6], 0.5, 0.001) && Near(acc[0], 0.0, 0.001)
   AccumulateLine(acc, 4, 2, 0.0, 1.0, 3.0, 1.0)
   const flat = Near(acc[3], 0.0, 0.001) && Near(acc[7], 0.0, 0.001)
   Free(acc)
@@ -451,9 +525,14 @@ fun FlattensACurveIntoLines() -> bool uses unsafe {
         var edges = ListNew<float>()
         Flatten(outline, 0.1, edges)
         const last = edges.Len()
-        return last >= 16 && last % 4 == 0 && edges.At(0) == 0.0 && edges.At(1) == 0.0 && Near(edges.At(last - 2), 50.0, 0.001) && Near(edges.At(last - 1), 0.0, 0.001)
-      },
-      Malformed => { return false },
+        return last >= 16 && last % 4 == 0 && edges.At(0) == 0.0 && edges.At(1) == 0.0 && Near(
+            edges.At(last - 2),
+            50.0,
+            0.001) && Near(edges.At(last - 1), 0.0, 0.001)
+      }
+      Malformed => {
+        return false
+      }
     }
   }
   return false
@@ -464,7 +543,9 @@ fun DrawsACoverageBitmapInAColour() -> bool uses unsafe {
   if const image = Blank(100, 100) {
     if const bitmap = RasterOf(0, 0, 100.0) {
       DrawGlyph(image, bitmap, 0, 80, 4294901760)
-      return image.Get(10, 10) == 4294901760 && image.Get(0, 0) == 0 && image.Get(60, 10) == 0
+      return image.Get(10, 10) == 4294901760 && image.Get(0, 0) == 0 && image.Get(
+          60,
+          10) == 0
     }
   }
   return false
@@ -478,7 +559,9 @@ fun BlendsAHalfOpaquePixelOverWhite() -> bool uses unsafe {
     const blended = image.Get(0, 0) == Pack(127, 127, 127, 255)
     BlendPixel(image, 0, 0, 0, 0, 0, 0)
     BlendPixel(image, 9, 9, 255, 0, 0, 255)
-    return blended && image.Get(0, 0) == Pack(127, 127, 127, 255) && image.Get(1, 1) == 0
+    return blended && image.Get(0, 0) == Pack(127, 127, 127, 255) && image.Get(
+        1,
+        1) == 0
   }
   return false
 }
@@ -488,7 +571,9 @@ fun ConvertsACoverageBitmapToAnImage() -> bool uses unsafe {
   if const bitmap = RasterOf(0, 0, 100.0) {
     if const empty = RasterOf(0, 1, 100.0) {
       if const image = bitmap.ToImage(255, 0, 0) {
-        return image.width == 42 && image.height == 72 && image.Get(1, 1) == 4294901760 && image.Get(0, 0) == 16711680 && empty.ToImage(0, 0, 0) == null
+        return image.width == 42 && image.height == 72 && image.Get(1, 1) == 4294901760 && image.Get(
+            0,
+            0) == 16711680 && empty.ToImage(0, 0, 0) == null
       }
     }
   }

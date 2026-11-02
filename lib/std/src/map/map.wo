@@ -49,7 +49,7 @@ offer class Map<K, V> {
     // The size is a power of two (`Reserve` starts at 8 and doubles), so a
     // mask is the remainder and a negative hash needs no fixing up; a
     // divide on every lookup was the cost of the old spelling (D284).
-    var index = hash(key) & (size - 1)
+    var index = hash(key) & size - 1
     var steps = 0
     while steps < size {
       if !filled[index] {

@@ -37,7 +37,18 @@ offer struct Style {
 }
 
 offer fun StyleDefault() -> Style {
-  return Style(4280295456, 4281348144, 4293848814, 4282006074, 4283058762, 4284111450, 4283403519, 4279900698, 16.0, 4, 4)
+  return Style(
+      4280295456,
+      4281348144,
+      4293848814,
+      4282006074,
+      4283058762,
+      4284111450,
+      4283403519,
+      4279900698,
+      16.0,
+      4,
+      4)
 }
 
 offer class Input {
@@ -234,7 +245,10 @@ fun Click(kind: s32, key: s32, x: s32, y: s32) -> Event {
 @Test
 fun ARectangleContainsItsInsideAndNotItsFarEdge() -> bool {
   const rect = Rect(10, 10, 20, 5)
-  return rect.Contains(10, 10) && rect.Contains(29, 14) && !rect.Contains(30, 10) && !rect.Contains(29, 15) && !rect.Contains(9, 10) && rect.Right() == 30 && rect.Bottom() == 15
+  return rect.Contains(10, 10) && rect.Contains(29, 14) && !rect.Contains(
+      30,
+      10) && !rect.Contains(29, 15) && !rect.Contains(9, 10) && rect.Right() == 30 && rect.Bottom(
+      ) == 15
 }
 
 @Test
@@ -272,7 +286,8 @@ fun InputCollectsTypingKeysAndScrolling() -> bool uses unsafe {
   input.Feed(Event(kText, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 105, 0))
   input.Feed(Click(kPressed, 41, 0, 0))
   input.Feed(Event(kScrolled, 0, 0, 0, 0.0, 2.0, 0, 0, 0, 0, 0))
-  const collected = input.typed.Len() == 2 && input.typed.At(0) == 104 && input.KeyPressed(41) && !input.KeyPressed(42) && input.scroll == 2.0
+  const collected = input.typed.Len() == 2 && input.typed.At(0) == 104 && input.KeyPressed(
+      41) && !input.KeyPressed(42) && input.scroll == 2.0
   input.EndFrame()
   return collected && input.typed.Len() == 0 && !input.KeyPressed(41) && input.scroll == 0.0
 }
@@ -283,7 +298,9 @@ fun ATextEditInsertsAtTheCursorAndRemoves() -> bool uses unsafe {
   const start = edit.Len() == 2 && edit.cursor == 2
   edit.Left()
   edit.Insert(120)
-  const middle = edit.Len() == 3 && edit.cursor == 2 && Equals(edit.Value(), "axb") && Equals(edit.Before(), "ax")
+  const middle = edit.Len() == 3 && edit.cursor == 2 && Equals(
+      edit.Value(),
+      "axb") && Equals(edit.Before(), "ax")
   edit.Backspace()
   edit.Delete()
   const removed = edit.Len() == 1 && Equals(edit.Value(), "a")

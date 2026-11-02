@@ -199,10 +199,10 @@ offer fun KindOf(path: text) -> Kind uses io, unsafe {
 }
 
 /// Whether there is anything at `path`.
-// These read the tag with `match` and not with `==`: the dev tier does not
-// compare two enum values, and one function it refuses takes every caller
-// of it into the interpreter with it (D284).
 offer fun Exists(path: text) -> bool uses io, unsafe {
+  // These read the tag with `match` and not with `==`: the dev tier does not
+  // compare two enum values, and one function it refuses takes every caller
+  // of it into the interpreter with it (D284).
   return match KindOf(path) {
     Kind.Missing => false
     _ => true

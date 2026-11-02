@@ -25,7 +25,18 @@ offer struct Config {
 }
 
 offer fun ConfigNew(title: text, width: int, height: int) -> Config {
-  return Config(title, width, height, true, true, true, 0.016666667, 0.25, 48000, true, false)
+  return Config(
+      title,
+      width,
+      height,
+      true,
+      true,
+      true,
+      0.016666667,
+      0.25,
+      48000,
+      true,
+      false)
 }
 
 fun Clamped(value: int, low: int, high: int) -> int {
@@ -70,11 +81,22 @@ fun BoolAt(doc: Value, path: text, fallback: bool) -> bool uses unsafe {
 offer fun ConfigParse(input: text, base: Config) -> Config uses unsafe {
   match Parse(input) {
     Ok(doc) => {
-      return Config(TextAt(doc, "window.title", base.title), Clamped(IntAt(doc, "window.width", base.width), 64, 16384), Clamped(IntAt(doc, "window.height", base.height), 64, 16384), BoolAt(doc, "window.resizable", base.resizable), BoolAt(doc, "window.vsync", base.vsync), BoolAt(doc, "window.gl", base.gl), FloatAt(doc, "loop.step", base.step), FloatAt(doc, "loop.max_frame", base.max_frame), Clamped(IntAt(doc, "audio.rate", base.sample_rate), 8000, 192000), BoolAt(doc, "audio.enabled", base.sound), base.hidden)
-    },
+      return Config(
+          TextAt(doc, "window.title", base.title),
+          Clamped(IntAt(doc, "window.width", base.width), 64, 16384),
+          Clamped(IntAt(doc, "window.height", base.height), 64, 16384),
+          BoolAt(doc, "window.resizable", base.resizable),
+          BoolAt(doc, "window.vsync", base.vsync),
+          BoolAt(doc, "window.gl", base.gl),
+          FloatAt(doc, "loop.step", base.step),
+          FloatAt(doc, "loop.max_frame", base.max_frame),
+          Clamped(IntAt(doc, "audio.rate", base.sample_rate), 8000, 192000),
+          BoolAt(doc, "audio.enabled", base.sound),
+          base.hidden)
+    }
     _ => {
       return base
-    },
+    }
   }
 }
 
@@ -85,13 +107,13 @@ offer fun ConfigText(config: Config) -> text {
 offer fun ConfigDirectory(name: text) -> text uses io, unsafe {
   const system = System()
   if system == "windows" {
-    return Join((Lookup("APPDATA") ?? Join(Home(), "AppData/Roaming")), name)
+    return Join(Lookup("APPDATA") ?? Join(Home(), "AppData/Roaming"), name)
   }
   if system == "macos" {
     return Join(Join(Home(), "Library/Application Support"), name)
   }
 
-  return Join((Lookup("XDG_CONFIG_HOME") ?? Join(Home(), ".config")), name)
+  return Join(Lookup("XDG_CONFIG_HOME") ?? Join(Home(), ".config"), name)
 }
 
 offer fun ConfigPath(name: text) -> text uses io, unsafe {
@@ -254,7 +276,7 @@ fun PickBackend(window: Window, wanted: bool) -> Backend uses unsafe {
   return NullNew()
 }
 
-offer fun AppNew(config: Config) -> App!(Malformed) uses unsafe {
+offer fun AppNew(config: Config) -> App!Malformed uses unsafe {
   var flags = 0 as u32
   if config.resizable {
     flags = flags + 1
@@ -278,7 +300,13 @@ offer fun AppNew(config: Config) -> App!(Malformed) uses unsafe {
     output.Close()
   }
 
-  return App(config, window, output, DeviceNew(PickBackend(window, config.gl)), ClockNew(config.step, config.max_frame), true)
+  return App(
+      config,
+      window,
+      output,
+      DeviceNew(PickBackend(window, config.gl)),
+      ClockNew(config.step, config.max_frame),
+      true)
 }
 
 class Counter {
@@ -333,7 +361,8 @@ fun RunsFixedStepsFromAFrameTime() -> bool {
 fun RunsNoStepForAShortFrame() -> bool {
   var clock = ClockNew(0.02, 0.25)
 
-  return clock.Advance(0.005) == 0 && clock.Advance(0.005) == 0 && clock.Advance(0.011) == 1
+  return clock.Advance(0.005) == 0 && clock.Advance(0.005) == 0 && clock.Advance(
+      0.011) == 1
 }
 
 @Test
@@ -381,7 +410,9 @@ fun KeepsTheDefaultsForWhatTheFileLeavesOut() -> bool uses unsafe {
 @Test
 fun ClampsAbsurdConfigValues() -> bool uses unsafe {
   const base = ConfigNew("Game", 1280, 720)
-  const config = ConfigParse("[window]\nwidth=999999\nheight=1\n[audio]\nrate=5\n", base)
+  const config = ConfigParse(
+      "[window]\nwidth=999999\nheight=1\n[audio]\nrate=5\n",
+      base)
 
   return config.width == 16384 && config.height == 64 && config.sample_rate == 8000
 }
@@ -409,7 +440,9 @@ fun PutsConfigUnderTheAppsOwnDirectory() -> bool uses io, unsafe {
   const directory = ConfigDirectory("wolang-test-app")
   const path = ConfigPath("wolang-test-app")
 
-  return Contains(directory, "wolang-test-app") && Contains(path, "config.ini") && Contains(path, "wolang-test-app")
+  return Contains(directory, "wolang-test-app") && Contains(path, "config.ini") && Contains(
+      path,
+      "wolang-test-app")
 }
 
 @Test
@@ -419,11 +452,12 @@ fun RunsAFixedNumberOfFramesWithNoWindow() -> bool uses unsafe {
       var counter = Counter()
       const done = app.RunFrames(counter, 10, 0.016666667)
 
-      return done == 10 && counter.draws == 10 && counter.updates >= 9 && counter.updates <= 11 && app.device.Name() == "null" && !app.HasSound()
-    },
+      return done == 10 && counter.draws == 10 && counter.updates >= 9 && counter.updates <= 11 && app.device.Name(
+          ) == "null" && !app.HasSound()
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -436,10 +470,10 @@ fun StopsWhenAskedTo() -> bool uses unsafe {
       const done = app.RunFrames(counter, 10, 0.016666667)
 
       return done == 0 && counter.draws == 0
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -455,10 +489,10 @@ fun RunDoesNothingWithoutAWindow() -> bool uses unsafe {
       }
 
       return app.Run(counter) == 0 && counter.draws == 0
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -470,10 +504,10 @@ fun MixesWhileRunningWithoutADevice() -> bool uses unsafe {
       const done = app.RunFrames(counter, 3, 0.01)
 
       return done == 3 && app.output.mixer.channels == 2
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -487,9 +521,9 @@ fun DrawsWithTheLeftoverFractionOfAStep() -> bool uses unsafe {
       const _done = app.RunFrames(counter, 1, 0.015)
 
       return counter.updates == 1 && counter.last_alpha > 0.49 && counter.last_alpha < 0.51
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 }

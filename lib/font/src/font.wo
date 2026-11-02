@@ -49,7 +49,13 @@ offer struct Affine {
   var f: float
 
   fun Then(child: Affine) -> Affine {
-    return Affine(a * child.a + c * child.b, b * child.a + d * child.b, a * child.c + c * child.d, b * child.c + d * child.d, a * child.e + c * child.f + e, b * child.e + d * child.f + f)
+    return Affine(
+        a * child.a + c * child.b,
+        b * child.a + d * child.b,
+        a * child.c + c * child.d,
+        b * child.c + d * child.d,
+        a * child.e + c * child.f + e,
+        b * child.e + d * child.f + f)
   }
 }
 
@@ -73,7 +79,11 @@ offer class Outline {
 }
 
 offer fun OutlineNew() -> Outline uses unsafe {
-  return Outline(ListNew<float>(), ListNew<float>(), ListNew<bool>(), ListNew<int>())
+  return Outline(
+      ListNew<float>(),
+      ListNew<float>(),
+      ListNew<bool>(),
+      ListNew<int>())
 }
 
 offer class Font {
@@ -268,7 +278,7 @@ offer class Font {
     return Be16(data, loca + glyph * 2 + 2) * 2
   }
 
-  fun GlyphOutline(glyph: int) -> Outline!(Malformed) uses unsafe {
+  fun GlyphOutline(glyph: int) -> Outline!Malformed uses unsafe {
     var out = OutlineNew()
     if !Collect(glyph, 0, AffineIdentity(), out) {
       return Malformed
@@ -336,7 +346,7 @@ offer class Font {
       const flag = data[p] as int
       p = p + 1
       flags.Push(flag)
-      if (flag & 8) != 0 {
+      if flag & 8 != 0 {
         if p >= limit {
           return false
         }
@@ -353,18 +363,18 @@ offer class Font {
     i = 0
     while i < count {
       const flag = flags.At(i)
-      if (flag & 2) != 0 {
+      if flag & 2 != 0 {
         if p >= limit {
           return false
         }
         const step = data[p] as int
         p = p + 1
-        if (flag & 16) != 0 {
+        if flag & 16 != 0 {
           x = x + step
         } else {
           x = x - step
         }
-      } else if (flag & 16) == 0 {
+      } else if flag & 16 == 0 {
         if p + 2 > limit {
           return false
         }
@@ -379,18 +389,18 @@ offer class Font {
     i = 0
     while i < count {
       const flag = flags.At(i)
-      if (flag & 4) != 0 {
+      if flag & 4 != 0 {
         if p >= limit {
           return false
         }
         const step = data[p] as int
         p = p + 1
-        if (flag & 32) != 0 {
+        if flag & 32 != 0 {
           y = y + step
         } else {
           y = y - step
         }
-      } else if (flag & 32) == 0 {
+      } else if flag & 32 == 0 {
         if p + 2 > limit {
           return false
         }
@@ -401,7 +411,7 @@ offer class Font {
       const fy = y as float
       out.xs.Push(t.a * fx + t.c * fy + t.e)
       out.ys.Push(t.b * fx + t.d * fy + t.f)
-      out.on.Push((flag & 1) != 0)
+      out.on.Push(flag & 1 != 0)
       i = i + 1
     }
     i = 0
@@ -412,7 +422,12 @@ offer class Font {
     return true
   }
 
-  fun CollectComposite(first: int, limit: int, depth: int, t: Affine, out: Outline) -> bool uses unsafe {
+  fun CollectComposite(
+      first: int,
+      limit: int,
+      depth: int,
+      t: Affine,
+      out: Outline) -> bool uses unsafe {
     var p = first
     var more = true
     var parts = 0
@@ -425,10 +440,10 @@ offer class Font {
       p = p + 4
       var dx = 0
       var dy = 0
-      if (flags & 2) == 0 {
+      if flags & 2 == 0 {
         return false
       }
-      if (flags & 1) != 0 {
+      if flags & 1 != 0 {
         if p + 4 > limit {
           return false
         }
@@ -453,21 +468,21 @@ offer class Font {
       var b = 0.0
       var c = 0.0
       var d = 1.0
-      if (flags & 8) != 0 {
+      if flags & 8 != 0 {
         if p + 2 > limit {
           return false
         }
         a = Be16s(data, p) as float / 16384.0
         d = a
         p = p + 2
-      } else if (flags & 64) != 0 {
+      } else if flags & 64 != 0 {
         if p + 4 > limit {
           return false
         }
         a = Be16s(data, p) as float / 16384.0
         d = Be16s(data, p + 2) as float / 16384.0
         p = p + 4
-      } else if (flags & 128) != 0 {
+      } else if flags & 128 != 0 {
         if p + 8 > limit {
           return false
         }
@@ -481,7 +496,7 @@ offer class Font {
       if !Collect(child, depth + 1, t.Then(local), out) {
         return false
       }
-      more = (flags & 32) != 0
+      more = flags & 32 != 0
       parts = parts + 1
     }
     return true
@@ -535,7 +550,9 @@ offer fun FontLoad(bytes: []u8) -> Font!(Malformed, TooLarge, Unsupported) uses 
   if head < 0 || maxp < 0 || hhea < 0 || hmtx < 0 || cmap < 0 || loca < 0 || glyf < 0 {
     return Malformed
   }
-  if TableLength(copy, head) < 54 || TableLength(copy, maxp) < 6 || TableLength(copy, hhea) < 36 {
+  if TableLength(copy, head) < 54 || TableLength(copy, maxp) < 6 || TableLength(
+      copy,
+      hhea) < 36 {
     return Malformed
   }
   const head_at = TableOffset(copy, head)
@@ -684,7 +701,7 @@ fun LoadKern(data: []u8, table: int, length: int, font: Font) {
   while i < tables && at + 14 <= table + length {
     const size = Be16(data, at + 2)
     const coverage = Be16(data, at + 4)
-    if (coverage / 256) == 0 && (coverage & 1) != 0 {
+    if coverage / 256 == 0 && coverage & 1 != 0 {
       const pairs = Be16(data, at + 6)
       if at + 14 + pairs * 6 <= table + length {
         font.kern = at + 14
@@ -724,19 +741,35 @@ fun Fixture(which: int) -> Font? uses unsafe {
   const loaded = FontLoad(bytes)
   Free(bytes)
   match loaded {
-    Ok(font) => { return font },
-    Malformed => { return null },
-    TooLarge => { return null },
-    Unsupported => { return null },
+    Ok(font) => {
+      return font
+    }
+    Malformed => {
+      return null
+    }
+    TooLarge => {
+      return null
+    }
+    Unsupported => {
+      return null
+    }
   }
 }
 
 fun Outcome(bytes: []u8) -> int uses unsafe {
   match FontLoad(bytes) {
-    Ok(_font) => { return 0 },
-    Malformed => { return 1 },
-    TooLarge => { return 2 },
-    Unsupported => { return 3 },
+    Ok(_font) => {
+      return 0
+    }
+    Malformed => {
+      return 1
+    }
+    TooLarge => {
+      return 2
+    }
+    Unsupported => {
+      return 3
+    }
   }
 }
 
@@ -754,7 +787,8 @@ fun TableRecord(bytes: []u8, a: int, b: int, c: int, d: int) -> int {
 @Test
 fun ReadsTheMetricsOfAFont() -> bool uses unsafe {
   if const font = Fixture(0) {
-    return font.UnitsPerEm() == 1000 && font.GlyphCount() == 4 && font.Ascent() == 800 && font.Descent() == -200 && font.LineGap() == 100
+    return font.UnitsPerEm() == 1000 && font.GlyphCount() == 4 && font.Ascent() == 800 && font.Descent(
+        ) == -200 && font.LineGap() == 100
   }
   return false
 }
@@ -762,7 +796,9 @@ fun ReadsTheMetricsOfAFont() -> bool uses unsafe {
 @Test
 fun MapsCharactersThroughFormat4() -> bool uses unsafe {
   if const font = Fixture(0) {
-    return font.GlyphIndex(65) == 2 && font.GlyphIndex(66) == 3 && font.GlyphIndex(32) == 1 && font.GlyphIndex(67) == 0 && font.GlyphIndex(-1) == 0 && font.GlyphIndex(70000) == 0
+    return font.GlyphIndex(65) == 2 && font.GlyphIndex(66) == 3 && font.GlyphIndex(
+        32) == 1 && font.GlyphIndex(67) == 0 && font.GlyphIndex(-1) == 0 && font.GlyphIndex(
+        70000) == 0
   }
   return false
 }
@@ -770,7 +806,8 @@ fun MapsCharactersThroughFormat4() -> bool uses unsafe {
 @Test
 fun MapsCharactersThroughFormat12() -> bool uses unsafe {
   if const font = Fixture(1) {
-    return font.GlyphIndex(128512) == 1 && font.GlyphIndex(46) == 2 && font.GlyphIndex(47) == 0 && font.GlyphIndex(65) == 0
+    return font.GlyphIndex(128512) == 1 && font.GlyphIndex(46) == 2 && font.GlyphIndex(
+        47) == 0 && font.GlyphIndex(65) == 0
   }
   return false
 }
@@ -779,7 +816,9 @@ fun MapsCharactersThroughFormat12() -> bool uses unsafe {
 fun ReadsAdvancesAndBearings() -> bool uses unsafe {
   if const font = Fixture(0) {
     if const shared = Fixture(1) {
-      return font.Advance(0) == 600 && font.Advance(2) == 600 && font.Advance(3) == 800 && font.Advance(99) == 0 && font.LeftBearing(0) == 100 && font.LeftBearing(99) == 0 && shared.Advance(2) == 500 && shared.LeftBearing(2) == 0 && shared.LeftBearing(0) == 100
+      return font.Advance(0) == 600 && font.Advance(2) == 600 && font.Advance(3) == 800 && font.Advance(
+          99) == 0 && font.LeftBearing(0) == 100 && font.LeftBearing(99) == 0 && shared.Advance(
+          2) == 500 && shared.LeftBearing(2) == 0 && shared.LeftBearing(0) == 100
     }
   }
   return false
@@ -789,7 +828,9 @@ fun ReadsAdvancesAndBearings() -> bool uses unsafe {
 fun ReadsKerningPairs() -> bool uses unsafe {
   if const font = Fixture(0) {
     if const plain = Fixture(1) {
-      return font.Kerning(2, 3) == -50 && font.Kerning(3, 2) == 0 && font.Kerning(2, 2) == 0 && plain.Kerning(1, 2) == 0
+      return font.Kerning(2, 3) == -50 && font.Kerning(3, 2) == 0 && font.Kerning(
+          2,
+          2) == 0 && plain.Kerning(1, 2) == 0
     }
   }
   return false
@@ -807,8 +848,14 @@ fun ScalesFontUnitsToPixels() -> bool uses unsafe {
 fun ReadsASimpleOutline() -> bool uses unsafe {
   if const font = Fixture(0) {
     match font.GlyphOutline(2) {
-      Ok(outline) => { return outline.Contours() == 1 && outline.Points() == 3 && outline.on.At(0) && !outline.on.At(1) && outline.on.At(2) && outline.xs.At(1) == 250.0 && outline.ys.At(1) == 800.0 && outline.ends.At(0) == 2 },
-      Malformed => { return false },
+      Ok(outline) => {
+        return outline.Contours() == 1 && outline.Points() == 3 && outline.on.At(
+            0) && !outline.on.At(1) && outline.on.At(2) && outline.xs.At(1) == 250.0 && outline.ys.At(
+            1) == 800.0 && outline.ends.At(0) == 2
+      }
+      Malformed => {
+        return false
+      }
     }
   }
   return false
@@ -818,8 +865,14 @@ fun ReadsASimpleOutline() -> bool uses unsafe {
 fun ReadsACompositeOutline() -> bool uses unsafe {
   if const font = Fixture(0) {
     match font.GlyphOutline(3) {
-      Ok(outline) => { return outline.Contours() == 2 && outline.Points() == 6 && outline.xs.At(0) == 0.0 && outline.xs.At(3) == 300.0 && outline.xs.At(4) == 425.0 && outline.ys.At(4) == 400.0 && outline.xs.At(5) == 550.0 && outline.ends.At(1) == 5 },
-      Malformed => { return false },
+      Ok(outline) => {
+        return outline.Contours() == 2 && outline.Points() == 6 && outline.xs.At(
+            0) == 0.0 && outline.xs.At(3) == 300.0 && outline.xs.At(4) == 425.0 && outline.ys.At(
+            4) == 400.0 && outline.xs.At(5) == 550.0 && outline.ends.At(1) == 5
+      }
+      Malformed => {
+        return false
+      }
     }
   }
   return false
@@ -829,8 +882,12 @@ fun ReadsACompositeOutline() -> bool uses unsafe {
 fun AnEmptyGlyphHasNoOutline() -> bool uses unsafe {
   if const font = Fixture(0) {
     match font.GlyphOutline(1) {
-      Ok(outline) => { return outline.Contours() == 0 && outline.Points() == 0 },
-      Malformed => { return false },
+      Ok(outline) => {
+        return outline.Contours() == 0 && outline.Points() == 0
+      }
+      Malformed => {
+        return false
+      }
     }
   }
   return false
@@ -840,8 +897,13 @@ fun AnEmptyGlyphHasNoOutline() -> bool uses unsafe {
 fun ReadsAnOutlineWithAHole() -> bool uses unsafe {
   if const font = Fixture(1) {
     match font.GlyphOutline(1) {
-      Ok(outline) => { return outline.Contours() == 2 && outline.Points() == 8 && outline.ends.At(0) == 3 },
-      Malformed => { return false },
+      Ok(outline) => {
+        return outline.Contours() == 2 && outline.Points() == 8 && outline.ends.At(
+            0) == 3
+      }
+      Malformed => {
+        return false
+      }
     }
   }
   return false
@@ -851,8 +913,12 @@ fun ReadsAnOutlineWithAHole() -> bool uses unsafe {
 fun RefusesAGlyphOutOfRange() -> bool uses unsafe {
   if const font = Fixture(0) {
     match font.GlyphOutline(99) {
-      Ok(_outline) => { return false },
-      Malformed => { return true },
+      Ok(_outline) => {
+        return false
+      }
+      Malformed => {
+        return true
+      }
     }
   }
   return false
@@ -947,11 +1013,17 @@ fun ACompositeThatNamesItselfIsRefused() -> bool uses unsafe {
   match FontLoad(bytes) {
     Ok(font) => {
       match font.GlyphOutline(3) {
-        Ok(_outline) => { outcome = false },
-        Malformed => { outcome = true },
+        Ok(_outline) => {
+          outcome = false
+        }
+        Malformed => {
+          outcome = true
+        }
       }
-    },
-    _ => { outcome = false },
+    }
+    _ => {
+      outcome = false
+    }
   }
   Free(bytes)
   return outcome

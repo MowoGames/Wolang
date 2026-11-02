@@ -113,7 +113,9 @@ fun FloatFromBits(bits: int) -> float uses unsafe {
   if exponent == 0 {
     value = mantissa as float / 8388608.0 * Pow(2.0, -126.0)
   } else {
-    value = (1.0 + mantissa as float / 8388608.0) * Pow(2.0, (exponent - 127) as float)
+    value = (1.0 + mantissa as float / 8388608.0) * Pow(
+        2.0,
+        (exponent - 127) as float)
   }
   if sign == 1 {
     return -value
@@ -123,7 +125,13 @@ fun FloatFromBits(bits: int) -> float uses unsafe {
 }
 
 offer fun WavDecode(data: []u8) -> Clip!(Malformed, Unsupported, TooLarge) uses unsafe {
-  if !Has(data, 0, 12) || !Tag(data, 0, 82, 73, 70, 70) || !Tag(data, 8, 87, 65, 86, 69) {
+  if !Has(data, 0, 12) || !Tag(data, 0, 82, 73, 70, 70) || !Tag(
+      data,
+      8,
+      87,
+      65,
+      86,
+      69) {
     return Malformed
   }
 
@@ -270,7 +278,7 @@ fun Release(out: List<u8>) -> []u8 uses unsafe {
   return held
 }
 
-offer fun WavEncode(clip: Clip, bits: int) -> []u8!(Unsupported) uses unsafe {
+offer fun WavEncode(clip: Clip, bits: int) -> []u8!Unsupported uses unsafe {
   if bits != 8 && bits != 16 && bits != 24 {
     return Unsupported
   }
@@ -351,7 +359,8 @@ offer fun Resample(clip: Clip, rate: int) -> Clip!(Malformed, TooLarge) uses uns
     return Malformed
   }
 
-  var frames = Round(clip.Frames() as float * rate as float / clip.rate as float) as int
+  var frames = Round(
+      clip.Frames() as float * rate as float / clip.rate as float) as int
   if frames < 1 {
     frames = 1
   }
@@ -427,7 +436,17 @@ offer class Mixer {
   fun Play(clip: Clip, volume: float, pan: float, looped: bool) -> int uses unsafe {
     const id = next_id
     next_id = next_id + 1
-    voices.Push(Voice(clip, 0.0, volume, ClampFloat(pan, -1.0, 1.0), 1.0, looped, 0, id, false))
+    voices.Push(
+        Voice(
+            clip,
+            0.0,
+            volume,
+            ClampFloat(pan, -1.0, 1.0),
+            1.0,
+            looped,
+            0,
+            id,
+            false))
 
     return id
   }
@@ -610,7 +629,7 @@ offer class Mixer {
   }
 }
 
-offer fun MixerNew(rate: int, channels: int) -> Mixer!(Malformed) uses unsafe {
+offer fun MixerNew(rate: int, channels: int) -> Mixer!Malformed uses unsafe {
   if rate < 1 || rate > 384000 || channels < 1 || channels > 2 {
     return Malformed
   }
@@ -659,7 +678,7 @@ offer class Output {
   }
 }
 
-offer fun OutputOpen(rate: int, channels: int) -> Output!(Malformed) uses unsafe {
+offer fun OutputOpen(rate: int, channels: int) -> Output!Malformed uses unsafe {
   var mixer = MixerNew(rate, channels)?
 
   return Output(OpenAudio(rate, channels), mixer)
@@ -705,7 +724,7 @@ fun OggTable() -> []mut u32 uses unsafe {
     var bit = 0
     while bit < 8 {
       if r >= 2147483648 {
-        r = ((r - 2147483648) * 2) ^ 79764919
+        r = (r - 2147483648) * 2 ^ 79764919
       } else {
         r = r * 2
       }
@@ -726,14 +745,14 @@ fun OggCrc(table: []u32, data: []u8, from: int, count: int, zero_at: int) -> u32
     if from + i >= zero_at && from + i < zero_at + 4 {
       byte = 0
     }
-    crc = ((crc & 16777215) * 256) ^ table[((crc / 16777216) ^ byte) as int]
+    crc = (crc & 16777215) * 256 ^ table[(crc / 16777216 ^ byte) as int]
     i = i + 1
   }
 
   return crc
 }
 
-fun OggRead(data: []u8, bytes: &mut List<u8>, starts: &mut List<int>) -> int!(Malformed) uses unsafe {
+fun OggRead(data: []u8, bytes: &mut List<u8>, starts: &mut List<int>) -> int!Malformed uses unsafe {
   const table = OggTable()
   var at = 0
   var granule = 0
@@ -887,7 +906,13 @@ fun ReadsAndWritesLittleEndianFields() -> bool {
 
 @Test
 fun DecodesFloatsFromTheirBits() -> bool uses unsafe {
-  return Near(FloatFromBits(1065353216), 1.0, 0.000001) && Near(FloatFromBits(3204448256), -0.5, 0.000001) && FloatFromBits(0) == 0.0 && Near(FloatFromBits(1073741824), 2.0, 0.000001)
+  return Near(FloatFromBits(1065353216), 1.0, 1e-06) && Near(
+      FloatFromBits(3204448256),
+      -0.5,
+      1e-06) && FloatFromBits(0) == 0.0 && Near(
+      FloatFromBits(1073741824),
+      2.0,
+      1e-06)
 }
 
 @Test
@@ -895,23 +920,26 @@ fun MakesAClipAndRefusesBadShapes() -> bool uses unsafe {
   var clip = ClipNew(4, 2, 100)
   match clip {
     Ok(c) => {
-      if c.Frames() != 4 || c.samples.len != 8 || !Near(c.Seconds(), 0.04, 0.0001) {
+      if c.Frames() != 4 || c.samples.len != 8 || !Near(
+          c.Seconds(),
+          0.04,
+          0.0001) {
         return false
       }
       c.Set(1, 1, 0.25)
       if c.Get(1, 1) != 0.25 || c.Get(0, 0) != 0.0 || c.Get(9, 0) != 0.0 {
         return false
       }
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
   match ClipNew(0, 2, 100) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
 
   return true
@@ -947,11 +975,15 @@ fun DecodesSixteenBitPcm() -> bool uses unsafe {
   const wav = WavBytes(1, 1, 8000, 16, body)
   match WavDecode(wav) {
     Ok(clip) => {
-      return clip.Frames() == 4 && clip.rate == 8000 && clip.channels == 1 && clip.Get(0, 0) == 0.0 && Near(clip.Get(1, 0), 0.999969, 0.00001) && clip.Get(2, 0) == -1.0 && clip.Get(3, 0) == 0.5
-    },
+      return clip.Frames() == 4 && clip.rate == 8000 && clip.channels == 1 && clip.Get(
+          0,
+          0) == 0.0 && Near(clip.Get(1, 0), 0.999969, 1e-05) && clip.Get(2, 0) == -1.0 && clip.Get(
+          3,
+          0) == 0.5
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -960,23 +992,28 @@ fun DecodesEightAndTwentyFourBitPcm() -> bool uses unsafe {
   const eight = WavBytes(1, 1, 8000, 8, Hex("80ff00"))
   match WavDecode(eight) {
     Ok(clip) => {
-      if clip.Frames() != 3 || clip.Get(0, 0) != 0.0 || Near(clip.Get(1, 0), 0.992188, 0.0001) == false || clip.Get(2, 0) != -1.0 {
+      if clip.Frames() != 3 || clip.Get(0, 0) != 0.0 || Near(
+          clip.Get(1, 0),
+          0.992188,
+          0.0001) == false || clip.Get(2, 0) != -1.0 {
         return false
       }
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 
   const wide = WavBytes(1, 2, 8000, 24, Hex("0000400000c0"))
   match WavDecode(wide) {
     Ok(clip) => {
-      return clip.Frames() == 1 && clip.channels == 2 && clip.Get(0, 0) == 0.5 && clip.Get(0, 1) == -0.5
-    },
+      return clip.Frames() == 1 && clip.channels == 2 && clip.Get(0, 0) == 0.5 && clip.Get(
+          0,
+          1) == -0.5
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -985,11 +1022,14 @@ fun DecodesFloatPcm() -> bool uses unsafe {
   const wav = WavBytes(3, 1, 8000, 32, Hex("0000803f000000bf"))
   match WavDecode(wav) {
     Ok(clip) => {
-      return clip.Frames() == 2 && Near(clip.Get(0, 0), 1.0, 0.000001) && Near(clip.Get(1, 0), -0.5, 0.000001)
-    },
+      return clip.Frames() == 2 && Near(clip.Get(0, 0), 1.0, 1e-06) && Near(
+          clip.Get(1, 0),
+          -0.5,
+          1e-06)
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -998,46 +1038,46 @@ fun RefusesBrokenWavFiles() -> bool uses unsafe {
   match WavDecode(Hex("52494646")) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
   match WavDecode(Hex("524946580000000057415645")) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
 
   const good = WavBytes(1, 1, 8000, 16, Hex("00000000"))
   match WavDecode(good) {
-    Ok(_) => {},
+    Ok(_) => {}
     _ => {
       return false
-    },
+    }
   }
 
   const compressed = WavBytes(2, 1, 8000, 4, Hex("00000000"))
   match WavDecode(compressed) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
 
   const bad_rate = WavBytes(1, 1, 0, 16, Hex("00000000"))
   match WavDecode(bad_rate) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
 
   const no_frames = WavBytes(1, 1, 8000, 16, Hex(""))
   match WavDecode(no_frames) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
 
   return true
@@ -1055,10 +1095,10 @@ fun KeepsWhatIsThereOfATruncatedFile() -> bool uses unsafe {
   match WavDecode(cut) {
     Ok(clip) => {
       return clip.Frames() == 2 && clip.Get(0, 0) == 0.5
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -1083,20 +1123,23 @@ fun RoundTripsThroughWav() -> bool uses unsafe {
             }
             var g = 0
             while g < 5 {
-              if !Near(back.Get(g, 0), clip.Get(g, 0), 0.0001) || !Near(back.Get(g, 1), clip.Get(g, 1), 0.0001) {
+              if !Near(back.Get(g, 0), clip.Get(g, 0), 0.0001) || !Near(
+                  back.Get(g, 1),
+                  clip.Get(g, 1),
+                  0.0001) {
                 return false
               }
               g = g + 1
             }
-          },
+          }
           _ => {
             return false
-          },
+          }
         }
-      },
+      }
       _ => {
         return false
-      },
+      }
     }
     bits = bits + 8
   }
@@ -1114,16 +1157,16 @@ fun EncodesEightBitAndRefusesOtherDepths() -> bool uses unsafe {
       if wav.len != 46 || wav[44] != 255 || wav[45] != 1 {
         return false
       }
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
   match WavEncode(clip, 12) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
 
   return true
@@ -1136,10 +1179,10 @@ fun ClampsWhatIsTooLoudWhenEncoding() -> bool uses unsafe {
   match WavEncode(clip, 16) {
     Ok(wav) => {
       return wav[44] == 255 && wav[45] == 127
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -1150,7 +1193,10 @@ fun ResamplesByInterpolating() -> bool uses unsafe {
   clip.Set(1, 0, 1.0)
   clip.Set(2, 0, 0.0)
   var up = Resample(clip, 200)?
-  if up.Frames() != 6 || up.rate != 200 || up.Get(0, 0) != 0.0 || !Near(up.Get(1, 0), 0.5, 0.0001) || !Near(up.Get(2, 0), 1.0, 0.0001) {
+  if up.Frames() != 6 || up.rate != 200 || up.Get(0, 0) != 0.0 || !Near(
+      up.Get(1, 0),
+      0.5,
+      0.0001) || !Near(up.Get(2, 0), 1.0, 0.0001) {
     return false
   }
 
@@ -1170,8 +1216,8 @@ fun RefusesToResampleToNothing() -> bool uses unsafe {
   match Resample(clip, 0) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
 
   return true
@@ -1201,8 +1247,8 @@ fun RemixesBetweenMonoAndStereo() -> bool uses unsafe {
   match Remix(stereo, 3) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
 
   return true
@@ -1370,7 +1416,8 @@ fun AppliesVolumeBusAndMasterGains() -> bool uses unsafe {
   const second = out[0]
   Free(out)
 
-  return Near(first, 0.1, 0.0001) && second == 0.0 && mixer.BusGain(music) == 0.0 && mixer.BusGain(0) == 1.0 && mixer.BusGain(9) == 0.0
+  return Near(first, 0.1, 0.0001) && second == 0.0 && mixer.BusGain(music) == 0.0 && mixer.BusGain(
+      0) == 1.0 && mixer.BusGain(9) == 0.0
 }
 
 @Test
@@ -1410,22 +1457,22 @@ fun RefusesBadMixerShapes() -> bool uses unsafe {
   match MixerNew(0, 2) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
   match MixerNew(48000, 3) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
   match MixerNew(48000, 2) {
     Ok(m) => {
       return m.channels == 2 && m.rate == 48000
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -1445,7 +1492,8 @@ fun OpensWithOrWithoutADevice() -> bool uses unsafe {
 }
 
 fun TestOgg() -> []u8 uses unsafe {
-  return Hex("4f67675300020000000000000000070000000000000017216cca011e01766f72626973000000000244ac00000000000000f4010000000000b8014f6767530000000000000000000007000000010000006f802af4012b03766f7262697302000000776f02000000080000005449544c453d4869090000004152544953543d576f014f676753000488580100000000000700000002000000a676b817010805766f7262697300")
+  return Hex(
+      "4f67675300020000000000000000070000000000000017216cca011e01766f72626973000000000244ac00000000000000f4010000000000b8014f6767530000000000000000000007000000010000006f802af4012b03766f7262697302000000776f02000000080000005449544c453d4869090000004152544953543d576f014f676753000488580100000000000700000002000000a676b817010805766f7262697300")
 }
 
 @Test
@@ -1465,7 +1513,8 @@ fun ReadsTheVorbisHeaders() -> bool uses unsafe {
       if info.channels != 2 || info.rate != 44100 || info.bitrate != 128000 || info.frames != 88200 {
         return false
       }
-      if !Near(info.Seconds(), 2.0, 0.0001) || !Equals(info.vendor, "wo") || info.comments.Len() != 2 {
+      if !Near(info.Seconds(), 2.0, 0.0001) || !Equals(info.vendor, "wo") || info.comments.Len(
+          ) != 2 {
         return false
       }
       if const title = info.Comment("title") {
@@ -1487,10 +1536,10 @@ fun ReadsTheVorbisHeaders() -> bool uses unsafe {
       }
 
       return true
-    },
+    }
     _ => {
       return false
-    },
+    }
   }
 }
 
@@ -1507,15 +1556,15 @@ fun RefusesACorruptedOggPage() -> bool uses unsafe {
   match OggVorbisInfo(data) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
 
   match OggVorbisInfo(Hex("4f676753")) {
     Ok(_) => {
       return false
-    },
-    _ => {},
+    }
+    _ => {}
   }
 
   return true

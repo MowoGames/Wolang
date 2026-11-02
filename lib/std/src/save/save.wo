@@ -16,8 +16,19 @@
 
 need std.mem.{ArrayNew, BytesFromRaw, Free, Prefix}
 
-extern "C" fun wolang_save_encode(schema: *u8, schema_length: u64, offsets: u64, root: u64, out_length: *mut u64) -> *mut u8 uses unsafe
-extern "C" fun wolang_save_decode(schema: *u8, schema_length: u64, offsets: u64, data: *u8, data_length: u64, status: *mut s32) -> u64 uses unsafe
+extern "C" fun wolang_save_encode(
+    schema: *u8,
+    schema_length: u64,
+    offsets: u64,
+    root: u64,
+    out_length: *mut u64) -> *mut u8 uses unsafe
+extern "C" fun wolang_save_decode(
+    schema: *u8,
+    schema_length: u64,
+    offsets: u64,
+    data: *u8,
+    data_length: u64,
+    status: *mut s32) -> u64 uses unsafe
 
 /// The bytes are not a save of this class: they end early, name a class the
 /// program does not have, or are not a save at all.
@@ -46,7 +57,12 @@ offer fun FromHandle<T>(word: u64) -> T
 offer fun Save<T>(value: T) -> []mut u8 uses unsafe {
   const shape = ShapeOf<T>()
   var length: u64 = 0
-  const made = wolang_save_encode(shape.schema.data, shape.schema.length, shape.offsets, HandleOf(value), &mut length)
+  const made = wolang_save_encode(
+      shape.schema.data,
+      shape.schema.length,
+      shape.offsets,
+      HandleOf(value),
+      &mut length)
   return BytesFromRaw(made, length as int)
 }
 
@@ -54,7 +70,13 @@ offer fun Save<T>(value: T) -> []mut u8 uses unsafe {
 offer fun Load<T>(data: []u8) -> T!Corrupt uses unsafe {
   const shape = ShapeOf<T>()
   var status: s32 = 0
-  const made = wolang_save_decode(shape.schema.data, shape.schema.length, shape.offsets, data.data, data.len as u64, &mut status)
+  const made = wolang_save_decode(
+      shape.schema.data,
+      shape.schema.length,
+      shape.offsets,
+      data.data,
+      data.len as u64,
+      &mut status)
   if status != 0 || made == 0 {
     return Corrupt
   }
@@ -101,8 +123,8 @@ fun KeepsTheMarkedFieldsAndOnlyThose() -> bool uses unsafe {
   mover.scratch = 99
   const bytes = Save(mover)
   const back = match Load<Mover>(bytes) {
-    Ok(found) => found,
-    Corrupt => Mover(),
+    Ok(found) => found
+    Corrupt => Mover()
   }
   Free(bytes)
   if back.steps != 5 || back.name != "walker" || back.mood != Mood.Angry {
@@ -124,8 +146,8 @@ fun KeepsASharedObjectOnceAndACycleAsACycle() -> bool uses unsafe {
   second.next = first
   const bytes = Save(first)
   const back = match Load<Mover>(bytes) {
-    Ok(found) => found,
-    Corrupt => Mover(),
+    Ok(found) => found
+    Corrupt => Mover()
   }
   Free(bytes)
   if back.steps != 1 {
@@ -144,8 +166,8 @@ fun KeepsASharedObjectOnceAndACycleAsACycle() -> bool uses unsafe {
 fun RefusesBytesThatAreNotASave() -> bool uses unsafe {
   var junk = ArrayNew<u8>(6)
   const answer = match Load<Mover>(junk) {
-    Ok(_kept) => false,
-    Corrupt => true,
+    Ok(_kept) => false
+    Corrupt => true
   }
   Free(junk)
   return answer
@@ -158,8 +180,8 @@ fun RefusesASaveThatEndsEarly() -> bool uses unsafe {
   const bytes = Save(mover)
   const cut = Prefix(bytes, bytes.len - 3)
   const answer = match Load<Mover>(cut) {
-    Ok(_kept) => false,
-    Corrupt => true,
+    Ok(_kept) => false
+    Corrupt => true
   }
   Free(bytes)
   return answer

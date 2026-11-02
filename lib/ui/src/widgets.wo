@@ -67,7 +67,17 @@ offer class Ui {
   fun Write(x: int, y: int, label: text, colour: u32) uses unsafe {
     const start = labels.Len()
     labels.Append(label)
-    commands.Push(DrawCommand(kDrawText, x, y, 0, 0, colour, start, labels.Len() - start, style.size))
+    commands.Push(
+        DrawCommand(
+            kDrawText,
+            x,
+            y,
+            0,
+            0,
+            colour,
+            start,
+            labels.Len() - start,
+            style.size))
   }
 
   fun Panel(x: int, y: int, w: int, h: int) uses unsafe {
@@ -76,7 +86,10 @@ offer class Ui {
   }
 
   fun LabelOf(command: DrawCommand) -> text uses unsafe {
-    return Substring(labels.Text(), command.start, command.start + command.length)
+    return Substring(
+        labels.Text(),
+        command.start,
+        command.start + command.length)
   }
 
   fun Spacer(pixels: int) {
@@ -145,9 +158,18 @@ offer class Ui {
       now = !value
     }
     if now {
-      Fill(rect.x + 3, rect.y + style.padding + 3, side - 6, side - 6, style.accent)
+      Fill(
+          rect.x + 3,
+          rect.y + style.padding + 3,
+          side - 6,
+          side - 6,
+          style.accent)
     }
-    Write(rect.x + side + style.padding, rect.y + style.padding, label, style.text)
+    Write(
+        rect.x + side + style.padding,
+        rect.y + style.padding,
+        label,
+        style.text)
     return now
   }
 
@@ -178,7 +200,12 @@ offer class Ui {
       shown = 1.0
     }
     Fill(rect.x, rect.y, rect.width, rect.height, style.track)
-    Fill(rect.x, rect.y, (shown * rect.width as float) as int, rect.height, style.accent)
+    Fill(
+        rect.x,
+        rect.y,
+        (shown * rect.width as float) as int,
+        rect.height,
+        style.accent)
     return now
   }
 
@@ -228,10 +255,22 @@ offer class Ui {
       }
     }
     Fill(rect.x, rect.y, rect.width, rect.height, style.track)
-    Write(rect.x + style.padding, rect.y + style.padding, edit.Value(), style.text)
+    Write(
+        rect.x + style.padding,
+        rect.y + style.padding,
+        edit.Value(),
+        style.text)
     if focus == id {
-      const caret = rect.x + style.padding + Measure(font, edit.Before(), style.size) as int
-      Fill(caret, rect.y + style.padding, 1, rect.height - style.padding * 2, style.accent)
+      const caret = rect.x + style.padding + Measure(
+          font,
+          edit.Before(),
+          style.size) as int
+      Fill(
+          caret,
+          rect.y + style.padding,
+          1,
+          rect.height - style.padding * 2,
+          style.accent)
     }
     return changed
   }
@@ -251,7 +290,11 @@ offer class Ui {
       } else {
         Fill(rect.x, rect.y, rect.width, rect.height, Shade(id, rect))
       }
-      Write(rect.x + style.padding, rect.y + style.padding, items.At(i), style.text)
+      Write(
+          rect.x + style.padding,
+          rect.y + style.padding,
+          items.At(i),
+          style.text)
       i = i + 1
     }
     return now
@@ -259,7 +302,20 @@ offer class Ui {
 }
 
 offer fun UiNew(font: Font, style: Style) -> Ui uses unsafe {
-  return Ui(font, style, InputNew(), ListNew<DrawCommand>(), BuilderNew(), 0, 0, 0, 0, 0, 0, 0, 0)
+  return Ui(
+      font,
+      style,
+      InputNew(),
+      ListNew<DrawCommand>(),
+      BuilderNew(),
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0)
 }
 
 fun Frame(ui: Ui) uses unsafe {

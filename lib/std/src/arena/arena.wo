@@ -21,7 +21,7 @@ offer class Arena {
   var current: int
   var used: int
 
-  deinit {
+  deinit  {
     var k = 0
     while k < chunks.Len() {
       Free(chunks.At(k))
