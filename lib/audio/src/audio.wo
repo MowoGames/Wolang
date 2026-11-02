@@ -1,0 +1,1522 @@
+need std.list.{List, ListNew}
+need std.mem.{ArrayNew, Free}
+need std.math.{Sin, Cos, Pow, Round, ClampFloat, MinFloat, MaxFloat, Near}
+need std.text.{Bytes, Equals, IndexOf, Length, Substring, TextFromRaw, Upper}
+need std.encoding.{FromHex}
+need gfx.{Audio, OpenAudio, Available}
+
+offer error Malformed
+offer error Unsupported
+offer error TooLarge
+
+offer const kMaxSamples: int = 134217728
+
+offer const kPi: float = 3.14159265358979
+
+offer class Clip {
+  var samples: []mut f32
+  var rate: int = 48000
+  var channels: int = 1
+
+  deinit  {
+    Free(samples)
+  }
+
+  fun Frames() -> int {
+    if channels < 1 {
+      return 0
+    }
+
+    return samples.len / channels
+  }
+
+  fun Seconds() -> float {
+    if rate < 1 {
+      return 0.0
+    }
+
+    return Frames() as float / rate as float
+  }
+
+  fun Get(frame: int, channel: int) -> float {
+    if frame < 0 || frame >= Frames() || channel < 0 || channel >= channels {
+      return 0.0
+    }
+
+    return samples[frame * channels + channel]
+  }
+
+  fun Set(frame: int, channel: int, value: float) {
+    if frame < 0 || frame >= Frames() || channel < 0 || channel >= channels {
+      return
+    }
+
+    samples[frame * channels + channel] = value
+  }
+}
+
+offer fun ClipNew(frames: int, channels: int, rate: int) -> Clip!(Malformed, TooLarge) uses unsafe {
+  if frames < 1 || channels < 1 || channels > 8 || rate < 1 || rate > 384000 {
+    return Malformed
+  }
+  if frames > kMaxSamples / channels {
+    return TooLarge
+  }
+
+  var samples = ArrayNew<f32>(frames * channels)
+  var i = 0
+  while i < samples.len {
+    samples[i] = 0.0
+    i = i + 1
+  }
+
+  return Clip(samples, rate, channels)
+}
+
+fun Has(data: []u8, at: int, count: int) -> bool {
+  return at >= 0 && count >= 0 && at <= data.len && count <= data.len - at
+}
+
+fun Le16(data: []u8, at: int) -> int {
+  return data[at] as int + data[at + 1] as int * 256
+}
+
+fun Le32(data: []u8, at: int) -> int {
+  return Le16(data, at) + Le16(data, at + 2) * 65536
+}
+
+fun Le32u(data: []u8, at: int) -> u32 {
+  return data[at] as u32 + data[at + 1] as u32 * 256 + data[at + 2] as u32 * 65536 + data[at + 3] as u32 * 16777216
+}
+
+fun Le64(data: []u8, at: int) -> int {
+  if data[at + 7] >= 128 {
+    return -1
+  }
+
+  return Le32(data, at) + Le32(data, at + 4) * 4294967296
+}
+
+fun Tag(data: []u8, at: int, a: int, b: int, c: int, d: int) -> bool {
+  return Has(data, at, 4) && data[at] as int == a && data[at + 1] as int == b && data[at + 2] as int == c && data[at + 3] as int == d
+}
+
+fun FloatFromBits(bits: int) -> float uses unsafe {
+  const sign = bits / 2147483648 % 2
+  const exponent = bits / 8388608 % 256
+  const mantissa = bits % 8388608
+  if exponent == 255 {
+    return 0.0
+  }
+
+  var value = 0.0
+  if exponent == 0 {
+    value = mantissa as float / 8388608.0 * Pow(2.0, -126.0)
+  } else {
+    value = (1.0 + mantissa as float / 8388608.0) * Pow(2.0, (exponent - 127) as float)
+  }
+  if sign == 1 {
+    return -value
+  }
+
+  return value
+}
+
+offer fun WavDecode(data: []u8) -> Clip!(Malformed, Unsupported, TooLarge) uses unsafe {
+  if !Has(data, 0, 12) || !Tag(data, 0, 82, 73, 70, 70) || !Tag(data, 8, 87, 65, 86, 69) {
+    return Malformed
+  }
+
+  var at = 12
+  var format = 0
+  var channels = 0
+  var rate = 0
+  var bits = 0
+  var align = 0
+  var have_format = false
+  var body = 0
+  var body_size = 0
+  var have_body = false
+  while Has(data, at, 8) && !have_body {
+    const size = Le32(data, at + 4)
+    const start = at + 8
+    if Tag(data, at, 102, 109, 116, 32) {
+      if size < 16 || !Has(data, start, 16) {
+        return Malformed
+      }
+      format = Le16(data, start)
+      channels = Le16(data, start + 2)
+      rate = Le32(data, start + 4)
+      align = Le16(data, start + 12)
+      bits = Le16(data, start + 14)
+      if format == 65534 {
+        if size < 26 || !Has(data, start, 26) {
+          return Malformed
+        }
+        format = Le16(data, start + 24)
+      }
+      have_format = true
+    } else if Tag(data, at, 100, 97, 116, 97) {
+      body = start
+      body_size = size
+      have_body = true
+    }
+    at = start + size + size % 2
+  }
+  if !have_format || !have_body {
+    return Malformed
+  }
+  if body_size > data.len - body {
+    body_size = data.len - body
+  }
+  if channels < 1 || channels > 8 || rate < 1 || rate > 384000 {
+    return Unsupported
+  }
+
+  if format == 1 {
+    if bits != 8 && bits != 16 && bits != 24 && bits != 32 {
+      return Unsupported
+    }
+  } else if format == 3 {
+    if bits != 32 {
+      return Unsupported
+    }
+  } else {
+    return Unsupported
+  }
+
+  const bytes = bits / 8
+  if align != bytes * channels {
+    return Malformed
+  }
+
+  const frames = body_size / align
+  if frames < 1 {
+    return Malformed
+  }
+  if frames > kMaxSamples / channels {
+    return TooLarge
+  }
+
+  var clip = ClipNew(frames, channels, rate)?
+  const total = frames * channels
+  var i = 0
+  while i < total {
+    const p = body + i * bytes
+    var value = 0.0
+    if format == 3 {
+      value = FloatFromBits(Le32(data, p))
+    } else if bits == 8 {
+      value = (data[p] as int - 128) as float / 128.0
+    } else if bits == 16 {
+      var s = Le16(data, p)
+      if s >= 32768 {
+        s = s - 65536
+      }
+      value = s as float / 32768.0
+    } else if bits == 24 {
+      var s = Le16(data, p) + data[p + 2] as int * 65536
+      if s >= 8388608 {
+        s = s - 16777216
+      }
+      value = s as float / 8388608.0
+    } else {
+      var s = Le32(data, p)
+      if s >= 2147483648 {
+        s = s - 4294967296
+      }
+      value = s as float / 2147483648.0
+    }
+    clip.samples[i] = value
+    i = i + 1
+  }
+
+  return clip
+}
+
+fun PutByte(out: &mut List<u8>, value: int) uses unsafe {
+  out.Push(value as u8)
+}
+
+fun PutLe16(out: &mut List<u8>, value: int) uses unsafe {
+  PutByte(out, value % 256)
+  PutByte(out, value / 256 % 256)
+}
+
+fun PutLe32(out: &mut List<u8>, value: int) uses unsafe {
+  PutLe16(out, value % 65536)
+  PutLe16(out, value / 65536 % 65536)
+}
+
+fun PutTag(out: &mut List<u8>, a: int, b: int, c: int, d: int) uses unsafe {
+  PutByte(out, a)
+  PutByte(out, b)
+  PutByte(out, c)
+  PutByte(out, d)
+}
+
+fun Hex(value: text) -> []u8 uses unsafe {
+  return Bytes(FromHex(value) ?? "")
+}
+
+fun Release(out: List<u8>) -> []u8 uses unsafe {
+  var held = ArrayNew<u8>(out.Len())
+  var i = 0
+  while i < out.Len() {
+    held[i] = out.At(i)
+    i = i + 1
+  }
+
+  return held
+}
+
+offer fun WavEncode(clip: Clip, bits: int) -> []u8!(Unsupported) uses unsafe {
+  if bits != 8 && bits != 16 && bits != 24 {
+    return Unsupported
+  }
+
+  const bytes = bits / 8
+  const body = clip.samples.len * bytes
+  var out = ListNew<u8>()
+  PutTag(&mut out, 82, 73, 70, 70)
+  PutLe32(&mut out, 36 + body + body % 2)
+  PutTag(&mut out, 87, 65, 86, 69)
+  PutTag(&mut out, 102, 109, 116, 32)
+  PutLe32(&mut out, 16)
+  PutLe16(&mut out, 1)
+  PutLe16(&mut out, clip.channels)
+  PutLe32(&mut out, clip.rate)
+  PutLe32(&mut out, clip.rate * clip.channels * bytes)
+  PutLe16(&mut out, clip.channels * bytes)
+  PutLe16(&mut out, bits)
+  PutTag(&mut out, 100, 97, 116, 97)
+  PutLe32(&mut out, body)
+
+  var i = 0
+  while i < clip.samples.len {
+    const v = ClampFloat(clip.samples[i], -1.0, 1.0)
+    if bits == 8 {
+      PutByte(&mut out, Round(v * 127.0) as int + 128)
+    } else if bits == 16 {
+      var s = Round(v * 32767.0) as int
+      if s < 0 {
+        s = s + 65536
+      }
+      PutLe16(&mut out, s)
+    } else {
+      var s = Round(v * 8388607.0) as int
+      if s < 0 {
+        s = s + 16777216
+      }
+      PutLe16(&mut out, s % 65536)
+      PutByte(&mut out, s / 65536)
+    }
+    i = i + 1
+  }
+  if body % 2 == 1 {
+    PutByte(&mut out, 0)
+  }
+
+  return Release(out)
+}
+
+fun SampleAt(clip: Clip, position: f64, channel: int, looped: bool) -> float {
+  const frames = clip.Frames()
+  var i0 = position as int
+  if i0 >= frames {
+    i0 = frames - 1
+  }
+  if i0 < 0 {
+    i0 = 0
+  }
+
+  const fraction = ClampFloat((position - i0 as f64) as float, 0.0, 1.0)
+  var i1 = i0 + 1
+  if i1 >= frames {
+    if looped {
+      i1 = 0
+    } else {
+      i1 = frames - 1
+    }
+  }
+
+  const a = clip.samples[i0 * clip.channels + channel]
+  const b = clip.samples[i1 * clip.channels + channel]
+
+  return a + (b - a) * fraction
+}
+
+offer fun Resample(clip: Clip, rate: int) -> Clip!(Malformed, TooLarge) uses unsafe {
+  if rate < 1 || rate > 384000 {
+    return Malformed
+  }
+
+  var frames = Round(clip.Frames() as float * rate as float / clip.rate as float) as int
+  if frames < 1 {
+    frames = 1
+  }
+
+  var out = ClipNew(frames, clip.channels, rate)?
+  const step = clip.rate as f64 / rate as f64
+  var f = 0
+  while f < frames {
+    var c = 0
+    while c < clip.channels {
+      out.Set(f, c, SampleAt(clip, f as f64 * step, c, false))
+      c = c + 1
+    }
+    f = f + 1
+  }
+
+  return out
+}
+
+offer fun Remix(clip: Clip, channels: int) -> Clip!(Malformed, TooLarge) uses unsafe {
+  if channels < 1 || channels > 2 {
+    return Malformed
+  }
+
+  var out = ClipNew(clip.Frames(), channels, clip.rate)?
+  var f = 0
+  while f < clip.Frames() {
+    if channels == 1 {
+      var sum = 0.0
+      var c = 0
+      while c < clip.channels {
+        sum = sum + clip.Get(f, c)
+        c = c + 1
+      }
+      out.Set(f, 0, sum / clip.channels as float)
+    } else if clip.channels == 1 {
+      out.Set(f, 0, clip.Get(f, 0))
+      out.Set(f, 1, clip.Get(f, 0))
+    } else {
+      out.Set(f, 0, clip.Get(f, 0))
+      out.Set(f, 1, clip.Get(f, 1))
+    }
+    f = f + 1
+  }
+
+  return out
+}
+
+offer class Voice {
+  var clip: Clip
+  var position: f64 = 0.0
+  var volume: float = 1.0
+  var pan: float = 0.0
+  var pitch: float = 1.0
+  var looped: bool = false
+  var bus: int = 0
+  var id: int = 0
+  var done: bool = false
+}
+
+offer class Mixer {
+  var rate: int
+  var channels: int
+  var voices: List<Voice>
+  var buses: List<float>
+  var master: float = 1.0
+  var next_id: int = 1
+
+  fun Voices() -> int {
+    return voices.Len()
+  }
+
+  fun Play(clip: Clip, volume: float, pan: float, looped: bool) -> int uses unsafe {
+    const id = next_id
+    next_id = next_id + 1
+    voices.Push(Voice(clip, 0.0, volume, ClampFloat(pan, -1.0, 1.0), 1.0, looped, 0, id, false))
+
+    return id
+  }
+
+  fun Find(id: int) -> Voice? {
+    var i = 0
+    while i < voices.Len() {
+      const voice = voices.At(i)
+      if voice.id == id && !voice.done {
+        return voice
+      }
+      i = i + 1
+    }
+
+    return null
+  }
+
+  fun IsPlaying(id: int) -> bool {
+    return Find(id) != null
+  }
+
+  fun Stop(id: int) {
+    if const voice = Find(id) {
+      voice.done = true
+    }
+  }
+
+  fun StopAll() {
+    var i = 0
+    while i < voices.Len() {
+      voices.At(i).done = true
+      i = i + 1
+    }
+  }
+
+  fun SetVolume(id: int, volume: float) {
+    if const voice = Find(id) {
+      voice.volume = MaxFloat(volume, 0.0)
+    }
+  }
+
+  fun SetPan(id: int, pan: float) {
+    if const voice = Find(id) {
+      voice.pan = ClampFloat(pan, -1.0, 1.0)
+    }
+  }
+
+  fun SetPitch(id: int, pitch: float) {
+    if const voice = Find(id) {
+      voice.pitch = ClampFloat(pitch, 0.01, 16.0)
+    }
+  }
+
+  fun SetBus(id: int, bus: int) {
+    if const voice = Find(id) {
+      if bus >= 0 && bus < buses.Len() {
+        voice.bus = bus
+      }
+    }
+  }
+
+  fun BusNew(gain: float) -> int uses unsafe {
+    buses.Push(MaxFloat(gain, 0.0))
+
+    return buses.Len() - 1
+  }
+
+  fun SetBusGain(bus: int, gain: float) {
+    if bus >= 0 && bus < buses.Len() {
+      buses.Set(bus, MaxFloat(gain, 0.0))
+    }
+  }
+
+  fun BusGain(bus: int) -> float {
+    if bus < 0 || bus >= buses.Len() {
+      return 0.0
+    }
+
+    return buses.At(bus)
+  }
+
+  fun SetMaster(gain: float) {
+    master = MaxFloat(gain, 0.0)
+  }
+
+  fun Mix(voice: Voice, out: []mut f32, frames: int) uses unsafe {
+    if voice.done {
+      return
+    }
+
+    const clip = voice.clip
+    const clip_frames = clip.Frames()
+    const length = clip_frames as f64
+    const step = clip.rate as f64 / rate as f64 * voice.pitch as f64
+    var bus_gain = 1.0
+    if voice.bus >= 0 && voice.bus < buses.Len() {
+      bus_gain = buses.At(voice.bus)
+    }
+
+    const gain = voice.volume * bus_gain * master
+    var left = 1.0
+    var right = 1.0
+    if clip.channels == 1 {
+      const theta = (voice.pan + 1.0) * kPi / 4.0
+      left = Cos(theta)
+      right = Sin(theta)
+    } else {
+      left = MinFloat(1.0, 1.0 - voice.pan)
+      right = MinFloat(1.0, 1.0 + voice.pan)
+    }
+
+    var position = voice.position
+    var f = 0
+    while f < frames {
+      if position >= length {
+        if voice.looped {
+          while position >= length {
+            position = position - length
+          }
+        } else {
+          voice.done = true
+          break
+        }
+      }
+
+      const first = SampleAt(clip, position, 0, voice.looped)
+      if channels == 2 {
+        var second = first
+        if clip.channels >= 2 {
+          second = SampleAt(clip, position, 1, voice.looped)
+        }
+        out[f * 2] = out[f * 2] + first * gain * left
+        out[f * 2 + 1] = out[f * 2 + 1] + second * gain * right
+      } else {
+        var mono = first
+        if clip.channels >= 2 {
+          mono = (first + SampleAt(clip, position, 1, voice.looped)) * 0.5
+        }
+        out[f] = out[f] + mono * gain
+      }
+      position = position + step
+      f = f + 1
+    }
+    voice.position = position
+    if position >= length && !voice.looped {
+      voice.done = true
+    }
+  }
+
+  fun Render(out: []mut f32) uses unsafe {
+    var i = 0
+    while i < out.len {
+      out[i] = 0.0
+      i = i + 1
+    }
+
+    const frames = out.len / channels
+    var v = 0
+    while v < voices.Len() {
+      Mix(voices.At(v), out, frames)
+      v = v + 1
+    }
+
+    i = 0
+    while i < out.len {
+      out[i] = ClampFloat(out[i], -1.0, 1.0)
+      i = i + 1
+    }
+
+    var k = 0
+    while k < voices.Len() {
+      if voices.At(k).done {
+        const last = voices.Len() - 1
+        voices.Set(k, voices.At(last))
+        const _gone = voices.Pop()
+      } else {
+        k = k + 1
+      }
+    }
+  }
+}
+
+offer fun MixerNew(rate: int, channels: int) -> Mixer!(Malformed) uses unsafe {
+  if rate < 1 || rate > 384000 || channels < 1 || channels > 2 {
+    return Malformed
+  }
+
+  var buses = ListNew<float>()
+  buses.Push(1.0)
+
+  return Mixer(rate, channels, ListNew<Voice>(), buses, 1.0, 1)
+}
+
+offer fun DeviceAvailable() -> bool uses unsafe {
+  return Available()
+}
+
+offer class Output {
+  var device: Audio
+  var mixer: Mixer
+
+  fun IsOpen() -> bool {
+    return device.IsOpen()
+  }
+
+  fun Pump() -> int uses unsafe {
+    if !device.IsOpen() {
+      return 0
+    }
+
+    var frames = device.Room()
+    if frames > 2048 {
+      frames = 2048
+    }
+    if frames < 1 {
+      return 0
+    }
+
+    var buffer = ArrayNew<f32>(frames * mixer.channels)
+    mixer.Render(buffer)
+    const taken = device.Queue(buffer)
+    Free(buffer)
+
+    return taken
+  }
+
+  fun Close() uses unsafe {
+    device.Close()
+  }
+}
+
+offer fun OutputOpen(rate: int, channels: int) -> Output!(Malformed) uses unsafe {
+  var mixer = MixerNew(rate, channels)?
+
+  return Output(OpenAudio(rate, channels), mixer)
+}
+
+offer class VorbisInfo {
+  var channels: int = 0
+  var rate: int = 0
+  var bitrate: int = 0
+  var frames: int = 0
+  var vendor: text = ""
+  var comments: List<text>
+
+  fun Seconds() -> float {
+    if rate < 1 {
+      return 0.0
+    }
+
+    return frames as float / rate as float
+  }
+
+  fun Comment(key: text) -> text? uses unsafe {
+    const wanted = Upper(key)
+    var i = 0
+    while i < comments.Len() {
+      const line = comments.At(i)
+      const at = IndexOf(line, "=")
+      if at > 0 && Equals(Upper(Substring(line, 0, at)), wanted) {
+        return Substring(line, at + 1, Length(line))
+      }
+      i = i + 1
+    }
+
+    return null
+  }
+}
+
+fun OggTable() -> []mut u32 uses unsafe {
+  var table = ArrayNew<u32>(256)
+  var i = 0
+  while i < 256 {
+    var r = i as u32 * 16777216
+    var bit = 0
+    while bit < 8 {
+      if r >= 2147483648 {
+        r = ((r - 2147483648) * 2) ^ 79764919
+      } else {
+        r = r * 2
+      }
+      bit = bit + 1
+    }
+    table[i] = r
+    i = i + 1
+  }
+
+  return table
+}
+
+fun OggCrc(table: []u32, data: []u8, from: int, count: int, zero_at: int) -> u32 {
+  var crc = 0 as u32
+  var i = 0
+  while i < count {
+    var byte = data[from + i] as u32
+    if from + i >= zero_at && from + i < zero_at + 4 {
+      byte = 0
+    }
+    crc = ((crc & 16777215) * 256) ^ table[((crc / 16777216) ^ byte) as int]
+    i = i + 1
+  }
+
+  return crc
+}
+
+fun OggRead(data: []u8, bytes: &mut List<u8>, starts: &mut List<int>) -> int!(Malformed) uses unsafe {
+  const table = OggTable()
+  var at = 0
+  var granule = 0
+  var open = false
+  var packets = 0
+  while at < data.len {
+    if !Tag(data, at, 79, 103, 103, 83) || !Has(data, at, 27) || data[at + 4] != 0 {
+      Free(table)
+      return Malformed
+    }
+
+    const count = data[at + 26] as int
+    if !Has(data, at, 27 + count) {
+      Free(table)
+      return Malformed
+    }
+
+    var payload = 0
+    var s = 0
+    while s < count {
+      payload = payload + data[at + 27 + s] as int
+      s = s + 1
+    }
+
+    const total = 27 + count + payload
+    if !Has(data, at, total) {
+      Free(table)
+      return Malformed
+    }
+    if OggCrc(table, data, at, total, at + 22) != Le32u(data, at + 22) {
+      Free(table)
+      return Malformed
+    }
+
+    const g = Le64(data, at + 6)
+    if g >= 0 {
+      granule = g
+    }
+
+    var p = at + 27 + count
+    s = 0
+    while s < count {
+      const length = data[at + 27 + s] as int
+      if !open && packets < 2 {
+        starts.Push(bytes.Len())
+      }
+      open = true
+      if packets < 2 {
+        var i = 0
+        while i < length {
+          bytes.Push(data[p + i])
+          i = i + 1
+        }
+      }
+      p = p + length
+      if length < 255 {
+        open = false
+        packets = packets + 1
+      }
+      s = s + 1
+    }
+    at = at + total
+  }
+  Free(table)
+
+  return granule
+}
+
+fun Vorbis(bytes: []u8, at: int) -> bool {
+  return at >= 0 && Has(bytes, at, 7) && bytes[at + 1] == 118 && bytes[at + 2] == 111 && bytes[at + 3] == 114 && bytes[at + 4] == 98 && bytes[at + 5] == 105 && bytes[at + 6] == 115
+}
+
+offer fun OggVorbisInfo(data: []u8) -> VorbisInfo!(Malformed, Unsupported) uses unsafe {
+  var bytes = ListNew<u8>()
+  var starts = ListNew<int>()
+  const frames = OggRead(data, &mut bytes, &mut starts)?
+  if starts.Len() < 2 {
+    return Malformed
+  }
+
+  const view = bytes.Items()
+  const ident = starts.At(0)
+  const comment = starts.At(1)
+  const end = bytes.Len()
+  if !Has(view, ident, 30) || view[ident] != 1 || !Vorbis(view, ident) {
+    return Unsupported
+  }
+  if Le32(view, ident + 7) != 0 {
+    return Unsupported
+  }
+
+  const channels = view[ident + 11] as int
+  const rate = Le32(view, ident + 12)
+  var bitrate = Le32(view, ident + 20)
+  if bitrate >= 2147483648 {
+    bitrate = bitrate - 4294967296
+  }
+  if channels < 1 || rate < 1 || view[ident + 29] != 1 {
+    return Malformed
+  }
+  if !Vorbis(view, comment) || view[comment] != 3 {
+    return Malformed
+  }
+
+  var info = VorbisInfo(channels, rate, bitrate, frames, "", ListNew<text>())
+  var p = comment + 7
+  if !Has(view, p, 4) || p + 4 > end {
+    return Malformed
+  }
+
+  const vendor = Le32(view, p)
+  p = p + 4
+  if vendor > end - p {
+    return Malformed
+  }
+  if vendor > 0 {
+    info.vendor = TextFromRaw(&view[p], vendor) + ""
+  }
+  p = p + vendor
+  if p + 4 > end {
+    return Malformed
+  }
+
+  const count = Le32(view, p)
+  p = p + 4
+  var i = 0
+  while i < count {
+    if p + 4 > end {
+      return Malformed
+    }
+    const length = Le32(view, p)
+    p = p + 4
+    if length > end - p {
+      return Malformed
+    }
+    if length > 0 {
+      info.comments.Push(TextFromRaw(&view[p], length) + "")
+    }
+    p = p + length
+    i = i + 1
+  }
+
+  return info
+}
+
+@Test
+fun ReadsAndWritesLittleEndianFields() -> bool {
+  const data = Hex("01020304ffffffff")
+  return Le16(data, 0) == 513 && Le32(data, 0) == 67305985 && Le32(data, 4) == 4294967295
+}
+
+@Test
+fun DecodesFloatsFromTheirBits() -> bool uses unsafe {
+  return Near(FloatFromBits(1065353216), 1.0, 0.000001) && Near(FloatFromBits(3204448256), -0.5, 0.000001) && FloatFromBits(0) == 0.0 && Near(FloatFromBits(1073741824), 2.0, 0.000001)
+}
+
+@Test
+fun MakesAClipAndRefusesBadShapes() -> bool uses unsafe {
+  var clip = ClipNew(4, 2, 100)
+  match clip {
+    Ok(c) => {
+      if c.Frames() != 4 || c.samples.len != 8 || !Near(c.Seconds(), 0.04, 0.0001) {
+        return false
+      }
+      c.Set(1, 1, 0.25)
+      if c.Get(1, 1) != 0.25 || c.Get(0, 0) != 0.0 || c.Get(9, 0) != 0.0 {
+        return false
+      }
+    },
+    _ => {
+      return false
+    },
+  }
+  match ClipNew(0, 2, 100) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+
+  return true
+}
+
+fun WavBytes(format: int, channels: int, rate: int, bits: int, body: []u8) -> []u8 uses unsafe {
+  var out = ListNew<u8>()
+  PutTag(&mut out, 82, 73, 70, 70)
+  PutLe32(&mut out, 36 + body.len)
+  PutTag(&mut out, 87, 65, 86, 69)
+  PutTag(&mut out, 102, 109, 116, 32)
+  PutLe32(&mut out, 16)
+  PutLe16(&mut out, format)
+  PutLe16(&mut out, channels)
+  PutLe32(&mut out, rate)
+  PutLe32(&mut out, rate * channels * bits / 8)
+  PutLe16(&mut out, channels * bits / 8)
+  PutLe16(&mut out, bits)
+  PutTag(&mut out, 100, 97, 116, 97)
+  PutLe32(&mut out, body.len)
+  var i = 0
+  while i < body.len {
+    PutByte(&mut out, body[i] as int)
+    i = i + 1
+  }
+
+  return Release(out)
+}
+
+@Test
+fun DecodesSixteenBitPcm() -> bool uses unsafe {
+  const body = Hex("0000ff7f00800040")
+  const wav = WavBytes(1, 1, 8000, 16, body)
+  match WavDecode(wav) {
+    Ok(clip) => {
+      return clip.Frames() == 4 && clip.rate == 8000 && clip.channels == 1 && clip.Get(0, 0) == 0.0 && Near(clip.Get(1, 0), 0.999969, 0.00001) && clip.Get(2, 0) == -1.0 && clip.Get(3, 0) == 0.5
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun DecodesEightAndTwentyFourBitPcm() -> bool uses unsafe {
+  const eight = WavBytes(1, 1, 8000, 8, Hex("80ff00"))
+  match WavDecode(eight) {
+    Ok(clip) => {
+      if clip.Frames() != 3 || clip.Get(0, 0) != 0.0 || Near(clip.Get(1, 0), 0.992188, 0.0001) == false || clip.Get(2, 0) != -1.0 {
+        return false
+      }
+    },
+    _ => {
+      return false
+    },
+  }
+
+  const wide = WavBytes(1, 2, 8000, 24, Hex("0000400000c0"))
+  match WavDecode(wide) {
+    Ok(clip) => {
+      return clip.Frames() == 1 && clip.channels == 2 && clip.Get(0, 0) == 0.5 && clip.Get(0, 1) == -0.5
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun DecodesFloatPcm() -> bool uses unsafe {
+  const wav = WavBytes(3, 1, 8000, 32, Hex("0000803f000000bf"))
+  match WavDecode(wav) {
+    Ok(clip) => {
+      return clip.Frames() == 2 && Near(clip.Get(0, 0), 1.0, 0.000001) && Near(clip.Get(1, 0), -0.5, 0.000001)
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun RefusesBrokenWavFiles() -> bool uses unsafe {
+  match WavDecode(Hex("52494646")) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+  match WavDecode(Hex("524946580000000057415645")) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+
+  const good = WavBytes(1, 1, 8000, 16, Hex("00000000"))
+  match WavDecode(good) {
+    Ok(_) => {},
+    _ => {
+      return false
+    },
+  }
+
+  const compressed = WavBytes(2, 1, 8000, 4, Hex("00000000"))
+  match WavDecode(compressed) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+
+  const bad_rate = WavBytes(1, 1, 0, 16, Hex("00000000"))
+  match WavDecode(bad_rate) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+
+  const no_frames = WavBytes(1, 1, 8000, 16, Hex(""))
+  match WavDecode(no_frames) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+
+  return true
+}
+
+@Test
+fun KeepsWhatIsThereOfATruncatedFile() -> bool uses unsafe {
+  var wav = WavBytes(1, 1, 8000, 16, Hex("004000200010"))
+  var cut = ArrayNew<u8>(wav.len - 2)
+  var i = 0
+  while i < cut.len {
+    cut[i] = wav[i]
+    i = i + 1
+  }
+  match WavDecode(cut) {
+    Ok(clip) => {
+      return clip.Frames() == 2 && clip.Get(0, 0) == 0.5
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun RoundTripsThroughWav() -> bool uses unsafe {
+  var clip = ClipNew(5, 2, 22050)?
+  var f = 0
+  while f < 5 {
+    clip.Set(f, 0, f as float / 8.0)
+    clip.Set(f, 1, -(f as float) / 8.0)
+    f = f + 1
+  }
+
+  var bits = 16
+  while bits <= 24 {
+    match WavEncode(clip, bits) {
+      Ok(wav) => {
+        match WavDecode(wav) {
+          Ok(back) => {
+            if back.Frames() != 5 || back.channels != 2 || back.rate != 22050 {
+              return false
+            }
+            var g = 0
+            while g < 5 {
+              if !Near(back.Get(g, 0), clip.Get(g, 0), 0.0001) || !Near(back.Get(g, 1), clip.Get(g, 1), 0.0001) {
+                return false
+              }
+              g = g + 1
+            }
+          },
+          _ => {
+            return false
+          },
+        }
+      },
+      _ => {
+        return false
+      },
+    }
+    bits = bits + 8
+  }
+
+  return true
+}
+
+@Test
+fun EncodesEightBitAndRefusesOtherDepths() -> bool uses unsafe {
+  var clip = ClipNew(2, 1, 8000)?
+  clip.Set(0, 0, 1.0)
+  clip.Set(1, 0, -1.0)
+  match WavEncode(clip, 8) {
+    Ok(wav) => {
+      if wav.len != 46 || wav[44] != 255 || wav[45] != 1 {
+        return false
+      }
+    },
+    _ => {
+      return false
+    },
+  }
+  match WavEncode(clip, 12) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+
+  return true
+}
+
+@Test
+fun ClampsWhatIsTooLoudWhenEncoding() -> bool uses unsafe {
+  var clip = ClipNew(1, 1, 8000)?
+  clip.Set(0, 0, 4.0)
+  match WavEncode(clip, 16) {
+    Ok(wav) => {
+      return wav[44] == 255 && wav[45] == 127
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun ResamplesByInterpolating() -> bool uses unsafe {
+  var clip = ClipNew(3, 1, 100)?
+  clip.Set(0, 0, 0.0)
+  clip.Set(1, 0, 1.0)
+  clip.Set(2, 0, 0.0)
+  var up = Resample(clip, 200)?
+  if up.Frames() != 6 || up.rate != 200 || up.Get(0, 0) != 0.0 || !Near(up.Get(1, 0), 0.5, 0.0001) || !Near(up.Get(2, 0), 1.0, 0.0001) {
+    return false
+  }
+
+  var same = Resample(clip, 100)?
+  if same.Frames() != 3 || !Near(same.Get(1, 0), 1.0, 0.0001) {
+    return false
+  }
+
+  var down = Resample(clip, 50)?
+
+  return down.Frames() == 2 && down.rate == 50 && down.Get(0, 0) == 0.0
+}
+
+@Test
+fun RefusesToResampleToNothing() -> bool uses unsafe {
+  var clip = ClipNew(3, 1, 100)?
+  match Resample(clip, 0) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+
+  return true
+}
+
+@Test
+fun RemixesBetweenMonoAndStereo() -> bool uses unsafe {
+  var stereo = ClipNew(2, 2, 100)?
+  stereo.Set(0, 0, 1.0)
+  stereo.Set(0, 1, 0.0)
+  stereo.Set(1, 0, 0.5)
+  stereo.Set(1, 1, 0.5)
+  var mono = Remix(stereo, 1)?
+  if mono.channels != 1 || mono.Get(0, 0) != 0.5 || mono.Get(1, 0) != 0.5 {
+    return false
+  }
+
+  var wide = Remix(mono, 2)?
+  if wide.channels != 2 || wide.Get(0, 0) != 0.5 || wide.Get(0, 1) != 0.5 {
+    return false
+  }
+
+  var same = Remix(stereo, 2)?
+  if same.Get(0, 0) != 1.0 || same.Get(0, 1) != 0.0 {
+    return false
+  }
+  match Remix(stereo, 3) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+
+  return true
+}
+
+fun Constant(frames: int, channels: int, rate: int, value: float) -> Clip uses unsafe {
+  var clip = ClipNew(frames, channels, rate)?
+  var i = 0
+  while i < clip.samples.len {
+    clip.samples[i] = value
+    i = i + 1
+  }
+
+  return clip
+}
+
+@Test
+fun MixesAMonoClipAtCentreWithEqualPower() -> bool uses unsafe {
+  var mixer = MixerNew(100, 2)?
+  const id = mixer.Play(Constant(100, 1, 100, 0.5), 1.0, 0.0, false)
+  var out = ArrayNew<f32>(20)
+  mixer.Render(out)
+  var i = 0
+  while i < 20 {
+    if !Near(out[i], 0.353553, 0.0001) {
+      return false
+    }
+    i = i + 1
+  }
+  Free(out)
+
+  return mixer.IsPlaying(id)
+}
+
+@Test
+fun PansHardLeftAndHardRight() -> bool uses unsafe {
+  var mixer = MixerNew(100, 2)?
+  const left = mixer.Play(Constant(100, 1, 100, 0.5), 1.0, -1.0, false)
+  var out = ArrayNew<f32>(4)
+  mixer.Render(out)
+  if !Near(out[0], 0.5, 0.0001) || !Near(out[1], 0.0, 0.0001) {
+    return false
+  }
+
+  mixer.Stop(left)
+  mixer.Render(out)
+  const right = mixer.Play(Constant(100, 1, 100, 0.5), 1.0, 1.0, false)
+  mixer.Render(out)
+  Free(out)
+
+  return mixer.IsPlaying(right)
+}
+
+@Test
+fun KeepsAStereoClipsChannelsApart() -> bool uses unsafe {
+  var clip = ClipNew(10, 2, 100)?
+  var f = 0
+  while f < 10 {
+    clip.Set(f, 0, 0.25)
+    clip.Set(f, 1, 0.75)
+    f = f + 1
+  }
+
+  var mixer = MixerNew(100, 2)?
+  const id = mixer.Play(clip, 1.0, 0.0, false)
+  var out = ArrayNew<f32>(2)
+  mixer.Render(out)
+  Free(out)
+
+  return mixer.IsPlaying(id)
+}
+
+@Test
+fun EndsAVoiceAtTheEndOfItsClip() -> bool uses unsafe {
+  var mixer = MixerNew(100, 1)?
+  const id = mixer.Play(Constant(5, 1, 100, 1.0), 1.0, 0.0, false)
+  var out = ArrayNew<f32>(8)
+  mixer.Render(out)
+  if out[0] != 1.0 || out[4] != 1.0 || out[5] != 0.0 || out[7] != 0.0 {
+    return false
+  }
+  Free(out)
+
+  return mixer.Voices() == 0 && !mixer.IsPlaying(id)
+}
+
+@Test
+fun LoopsUntilStopped() -> bool uses unsafe {
+  var mixer = MixerNew(100, 1)?
+  const id = mixer.Play(Constant(3, 1, 100, 1.0), 1.0, 0.0, true)
+  var out = ArrayNew<f32>(10)
+  mixer.Render(out)
+  var i = 0
+  while i < 10 {
+    if out[i] != 1.0 {
+      return false
+    }
+    i = i + 1
+  }
+  if !mixer.IsPlaying(id) {
+    return false
+  }
+
+  mixer.Stop(id)
+  mixer.Render(out)
+  Free(out)
+
+  return mixer.Voices() == 0
+}
+
+@Test
+fun PlaysSlowerAndFaster() -> bool uses unsafe {
+  var clip = ClipNew(4, 1, 100)?
+  clip.Set(0, 0, 0.0)
+  clip.Set(1, 0, 1.0)
+  clip.Set(2, 0, 0.0)
+  clip.Set(3, 0, 0.0)
+  var mixer = MixerNew(100, 1)?
+  const id = mixer.Play(clip, 1.0, 0.0, false)
+  mixer.SetPitch(id, 0.5)
+  var out = ArrayNew<f32>(3)
+  mixer.Render(out)
+  Free(out)
+
+  return mixer.IsPlaying(id)
+}
+
+@Test
+fun ConvertsTheClipRateToTheMixerRate() -> bool uses unsafe {
+  var mixer = MixerNew(8000, 1)?
+  const id = mixer.Play(Constant(4, 1, 4000, 1.0), 1.0, 0.0, false)
+  var out = ArrayNew<f32>(10)
+  mixer.Render(out)
+  const fits = out[0] == 1.0 && out[7] == 1.0 && out[8] == 0.0
+  Free(out)
+
+  return fits && mixer.Voices() == 0 && !mixer.IsPlaying(id)
+}
+
+@Test
+fun SumsVoicesAndClamps() -> bool uses unsafe {
+  var mixer = MixerNew(100, 1)?
+  const a = mixer.Play(Constant(10, 1, 100, 0.75), 1.0, 0.0, false)
+  const b = mixer.Play(Constant(10, 1, 100, 0.75), 1.0, 0.0, false)
+  var out = ArrayNew<f32>(4)
+  mixer.Render(out)
+  const loud = out[0] == 1.0
+  Free(out)
+
+  return loud && mixer.IsPlaying(a) && mixer.IsPlaying(b)
+}
+
+@Test
+fun AppliesVolumeBusAndMasterGains() -> bool uses unsafe {
+  var mixer = MixerNew(100, 1)?
+  const music = mixer.BusNew(0.5)
+  const id = mixer.Play(Constant(10, 1, 100, 0.8), 0.5, 0.0, false)
+  mixer.SetBus(id, music)
+  mixer.SetMaster(0.5)
+  var out = ArrayNew<f32>(2)
+  mixer.Render(out)
+  const first = out[0]
+  mixer.SetBusGain(music, 0.0)
+  mixer.Render(out)
+  const second = out[0]
+  Free(out)
+
+  return Near(first, 0.1, 0.0001) && second == 0.0 && mixer.BusGain(music) == 0.0 && mixer.BusGain(0) == 1.0 && mixer.BusGain(9) == 0.0
+}
+
+@Test
+fun ChangesAVoiceWhilePlaying() -> bool uses unsafe {
+  var mixer = MixerNew(100, 1)?
+  const id = mixer.Play(Constant(10, 1, 100, 1.0), 1.0, 0.0, false)
+  mixer.SetVolume(id, 0.25)
+  var out = ArrayNew<f32>(2)
+  mixer.Render(out)
+  const quiet = Near(out[0], 0.25, 0.0001)
+  mixer.SetVolume(id, -3.0)
+  mixer.Render(out)
+  const silent = out[0] == 0.0
+  mixer.StopAll()
+  mixer.Render(out)
+  Free(out)
+
+  return quiet && silent && mixer.Voices() == 0
+}
+
+@Test
+fun IgnoresControlsForAVoiceThatIsGone() -> bool uses unsafe {
+  var mixer = MixerNew(100, 1)?
+  const id = mixer.Play(Constant(1, 1, 100, 1.0), 1.0, 0.0, false)
+  mixer.Stop(id)
+  mixer.SetVolume(id, 1.0)
+  mixer.SetPan(id, 1.0)
+  mixer.SetPitch(id, 2.0)
+  mixer.SetBus(id, 0)
+  mixer.Stop(777)
+
+  return !mixer.IsPlaying(id) && !mixer.IsPlaying(777)
+}
+
+@Test
+fun RefusesBadMixerShapes() -> bool uses unsafe {
+  match MixerNew(0, 2) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+  match MixerNew(48000, 3) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+  match MixerNew(48000, 2) {
+    Ok(m) => {
+      return m.channels == 2 && m.rate == 48000
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun OpensWithOrWithoutADevice() -> bool uses unsafe {
+  var output = OutputOpen(48000, 2)?
+  if output.IsOpen() != DeviceAvailable() && DeviceAvailable() {
+    return false
+  }
+  if !output.IsOpen() {
+    return output.Pump() == 0
+  }
+
+  output.Close()
+
+  return !output.IsOpen()
+}
+
+fun TestOgg() -> []u8 uses unsafe {
+  return Hex("4f67675300020000000000000000070000000000000017216cca011e01766f72626973000000000244ac00000000000000f4010000000000b8014f6767530000000000000000000007000000010000006f802af4012b03766f7262697302000000776f02000000080000005449544c453d4869090000004152544953543d576f014f676753000488580100000000000700000002000000a676b817010805766f7262697300")
+}
+
+@Test
+fun ChecksTheOggCrcAgainstAnIndependentImplementation() -> bool uses unsafe {
+  const table = OggTable()
+  const data = Hex("313233343536373839")
+  const crc = OggCrc(table, data, 0, data.len, 100)
+  Free(table)
+
+  return crc == 2309065087
+}
+
+@Test
+fun ReadsTheVorbisHeaders() -> bool uses unsafe {
+  match OggVorbisInfo(TestOgg()) {
+    Ok(info) => {
+      if info.channels != 2 || info.rate != 44100 || info.bitrate != 128000 || info.frames != 88200 {
+        return false
+      }
+      if !Near(info.Seconds(), 2.0, 0.0001) || !Equals(info.vendor, "wo") || info.comments.Len() != 2 {
+        return false
+      }
+      if const title = info.Comment("title") {
+        if !Equals(title, "Hi") {
+          return false
+        }
+      } else {
+        return false
+      }
+      if const artist = info.Comment("ARTIST") {
+        if !Equals(artist, "Wo") {
+          return false
+        }
+      } else {
+        return false
+      }
+      if const _missing = info.Comment("Album") {
+        return false
+      }
+
+      return true
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun RefusesACorruptedOggPage() -> bool uses unsafe {
+  const original = TestOgg()
+  var data = ArrayNew<u8>(original.len)
+  var i = 0
+  while i < original.len {
+    data[i] = original[i]
+    i = i + 1
+  }
+  data[40] = 99
+  match OggVorbisInfo(data) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+
+  match OggVorbisInfo(Hex("4f676753")) {
+    Ok(_) => {
+      return false
+    },
+    _ => {},
+  }
+
+  return true
+}
