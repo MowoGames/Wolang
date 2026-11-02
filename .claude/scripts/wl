@@ -15,6 +15,7 @@
 #   wl docs                        the checks CI runs on includes and docs
 #   wl ci      [preset]            everything above, in CI's order
 #   wl wo      <args...>           the built driver, e.g. `wl wo run x.wo`
+#   wl bench   [preset]            the per-frame script benchmark, a table to paste into docs/benchmarks.md
 #   wl log     <command> [lines]   the tail of a saved log
 #
 # Set WL_PRESET to change the default preset (debug).
@@ -167,6 +168,14 @@ cmd_ci() {
   return $status
 }
 
+cmd_bench() {
+  local preset="${1:-release}"
+  cmd_build "$preset" >/dev/null || { cmd_build "$preset"; return 1; }
+  local bin="build/$preset/wolang_actor_bench"
+  [ -x "$bin" ] || bin="$bin.exe"
+  "$bin" benchmarks/actors/actors.wo
+}
+
 cmd_log() {
   local name="${1:?usage: wl log <command> [lines]}"
   tail -n "${2:-80}" "$LOGS/$name.log"
@@ -181,6 +190,7 @@ case "$command" in
   fuzz) cmd_fuzz "$@" ;;
   fmt) cmd_fmt ;;
   docs) cmd_docs ;;
+  bench) cmd_bench "$@" ;;
   ci) cmd_ci "$@" ;;
   wo) exec "$(driver "$PRESET")" "$@" ;;
   log) cmd_log "$@" ;;

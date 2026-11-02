@@ -121,10 +121,15 @@ uint64_t* WeakCountOf(void* object) {
 }
 
 static std::atomic<int64_t> sm_LiveObjects{0};
+static std::atomic<int64_t> sm_ObjectsAllocated{0};
 
 static bool Traced() {
   static const bool sm_Traced = std::getenv("WOLANG_TRACE_RC") != nullptr;
   return sm_Traced;
+}
+
+int64_t wolang_objects_allocated() {
+  return sm_ObjectsAllocated.load(std::memory_order_relaxed);
 }
 
 int64_t wolang_objects_live() {
@@ -144,6 +149,7 @@ void* wolang_object_alloc(uint64_t size) {
     return nullptr;
   }
   auto* object = static_cast<uint8_t*>(base) + kCountBytes;
+  sm_ObjectsAllocated.fetch_add(1, std::memory_order_relaxed);
   if (!wolang_arena_owns(object)) {
     sm_LiveObjects.fetch_add(1, std::memory_order_relaxed);
     if (Traced()) {

@@ -20,6 +20,7 @@
 #if defined(WOLANG_ACTORS_AOT)
 extern "C" void actors_start(void);
 extern "C" float actors_Tick(void* target, float delta);
+extern "C" int64_t actors_Allocated(void);
 #endif
 
 struct Vec3 {
@@ -160,6 +161,14 @@ static double ScriptFrame(WolangFunction* tick, std::vector<std::unique_ptr<Acto
   });
 }
 
+static int64_t Allocated(WolangFunction* count) {
+  WolangValue answer = wolang_void();
+  if (wolang_call(count, nullptr, 0, &answer) != 0) {
+    return -1;
+  }
+  return answer.integer;
+}
+
 static bool Agree(const std::vector<std::unique_ptr<Actor>>& left, const std::vector<std::unique_ptr<Actor>>& right) {
   for (size_t i = 0; i < left.size(); ++i) {
     const Vec3 a = left[i]->GetLocation();
@@ -180,6 +189,16 @@ int main(int argc, char** argv) {
   }
   WolangFunction* fast = wolang_vm_function(compiled, "Tick");
   WolangFunction* slow = wolang_vm_function(interpreted, "Tick");
+  WolangFunction* fast_count = wolang_vm_function(compiled, "Allocated");
+  WolangFunction* slow_count = wolang_vm_function(interpreted, "Allocated");
+  double table_native_us = 0.0;
+  double table_aot_us = 0.0;
+  double table_jit_us = 0.0;
+  double table_interp_us = 0.0;
+  double table_aot_objects = 0.0;
+  double table_jit_objects = 0.0;
+  double table_interp_objects = 0.0;
+  int32_t table_count = 0;
 
 #if defined(WOLANG_ACTORS_AOT)
   actors_start();
@@ -199,18 +218,47 @@ int main(int argc, char** argv) {
       }
     });
     double aot_us = 0.0;
+    double aot_objects = 0.0;
 #if defined(WOLANG_ACTORS_AOT)
+    const int64_t aot_before = actors_Allocated();
     aot_us = Measure(frames, [&]() {
       for (const std::unique_ptr<Actor>& actor : aot) {
         actors_Tick(actor.get(), 1.0f / 60.0f);
       }
     });
+    aot_objects = static_cast<double>(actors_Allocated() - aot_before) / (static_cast<double>(count) * (frames + 1));
 #endif
+    const int32_t interp_frames = count >= 1000 ? 4 : 20;
+    const int64_t jit_before = Allocated(fast_count);
     const double jit_us = ScriptFrame(fast, jit, frames, &failed);
-    const double interp_us = ScriptFrame(slow, interp, count >= 1000 ? 4 : 20, &failed);
+    const double jit_objects = static_cast<double>(Allocated(fast_count) - jit_before) / (static_cast<double>(count) * (frames + 1));
+    const int64_t interp_before = Allocated(slow_count);
+    const double interp_us = ScriptFrame(slow, interp, interp_frames, &failed);
+    const double interp_objects = static_cast<double>(Allocated(slow_count) - interp_before) / (static_cast<double>(count) * (interp_frames + 1));
+    if (count == 1000) {
+      table_count = count;
+      table_native_us = native_us;
+      table_aot_us = aot_us;
+      table_jit_us = jit_us;
+      table_interp_us = interp_us;
+      table_aot_objects = aot_objects;
+      table_jit_objects = jit_objects;
+      table_interp_objects = interp_objects;
+    }
     const bool agree = Agree(native, jit) && (aot_us == 0.0 || Agree(native, aot));
 
     std::printf("%8d %10.1f %10.1f %6.1fx %10.1f %6.1fx %12.1f %7.1fx %6s\n", count, native_us, aot_us, aot_us / native_us, jit_us, jit_us / native_us, interp_us, interp_us / native_us, agree ? "yes" : "NO");
+  }
+
+  if (table_count != 0) {
+    std::printf("\nOne script call per actor, %d actors a frame (D273)\n", table_count);
+    std::printf("%-8s %14s %18s\n", "tier", "calls per ms", "objects per call");
+    std::printf("%-8s %14.0f %18s\n", "c++", table_count * 1000.0 / table_native_us, "0");
+    if (table_aot_us > 0.0) {
+      std::printf("%-8s %14.0f %18.2f\n", "aot", table_count * 1000.0 / table_aot_us, table_aot_objects);
+    }
+    std::printf("%-8s %14.0f %18.2f\n", "jit", table_count * 1000.0 / table_jit_us, table_jit_objects);
+    std::printf("%-8s %14.0f %18.2f\n", "interp", table_count * 1000.0 / table_interp_us, table_interp_objects);
   }
 
   wolang_vm_destroy(compiled);

@@ -61,6 +61,10 @@ int32_t wolang_object_escaped(void* object);
 
 int64_t wolang_objects_live();
 
+// Every object ever allocated, freed or not, so a benchmark can say how many
+// a call makes (D273).
+int64_t wolang_objects_allocated();
+
 void wolang_object_weak_retain(void* object);
 void wolang_object_weak_release(void* object);
 int32_t wolang_object_upgrade(void* object);

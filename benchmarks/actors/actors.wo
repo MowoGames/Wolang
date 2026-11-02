@@ -45,3 +45,9 @@ offer fun Tick(target: Actor, delta: f32) -> f32 uses unsafe {
   target.RawSetVelocity(&mut speed)
   return health
 }
+
+extern "C" fun wolang_objects_allocated() -> s64
+
+offer fun Allocated() -> int uses unsafe {
+  return wolang_objects_allocated() as int
+}
