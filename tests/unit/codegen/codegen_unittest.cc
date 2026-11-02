@@ -4458,6 +4458,51 @@ fun Differ(a: int, b: int) -> int {
   WOLANG_EXPECT_EQ(f.Run("Same", {Fixture::Int(0), Fixture::Int(2)}), "0");
   WOLANG_EXPECT_EQ(f.Run("Differ", {Fixture::Int(0), Fixture::Int(2)}), "1");
   WOLANG_EXPECT_EQ(f.Run("Differ", {Fixture::Int(2), Fixture::Int(2)}), "0");
+
+WOLANG_TEST(CodegenTest, AClassWithAnOwnedTextFieldGivesItBack) {
+  Fixture f(R"(
+extern "C" fun wolang_objects_live() -> s64
+
+class Holder {
+  var label: Text
+}
+
+fun Live() -> int uses unsafe {
+  return wolang_objects_live() as int
+}
+
+fun FromBorrowed(word: Text) -> int {
+  const h = Holder("{word}")
+  return h.label.len
+}
+
+fun FromNumber(n: int) -> int {
+  const h = Holder("n={n}")
+  return h.label.len
+}
+
+fun Replaced(n: int) -> int {
+  const h = Holder("a{n}")
+  h.label = "bb{n}"
+  return h.label.len
+}
+
+fun Looped() -> int {
+  var total = 0
+  for i in 0..20 {
+    const word = "w{i}"
+    total = total + FromBorrowed(word) + FromNumber(i) + Replaced(i)
+  }
+  return total
+}
+
+fun Balanced() -> int uses unsafe {
+  const before = Live()
+  const total = Looped()
+  return total * 100 + (Live() - before)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Balanced", {}), "19000");
 }
 
 }  // namespace

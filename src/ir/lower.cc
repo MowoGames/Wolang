@@ -2737,6 +2737,13 @@ class Lowerer {
 
     for (const StoredField& field : StoredFields(type)) {
       const TypeId erased = Erase(field.Type);
+      // A `Text` field owns its bytes: whoever built the object handed them
+      // over, so the last release gives them back (D289).
+      if (types_->KindOf(Apply(field.Type)) == TypeKind::kString) {
+        const InstId text_address = builder.FieldAddress(types_->Pointer(erased, /*is_mutable=*/true), self, field.Index);
+        FreeText(builder.Add(Opcode::kLoad, erased, {text_address}));
+        continue;
+      }
       if (!Counts(erased)) {
         continue;
       }
@@ -5118,6 +5125,9 @@ class Lowerer {
     InstId index;
     InstId length;
     TypeId type;
+    // A `Text` field of a class: the step's type is erased, and the object
+    // is what owns the bytes (D289).
+    bool owned_text = false;
 
     bool index_is_element() const { return index.is_valid(); }
   };
@@ -5233,6 +5243,7 @@ class Lowerer {
           place.root_type = owner;
           place.path.push_back(Step{FieldIndex(owner, expr.name), InstId{},
                                     InstId{}, field_type});
+          place.path.back().owned_text = read != nullptr && types_->KindOf(Apply(read->type)) == TypeKind::kString;
           return place;
         }
         // A field through an address: a reference is a pointer here
@@ -5447,6 +5458,7 @@ class Lowerer {
     }
     place.path.push_back(Step{FieldIndex(self_type_, name), InstId{},
                               InstId{}, Erase(member->type)});
+    place.path.back().owned_text = types_->KindOf(Apply(member->type)) == TypeKind::kString;
     return place;
   }
 
@@ -5540,6 +5552,15 @@ class Lowerer {
     }
     const InstId address = AddressOfPlace(place);
     if (!Counts(stored)) {
+      // A class owns the bytes of its `Text` field, so what a new one
+      // replaces goes back (D289).
+      if (IsOwnedTextField(place)) {
+        const InstId replaced = builder_->Add(Opcode::kLoad, stored, {address});
+        builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+        InvalidateDerived(place);
+        FreeText(replaced);
+        return;
+      }
       builder_->Add(Opcode::kStore, TypeId{}, {address, value});
       InvalidateDerived(place);
       return;
@@ -5642,6 +5663,15 @@ class Lowerer {
       }
     }
     return false;
+  }
+
+  // Whether |place| is a `Text` field of a class: the object, not a binding,
+  // owns the bytes (D289).
+  bool IsOwnedTextField(const Place& place) {
+    if (place.path.empty() || place.path.back().index.is_valid() || place.soa_record.is_valid()) {
+      return false;
+    }
+    return place.path.back().owned_text && IsCountedHandle(OwnerOfLastStep(place));
   }
 
   bool IsWeakPlace(const Place& place) {

@@ -823,6 +823,81 @@ fun Same(a: Shape, b: Shape) -> bool {
 }
 )");
   WOLANG_EXPECT(f.Function("Same").find("eq %0, %1") != std::string::npos);
+
+WOLANG_TEST(LowerTest, AClassGivesBackItsTextFieldWhenItGoes) {
+  Fixture f(R"(
+class Holder {
+  var label: Text
+}
+
+fun Use(n: int) -> int {
+  const h = Holder("n={n}")
+  return h.label.len
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Function("Holder$drop").find("call @wolang_text_free") != std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AClassWithoutATextFieldFreesNoText) {
+  Fixture f(R"(
+class Holder {
+  var id: int
+}
+
+fun Use(n: int) -> int {
+  const h = Holder(n)
+  return h.id
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Function("Holder$drop").find("wolang_text_free") == std::string::npos);
+}
+
+static size_t FreesIn(const std::string& body) {
+  size_t count = 0;
+  const std::string needle = "call @wolang_text_free";
+  for (size_t at = body.find(needle); at != std::string::npos; at = body.find(needle, at + needle.size())) {
+    ++count;
+  }
+  return count;
+}
+
+WOLANG_TEST(LowerTest, ReplacingATextFieldGivesBackTheOldBytes) {
+  Fixture f(R"(
+class Holder {
+  var label: Text
+}
+
+fun Replace(n: int) -> int {
+  const h = Holder("a{n}")
+  h.label = "bb{n}"
+  return h.label.len
+}
+
+fun Keep(n: int) -> int {
+  const h = Holder("a{n}")
+  return h.label.len
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT_EQ(FreesIn(f.Function("Replace")), FreesIn(f.Function("Keep")) + 2);
+}
+
+WOLANG_TEST(LowerTest, ReplacingANumberFieldFreesNoText) {
+  Fixture f(R"(
+class Holder {
+  var id: int
+}
+
+fun Replace(n: int) -> int {
+  const h = Holder(n)
+  h.id = n + 1
+  return h.id
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT_EQ(FreesIn(f.Function("Replace")), 0u);
 }
 
 }  // namespace

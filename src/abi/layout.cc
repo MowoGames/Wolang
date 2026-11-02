@@ -44,6 +44,7 @@ ValueClass LayoutStore::ClassOf(TypeId type) const {
     // somewhere else, which is what makes `[]u8` the buffer type and what
     // makes an array convert to one.
     case TypeKind::kStr:
+    case TypeKind::kString:
     case TypeKind::kSlice:
       return ValueClass::kAggregate;
     // An instance of a generic type is laid out like the declaration it
@@ -238,7 +239,7 @@ bool LayoutStore::IsSupported(TypeId type) const {
       break;
   }
   const TypeKind kind = types_.KindOf(type);
-  if (kind == TypeKind::kStr) {
+  if (kind == TypeKind::kStr || kind == TypeKind::kString) {
     return true;
   }
   if (kind == TypeKind::kSlice) {
@@ -359,6 +360,7 @@ uint32_t LayoutStore::FieldCount(TypeId type) const {
     case TypeKind::kTuple:
       return static_cast<uint32_t>(types_.ArgumentsOf(type).size());
     case TypeKind::kStr:
+    case TypeKind::kString:
     case TypeKind::kSlice:
       // The elements and how many there are.
       return 2;
@@ -584,7 +586,11 @@ Layout LayoutStore::Compute(TypeId type) {
   // A borrowed string: the bytes and how many there are. Written out here
   // rather than through the field walk, because neither field is a member
   // anyone declared -- `str` is built in.
+  // An owned string is laid out as the view of its bytes: a class member is
+  // read here by its declared type, `Text`, and a size of zero would let the
+  // two-word store run past the object (D289).
   if (types_.KindOf(type) == TypeKind::kStr ||
+      types_.KindOf(type) == TypeKind::kString ||
       types_.KindOf(type) == TypeKind::kSlice) {
     layout.size = 16;
     layout.align = 8;
