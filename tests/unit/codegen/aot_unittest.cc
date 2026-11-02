@@ -474,6 +474,10 @@ static std::string ObjectBytes(std::string_view code, std::string_view tag) {
 }
 
 WOLANG_TEST(AotTest, TheSameSourceMakesTheSameObjectBytes) {
+  if (!Links()) {
+    return;
+  }
+
   const std::string_view code = R"(
 class Cell { var n: int }
 

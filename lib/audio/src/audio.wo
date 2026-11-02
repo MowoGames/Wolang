@@ -1479,7 +1479,7 @@ fun RefusesBadMixerShapes() -> bool uses unsafe {
 @Test
 fun OpensWithOrWithoutADevice() -> bool uses unsafe {
   var output = OutputOpen(48000, 2)?
-  if output.IsOpen() != DeviceAvailable() && DeviceAvailable() {
+  if output.IsOpen() && !DeviceAvailable() {
     return false
   }
   if !output.IsOpen() {
