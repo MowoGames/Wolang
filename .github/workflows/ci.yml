@@ -341,7 +341,7 @@ jobs:
         if: steps.llvm-sdk.outputs.cache-hit != 'true'
         run: python tools/package/fetch_llvm.py --version 22.1.8 --arch aarch64
       - name: Configure
-        run: cmake --preset windows-arm64
+        run: cmake --preset windows-arm64 -DCMAKE_DISABLE_FIND_PACKAGE_LLVM=ON
       - name: Build
         run: cmake --build --preset windows-arm64 -j
       - name: Unit tests
