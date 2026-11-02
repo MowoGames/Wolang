@@ -2802,6 +2802,44 @@ fun Fill(xs: []mut int) {
   WOLANG_EXPECT_EQ(fine.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheck, AConstArrayCannotBeHandedToAWritableSlice) {
+  Fixture held(R"(
+fun Fill(xs: []mut int) {
+  xs[0] = 1
+}
+
+fun Go() {
+  const a: [3]int = [1, 2, 3]
+  Fill(a)
+}
+)");
+  WOLANG_EXPECT(held.HasCode("E0105"));
+
+  Fixture mutable_array(R"(
+fun Fill(xs: []mut int) {
+  xs[0] = 1
+}
+
+fun Go() {
+  var a: [3]int = [1, 2, 3]
+  Fill(a)
+}
+)");
+  WOLANG_EXPECT(!mutable_array.HasCode("E0105"));
+
+  Fixture read_only(R"(
+fun Sum(xs: []int) -> int {
+  return xs[0]
+}
+
+fun Go() -> int {
+  const a: [3]int = [1, 2, 3]
+  return Sum(a)
+}
+)");
+  WOLANG_EXPECT(!read_only.HasCode("E0105"));
+}
+
 WOLANG_TEST(TypeCheck, WritingThroughAHandleInASliceIsNotAWriteToTheSlice) {
   Fixture f(R"(
 class Cell {
@@ -3288,6 +3326,57 @@ WOLANG_TEST(TypeCheck, MatchOnAResultMustCoverItsErrors) {
       "  return match Root(1) {\n    Ok(v) => v\n    Small => 0\n    Big => 1\n  }\n"
       "}\n");
   WOLANG_EXPECT(!stated_covered.HasCode("E0201"));
+}
+
+WOLANG_TEST(TypeCheck, AFunctionHeldInALocalCannotBeFollowedOntoAThread) {
+  Fixture held(
+      "@Thread\nfun Launch(body: fun()) {\n  body()\n}\n"
+      "fun Go(f: fun()) {\n  Launch(f)\n}\n");
+  WOLANG_EXPECT(held.HasCode("E0163"));
+
+  Fixture named(
+      "@Thread\nfun Launch(body: fun()) {\n  body()\n}\n"
+      "fun Work() {}\n"
+      "fun Go() {\n  Launch(Work)\n}\n");
+  WOLANG_EXPECT(!named.HasCode("E0163"));
+
+  Fixture forwarded(
+      "@Thread\nfun Launch(body: fun()) {\n  body()\n}\n"
+      "@Thread\nfun Again(body: fun()) {\n  Launch(body)\n}\n");
+  WOLANG_EXPECT(!forwarded.HasCode("E0163"));
+
+  Fixture trusted(
+      "@Thread\nfun Launch(body: fun()) {\n  body()\n}\n"
+      "fun Go(f: fun()) uses unsafe {\n  Launch(f)\n}\n");
+  WOLANG_EXPECT(!trusted.HasCode("E0163"));
+}
+
+WOLANG_TEST(TypeCheck, AnErrorNameInAMatchArmMustBeInScope) {
+  Fixture unknown(
+      "error Small\n"
+      "fun Root(x: int) -> int! {\n  return Small\n}\n"
+      "fun Use() -> int {\n"
+      "  return match Root(1) {\n    Ok(v) => v\n    Gone(x) => x\n    _ => 0\n  }\n"
+      "}\n");
+  WOLANG_EXPECT(unknown.HasCode("E0166"));
+  WOLANG_EXPECT(!unknown.HasCode("E0201"));
+
+  Fixture known(
+      "error Small(x: int)\n"
+      "fun Root(x: int) -> int!(Small) {\n  return Small(x)\n}\n"
+      "fun Use() -> int {\n"
+      "  return match Root(1) {\n    Ok(v) => v\n    Small(x) => x\n  }\n"
+      "}\n");
+  WOLANG_EXPECT(!known.HasCode("E0166"));
+  WOLANG_EXPECT_EQ(known.Codes(), "");
+
+  Fixture binding(
+      "error Small\n"
+      "fun Root(x: int) -> int! {\n  return Small\n}\n"
+      "fun Use() -> int {\n"
+      "  return match Root(1) {\n    Ok(v) => v\n    other => 0\n  }\n"
+      "}\n");
+  WOLANG_EXPECT(!binding.HasCode("E0166"));
 }
 
 WOLANG_TEST(TypeCheck, APayloadBindsInAMatchArm) {

@@ -692,7 +692,10 @@ calls, in any module, unless the function making the call states
 `uses unsafe` (`E0147`); a function that states it stops the walk
 (D252), and `Spawn`
 takes no capturing closure at all (`E0148`); `ParallelFor`'s closure
-may capture, each thread getting a copy (D232).
+may capture, each thread getting a copy (D232). A function the caller holds
+in a variable cannot be followed, so handing one to a `@Thread` function is
+`E0163`: pass the function by name or as a closure, state `uses unsafe`, or be
+a `@Thread` function that passes on what it was given (D275).
 
 ## std.tasks
 

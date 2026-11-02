@@ -495,7 +495,9 @@ match Load(p) {
 A `match` over a stated set must name every error in it, or have a `_` arm
 (`E0201`). A `match` over a bare `T!` must have a `_` arm, because the errors it
 may hold are not written anywhere. An offered function states its set
-(`E0150`): a caller in another module cannot read the body.
+(`E0150`): a caller in another module cannot read the body. An arm that
+names something that is not an error in scope, such as an error that was never
+imported with `need`, is `E0166` at the arm, not a missing arm (D275).
 
 An error may carry data: `error Malformed(line: int, column: int)`. It is built
 with its arguments, `return Malformed(3, 14)`, and a `match` arm binds them,

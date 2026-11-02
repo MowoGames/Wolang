@@ -105,6 +105,8 @@ constexpr std::string_view kUnsafeMismatch = "E0154";
 constexpr std::string_view kUnknownEffect = "E0158";
 constexpr std::string_view kAmbiguousName = "E0143";
 constexpr std::string_view kUnknownModuleItem = "E0144";
+constexpr std::string_view kUnknownPatternError = "E0166";
+constexpr std::string_view kOpaqueThreadArgument = "E0163";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
 constexpr std::string_view kDimensionMismatch = "E1001";
 constexpr std::string_view kUnknownUnit = "E1002";
@@ -371,6 +373,31 @@ class Checker {
            "function that lives on");
   }
 
+  // An array bound with `const` handed to a `[]mut T` would let the callee
+  // write what the binding promised nobody would (D251).
+  void RefuseConstArrayAsMut(ExprId id, TypeId target) {
+    if (!ast_.Contains(id) || !target.is_valid()) {
+      return;
+    }
+    const TypeId wanted = types_->StripWrappers(target);
+    if (types_->KindOf(wanted) != TypeKind::kSlice || !types_->Get(wanted).is_mutable) {
+      return;
+    }
+    const Expr& argument = ast_.Get(id);
+    if (argument.kind != ExprKind::kPath) {
+      return;
+    }
+    const Binding* binding = Lookup(argument.name);
+    if (binding == nullptr || (binding->kind != BindingKind::kValue && binding->kind != BindingKind::kLocal) || binding->is_mutable ||
+        types_->KindOf(types_->StripWrappers(result_.TypeOf(id))) != TypeKind::kArray) {
+      return;
+    }
+    std::string message = "the elements of `";
+    message.append(interner_->Text(argument.name));
+    message.append("` cannot be written: it is a `const`");
+    Report(kAssignToLet, std::move(message), argument.span, "declare it with `var` to hand it to a `[]mut` parameter (D251)");
+  }
+
   bool IsFrameBound(TypeId type) const {
     while (types_->IsOptional(type)) {
       type = types_->ElementOf(type);
@@ -513,6 +540,9 @@ class Checker {
   // `uses unsafe` on the declaration being checked: the caller takes
   // responsibility for what the threads share.
   bool caller_unsafe_ = false;
+  // The function being checked is itself `@Thread`: the function values it
+  // is given are judged where it is called, so it may pass them on (D252).
+  bool in_thread_function_ = false;
   ExprId negated_literal_;
 
   bool InsideClosure(ExprId closure) const {
@@ -568,6 +598,19 @@ class Checker {
     return nullptr;
   }
 
+  // Whether |name| is a local whose value is a function: a parameter or a
+  // `const` the checker cannot see through to the function it names.
+  bool HoldsFunctionValue(Symbol name) const {
+    for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
+      for (auto local = scope->bindings.rbegin(); local != scope->bindings.rend(); ++local) {
+        if (local->binding.name == name) {
+          return local->binding.type.is_valid() && types_->KindOf(local->binding.type) == TypeKind::kFunction;
+        }
+      }
+    }
+    return false;
+  }
+
   // Looks at the arguments of a call to a `@Thread` function.
   void CollectThreadArguments(const Expr& call) {
     if (!ast_.Contains(call.lhs)) {
@@ -593,6 +636,11 @@ class Checker {
           root.span = value.span;
           root.callees.emplace_back(named->file, named->item);
           result_.thread_roots.push_back(std::move(root));
+        } else if (value.kind == ExprKind::kPath && !in_thread_function_ && HoldsFunctionValue(value.name)) {
+          std::string message = "`";
+          message.append(interner_->Text(value.name));
+          message.append("` holds a function that cannot be followed onto another thread");
+          Report(kOpaqueThreadArgument, std::move(message), value.span, "pass the function by name or write it as a closure, or state `uses unsafe` (D252)");
         }
       }
     }
@@ -2297,6 +2345,7 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
         ReportMismatch(expected, found[i], ast_.Get(args[i]).span);
       }
       KeepInto(args[i], expected, "given to a parameter that keeps it");
+      RefuseConstArrayAsMut(args[i], expected);
     }
     CheckBounds(substitution, expr.span);
     // A parameter nothing narrowed stands for itself.
@@ -2346,6 +2395,7 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
       ReportMismatch(expected, found, ast_.Get(args[i]).span);
     }
     KeepInto(args[i], expected, "given to a parameter that keeps it");
+    RefuseConstArrayAsMut(args[i], expected);
   }
   return result;
 }
@@ -3972,7 +4022,16 @@ void Checker::BindPattern(PatternId id, TypeId type,
           interner_->Text(name) == "Ok") {
         carried.push_back(types_->ElementOf(type));
       } else if (const Binding* error_tag = types_->KindOf(type) == TypeKind::kFallible ? PatternBinding(ast_.Get(pattern.path), name) : nullptr;
-                 error_tag != nullptr && error_tag->kind == BindingKind::kErrorTag) {
+                 types_->KindOf(type) == TypeKind::kFallible && pattern.kind == PatternKind::kVariant && ast_.Get(pattern.path).size() < 2 && (error_tag == nullptr || error_tag->kind != BindingKind::kErrorTag)) {
+        std::string message = "`";
+        message.append(interner_->Text(name));
+        message.append("` is not an error this `match` can see");
+        Report(kUnknownPatternError, std::move(message), pattern.span, "declare it with `error`, or import it with `need` (D235)");
+        for (PatternId element : ast_.Get(pattern.elements)) {
+          BindPattern(element, types_->error());
+        }
+        return;
+      } else if (error_tag != nullptr && error_tag->kind == BindingKind::kErrorTag) {
         const std::vector<ErrorMember> stated = types_->StatedErrorsOf(error_tag->type);
         if (stated.size() == 1 && stated[0].detail.is_valid()) {
           for (const Member& field : resolution_->MembersOf(stated[0].detail)) {
@@ -4049,8 +4108,15 @@ void Checker::CheckStmt(StmtId id) {
       if (!value.is_valid()) {
         value = types_->error();
       }
-      BindPattern(stmt.pattern, Adapt(value, declared, stmt.span),
-                  stmt.kind == StmtKind::kVar);
+      TypeId bound = Adapt(value, declared, stmt.span);
+      // A `T!` annotation makes the binding a `T!` when what it is given is
+      // an error that carries data, so the box is held where a `T!` drops it
+      // and not in a tuple nothing releases (D275).
+      if (declared.is_valid() && types_->KindOf(declared) == TypeKind::kFallible && types_->KindOf(value) == TypeKind::kErrorSet && types_->ErrorSetHasPayload(value)) {
+        bound = declared;
+        Record(stmt.expr, declared);
+      }
+      BindPattern(stmt.pattern, bound, stmt.kind == StmtKind::kVar);
       return;
     }
 
@@ -4266,6 +4332,11 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   const bool previous_task = in_task_;
   in_task_ = HasFlag(item.flags, ItemFlags::kAsync);
   const bool previous_unsafe = caller_unsafe_;
+  const bool previous_thread = in_thread_function_;
+  in_thread_function_ = false;
+  for (AttributeId attribute : ast_.Get(item.attributes)) {
+    in_thread_function_ |= interner_->Text(ast_.Get(attribute).name) == "Thread";
+  }
   caller_unsafe_ = HasFlag(item.flags, ItemFlags::kUnsafe);
   for (TypeRefId effect : ast_.Get(item.effects)) {
     const std::span<const Symbol> path = ast_.Get(ast_.Get(effect).path);
@@ -4357,6 +4428,7 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   return_type_ = previous_return;
   in_task_ = previous_task;
   caller_unsafe_ = previous_unsafe;
+  in_thread_function_ = previous_thread;
   in_deinit_ = previous_deinit;
   if (framed) {
     result_.allocation.push_back(std::move(alloc_open_.back()));

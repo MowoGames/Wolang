@@ -4753,6 +4753,67 @@ fun Coalesced() -> int {
   WOLANG_EXPECT_EQ(f.Run("Coalesced", {}), "30");
 }
 
+WOLANG_TEST(CodegenTest, AnErrorHeldInAnAnnotatedConstGivesItsBoxBack) {
+  Fixture f(R"(
+extern "C" fun wolang_objects_live() -> s64
+
+error P(x: int, why: text)
+
+fun Live() -> int uses unsafe {
+  return wolang_objects_live() as int
+}
+
+fun Held(n: int) -> int!(P) {
+  const e: int!(P) = P(n, "late")
+  if n > 0 {
+    return e
+  }
+  return 1
+}
+
+fun Dropped(n: int) -> int {
+  const e: int!(P) = P(n, "late")
+  return n
+}
+
+fun Matched(n: int) -> int {
+  const e: int!(P) = P(n, "late")
+  return match e {
+    Ok(v) => v
+    P(x, why) => x
+  }
+}
+
+fun RunHeld() -> int uses unsafe {
+  const before = Live()
+  for i in 0..5 {
+    const r = Held(i)
+  }
+  return Live() - before
+}
+
+fun RunDropped() -> int uses unsafe {
+  const before = Live()
+  for i in 0..5 {
+    const r = Dropped(i)
+  }
+  return Live() - before
+}
+
+fun RunMatched() -> int uses unsafe {
+  const before = Live()
+  for i in 0..5 {
+    const r = Matched(i)
+  }
+  return Live() - before
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("RunHeld", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("RunDropped", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("RunMatched", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Matched", {Fixture::Int(7)}), "7");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang
