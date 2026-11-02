@@ -510,6 +510,24 @@ WOLANG_TEST(Formatter, DropsTheParenthesesOfACastWhereNoneAreNeeded) {
                    "}\n");
 }
 
+WOLANG_TEST(Formatter, NeverBreaksACallInsideAStringInterpolation) {
+  FormatOptions narrow;
+  narrow.column_limit = 20;
+  const std::string code = "fun f() {\n  Print(\"{Alpha(first, second)} {Beta(third)}\")\n}\n";
+  Pass pass(code, narrow);
+  WOLANG_EXPECT(pass.formatted().find("{Alpha(first, second)}") != std::string::npos);
+  WOLANG_EXPECT(pass.formatted().find("{Beta(third)}") != std::string::npos);
+  Pass again(pass.formatted(), narrow);
+  WOLANG_EXPECT(!again.HasErrors());
+}
+
+WOLANG_TEST(Formatter, StillBreaksALongCallOutsideAString) {
+  FormatOptions narrow;
+  narrow.column_limit = 20;
+  Pass pass("fun f() {\n  Alpha(first, second, third)\n}\n", narrow);
+  WOLANG_EXPECT(pass.formatted().find("Alpha(\n") != std::string::npos);
+}
+
 WOLANG_TEST(Formatter, WritesNulAsAnEscapeNotARawByte) {
   Pass pass("fun f() {\n  const a = \"x\\0y\"\n  const b = '\\0'\n}\n");
   WOLANG_EXPECT_EQ(pass.formatted(),

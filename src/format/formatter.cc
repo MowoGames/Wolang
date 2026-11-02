@@ -168,7 +168,12 @@ class Formatter {
   void PushIndent() { indent_ += static_cast<int>(options_.indent_width); }
   void PopIndent() { indent_ -= static_cast<int>(options_.indent_width); }
 
+  // A line break inside `{}` of a string would end the string (D290), so the
+  // column limit does not apply there.
   bool Fits(const std::string& piece) const {
+    if (interpolation_depth_ > 0) {
+      return piece.find('\n') == std::string::npos;
+    }
     return piece.find('\n') == std::string::npos &&
            Column() + piece.size() <= options_.column_limit;
   }
@@ -974,7 +979,9 @@ class Formatter {
             PutEscaped(ast_.string(piece.aux));
           } else {
             Put("{");
+            ++interpolation_depth_;
             EmitExpr(part);
+            --interpolation_depth_;
             Put("}");
           }
         }
@@ -1647,6 +1654,7 @@ class Formatter {
 
   // Set while writing a dimension's product, where `^` is a power.
   bool in_dimension_ = false;
+  int interpolation_depth_ = 0;
 
   const SourceManager& sources_;
   const StringInterner& interner_;
