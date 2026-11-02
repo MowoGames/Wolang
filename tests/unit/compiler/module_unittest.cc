@@ -568,6 +568,48 @@ WOLANG_TEST(ModuleScopeTest, ReportsAnEffectADeclarationDoesNotState) {
                 std::string::npos);
 }
 
+WOLANG_TEST(ModuleScopeTest, AnEffectDeclaredInASiblingFileCanBeStated) {
+  Fixture fixture;
+  const ModuleId game = fixture.AddModule("game");
+  fixture.AddFile(game, "a.wo",
+                  "offer effect Eff\n"
+                  "offer fun F() uses Eff {}\n");
+  const FileId b = fixture.AddFile(game, "b.wo",
+                                   "offer fun U() uses Eff { F() }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(b), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AnImportedEffectCanBeStated) {
+  Fixture fixture;
+  const ModuleId lib = fixture.AddModule("game.lib");
+  fixture.AddFile(lib, "a.wo",
+                  "offer effect Eff\n"
+                  "offer fun F() uses Eff {}\n");
+  const ModuleId game = fixture.AddModule("game");
+  const FileId b = fixture.AddFile(
+      game, "b.wo",
+      "need game.lib.{Eff, F}\n"
+      "offer fun U() uses Eff { F() }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(b), "");
+}
+
+WOLANG_TEST(ModuleScopeTest, AnImportedEffectStillHasToBeStated) {
+  Fixture fixture;
+  const ModuleId lib = fixture.AddModule("game.lib");
+  fixture.AddFile(lib, "a.wo",
+                  "offer effect Eff\n"
+                  "offer fun F() uses Eff {}\n");
+  const ModuleId game = fixture.AddModule("game");
+  const FileId b = fixture.AddFile(
+      game, "b.wo",
+      "need game.lib.{F}\n"
+      "offer fun U() uses io { F() }\n");
+
+  WOLANG_EXPECT_EQ(fixture.Codes(b), "E0701");
+}
+
 WOLANG_TEST(ModuleScopeTest, AStatedRowThatCoversTheBodyIsAccepted) {
   Fixture fixture;
   const ModuleId game = fixture.AddModule("game");

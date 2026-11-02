@@ -1595,7 +1595,21 @@ void ResolveSignatures(TypeStore* types,
         if (path.empty()) {
           continue;
         }
-        row.Add(resolution->FindEffect(path.back(), *interner));
+        EffectId found = resolution->FindEffect(path.back(), *interner);
+        if (!found.is_valid()) {
+          // Declared in a sibling file or imported: the scope binding names
+          // the declaring file and item, which is all an effect's identity is
+          // (D246).
+          for (const Binding& binding : resolution->scope) {
+            if (binding.kind == BindingKind::kEffect &&
+                binding.name == path.back() &&
+                binding.item != Binding::kNoItem) {
+              found = types->Effect(binding.name, binding.file, binding.item);
+              break;
+            }
+          }
+        }
+        row.Add(found);
       }
       resolution->declared_effects.push_back(
           DeclaredEffects{file_index, index, std::move(row)});
