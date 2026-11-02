@@ -72,36 +72,36 @@ offer fun Min<T: Ord>(a: T, b: T) -> T {
   return b
 }
 
-struct OpsVec2 {
+struct Vec2 {
   var x: int
   var y: int
 }
 
-extend OpsVec2 as Add {
-  fun Plus(other: Self) -> Self => OpsVec2(x + other.x, y + other.y)
+extend Vec2 as Add {
+  fun Plus(other: Self) -> Self => Vec2(x + other.x, y + other.y)
 }
 
-extend OpsVec2 as Sub {
-  fun Minus(other: Self) -> Self => OpsVec2(x - other.x, y - other.y)
+extend Vec2 as Sub {
+  fun Minus(other: Self) -> Self => Vec2(x - other.x, y - other.y)
 }
 
-extend OpsVec2 as Mul {
-  fun Times(other: Self) -> Self => OpsVec2(x * other.x, y * other.y)
+extend Vec2 as Mul {
+  fun Times(other: Self) -> Self => Vec2(x * other.x, y * other.y)
 }
 
-extend OpsVec2 as Div {
-  fun Divide(other: Self) -> Self => OpsVec2(x / other.x, y / other.y)
+extend Vec2 as Div {
+  fun Divide(other: Self) -> Self => Vec2(x / other.x, y / other.y)
 }
 
-extend OpsVec2 as Neg {
-  fun Negate() -> Self => OpsVec2(-x, -y)
+extend Vec2 as Neg {
+  fun Negate() -> Self => Vec2(-x, -y)
 }
 
-extend OpsVec2 as Eq {
+extend Vec2 as Eq {
   fun Equals(other: &Self) -> bool => x == other.x && y == other.y
 }
 
-extend OpsVec2 as Ord {
+extend Vec2 as Ord {
   fun Compare(other: &Self) -> int {
     if x != other.x {
       return if x < other.x {
@@ -141,14 +141,14 @@ fun Twice<T: Add>(value: T) -> T => value + value
 
 @Test
 fun AddsStructs() -> bool {
-  const sum = OpsVec2(1, 2) + OpsVec2(10, 20)
+  const sum = Vec2(1, 2) + Vec2(10, 20)
   return sum.x == 11 && sum.y == 22
 }
 
 @Test
 fun SubtractsMultipliesAndDividesStructs() -> bool {
-  const a = OpsVec2(12, 30)
-  const b = OpsVec2(3, 5)
+  const a = Vec2(12, 30)
+  const b = Vec2(3, 5)
   const less = a - b
   const more = a * b
   const part = a / b
@@ -157,32 +157,32 @@ fun SubtractsMultipliesAndDividesStructs() -> bool {
 
 @Test
 fun NegatesAStruct() -> bool {
-  const flipped = -OpsVec2(3, -4)
+  const flipped = -Vec2(3, -4)
   return flipped.x == -3 && flipped.y == 4
 }
 
 @Test
 fun ComparesStructsForEquality() -> bool {
-  const a = OpsVec2(1, 2)
-  const b = OpsVec2(1, 2)
-  const c = OpsVec2(1, 3)
+  const a = Vec2(1, 2)
+  const b = Vec2(1, 2)
+  const c = Vec2(1, 3)
   return a == b && !(a == c) && a != c && !(a != b)
 }
 
 @Test
 fun OrdersStructs() -> bool {
-  const small = OpsVec2(1, 9)
-  const big = OpsVec2(2, 0)
-  const same = OpsVec2(1, 9)
+  const small = Vec2(1, 9)
+  const big = Vec2(2, 0)
+  const same = Vec2(1, 9)
   return small < big && small <= big && big > small && big >= small && small <= same && small >= same && !(small > big) && !(big < small)
 }
 
 @Test
 fun AddsInPlace() -> bool {
-  var total = OpsVec2(1, 1)
-  total += OpsVec2(2, 3)
-  total += OpsVec2(4, 5)
-  total -= OpsVec2(1, 1)
+  var total = Vec2(1, 1)
+  total += Vec2(2, 3)
+  total += Vec2(4, 5)
+  total -= Vec2(1, 1)
   return total.x == 6 && total.y == 8
 }
 
@@ -197,8 +197,8 @@ fun AddsClassesWithoutLeakingOrFreeingEarly() -> bool {
 
 @Test
 fun PicksTheGreaterOfAStructAndOfAnInt() -> bool {
-  const bigger = Max(OpsVec2(1, 5), OpsVec2(1, 7))
-  const smaller = Min(OpsVec2(1, 5), OpsVec2(1, 7))
+  const bigger = Max(Vec2(1, 5), Vec2(1, 7))
+  const smaller = Min(Vec2(1, 5), Vec2(1, 7))
   return bigger.y == 7 && smaller.y == 5 && Max(3, 9) == 9 && Min(3, 9) == 3 && Max(
       Money(1),
       Money(2)).cents == 2
@@ -206,7 +206,7 @@ fun PicksTheGreaterOfAStructAndOfAnInt() -> bool {
 
 @Test
 fun GenericAddTakesStructsAndNumbers() -> bool {
-  return Twice(OpsVec2(1, 2)).y == 4 && Twice(21) == 42 && Twice(1.5) == 3.0
+  return Twice(Vec2(1, 2)).y == 4 && Twice(21) == 42 && Twice(1.5) == 3.0
 }
 
 @Test

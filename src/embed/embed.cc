@@ -339,9 +339,9 @@ std::string DescribeLayout(const std::vector<uint32_t>& words) {
 static std::vector<TypeId> HostTypesNamed(const WolangVm* vm, const std::string& name, bool classes) {
   std::string bare = name;
   std::string module;
-  const size_t dot = name.find('.');
-  if (dot != std::string::npos && name.find('<') == std::string::npos) {
-    const size_t last = name.rfind('.');
+  const size_t angle = name.find('<');
+  const size_t last = name.substr(0, angle).rfind('.');
+  if (last != std::string::npos) {
     module = name.substr(0, last);
     bare = name.substr(last + 1);
   }
@@ -357,10 +357,12 @@ static std::vector<TypeId> HostTypesNamed(const WolangVm* vm, const std::string&
       continue;
     }
 
-    const FileId file{types.Get(id).declaring_file};
+    // An instance carries no declaration of its own; its generic does.
+    const TypeId home = kind == TypeKind::kInstance ? types.Get(id).base : id;
+    const FileId file{types.Get(home).declaring_file};
     if (!module.empty()) {
-      const wolang::Module* home = vm->database.GetModule(vm->database.ModuleOf(file));
-      if (home != nullptr && home->name == module) {
+      const wolang::Module* owner = vm->database.GetModule(vm->database.ModuleOf(file));
+      if (owner != nullptr && owner->name == module) {
         own.push_back(id);
       }
       continue;
@@ -372,11 +374,12 @@ static std::vector<TypeId> HostTypesNamed(const WolangVm* vm, const std::string&
     }
 
     const CheckedFile* checked = vm->database.Checked(file);
-    const wolang::Binding* binding = checked == nullptr ? nullptr : checked->resolution.Find(types.Get(id).name);
+    const wolang::Binding* binding = checked == nullptr ? nullptr : checked->resolution.Find(types.Get(home).name);
     if (binding != nullptr && binding->is_public) {
       offered.push_back(id);
     }
   }
+
   return own.empty() ? offered : own;
 }
 
@@ -928,6 +931,30 @@ static void AttachToHost(WolangVm* vm, FileId file);
 // The standard library for a lone file, found the way the driver finds it:
 // WOLANG_STD, then a tree the file sits inside. A package loaded by path
 // brings its own dependencies; a single file has none to bring (D259).
+// Whether |source| has a line that begins with `need`: the only thing that
+// makes a host's source want the standard library found for it. A comment or
+// a string that merely says "need " does not, so it cannot make the load
+// depend on the working directory (D293).
+static bool WritesNeed(std::string_view source) {
+  size_t at = 0;
+  while (at < source.size()) {
+    size_t stop = source.find('\n', at);
+    if (stop == std::string_view::npos) {
+      stop = source.size();
+    }
+    std::string_view line = source.substr(at, stop - at);
+    while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
+      line.remove_prefix(1);
+    }
+    if (line.rfind("need ", 0) == 0) {
+      return true;
+    }
+    at = stop + 1;
+  }
+
+  return false;
+}
+
 static void LoadStandardFor(WolangVm* vm, const char* path) {
   for (size_t i = 0; i < vm->database.package_count(); ++i) {
     const wolang::Package* held = vm->database.GetPackage(wolang::PackageId{static_cast<uint32_t>(i)});
@@ -1078,7 +1105,7 @@ WolangStatus wolang_vm_load_source(WolangVm* vm,
   const FileId file = vm->database.AddFile(
       name == nullptr ? "<host>" : name, source);
   if (file.is_valid()) {
-    if (std::string_view(source).find("need ") != std::string_view::npos) {
+    if (WritesNeed(source)) {
       LoadStandardFor(vm, name == nullptr ? "<host>" : name);
     }
     AttachToHost(vm, file);
@@ -1121,7 +1148,7 @@ WolangStatus wolang_vm_load_package_source(WolangVm* vm,
       return kWolangError;
     }
     files.push_back(wolang::MemoryFile{paths[i], sources[i]});
-    mentions_need = mentions_need || files.back().text.find("need ") != std::string::npos;
+    mentions_need = mentions_need || WritesNeed(files.back().text);
   }
 
   // Only a package with no manifest of its own is promised the standard
@@ -1172,20 +1199,24 @@ WolangStatus wolang_vm_load_package_source(WolangVm* vm,
   return vm->ok ? kWolangOk : kWolangError;
 }
 
+static WolangStatus LoadPackageAgain(WolangVm* vm, const WolangVm::Loaded& what) {
+  std::vector<const char*> paths;
+  std::vector<const char*> sources;
+  for (size_t i = 0; i < what.paths.size(); ++i) {
+    paths.push_back(what.paths[i].c_str());
+    sources.push_back(what.sources[i].c_str());
+  }
+
+  return wolang_vm_load_package_source(vm, what.path.c_str(), what.has_manifest ? what.manifest.c_str() : nullptr, paths.data(), sources.data(), static_cast<int32_t>(paths.size()));
+}
+
 // One thing a reload loads again, whichever way the host first gave it.
 static WolangStatus LoadAgain(WolangVm* vm, const WolangVm::Loaded& what) {
   switch (what.kind) {
     case WolangVm::LoadKind::kSource:
       return wolang_vm_load_source(vm, what.path.c_str(), what.source.c_str());
-    case WolangVm::LoadKind::kPackage: {
-      std::vector<const char*> paths;
-      std::vector<const char*> sources;
-      for (size_t i = 0; i < what.paths.size(); ++i) {
-        paths.push_back(what.paths[i].c_str());
-        sources.push_back(what.sources[i].c_str());
-      }
-      return wolang_vm_load_package_source(vm, what.path.c_str(), what.has_manifest ? what.manifest.c_str() : nullptr, paths.data(), sources.data(), static_cast<int32_t>(paths.size()));
-    }
+    case WolangVm::LoadKind::kPackage:
+      return LoadPackageAgain(vm, what);
     case WolangVm::LoadKind::kPath:
       break;
   }
@@ -1456,6 +1487,24 @@ static TypeId FindClassNamed(const WolangVm* vm, const std::string& name, std::s
   return found.empty() ? TypeId{} : found.front();
 }
 
+// The class an object of the host's names. The index the object was handed
+// out with is trusted while it still names a class of that spelling; a reload
+// moves the indices, and then the name is looked up again (D291).
+static TypeId ClassOfObject(const WolangVm* vm, const WolangValue& object, const std::string& name) {
+  const wolang::TypeStore& types = vm->database.types();
+  const TypeId given{object.reserved};
+  if (given.index < types.size()) {
+    const TypeKind kind = types.KindOf(given);
+    if ((kind == TypeKind::kNamed || kind == TypeKind::kInstance) && types.IsHandle(given) && !types.IsForeignClass(given) && types.Describe(vm->database.interner(), given) == name) {
+      return given;
+    }
+  }
+
+  const TypeId found = FindClassNamed(vm, name);
+
+  return found.is_valid() ? found : given;
+}
+
 static const Callable* FindMember(const WolangVm* vm, const std::string& name) {
   for (auto it = vm->members.rbegin(); it != vm->members.rend(); ++it) {
     if (it->name == name) {
@@ -1536,10 +1585,7 @@ WolangStatus wolang_vm_object_get(WolangVm* vm, WolangValue object, const char* 
     return kWolangError;
   }
   wolang::TypeStore& types = vm->database.types();
-  TypeId type = FindClassNamed(vm, std::string(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length)));
-  if (!type.is_valid()) {
-    type = TypeId{object.reserved};
-  }
+  const TypeId type = ClassOfObject(vm, object, std::string(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length)));
   const uint32_t file = types.Get(type).declaring_file;
   const CheckedFile* checked = vm->database.Checked(FileId{file});
   if (checked == nullptr) {
@@ -1903,10 +1949,7 @@ WolangStatus wolang_vm_save(WolangVm* vm, WolangValue object, const uint8_t** by
   }
 
   const std::string name(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length));
-  TypeId type = FindClassNamed(vm, name);
-  if (!type.is_valid()) {
-    type = TypeId{object.reserved};
-  }
+  const TypeId type = ClassOfObject(vm, object, name);
 
   const WolangVm::SaveSchema& schema = SaveSchemaOf(vm, type);
   if (schema.Text.empty()) {

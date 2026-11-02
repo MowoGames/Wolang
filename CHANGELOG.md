@@ -23,6 +23,9 @@ Wolang.
   (`E0701`).
 - A name the host gives, as in `wolang_vm_expect_struct`, finds the program's
   type and not a dependency's helper of the same name (D291).
+- The formatter keeps the parentheses of a cast that ends the left side of `<`
+  (`(stop as float) < y1`), which it used to drop and so wrote code the parser
+  rejects, and never breaks a line inside the `{}` of a string (D290).
 
 ## 1.3.0
 

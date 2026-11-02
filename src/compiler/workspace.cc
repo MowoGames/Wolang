@@ -479,6 +479,7 @@ bool Loader::LoadMemory(std::string_view name,
     }
   }
 
+  const size_t errors_before = diagnostics_->error_count();
   const std::string directory = std::string(kMemoryScheme) + package_name;
   Manifest manifest;
   if (manifest_text != nullptr) {
@@ -552,6 +553,26 @@ bool Loader::LoadMemory(std::string_view name,
                                      prefix + "`");
       return false;
     }
+
+    // `src/../x.wo` or `src//a.wo` would name a module with no directory.
+    bool plain = true;
+    size_t at = prefix.size();
+    while (at <= path.size()) {
+      size_t stop = path.find('/', at);
+      if (stop == std::string::npos) {
+        stop = path.size();
+      }
+      const std::string_view part =
+          std::string_view(path).substr(at, stop - at);
+      plain = plain && !part.empty() && part != "." && part != "..";
+      at = stop + 1;
+    }
+    if (!plain) {
+      Report(kUnreadablePackage, "`" + file.path +
+                                     "` is not a plain path under `" + prefix +
+                                     "`");
+      return false;
+    }
     sorted.emplace_back(std::move(path), &file);
   }
   std::sort(sorted.begin(), sorted.end(),
@@ -561,6 +582,12 @@ bool Loader::LoadMemory(std::string_view name,
       Report(kUnreadablePackage, "`" + sorted[i].first + "` is given twice");
       return false;
     }
+  }
+
+  // A manifest that did not parse or a dependency that does not fit must not
+  // leave the name taken, or the host's corrected retry is refused (D293).
+  if (diagnostics_->error_count() != errors_before) {
+    return false;
   }
 
   const PackageId package =

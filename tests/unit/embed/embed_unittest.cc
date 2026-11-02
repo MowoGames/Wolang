@@ -1468,24 +1468,25 @@ offer fun Hello() uses io {
 }
 )";
 
+// std keeps a private `Vec2` of two ints (16 bytes), so a host's `Vec2` of two
+// f32 (8 bytes) only passes if the host's own struct is the one checked (D291).
 WOLANG_TEST(EmbedTest, ABindingsStructIsTheHostsNotADependencysPrivateOne) {
-  const std::string standard = std::string(WOLANG_PROJECT_DIR) + "/lib/std";
-  const char* source = "offer struct Vec2 {\n  var x: f64\n  var y: f64\n}\n";
-  const uint32_t right[] = {16, 8, 0, 8};
+  const std::string dependency = "\n[dependencies]\nstd = { path = \"" + std::string(WOLANG_PROJECT_DIR) + "/lib/std\" }\n";
+  const std::filesystem::path host = WritePackage("vec2host", dependency.c_str(), "offer struct Vec2 {\n  var x: f32\n  var y: f32\n}\n");
+  const uint32_t right[] = {8, 4, 0, 4};
   WolangVm* vm = wolang_vm_create();
   WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec2", right, 4), kWolangOk);
-  WOLANG_EXPECT_EQ(wolang_vm_load(vm, standard.c_str()), 0);
-  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "host_vec2.wo", source), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, host.string().c_str()), 0);
   WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
   wolang_vm_destroy(vm);
 
-  const uint32_t private_one[] = {8, 4, 0, 4};
+  const uint32_t private_one[] = {16, 8, 0, 8};
   vm = wolang_vm_create();
   WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec2", private_one, 4), kWolangOk);
-  WOLANG_EXPECT_EQ(wolang_vm_load(vm, standard.c_str()), 0);
-  WOLANG_EXPECT(wolang_vm_load_source(vm, "host_vec2_bad.wo", source) != 0);
-  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("expect `Vec2` to be size 8, align 4") != std::string::npos);
+  WOLANG_EXPECT(wolang_vm_load(vm, host.string().c_str()) != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("expect `Vec2` to be size 16, align 8") != std::string::npos);
   wolang_vm_destroy(vm);
+  std::filesystem::remove_all(host);
 }
 
 WOLANG_TEST(EmbedTest, AQualifiedStructNameMeansThatModulesStruct) {
@@ -2578,4 +2579,90 @@ WOLANG_TEST(EmbedTest, AMemoryPackageIsRefusedForABadNameManifestOrDependency) {
   WOLANG_EXPECT(wolang_vm_load_package_source(missing, "app", "[package]\nname = \"app\"\n\n[dependencies]\nmowo = { path = \".\" }\n", paths, sources, 1) != 0);
   WOLANG_EXPECT(std::string(wolang_vm_errors(missing)).find("E0060") != std::string::npos);
   wolang_vm_destroy(missing);
+}
+
+static const char* const kBoxSource = R"(
+class Box<T> {
+  var v: T
+}
+
+offer fun MakeBox() -> Box<int> uses unsafe {
+  const made = Box<int>()
+  made.v = 5
+  return made
+}
+
+offer fun ReadBox(b: Box<int>) -> int => b.v
+)";
+
+WOLANG_TEST(EmbedTest, AHostNamesAGenericClassInstanceByItsSpelling) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_ASSERT_EQ(wolang_vm_load_source(vm, "box.wo", kBoxSource), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  WolangValue made = wolang_void();
+  WOLANG_ASSERT_EQ(wolang_vm_call(vm, "MakeBox", nullptr, 0, &made), 0);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_object_get(vm, made, "v", &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 5);
+
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "ReadBox", &made, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 5);
+
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "ReadBox", &made, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 5);
+
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, made), 0);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ABadManifestLeavesTheNameFreeForACorrectedRetry) {
+  const char* paths[] = {"src/main.wo"};
+  const char* sources[] = {"offer fun One() -> int => 1\n"};
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT(wolang_vm_load_package_source(vm, "game", "[package\nname = \n", paths, sources, 1) != 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_package_source(vm, "game", "[package]\nname = \"game\"\n", paths, sources, 1), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "game.One", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 1);
+  wolang_vm_destroy(vm);
+
+  vm = wolang_vm_create();
+  const char* library = "[package]\nname = \"mowo\"\nversion = \"1.0.0\"\n";
+  WOLANG_EXPECT_EQ(wolang_vm_load_package_source(vm, "mowo", library, paths, sources, 1), 0);
+  const char* wants_two = "[package]\nname = \"app\"\n\n[dependencies]\nmowo = { path = \".\", version = \"2.0.0\" }\n";
+  const char* wants_one = "[package]\nname = \"app\"\n\n[dependencies]\nmowo = { path = \".\", version = \"1.0.0\" }\n";
+  WOLANG_EXPECT(wolang_vm_load_package_source(vm, "app", wants_two, paths, sources, 1) != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("E0053") != std::string::npos);
+  WOLANG_EXPECT_EQ(wolang_vm_load_package_source(vm, "app", wants_one, paths, sources, 1), 0);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, AMemoryPackagePathMustBePlain) {
+  const char* sources[] = {"offer fun One() -> int => 1\n"};
+  const char* bad[] = {"src/../x.wo", "src//a.wo", "src/./a.wo", "src/ui//a.wo"};
+  for (const char* path : bad) {
+    WolangVm* vm = wolang_vm_create();
+    const char* paths[] = {path};
+    WOLANG_EXPECT(wolang_vm_load_package_source(vm, "game", nullptr, paths, sources, 1) != 0);
+    WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("E0060") != std::string::npos);
+    wolang_vm_destroy(vm);
+  }
+
+  WolangVm* vm = wolang_vm_create();
+  const char* good[] = {"src/ui/a.wo"};
+  WOLANG_EXPECT_EQ(wolang_vm_load_package_source(vm, "game", nullptr, good, sources, 1), 0);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ACommentThatSaysNeedDoesNotAskForTheStandardLibrary) {
+  WolangVm* vm = wolang_vm_create();
+  const char* paths[] = {"src/main.wo"};
+  const char* sources[] = {"// we need this one\noffer fun One() -> int => 1\n"};
+  WOLANG_EXPECT_EQ(wolang_vm_load_package_source(vm, "game", nullptr, paths, sources, 1), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  wolang_vm_destroy(vm);
 }

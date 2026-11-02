@@ -416,9 +416,13 @@ on disk (`unsafe` and `[link]` allowed); a mod is still sandboxed only through
 loaded, so load `std` first; the `path` it needs to parse is a placeholder.
 Pass a null manifest and the package depends on everything loaded so far, as
 source from `wolang_vm_load_source` does, and the standard library is looked
-for the way it is for a lone file. `host`, a name already loaded, a manifest that
-names another package, a dependency that is not loaded and a path outside
-`src/` are refused with `E0060`. A reload loads the package again from the
+for the way it is for a lone file, but only when a file has a line that begins
+with `need` (a comment that says "need" does not count), so that search can
+depend on `WOLANG_STD` and the working directory. `host`, a name already
+loaded, a manifest that names another package, a dependency that is not loaded,
+a path outside `src/` and a path with an empty, `.` or `..` segment are refused
+with `E0060`; a manifest that does not parse, or a dependency version that does
+not fit, is refused too and leaves the name free for a corrected retry. A reload loads the package again from the
 data the vm kept.
 
 ## Tasks on the host's clock

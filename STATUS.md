@@ -6,7 +6,7 @@
 
 **Date:** 2026-11-02
 **Waves are closed through the 11th**; after that the work was "a complete
-language" without waves, and everything below belongs to it (D119–D293). **1.3.0 is on `feature/1.3.0`, awaiting CI on the other platforms; 1.2.0 is the last release; 1.4.0 (D290–D293) is in progress on `feature/1.4.0`.**
+language" without waves, and everything below belongs to it (D119–D293). **1.3.0 is released (merged in PR #13); 1.4.0 (D290–D293) is version-bumped and in progress on `feature/1.4.0`.**
 
 ## In short
 
@@ -23,14 +23,14 @@ that they do.
 | Cross targets | `--target`: Windows COFF, Linux ELF, WebAssembly, RISC-V |
 | std | 38 modules (see [docs/stdlib.md](docs/stdlib.md)) |
 | Packages | `http` (server and client), `db` (storage), `gfx` (window/GPU/sound/gamepads), `image` (PNG/QOI/BMP), `tls`, `game`, `core`, `math` (vectors, matrices, quaternions), `font` (TrueType), `ui` (immediate mode), `audio` (mixer, WAV), `gpu` (null and OpenGL 3.3), `app` (the shell) |
-| Tests | 1032 unit tests + 460 library tests, a three-tier fuzzer, a check of every example in the docs |
+| Tests | 1056 unit tests + 460 library tests, a three-tier fuzzer, a check of every example in the docs |
 | Server | 53,900 requests/s on one thread, 58,900 on eight |
 
 ## In progress: 1.4.0 (D290–D293)
 
 Embedding fixes from an engine moving its scripts onto Wolang, on
-`feature/1.4.0`. Not released, and no version string has moved: the bump is the
-release branch's step (docs/releasing.md).
+`feature/1.4.0`. The version strings say 1.4.0; it is not released yet
+(docs/releasing.md).
 
 **Embedding.** C ABI 1.6 and 1.7. `wolang_vm_save` and `wolang_vm_load_save`
 write and read an object graph with the bytes `std.save` writes (D292);
