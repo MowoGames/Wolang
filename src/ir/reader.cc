@@ -778,11 +778,11 @@ class TypedReader {
             }
             inst.field = kObjectSizeField;
           } else {
-            uint32_t index = 0;
-            if (!ReadU32(&index)) {
+            uint32_t field_number = 0;
+            if (!ReadU32(&field_number)) {
               return;
             }
-            inst.field = index + 1;
+            inst.field = field_number + 1;
           }
         }
         break;
