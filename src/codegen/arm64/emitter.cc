@@ -2987,7 +2987,8 @@ CompiledFunction EmitFunction(const StringInterner& interner,
                               const std::vector<uint64_t>& foreign,
                               const std::vector<std::pair<uint64_t,
                                                           uint64_t>>& strings,
-                              uint32_t trap_site_base) {
+                              uint32_t trap_site_base,
+                              bool) {
   FunctionEmitter emitter(interner, types, layouts, module, function,
                           compilable, foreign, strings, trap_site_base);
   return emitter.Run();

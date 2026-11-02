@@ -182,6 +182,9 @@ struct WolangVm {
   // How much a call may do, and whether the machine-code tier may run
   // it: counting steps is something only the interpreter can do (D137).
   uint64_t steps = 0;
+  // How many ticks a call may take before it is stopped, in either tier;
+  // zero for no limit (D265).
+  uint64_t budget = 0;
   bool allow_compiled = true;
   // Whether a load starts the module-level `var`s it declares (D140).
   bool initialize = true;
@@ -427,8 +430,10 @@ void Prepare(WolangVm* vm) {
   if (vm->foreign == nullptr) {
     vm->foreign = wolang::codegen::MakeForeignCaller();
   }
-  vm->compiled = wolang::codegen::Compile(vm->database.interner(),
-                                          vm->database.types(), code);
+  wolang::codegen::CompileOptions options;
+  options.budgeted = vm->budget != 0;
+  vm->compiled = wolang::codegen::Compile(vm->database.interner(), vm->database.types(), code, options);
+  vm->compiled->SetBudget(vm->budget);
   static std::atomic<uint64_t> sm_Generations{0};
   vm->generation = ++sm_Generations;
 
@@ -1161,6 +1166,9 @@ static WolangStatus Invoke(WolangVm* vm, const Callable* entry, const std::vecto
     limits.keep_globals = true;
     if (vm->steps != 0) {
       limits.steps = vm->steps;
+    }
+    if (vm->budget != 0) {
+      limits.ticks = vm->budget;
     }
     wolang::interp::Output printed;
     outcome = wolang::interp::RunNamed(
@@ -2117,6 +2125,21 @@ void wolang_vm_set_step_limit(WolangVm* vm, uint64_t steps) {
   }
 }
 
+void wolang_vm_set_budget(WolangVm* vm, uint64_t ticks) {
+  const VmTurn turn(vm);
+  if (vm == nullptr) {
+    return;
+  }
+  const bool rebuild = vm->ok && (ticks != 0) != (vm->budget != 0);
+  vm->budget = ticks;
+  if (rebuild) {
+    Prepare(vm);
+  }
+  else if (vm->compiled != nullptr) {
+    vm->compiled->SetBudget(ticks);
+  }
+}
+
 void wolang_vm_set_compiled(WolangVm* vm, int32_t allowed) {
   const VmTurn turn(vm);
   if (vm != nullptr) {
@@ -2455,6 +2478,7 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   const std::shared_ptr<std::deque<FunctionHandle>> handles = vm->handles;
   const std::shared_ptr<DebugLink> debug = vm->debug;
   const uint64_t steps = vm->steps;
+  const uint64_t budget = vm->budget;
   const bool allow_compiled = vm->allow_compiled;
   const bool initialize = vm->initialize;
   const std::vector<std::pair<std::string, std::vector<std::string>>> sandboxes = vm->sandboxes;
@@ -2475,6 +2499,7 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   vm->handles = handles;
   vm->debug = debug;
   vm->steps = steps;
+  vm->budget = budget;
   vm->allow_compiled = allow_compiled;
   vm->initialize = initialize;
   vm->sandboxes = sandboxes;

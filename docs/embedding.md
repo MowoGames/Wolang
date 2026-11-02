@@ -84,7 +84,7 @@ and pointing `CMAKE_PREFIX_PATH` at it is enough.
 | **Configure** | `wolang_vm_get_global`/`_set_global` read and write the program's module-level `var`s. A script's `var gravity: f32 = -9.8` is a setting the host owns. |
 | **Extend** | `wolang_vm_bind` makes a host function reachable: the script declares `extern "C" fun host_log(message: *u8, length: u64)` and calls it. |
 | **Capture** | `wolang_vm_set_writer` sends the program's output to the host's console instead of standard output; `wolang_vm_set_reporter` does the same for diagnostics. `std.io.Print` and `Eprint` reach them too, in every tier (D259). |
-| **Contain** | `wolang_vm_set_step_limit` stops a call after so many instructions, for scripts the host did not write. It keeps calls on the interpreter, which is the trade. |
+| **Contain** | `wolang_vm_set_budget` stops a call after so many ticks in either tier, for scripts the host did not write (D265). `wolang_vm_set_step_limit` counts interpreter instructions and keeps calls on the interpreter. |
 | **Debug** | `wolang_vm_debug_listen` opens a port an editor attaches to with the Debug Adapter Protocol; breakpoints stop the host's call where it is. See [debugging](debugging.md). |
 | **Reload** | `wolang_vm_reload` loads everything again and keeps the program's state; `wolang_vm_file_count`/`_name` say which files to watch. |
 
@@ -342,8 +342,15 @@ those states the capability it needs, down to the standard library's
 `std.fs.Open`, which is `io`. A mod that reaches past its grant does not
 load: `E0703` names the function and the capability (D217).
 
-The grant bounds *reach*. `wolang_vm_set_step_limit` bounds *time*, for a
-mod that loops forever; together they are what a mod sandbox is. Memory a
+The grant bounds *reach*. `wolang_vm_set_budget` bounds *time*, for a mod
+that loops forever (D265): a call that spends its ticks stops with
+`kWolangTrap` and the message `step limit`, and the next call starts afresh.
+A tick is one entry into a script function or one jump back to an earlier
+block; it is counted in the interpreter and in the compiled tier alike, so a
+budget does not cost the speed of compiled code, only a subtract and a branch
+at those points. It is a guard against a script that never ends, not a meter:
+the two tiers draw the line between "back" and "forward" a block or so apart.
+Together they are what a mod sandbox is. Memory a
 mod allocates is not bounded, and a host that runs mods from strangers
 should still give them a vm of their own.
 

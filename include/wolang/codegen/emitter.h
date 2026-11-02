@@ -81,6 +81,11 @@ struct CompiledFunction {
 // |trap_site_base| is where this function's trap sites start in the
 // module's table, so that a site index means one thing across the module.
 //
+// |budgeted| asks for a tick to be taken from the context's budget at the
+// function's entry and at each jump back to an earlier block, trapping with
+// `kStepLimit` when it is used up (D265). A target that cannot do it leaves
+// the function to the interpreter.
+//
 // |foreign| holds the address of each foreign function of the module, by
 // index, or zero for one that is not foreign or whose symbol was not found.
 // Resolving a symbol is the host's business, not the emitter's.
@@ -98,7 +103,8 @@ CompiledFunction EmitFunction(Target target,
                               const std::vector<uint64_t>& foreign,
                               const std::vector<std::pair<uint64_t,
                                                           uint64_t>>& strings,
-                              uint32_t trap_site_base);
+                              uint32_t trap_site_base,
+                              bool budgeted);
 
 // Writes the displacement of a call into |code|, now that the callee's
 // offset is known. The one piece of placement that cannot be shared: a
@@ -128,7 +134,8 @@ CompiledFunction EmitFunction(const StringInterner& interner,
                               const std::vector<uint64_t>& foreign,
                               const std::vector<std::pair<uint64_t,
                                                           uint64_t>>& strings,
-                              uint32_t trap_site_base);
+                              uint32_t trap_site_base,
+                              bool budgeted);
 
 }  // namespace arm64
 
@@ -144,7 +151,8 @@ CompiledFunction EmitFunction(const StringInterner& interner,
                               const std::vector<uint64_t>& foreign,
                               const std::vector<std::pair<uint64_t,
                                                           uint64_t>>& strings,
-                              uint32_t trap_site_base);
+                              uint32_t trap_site_base,
+                              bool budgeted);
 
 }  // namespace x64
 

@@ -261,6 +261,80 @@ class Fixture {
   Host host_;
 };
 
+static const char* const kBudgetSource = R"(
+fun Spin() -> int {
+  var i = 0
+  loop {
+    i = i + 1
+  }
+}
+
+fun Count(n: int) -> int {
+  var i = 0
+  while i < n {
+    i = i + 1
+  }
+  return i
+}
+
+fun Fall(n: int) -> int {
+  if n == 0 {
+    return 0
+  }
+  return Fall(n - 1) + 1
+}
+)";
+
+WOLANG_TEST(CodegenTest, ABudgetStopsCompiledCodeAtLoopsAndCalls) {
+  Database db;
+  const FileId file = db.AddFile("<test>", std::string(kBudgetSource));
+  const LoweredFile* lowered = db.Lowered(file);
+  const CheckedFile* checked = db.Checked(file);
+  WOLANG_ASSERT(lowered != nullptr && checked != nullptr);
+  const FileCode code{&checked->resolution, &lowered->module};
+
+  CompileOptions options;
+  options.budgeted = true;
+  std::unique_ptr<CompiledModule> budgeted = Compile(db.interner(), db.types(), std::span<const FileCode>(&code, 1), options);
+  const Symbol spin = db.interner().Intern("Spin");
+  const Symbol count = db.interner().Intern("Count");
+  const Symbol fall = db.interner().Intern("Fall");
+  if (!budgeted->Contains(spin)) {
+    return;
+  }
+
+  budgeted->SetBudget(1000);
+  WOLANG_EXPECT_EQ(budgeted->Run(spin, {}).trap, ir::TrapKind::kStepLimit);
+  const interp::Outcome small = budgeted->Run(count, {Fixture::Int(10)});
+  WOLANG_EXPECT(small.ok());
+  WOLANG_EXPECT_EQ(small.value.Describe(), "10");
+  WOLANG_EXPECT_EQ(budgeted->Run(count, {Fixture::Int(100000)}).trap, ir::TrapKind::kStepLimit);
+  WOLANG_EXPECT(budgeted->Run(fall, {Fixture::Int(10)}).ok());
+  WOLANG_EXPECT_EQ(budgeted->Run(fall, {Fixture::Int(5000)}).trap, ir::TrapKind::kStepLimit);
+  WOLANG_EXPECT(budgeted->Run(count, {Fixture::Int(10)}).ok());
+
+  budgeted->SetBudget(0);
+  WOLANG_EXPECT(budgeted->Run(count, {Fixture::Int(100000)}).ok());
+}
+
+WOLANG_TEST(CodegenTest, CodeCompiledWithoutABudgetDoesNotCountOne) {
+  Database db;
+  const FileId file = db.AddFile("<test>", std::string(kBudgetSource));
+  const LoweredFile* lowered = db.Lowered(file);
+  const CheckedFile* checked = db.Checked(file);
+  WOLANG_ASSERT(lowered != nullptr && checked != nullptr);
+  std::unique_ptr<CompiledModule> plain = Compile(db.interner(), db.types(), checked->resolution, lowered->module);
+  const Symbol count = db.interner().Intern("Count");
+  if (!plain->Contains(count)) {
+    return;
+  }
+
+  plain->SetBudget(10);
+  const interp::Outcome outcome = plain->Run(count, {Fixture::Int(100000)});
+  WOLANG_EXPECT(outcome.ok());
+  WOLANG_EXPECT_EQ(outcome.value.Describe(), "100000");
+}
+
 WOLANG_TEST(CodegenTest, RunsArithmetic) {
   Fixture f("fun Add(a: int, b: int) -> int => a + b\n");
   WOLANG_EXPECT_EQ(f.Run("Add", {Fixture::Int(2), Fixture::Int(3)}), "5");

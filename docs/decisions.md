@@ -3479,3 +3479,25 @@ the struct and both layouts, and `wolang_vm_ok` is zero. The expectations
 survive a reload. A change to how the compiler lays a struct out is an ABI
 change and bumps the major version. No syntax; ABI 1.4 adds the two calls.
 This is the compatibility rule the engine asked for (engine items 13 and 16).
+
+**D265. A host gives a call a budget of ticks, and a runaway script stops.**
+`wolang_vm_set_budget(vm, ticks)` (ABI 1.4) limits every call. A tick is taken
+at each entry into a script function and each jump back to an earlier block,
+which is where a program that does not end spends its time; straight-line code
+costs nothing. A call that uses its budget up stops with `kWolangTrap`, the
+trap is the `step limit` kind with the function and place, and the vm is
+untouched: the next call starts with a full budget. Zero, the default, is no
+limit. It is counted in both tiers. The interpreter keeps a counter; the
+compiled tier keeps one in the context it already carries, taking a tick with a
+subtract and a branch on the sign, in code compiled with `budgeted`, and
+nothing at all in code compiled without it. Setting a budget on a vm that is
+loaded builds the compiled tier again, once, when the budget turns on or off.
+Where the two tiers draw the line between "a jump back" differs by a block or
+two (the interpreter by block number, the compiler by where the block was
+placed), so a budget is a guard against a loop that never ends and not a
+meter: do not expect the same count from both. A host function a script calls,
+which calls a script function again, starts that inner call with the full
+budget. arm64 code does not count yet; a vm with a budget runs the interpreter
+there. The older `wolang_vm_set_step_limit` counts interpreter instructions,
+keeps calls off the compiled tier and is left as it is. A call that traps does
+not run the destructors of what it owned, as with any trap.

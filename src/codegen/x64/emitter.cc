@@ -200,7 +200,8 @@ class FunctionEmitter {
                   const std::vector<bool>& compilable,
                   const std::vector<uint64_t>& foreign,
                   const std::vector<std::pair<uint64_t, uint64_t>>& strings,
-                  uint32_t trap_site_base)
+                  uint32_t trap_site_base,
+                  bool budgeted)
       : interner_(interner),
         types_(types),
         layouts_(*layouts),
@@ -209,7 +210,8 @@ class FunctionEmitter {
         compilable_(compilable),
         foreign_(foreign),
         strings_(strings),
-        trap_site_base_(trap_site_base) {}
+        trap_site_base_(trap_site_base),
+        budgeted_(budgeted) {}
 
   CompiledFunction Run() {
     CompiledFunction result;
@@ -1018,11 +1020,16 @@ class FunctionEmitter {
       labels_[block.index] = assembler_.CreateLabel();
     }
     epilogue_ = assembler_.CreateLabel();
+    position_.assign(function_.blocks.size(), 0);
+    for (size_t i = 0; i < order_.blocks.size(); ++i) {
+      position_[order_.blocks[i].index] = static_cast<uint32_t>(i);
+    }
 
     EmitPrologue();
 
     for (size_t i = 0; i < order_.blocks.size(); ++i) {
       const ir::BlockId block = order_.blocks[i];
+      current_block_ = block;
       next_block_ =
           i + 1 < order_.blocks.size() ? order_.blocks[i + 1] : ir::BlockId{};
       assembler_.Bind(labels_[block.index]);
@@ -1039,9 +1046,36 @@ class FunctionEmitter {
     EmitTrapSites();
   }
 
+  // One tick off the host's budget, and a trap when none was left (D265).
+  // The count lives in the context, so a function that was not asked to count
+  // pays nothing, and the frame record is already built when the first tick
+  // is taken, so the trap's backtrace includes this function.
+  void EmitBudgetTick(ir::InstId where) {
+    const Address budget{kContextRegister, static_cast<int32_t>(kContextBudgetOffset)};
+    assembler_.Load(IWidth::k64, kCallScratch, budget);
+    assembler_.SubImmediate(IWidth::k64, kCallScratch, 1);
+    assembler_.Store(IWidth::k64, budget, kCallScratch);
+    assembler_.Jcc(Condition::kSign, TrapLabel(ir::TrapKind::kStepLimit, where, "budget used up"));
+  }
+
+  bool JumpsBack(const ir::Inst& inst) const {
+    if (inst.opcode != ir::Opcode::kJump && inst.opcode != ir::Opcode::kBranch && inst.opcode != ir::Opcode::kSwitch) {
+      return false;
+    }
+    for (ir::BlockId target : function_.SuccessorsOf(inst)) {
+      if (position_[target.index] <= position_[current_block_.index]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void EmitPrologue() {
     assembler_.Push(Register::kRbp);
     assembler_.Mov(IWidth::k64, Register::kRbp, Register::kRsp);
+    if (budgeted_) {
+      EmitBudgetTick(function_.Get(function_.entry()).instructions.back());
+    }
     uint32_t unprobed = frame_bytes_;
     while (kProbeStack && unprobed > kPageBytes) {
       assembler_.SubImmediate(IWidth::k64, Register::kRsp, static_cast<int32_t>(kPageBytes));
@@ -1967,6 +2001,9 @@ class FunctionEmitter {
   }
 
   void EmitTerminator(ir::InstId id, const ir::Inst& inst) {
+    if (budgeted_ && JumpsBack(inst)) {
+      EmitBudgetTick(id);
+    }
     switch (inst.opcode) {
       case ir::Opcode::kReturn: {
         if (inst.operands_count != 0) {
@@ -2857,6 +2894,9 @@ class FunctionEmitter {
   const std::vector<uint64_t>& foreign_;
   const std::vector<std::pair<uint64_t, uint64_t>>& strings_;
   uint32_t trap_site_base_ = 0;
+  bool budgeted_ = false;
+  std::vector<uint32_t> position_;
+  ir::BlockId current_block_;
   // Where a virtual call parks the body it looked up.
   uint32_t virtual_target_ = 0;
 
@@ -2902,9 +2942,11 @@ CompiledFunction EmitFunction(const StringInterner& interner,
                               const std::vector<uint64_t>& foreign,
                               const std::vector<std::pair<uint64_t,
                                                           uint64_t>>& strings,
-                              uint32_t trap_site_base) {
+                              uint32_t trap_site_base,
+                              bool budgeted) {
   FunctionEmitter emitter(interner, types, layouts, module, function,
-                          compilable, foreign, strings, trap_site_base);
+                          compilable, foreign, strings, trap_site_base,
+                          budgeted);
   return emitter.Run();
 }
 

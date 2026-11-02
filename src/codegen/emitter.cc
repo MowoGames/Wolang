@@ -21,16 +21,22 @@ CompiledFunction EmitFunction(Target target,
                               const std::vector<uint64_t>& foreign,
                               const std::vector<std::pair<uint64_t,
                                                           uint64_t>>& strings,
-                              uint32_t trap_site_base) {
+                              uint32_t trap_site_base,
+                              bool budgeted) {
   switch (target) {
     case Target::kArm64:
+      if (budgeted) {
+        CompiledFunction result;
+        result.reason = "is left to the interpreter: arm64 code does not count a budget yet";
+        return result;
+      }
       return arm64::EmitFunction(interner, types, layouts, module, function,
                                  compilable, foreign, strings,
-                                 trap_site_base);
+                                 trap_site_base, false);
     case Target::kX64:
       return x64::EmitFunction(interner, types, layouts, module, function,
                                compilable, foreign, strings,
-                               trap_site_base);
+                               trap_site_base, budgeted);
     case Target::kUnknown:
       break;
   }

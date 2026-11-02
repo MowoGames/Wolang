@@ -106,8 +106,9 @@ class CompiledModule::Impl {
 
   Impl(const StringInterner& interner,
        const TypeStore& types,
-       std::span<const FileCode> files)
-      : interner_(interner), types_(types) {
+       std::span<const FileCode> files,
+       const CompileOptions& options)
+      : interner_(interner), types_(types), budgeted_(options.budgeted) {
     for (const FileCode& file : files) {
       if (file.resolution == nullptr || file.module == nullptr) {
         continue;
@@ -240,6 +241,8 @@ class CompiledModule::Impl {
   const StringInterner& interner_;
   const TypeStore& types_;
   const Target target_ = HostTarget();
+  const bool budgeted_ = false;
+  int64_t budget_ = INT64_MAX;
   std::vector<std::unique_ptr<FileState>> files_;
 
   std::vector<uint8_t> bytes_;
@@ -395,7 +398,7 @@ void CompiledModule::Impl::Compile() {
     FileState& file = *files_[entry.file];
     const CompiledFunction attempt =
         EmitFunction(target_, interner_, types_, &file.layouts, file.module, function,
-                     file.compilable, file.foreign, file.strings, 0);
+                     file.compilable, file.foreign, file.strings, 0, budgeted_);
     if (!attempt.compiled) {
       compilable[i] = false;
       reasons[i] = attempt.reason;
@@ -447,7 +450,7 @@ void CompiledModule::Impl::Compile() {
     CompiledFunction compiled =
         EmitFunction(target_, interner_, types_, &file.layouts, file.module, function,
                      file.compilable, file.foreign, file.strings,
-                     static_cast<uint32_t>(traps_.size()));
+                     static_cast<uint32_t>(traps_.size()), budgeted_);
     if (!compiled.compiled) {
       // The probe above said yes and the real emit says no (it sees the
       // real trap numbering). Calls between functions are patched only
@@ -674,6 +677,7 @@ interp::Outcome CompiledModule::Impl::RunEntry(
   context_ = Context();
   context_.landing = &landing_;
   context_.report = &ReportTrap;
+  context_.budget = budget_;
   context_.code_begin = reinterpret_cast<uint64_t>(block_.AddressOf(0));
   context_.code_end =
       context_.code_begin + bytes_.size();
@@ -811,6 +815,7 @@ bool CompiledModule::CallPrepared(uintptr_t prepared, const uint64_t* slots, voi
   impl.context_ = Context();
   impl.context_.landing = &impl.landing_;
   impl.context_.report = &ReportTrap;
+  impl.context_.budget = impl.budget_;
   impl.context_.code_begin = reinterpret_cast<uint64_t>(impl.block_.AddressOf(0));
   impl.context_.code_end = impl.context_.code_begin + impl.bytes_.size();
 
@@ -855,6 +860,7 @@ bool CompiledModule::ResumeTask(Symbol dispatch,
   impl.context_ = Context();
   impl.context_.landing = &impl.landing_;
   impl.context_.report = &ReportTrap;
+  impl.context_.budget = impl.budget_;
   impl.context_.code_begin =
       reinterpret_cast<uint64_t>(impl.block_.AddressOf(0));
   impl.context_.code_end =
@@ -891,6 +897,10 @@ std::vector<std::pair<std::string, uint32_t>> CompiledModule::Listing()
   return listing;
 }
 
+void CompiledModule::SetBudget(uint64_t ticks) {
+  impl_->budget_ = ticks == 0 || ticks > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(ticks);
+}
+
 size_t CompiledModule::size() const {
   return impl_->bytes_.size();
 }
@@ -903,10 +913,11 @@ uint32_t CompiledModule::skipped_count() const {
 
 std::unique_ptr<CompiledModule> Compile(const StringInterner& interner,
                                         const TypeStore& types,
-                                        std::span<const FileCode> files) {
+                                        std::span<const FileCode> files,
+                                        const CompileOptions& options) {
   auto compiled = std::unique_ptr<CompiledModule>(new CompiledModule());
   compiled->impl_ =
-      std::make_unique<CompiledModule::Impl>(interner, types, files);
+      std::make_unique<CompiledModule::Impl>(interner, types, files, options);
   compiled->impl_->Compile();
   return compiled;
 }

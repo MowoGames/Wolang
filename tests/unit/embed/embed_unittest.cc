@@ -1242,6 +1242,72 @@ WOLANG_TEST(EmbedTest, AnOptionalHostObjectIsPresentOrAbsent) {
   CheckAnOptionalHostParameter(false);
 }
 
+static void CheckABudget(bool compiled, bool before_load) {
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_compiled(vm, compiled ? 1 : 0);
+  if (before_load) {
+    wolang_vm_set_budget(vm, 10000);
+  }
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "budget.wo", R"(
+offer fun Spin() -> int {
+  var i = 0
+  loop {
+    i = i + 1
+  }
+}
+
+offer fun Count(n: int) -> int {
+  var i = 0
+  while i < n {
+    i = i + 1
+  }
+  return i
+}
+
+offer fun Fall(n: int) -> int {
+  if n == 0 {
+    return 0
+  }
+  return Fall(n - 1) + 1
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  if (!before_load) {
+    wolang_vm_set_budget(vm, 10000);
+  }
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Spin", nullptr, 0, &answer), kWolangTrap);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("step limit") != std::string::npos);
+
+  WolangValue argument = wolang_int(100);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Count", &argument, 1, &answer), kWolangOk);
+  WOLANG_EXPECT_EQ(answer.integer, 100);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Fall", &argument, 1, &answer), kWolangOk);
+  WOLANG_EXPECT_EQ(answer.integer, 100);
+
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Spin", nullptr, 0, &answer), kWolangTrap);
+  argument = wolang_int(1000000);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Count", &argument, 1, &answer), kWolangTrap);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Fall", &argument, 1, &answer), kWolangTrap);
+
+  argument = wolang_int(100);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Count", &argument, 1, &answer), kWolangOk);
+  WOLANG_EXPECT_EQ(answer.integer, 100);
+
+  wolang_vm_set_budget(vm, 0);
+  argument = wolang_int(100000);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Count", &argument, 1, &answer), kWolangOk);
+  WOLANG_EXPECT_EQ(answer.integer, 100000);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ABudgetStopsARunawayCallAndTheVmStaysUsable) {
+  CheckABudget(false, true);
+  CheckABudget(true, true);
+  CheckABudget(true, false);
+}
+
 WOLANG_TEST(EmbedTest, BindingsForAnotherAbiAreRefused) {
   WolangVm* vm = wolang_vm_create();
   WOLANG_EXPECT_EQ(wolang_vm_expect_abi(vm, WOLANG_ABI_VERSION), kWolangOk);

@@ -339,6 +339,18 @@ void wolang_vm_set_reporter(WolangVm* vm, WolangWriter reporter, void* user);
 // which is the trade the caller is making knowingly.
 void wolang_vm_set_step_limit(WolangVm* vm, uint64_t steps);
 
+// A budget for each call, in ticks: one for each entry into a script function
+// and each jump back to an earlier block, which is where a runaway script
+// spends its time. A call that uses it up stops with `kWolangTrap`, and
+// `wolang_vm_errors` says `step limit` and where; the vm stays usable, and the
+// next call starts with a full budget. Unlike the step limit this works in the
+// compiled tier too, at a cost of a few instructions at each of those points,
+// paid only when a budget is set. Zero, the default, is no limit. The same
+// budget starts again for a script function a host function calls back into.
+// arm64 compiled code does not count yet, so a vm with a budget runs the
+// interpreter there (D265). Added in ABI 1.4.
+void wolang_vm_set_budget(WolangVm* vm, uint64_t ticks);
+
 // Whether to use the machine-code tier at all. On by default; a host that
 // wants every call counted turns it off.
 void wolang_vm_set_compiled(WolangVm* vm, int32_t allowed);
