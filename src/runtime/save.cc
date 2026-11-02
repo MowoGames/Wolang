@@ -4,6 +4,7 @@
 #include "wolang/runtime/save.h"
 
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
