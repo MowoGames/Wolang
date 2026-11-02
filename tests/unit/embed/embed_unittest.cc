@@ -1450,6 +1450,75 @@ WOLANG_TEST(EmbedTest, ALayoutIsAlsoCheckedWhenTheProgramIsAlreadyLoaded) {
   wolang_vm_destroy(vm);
 }
 
+static const char* const kHostVec2Source = R"(
+need std.io.{Print}
+need std.ops.{Add}
+
+offer struct Vec2 {
+  var x: f64
+  var y: f64
+}
+
+offer fun Twice<T: Add>(a: T) -> T => a + a
+
+offer fun Hello() uses io {
+  Print("hi")
+}
+)";
+
+WOLANG_TEST(EmbedTest, ABindingsStructIsTheHostsNotADependencysPrivateOne) {
+  const std::string dependency = "\n[dependencies]\nstd = { path = \"" + std::string(WOLANG_PROJECT_DIR) + "/lib/std\" }\n";
+  const std::filesystem::path package = WritePackage("vec2host", dependency.c_str(), kHostVec2Source);
+  const uint32_t right[] = {16, 8, 0, 8};
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec2", right, 4), kWolangOk);
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, package.string().c_str()), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  wolang_vm_destroy(vm);
+
+  const uint32_t private_one[] = {8, 4, 0, 4};
+  vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec2", private_one, 4), kWolangOk);
+  WOLANG_EXPECT(wolang_vm_load(vm, package.string().c_str()) != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("expect `Vec2` to be size 8, align 4") != std::string::npos);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, AQualifiedStructNameMeansThatModulesStruct) {
+  const uint32_t right[] = {16, 8, 0, 8};
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "host.Vec2", right, 4), kWolangOk);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "host_vec2_q.wo", kHostVec2Source), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, TwoStructsWithOneNameAndTwoLayoutsIsAnError) {
+  const std::filesystem::path wide = WritePackage("vec2wide", "", "offer struct Vec2 {\n  var x: f64\n  var y: f64\n}\n");
+  const std::filesystem::path narrow = WritePackage("vec2narrow", "", "offer struct Vec2 {\n  var x: f32\n  var y: f32\n}\n");
+  const uint32_t layout[] = {16, 8, 0, 8};
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec2", layout, 4), kWolangOk);
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, wide.string().c_str()), 0);
+  WOLANG_EXPECT(wolang_vm_load(vm, narrow.string().c_str()) != 0);
+  const std::string errors = wolang_vm_errors(vm);
+  WOLANG_EXPECT(errors.find("different layouts") != std::string::npos);
+  WOLANG_EXPECT(errors.find("(D291)") != std::string::npos);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ObjectNewOnAnAmbiguousClassNameIsAnError) {
+  const std::filesystem::path first = WritePackage("thingfirst", "", "offer class Thing {\n  var a: int\n}\n");
+  const std::filesystem::path second = WritePackage("thingsecond", "", "offer class Thing {\n  var b: int\n}\n");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, first.string().c_str()), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, second.string().c_str()), 0);
+  WolangValue out;
+  WOLANG_EXPECT_EQ(wolang_vm_object_new(vm, "Thing", &out), kWolangError);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("more than one class") != std::string::npos);
+  wolang_vm_destroy(vm);
+}
+
 static void CheckAnOptionalHostField(bool compiled) {
   WolangVm* vm = wolang_vm_create();
   wolang_vm_set_compiled(vm, compiled ? 1 : 0);

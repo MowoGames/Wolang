@@ -313,32 +313,93 @@ std::string DescribeLayout(const std::vector<uint32_t>& words) {
   return text;
 }
 
+// The types a host's |name| can mean (D291). A qualified name
+// (`game.math.Vec2`) is that module's type. A bare name is first the files
+// the host loaded itself, then what dependencies offer; a dependency's
+// private helper of the same name is never a candidate.
+static std::vector<TypeId> HostTypesNamed(const WolangVm* vm, const std::string& name, bool classes) {
+  std::string bare = name;
+  std::string module;
+  const size_t dot = name.find('.');
+  if (dot != std::string::npos && name.find('<') == std::string::npos) {
+    const size_t last = name.rfind('.');
+    module = name.substr(0, last);
+    bare = name.substr(last + 1);
+  }
+
+  const wolang::TypeStore& types = vm->database.types();
+  std::vector<TypeId> own;
+  std::vector<TypeId> offered;
+  for (size_t i = 0; i < types.size(); ++i) {
+    const TypeId id{static_cast<uint32_t>(i)};
+    const TypeKind kind = types.KindOf(id);
+    const bool shape = classes ? ((kind == TypeKind::kNamed || kind == TypeKind::kInstance) && types.IsHandle(id) && !types.IsForeignClass(id)) : (kind == TypeKind::kNamed && !types.IsHandle(id));
+    if (!shape || types.Describe(vm->database.interner(), id) != bare) {
+      continue;
+    }
+
+    const FileId file{types.Get(id).declaring_file};
+    if (!module.empty()) {
+      const wolang::Module* home = vm->database.GetModule(vm->database.ModuleOf(file));
+      if (home != nullptr && home->name == module) {
+        own.push_back(id);
+      }
+      continue;
+    }
+
+    if (std::find(vm->own.begin(), vm->own.end(), file) != vm->own.end()) {
+      own.push_back(id);
+      continue;
+    }
+
+    const CheckedFile* checked = vm->database.Checked(file);
+    const wolang::Binding* binding = checked == nullptr ? nullptr : checked->resolution.Find(types.Get(id).name);
+    if (binding != nullptr && binding->is_public) {
+      offered.push_back(id);
+    }
+  }
+  return own.empty() ? offered : own;
+}
+
+static std::vector<uint32_t> LayoutWordsOf(WolangVm* vm, TypeId id) {
+  std::vector<uint32_t> found;
+  const CheckedFile* checked = vm->database.Checked(FileId{vm->database.types().Get(id).declaring_file});
+  if (checked == nullptr) {
+    return found;
+  }
+  wolang::abi::LayoutStore layouts(vm->database.types(), checked->resolution);
+  vm->database.ShareMembers(&layouts);
+  const wolang::abi::Layout& layout = layouts.Of(id);
+  found.push_back(layout.size);
+  found.push_back(layout.align);
+  found.insert(found.end(), layout.offsets.begin(), layout.offsets.end());
+  return found;
+}
+
 // What the host's bindings said about a struct against what the compiler
-// lays that struct out as; one line per disagreement (D271).
+// lays that struct out as; one line per disagreement (D271, D291).
 std::string LayoutProblems(WolangVm* vm) {
   std::string problems;
-  const wolang::TypeStore& types = vm->database.types();
   for (const WolangVm::ExpectedLayout& expected : vm->expected_layouts) {
-    for (size_t i = 0; i < types.size(); ++i) {
-      const TypeId id{static_cast<uint32_t>(i)};
-      if (types.KindOf(id) != TypeKind::kNamed || types.IsHandle(id) || types.Describe(vm->database.interner(), id) != expected.name) {
-        continue;
-      }
-      const CheckedFile* checked = vm->database.Checked(FileId{types.Get(id).declaring_file});
-      if (checked == nullptr) {
-        continue;
-      }
-      wolang::abi::LayoutStore layouts(vm->database.types(), checked->resolution);
-      vm->database.ShareMembers(&layouts);
-      const wolang::abi::Layout& layout = layouts.Of(id);
-      std::vector<uint32_t> found;
-      found.push_back(layout.size);
-      found.push_back(layout.align);
-      found.insert(found.end(), layout.offsets.begin(), layout.offsets.end());
-      if (found != expected.words) {
-        problems += "error: the bindings expect `" + expected.name + "` to be " + DescribeLayout(expected.words) + ", but this compiler lays it out as " + DescribeLayout(found) + " (D271)\n";
-      }
-      break;
+    const std::vector<TypeId> candidates = HostTypesNamed(vm, expected.name, false);
+    if (candidates.empty()) {
+      continue;
+    }
+
+    const std::vector<uint32_t> found = LayoutWordsOf(vm, candidates.front());
+    bool agree = true;
+    for (size_t i = 1; i < candidates.size(); ++i) {
+      agree = agree && LayoutWordsOf(vm, candidates[i]) == found;
+    }
+    if (!agree) {
+      problems += "error: `" + expected.name + "` names structs with different layouts; write `module." + expected.name + "` (D291)\n";
+      continue;
+    }
+    if (found.empty()) {
+      continue;
+    }
+    if (found != expected.words) {
+      problems += "error: the bindings expect `" + expected.name + "` to be " + DescribeLayout(expected.words) + ", but this compiler lays it out as " + DescribeLayout(found) + " (D271)\n";
     }
   }
   return problems;
@@ -1267,16 +1328,15 @@ static std::vector<const wolang::Member*> StoredMembers(const wolang::FileResolu
 
 // The class called |name| in |database|, by the spelling an object answers
 // for its type; invalid when the program has no such class.
-static TypeId FindClassNamed(Database& database, const std::string& name) {
-  const wolang::TypeStore& types = database.types();
-  for (size_t i = 0; i < types.size(); ++i) {
-    const TypeId id{static_cast<uint32_t>(i)};
-    const TypeKind kind = types.KindOf(id);
-    if ((kind == TypeKind::kNamed || kind == TypeKind::kInstance) && types.IsHandle(id) && !types.IsForeignClass(id) && types.Describe(database.interner(), id) == name) {
-      return id;
+static TypeId FindClassNamed(const WolangVm* vm, const std::string& name, std::string* error = nullptr) {
+  const std::vector<TypeId> found = HostTypesNamed(vm, name, true);
+  if (found.size() > 1) {
+    if (error != nullptr) {
+      *error = "wolang: `" + name + "` names more than one class; write `module." + name + "`\n";
     }
+    return TypeId{};
   }
-  return TypeId{};
+  return found.empty() ? TypeId{} : found.front();
 }
 
 static const Callable* FindMember(const WolangVm* vm, const std::string& name) {
@@ -1359,7 +1419,7 @@ WolangStatus wolang_vm_object_get(WolangVm* vm, WolangValue object, const char* 
     return kWolangError;
   }
   wolang::TypeStore& types = vm->database.types();
-  TypeId type = FindClassNamed(vm->database, std::string(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length)));
+  TypeId type = FindClassNamed(vm, std::string(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length)));
   if (!type.is_valid()) {
     type = TypeId{object.reserved};
   }
@@ -1537,7 +1597,7 @@ static const char* Kept(WolangVm* vm, const std::string& text) {
 // has no such class.
 static std::vector<const wolang::Member*> FieldsOfClass(WolangVm* vm, const std::string& name, TypeId* type, bool* header) {
   *header = false;
-  *type = FindClassNamed(vm->database, name);
+  *type = FindClassNamed(vm, name);
   if (!type->is_valid()) {
     return {};
   }
@@ -1564,7 +1624,9 @@ WolangStatus wolang_vm_object_new(WolangVm* vm, const char* class_name, WolangVa
   bool header = false;
   const std::vector<const wolang::Member*> stored = FieldsOfClass(vm, class_name, &type, &header);
   if (!type.is_valid()) {
-    vm->errors = std::string("wolang: no class called `") + class_name + "`\n";
+    std::string ambiguous;
+    FindClassNamed(vm, class_name, &ambiguous);
+    vm->errors = ambiguous.empty() ? std::string("wolang: no class called `") + class_name + "`\n" : ambiguous;
     return kWolangError;
   }
   const wolang::TypeStore& types = vm->database.types();
@@ -2915,8 +2977,8 @@ static std::string PlanMigration(WolangVm* vm, WolangVm* staged, Migration* migr
   std::vector<TypeId> old_roots;
   std::vector<TypeId> new_roots;
   for (const auto& [address, held] : vm->held) {
-    const TypeId before = FindClassNamed(vm->database, held.Type);
-    const TypeId after = FindClassNamed(staged->database, held.Type);
+    const TypeId before = FindClassNamed(vm, held.Type);
+    const TypeId after = FindClassNamed(staged, held.Type);
     if (!before.is_valid() || !after.is_valid()) {
       blocked += "the host holds a `" + held.Type + "` and the new program has no such class\n";
       continue;
@@ -2977,7 +3039,7 @@ static void ApplyMigration(WolangVm* vm, Migration* migration) {
 
   std::vector<TypeId> roots;
   for (const std::string& name : migration->Classes) {
-    roots.push_back(FindClassNamed(vm->database, name));
+    roots.push_back(FindClassNamed(vm, name));
   }
 
   std::string text;
@@ -3128,14 +3190,14 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
     Carry(vm, before, old, migration.Table);
     for (auto& [address, entry] : vm->held) {
       (void)address;
-      const TypeId now = FindClassNamed(vm->database, entry.Type);
+      const TypeId now = FindClassNamed(vm, entry.Type);
       if (now.is_valid()) {
         entry.Index = now.index;
       }
     }
     if (vm->remap != nullptr) {
       for (const auto& [from, to, name] : migration.Moved) {
-        const TypeId type = FindClassNamed(vm->database, name);
+        const TypeId type = FindClassNamed(vm, name);
         vm->remap(vm, ObjectOf(vm, reinterpret_cast<uint64_t>(from), type), ObjectOf(vm, reinterpret_cast<uint64_t>(to), type), vm->remap_user);
       }
     }
