@@ -3,6 +3,7 @@
 
 #include "wolang/platform/gpu.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
