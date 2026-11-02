@@ -1,0 +1,168 @@
+need std.list.{List, ListNew}
+
+// The syntax tree, shaped like src/syntax/ast.h (D283). A kind is the word the
+// printer writes for it, so a node prints without a table lookup, and a
+// literal's atom (its value, suffix and unit) is worked out when it is parsed.
+// Flags are bit sets: for an item 1 offer, 2 priv, 4 task, 8 virtual,
+// 16 override, 32 comptime, 64 derived, 128 weak, 256 extern, 512 unsafe,
+// 1024 has-error, 2048 ability-impl, 4096 expression-body, 8192 mutable (a
+// `var`); for an expression 1 has-error, 2 binding, 4 mutable, 8 inclusive;
+// for a type 1 soa, 2 aos, 4 keep, 8 mutable.
+
+offer class Ty {
+  var kind: text
+  var flags: int
+  var path: List<text>
+  var args: List<Ty>
+  var element: Ty?
+  var length: Expr?
+}
+
+offer class Pat {
+  var kind: text
+  var flags: int
+  var name: text
+  var field: text
+  var path: List<text>
+  var elements: List<Pat>
+  var literal: Expr?
+}
+
+offer class Attr {
+  var name: text
+  var args: List<Expr>
+}
+
+offer class Param {
+  var name: text
+  var is_mutable: bool
+  var attributes: List<Attr>
+  var type: Ty?
+  var default_value: Expr?
+}
+
+offer class Generic {
+  var name: text
+  var bounds: List<Ty>
+}
+
+offer class Arm {
+  var patterns: List<Pat>
+  var guard: Expr?
+  var body: Expr?
+}
+
+offer class Trans {
+  var event: text
+  var target: text
+  var is_always: bool
+  var delay: Expr?
+}
+
+offer class State {
+  var name: text
+  var enter: Expr?
+  var exit: Expr?
+  var transitions: List<Trans>
+}
+
+offer class Order {
+  var path: List<text>
+  var is_after: bool
+}
+
+offer class Stmt {
+  var kind: text
+  var label: text
+  var pattern: Pat?
+  var type: Ty?
+  var item: Item?
+  var expr: Expr?
+}
+
+offer class Expr {
+  var kind: text
+  var flags: int
+  var atom: text
+  var label: text
+  var lhs: Expr?
+  var rhs: Expr?
+  var extra: Expr?
+  var args: List<Expr>
+  var stmts: List<Stmt>
+  var arms: List<Arm>
+  var generics: List<Ty>
+  var params: List<Param>
+  var pattern: Pat?
+  var type: Ty?
+}
+
+offer class Item {
+  var kind: text
+  var flags: int
+  var name: text
+  var attributes: List<Attr>
+  var generics: List<Generic>
+  var params: List<Param>
+  var members: List<Item>
+  var states: List<State>
+  var orderings: List<Order>
+  var effects: List<Ty>
+  var path: List<text>
+  var names: List<text>
+  var type: Ty?
+  var super_type: Ty?
+  var target_type: Ty?
+  var body: Expr?
+  var init: Expr?
+  var abi: text
+  var link_name: text
+}
+
+offer fun NewTy(kind: text) -> Ty uses unsafe {
+  return Ty(kind, 0, ListNew<text>(), ListNew<Ty>(), null, null)
+}
+
+offer fun NewPat(kind: text) -> Pat uses unsafe {
+  return Pat(kind, 0, "", "", ListNew<text>(), ListNew<Pat>(), null)
+}
+
+offer fun NewAttr() -> Attr uses unsafe {
+  return Attr("", ListNew<Expr>())
+}
+
+offer fun NewParam() -> Param uses unsafe {
+  return Param("", false, ListNew<Attr>(), null, null)
+}
+
+offer fun NewGeneric() -> Generic uses unsafe {
+  return Generic("", ListNew<Ty>())
+}
+
+offer fun NewArm() -> Arm uses unsafe {
+  return Arm(ListNew<Pat>(), null, null)
+}
+
+offer fun NewTrans() -> Trans {
+  return Trans("", "", false, null)
+}
+
+offer fun NewState() -> State uses unsafe {
+  return State("", null, null, ListNew<Trans>())
+}
+
+offer fun NewOrder() -> Order uses unsafe {
+  return Order(ListNew<text>(), true)
+}
+
+offer fun NewStmt(kind: text) -> Stmt {
+  return Stmt(kind, "", null, null, null, null)
+}
+
+offer fun NewExpr(kind: text) -> Expr uses unsafe {
+  return Expr(kind, 0, "", "", null, null, null, ListNew<Expr>(), ListNew<Stmt>(), ListNew<Arm>(), ListNew<Ty>(), ListNew<Param>(), null, null)
+}
+
+offer fun NewItem(kind: text) -> Item uses unsafe {
+  return Item(kind, 0, "", ListNew<Attr>(), ListNew<Generic>(), ListNew<Param>(), ListNew<Item>(), ListNew<State>(), ListNew<Order>(), ListNew<Ty>(), ListNew<text>(), ListNew<text>(), null, null, null, null, null, "", "")
+}

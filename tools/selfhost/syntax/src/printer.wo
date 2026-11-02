@@ -1,0 +1,633 @@
+need std.list.{List}
+need std.text.{Builder, BuilderNew}
+
+// The indented s-expression of src/syntax/ast_printer.cc, without positions
+// (D283). Every Print function writes its own indentation and leaves the cursor
+// after its closing parenthesis, so a parent only breaks the line between
+// children.
+
+fun Pad(out: Builder, count: int) uses unsafe {
+  var k = 0
+  while k < count {
+    out.AppendByte(32)
+    k = k + 1
+  }
+}
+
+fun Open(out: Builder, indent: int, head: text) uses unsafe {
+  Pad(out, indent)
+  out.Append("(")
+  out.Append(head)
+}
+
+fun Close(out: Builder) uses unsafe {
+  out.Append(")")
+}
+
+fun Break(out: Builder) uses unsafe {
+  out.AppendByte(10)
+}
+
+fun Atom(out: Builder, value: text) uses unsafe {
+  out.Append(" ")
+  out.Append(value)
+}
+
+fun Name(out: Builder, value: text) uses unsafe {
+  if value == "" {
+    Atom(out, "<missing>")
+  } else {
+    Atom(out, value)
+  }
+}
+
+fun PathText(path: List<text>) -> text uses unsafe {
+  if path.Len() == 0 {
+    return "<missing>"
+  }
+
+  var out = BuilderNew()
+  var k = 0
+  while k < path.Len() {
+    if k > 0 {
+      out.AppendByte(46)
+    }
+    out.Append(path.At(k))
+    k = k + 1
+  }
+  return out.Release()
+}
+
+fun Has(flags: int, flag: int) -> bool {
+  return (flags & flag) != 0
+}
+
+offer fun PrintFile(items: List<Item>) -> text uses unsafe {
+  var out = BuilderNew()
+  Open(out, 0, "file")
+  var k = 0
+  while k < items.Len() {
+    Break(out)
+    PrintItem(out, items.At(k), 2)
+    k = k + 1
+  }
+  Close(out)
+  out.AppendByte(10)
+  return out.Release()
+}
+
+fun PrintItem(out: Builder, item: Item, indent: int) uses unsafe {
+  const child = indent + 2
+  var head = item.kind
+  if item.kind == "binding" {
+    if Has(item.flags, 8192) {
+      head = "var"
+    } else {
+      head = "const"
+    }
+  }
+  Open(out, indent, head)
+
+  if item.kind == "need" {
+    Atom(out, PathText(item.path))
+  } else if item.name != "" {
+    Name(out, item.name)
+  }
+
+  PrintItemFlags(out, item.flags)
+
+  var k = 0
+  while k < item.attributes.Len() {
+    Break(out)
+    PrintAttr(out, item.attributes.At(k), child)
+    k = k + 1
+  }
+
+  if item.names.Len() > 0 {
+    Break(out)
+    Open(out, child, "names")
+    k = 0
+    while k < item.names.Len() {
+      Name(out, item.names.At(k))
+      k = k + 1
+    }
+    Close(out)
+  }
+
+  if item.kind == "unit" && item.path.Len() > 0 {
+    Break(out)
+    Open(out, child, "dimension")
+    Atom(out, PathText(item.path))
+    Close(out)
+  }
+
+  if item.kind == "on" && item.path.Len() > 0 {
+    Break(out)
+    Open(out, child, "signal")
+    Atom(out, PathText(item.path))
+    Close(out)
+  }
+
+  k = 0
+  while k < item.generics.Len() {
+    Break(out)
+    PrintGeneric(out, item.generics.At(k), child)
+    k = k + 1
+  }
+
+  if const super_type = item.super_type {
+    Break(out)
+    if Has(item.flags, 2048) {
+      Open(out, child, "as")
+    } else {
+      Open(out, child, "extends")
+    }
+    Break(out)
+    PrintTy(out, super_type, child + 2)
+    Close(out)
+  }
+
+  if const target_type = item.target_type {
+    Break(out)
+    Open(out, child, "target")
+    Break(out)
+    PrintTy(out, target_type, child + 2)
+    Close(out)
+  }
+
+  if item.params.Len() > 0 {
+    Break(out)
+    Open(out, child, "params")
+    k = 0
+    while k < item.params.Len() {
+      Break(out)
+      PrintParam(out, item.params.At(k), child + 2)
+      k = k + 1
+    }
+    Close(out)
+  }
+
+  if const ty = item.type {
+    Break(out)
+    if item.kind == "fun" {
+      Open(out, child, "returns")
+    } else {
+      Open(out, child, "of")
+    }
+    Break(out)
+    PrintTy(out, ty, child + 2)
+    Close(out)
+  }
+
+  if item.effects.Len() > 0 {
+    Break(out)
+    Open(out, child, "uses")
+    k = 0
+    while k < item.effects.Len() {
+      Break(out)
+      PrintTy(out, item.effects.At(k), child + 2)
+      k = k + 1
+    }
+    Close(out)
+  }
+
+  k = 0
+  while k < item.orderings.Len() {
+    Break(out)
+    const ordering = item.orderings.At(k)
+    if ordering.is_after {
+      Open(out, child, "after")
+    } else {
+      Open(out, child, "before")
+    }
+    Atom(out, PathText(ordering.path))
+    Close(out)
+    k = k + 1
+  }
+
+  if item.link_name != "" {
+    Break(out)
+    Open(out, child, "symbol")
+    Name(out, item.link_name)
+    Close(out)
+  }
+
+  if item.abi != "" {
+    Break(out)
+    Open(out, child, "abi")
+    Name(out, item.abi)
+    Close(out)
+  }
+
+  if const init = item.init {
+    Break(out)
+    if Has(item.flags, 4096) {
+      Open(out, child, "derive")
+    } else {
+      Open(out, child, "init")
+    }
+    Break(out)
+    PrintExpr(out, init, child + 2)
+    Close(out)
+  }
+
+  k = 0
+  while k < item.states.Len() {
+    Break(out)
+    PrintState(out, item.states.At(k), child)
+    k = k + 1
+  }
+
+  k = 0
+  while k < item.members.Len() {
+    Break(out)
+    PrintItem(out, item.members.At(k), child)
+    k = k + 1
+  }
+
+  if const body = item.body {
+    Break(out)
+    PrintExpr(out, body, child)
+  }
+
+  Close(out)
+}
+
+fun PrintItemFlags(out: Builder, flags: int) uses unsafe {
+  if Has(flags, 1) {
+    Atom(out, "offer")
+  }
+  if Has(flags, 2) {
+    Atom(out, "priv")
+  }
+  if Has(flags, 4) {
+    Atom(out, "task")
+  }
+  if Has(flags, 8) {
+    Atom(out, "virtual")
+  }
+  if Has(flags, 16) {
+    Atom(out, "override")
+  }
+  if Has(flags, 32) {
+    Atom(out, "comptime")
+  }
+  if Has(flags, 64) {
+    Atom(out, "derived")
+  }
+  if Has(flags, 128) {
+    Atom(out, "weak")
+  }
+  if Has(flags, 256) {
+    Atom(out, "extern")
+  }
+  if Has(flags, 512) {
+    Atom(out, "unsafe")
+  }
+  if Has(flags, 1024) {
+    Atom(out, "has-error")
+  }
+}
+
+fun PrintAttr(out: Builder, attribute: Attr, indent: int) uses unsafe {
+  Open(out, indent, "attr")
+  Name(out, attribute.name)
+  var k = 0
+  while k < attribute.args.Len() {
+    Break(out)
+    PrintExpr(out, attribute.args.At(k), indent + 2)
+    k = k + 1
+  }
+  Close(out)
+}
+
+fun PrintParam(out: Builder, param: Param, indent: int) uses unsafe {
+  Open(out, indent, "param")
+  Name(out, param.name)
+  if param.is_mutable {
+    Atom(out, "mut")
+  }
+
+  var k = 0
+  while k < param.attributes.Len() {
+    Break(out)
+    PrintAttr(out, param.attributes.At(k), indent + 2)
+    k = k + 1
+  }
+
+  if const ty = param.type {
+    Break(out)
+    PrintTy(out, ty, indent + 2)
+  }
+
+  if const default_value = param.default_value {
+    Break(out)
+    Open(out, indent + 2, "default")
+    Break(out)
+    PrintExpr(out, default_value, indent + 4)
+    Close(out)
+  }
+  Close(out)
+}
+
+fun PrintGeneric(out: Builder, generic: Generic, indent: int) uses unsafe {
+  Open(out, indent, "generic")
+  Name(out, generic.name)
+  var k = 0
+  while k < generic.bounds.Len() {
+    Break(out)
+    PrintTy(out, generic.bounds.At(k), indent + 2)
+    k = k + 1
+  }
+  Close(out)
+}
+
+fun PrintState(out: Builder, state: State, indent: int) uses unsafe {
+  const child = indent + 2
+  Open(out, indent, "state")
+  Name(out, state.name)
+
+  if const enter = state.enter {
+    Break(out)
+    Open(out, child, "enter")
+    Break(out)
+    PrintExpr(out, enter, child + 2)
+    Close(out)
+  }
+
+  if const exit = state.exit {
+    Break(out)
+    Open(out, child, "exit")
+    Break(out)
+    PrintExpr(out, exit, child + 2)
+    Close(out)
+  }
+
+  var k = 0
+  while k < state.transitions.Len() {
+    Break(out)
+    const transition = state.transitions.At(k)
+    Open(out, child, "transition")
+    if transition.is_always {
+      Atom(out, "always")
+    } else {
+      Name(out, transition.event)
+    }
+    Atom(out, "->")
+    Name(out, transition.target)
+    if const delay = transition.delay {
+      Break(out)
+      Open(out, child + 2, "after")
+      Break(out)
+      PrintExpr(out, delay, child + 4)
+      Close(out)
+    }
+    Close(out)
+    k = k + 1
+  }
+  Close(out)
+}
+
+fun PrintStmt(out: Builder, stmt: Stmt, indent: int) uses unsafe {
+  const child = indent + 2
+  Open(out, indent, stmt.kind)
+  if stmt.label != "" {
+    Name(out, stmt.label)
+  }
+
+  if const pattern = stmt.pattern {
+    Break(out)
+    PrintPat(out, pattern, child)
+  }
+  if const ty = stmt.type {
+    Break(out)
+    PrintTy(out, ty, child)
+  }
+  if const item = stmt.item {
+    Break(out)
+    PrintItem(out, item, child)
+  }
+  if const expr = stmt.expr {
+    Break(out)
+    PrintExpr(out, expr, child)
+  }
+  Close(out)
+}
+
+fun PrintExpr(out: Builder, expr: Expr, indent: int) uses unsafe {
+  const child = indent + 2
+  Open(out, indent, expr.kind)
+
+  if expr.atom != "" {
+    out.Append(expr.atom)
+  }
+  if expr.label != "" {
+    Atom(out, "label=" + expr.label)
+  }
+  if Has(expr.flags, 4) {
+    Atom(out, "mut")
+  }
+  if Has(expr.flags, 1) {
+    Atom(out, "has-error")
+  }
+
+  if const pattern = expr.pattern {
+    Break(out)
+    PrintPat(out, pattern, child)
+  }
+
+  if expr.params.Len() > 0 {
+    Break(out)
+    Open(out, child, "params")
+    var k = 0
+    while k < expr.params.Len() {
+      Break(out)
+      PrintParam(out, expr.params.At(k), child + 2)
+      k = k + 1
+    }
+    Close(out)
+  }
+
+  if expr.kind == "range" {
+    if const from = expr.lhs {
+      Break(out)
+      Open(out, child, "from")
+      Break(out)
+      PrintExpr(out, from, child + 2)
+      Close(out)
+    }
+    if const to = expr.rhs {
+      Break(out)
+      Open(out, child, "to")
+      Break(out)
+      PrintExpr(out, to, child + 2)
+      Close(out)
+    }
+    Close(out)
+    return
+  }
+
+  if const lhs = expr.lhs {
+    Break(out)
+    PrintExpr(out, lhs, child)
+  }
+
+  if expr.generics.Len() > 0 {
+    Break(out)
+    Open(out, child, "generics")
+    var k = 0
+    while k < expr.generics.Len() {
+      Break(out)
+      PrintTy(out, expr.generics.At(k), child + 2)
+      k = k + 1
+    }
+    Close(out)
+  }
+
+  if expr.args.Len() > 0 {
+    if expr.kind == "call" || expr.kind == "struct-literal" {
+      Break(out)
+      Open(out, child, "args")
+      var k = 0
+      while k < expr.args.Len() {
+        Break(out)
+        PrintExpr(out, expr.args.At(k), child + 2)
+        k = k + 1
+      }
+      Close(out)
+    } else {
+      var k = 0
+      while k < expr.args.Len() {
+        Break(out)
+        PrintExpr(out, expr.args.At(k), child)
+        k = k + 1
+      }
+    }
+  }
+
+  if const rhs = expr.rhs {
+    Break(out)
+    PrintExpr(out, rhs, child)
+  }
+
+  if const ty = expr.type {
+    Break(out)
+    PrintTy(out, ty, child)
+  }
+
+  var s = 0
+  while s < expr.stmts.Len() {
+    Break(out)
+    PrintStmt(out, expr.stmts.At(s), child)
+    s = s + 1
+  }
+
+  var a = 0
+  while a < expr.arms.Len() {
+    Break(out)
+    PrintArm(out, expr.arms.At(a), child)
+    a = a + 1
+  }
+
+  if const extra = expr.extra {
+    Break(out)
+    Open(out, child, "else")
+    Break(out)
+    PrintExpr(out, extra, child + 2)
+    Close(out)
+  }
+  Close(out)
+}
+
+fun PrintArm(out: Builder, arm: Arm, indent: int) uses unsafe {
+  const child = indent + 2
+  Open(out, indent, "arm")
+  var k = 0
+  while k < arm.patterns.Len() {
+    Break(out)
+    PrintPat(out, arm.patterns.At(k), child)
+    k = k + 1
+  }
+
+  if const guard = arm.guard {
+    Break(out)
+    Open(out, child, "guard")
+    Break(out)
+    PrintExpr(out, guard, child + 2)
+    Close(out)
+  }
+
+  if const body = arm.body {
+    Break(out)
+    PrintExpr(out, body, child)
+  }
+  Close(out)
+}
+
+fun PrintPat(out: Builder, pattern: Pat, indent: int) uses unsafe {
+  Open(out, indent, pattern.kind)
+  if pattern.path.Len() > 0 {
+    Atom(out, PathText(pattern.path))
+  } else if pattern.name != "" {
+    Name(out, pattern.name)
+  }
+  if pattern.field != "" {
+    Atom(out, "field=" + pattern.field)
+  }
+  if Has(pattern.flags, 2) {
+    Atom(out, "mut")
+  }
+
+  if const literal = pattern.literal {
+    Break(out)
+    PrintExpr(out, literal, indent + 2)
+  }
+
+  var k = 0
+  while k < pattern.elements.Len() {
+    Break(out)
+    PrintPat(out, pattern.elements.At(k), indent + 2)
+    k = k + 1
+  }
+  Close(out)
+}
+
+fun PrintTy(out: Builder, ty: Ty, indent: int) uses unsafe {
+  Open(out, indent, ty.kind)
+  if ty.kind == "type" {
+    Atom(out, PathText(ty.path))
+  }
+  if Has(ty.flags, 1) {
+    Atom(out, "soa")
+  }
+  if Has(ty.flags, 2) {
+    Atom(out, "aos")
+  }
+  if Has(ty.flags, 4) {
+    Atom(out, "keep")
+  }
+  if Has(ty.flags, 8) && ty.kind != "mut" {
+    Atom(out, "mut")
+  }
+
+  var k = 0
+  while k < ty.args.Len() {
+    Break(out)
+    PrintTy(out, ty.args.At(k), indent + 2)
+    k = k + 1
+  }
+
+  if const element = ty.element {
+    Break(out)
+    PrintTy(out, element, indent + 2)
+  }
+
+  if const length = ty.length {
+    Break(out)
+    Open(out, indent + 2, "length")
+    Break(out)
+    PrintExpr(out, length, indent + 4)
+    Close(out)
+  }
+  Close(out)
+}
