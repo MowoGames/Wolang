@@ -3328,6 +3328,66 @@ WOLANG_TEST(TypeCheck, MatchOnAResultMustCoverItsErrors) {
   WOLANG_EXPECT(!stated_covered.HasCode("E0201"));
 }
 
+WOLANG_TEST(TypeCheck, AnAnnotatedLocalKeepsItsAnnotatedType) {
+  Fixture ability(R"(
+ability Backend {
+  fun Id() -> int
+}
+
+class Null {
+  var n: int = 0
+}
+
+class Real {
+  var n: int = 1
+}
+
+extend Null as Backend {
+  fun Id() -> int => 0
+}
+
+extend Real as Backend {
+  fun Id() -> int => 1
+}
+
+fun NullNew() -> Null => Null(0)
+
+fun RealNew() -> Real => Real(1)
+
+fun Pick(real: bool) -> int {
+  var backend: Backend = NullNew()
+  if real {
+    backend = RealNew()
+  }
+  return backend.Id()
+}
+)");
+  WOLANG_EXPECT_EQ(ability.Codes(), "");
+
+  Fixture other(R"(
+ability Backend {
+  fun Id() -> int
+}
+
+class Null {
+  var n: int = 0
+}
+
+extend Null as Backend {
+  fun Id() -> int => 0
+}
+
+fun NullNew() -> Null => Null(0)
+
+fun Pick() -> int {
+  var backend: Backend = NullNew()
+  backend = 3
+  return backend.Id()
+}
+)");
+  WOLANG_EXPECT(other.HasCode("E0101"));
+}
+
 WOLANG_TEST(TypeCheck, AFunctionHeldInALocalCannotBeFollowedOntoAThread) {
   Fixture held(
       "@Thread\nfun Launch(body: fun()) {\n  body()\n}\n"

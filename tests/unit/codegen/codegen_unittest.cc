@@ -4814,6 +4814,47 @@ fun RunMatched() -> int uses unsafe {
   WOLANG_EXPECT_EQ(f.Run("Matched", {Fixture::Int(7)}), "7");
 }
 
+WOLANG_TEST(CodegenTest, AnAnnotatedAbilityLocalTakesAnotherImplementer) {
+  Fixture f(R"(
+ability Backend {
+  fun Id() -> int
+}
+
+class Null {
+  var n: int = 0
+}
+
+class Real {
+  var n: int = 1
+}
+
+extend Null as Backend {
+  fun Id() -> int => 0
+}
+
+extend Real as Backend {
+  fun Id() -> int => 1
+}
+
+fun NullNew() -> Null => Null(0)
+
+fun RealNew() -> Real => Real(1)
+
+fun Pick(real: bool) -> int {
+  var backend: Backend = NullNew()
+  if real {
+    backend = RealNew()
+  }
+  return backend.Id()
+}
+
+fun Both() -> int {
+  return Pick(false) * 10 + Pick(true)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Both", {}), "1");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

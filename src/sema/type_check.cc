@@ -4116,6 +4116,12 @@ void Checker::CheckStmt(StmtId id) {
         bound = declared;
         Record(stmt.expr, declared);
       }
+      // `var backend: Backend = NullNew()` is a `Backend` that can be given
+      // any other, not the one concrete type it started as (D275).
+      if (declared.is_valid() && value.is_valid() && declared != value && resolution_ != nullptr && Accepts(declared, value) &&
+          (resolution_->IsAbility(declared) || (types_->IsHandle(declared) && types_->IsHandle(value)))) {
+        bound = declared;
+      }
       BindPattern(stmt.pattern, bound, stmt.kind == StmtKind::kVar);
       return;
     }

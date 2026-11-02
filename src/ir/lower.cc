@@ -2437,7 +2437,8 @@ class Lowerer {
     if (stmt.type.is_valid()) {
       const TypeId said = Apply(resolver_.Resolve(ast(), stmt.type));
       if (!type.is_valid() || types_->IsError(type) ||
-          types_->KindOf(said) == TypeKind::kString) {
+          types_->KindOf(said) == TypeKind::kString ||
+          (resolution().IsAbility(said) && !resolution().IsAbility(type))) {
         type = said;
       }
     }
