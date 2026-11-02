@@ -10,12 +10,15 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
 #include <cstring>
 #include <system_error>
 
 namespace wolang {
 namespace runtime {
 namespace {
+
+std::atomic<int64_t> sm_LiveTexts{0};
 
 // One allocation for the pair and its bytes together, so that a string is
 // one thing to free when there is something to free it.
@@ -26,6 +29,9 @@ Text* Allocate(const char* bytes, size_t length) {
       wolang_arena_alloc(sizeof(Text) + length + 1));
   if (text == nullptr) {
     return nullptr;
+  }
+  if (!wolang_arena_owns(text)) {
+    sm_LiveTexts.fetch_add(1, std::memory_order_relaxed);
   }
   auto* storage = reinterpret_cast<uint8_t*>(text + 1);
   if (length != 0 && bytes != nullptr) {
@@ -140,7 +146,12 @@ void wolang_text_free(const uint8_t* data) {
     // never gave anyone.
     return;
   }
+  sm_LiveTexts.fetch_sub(1, std::memory_order_relaxed);
   std::free(text);
+}
+
+int64_t wolang_texts_live() {
+  return sm_LiveTexts.load(std::memory_order_relaxed);
 }
 
 bool wolang_text_equal(const uint8_t* left,

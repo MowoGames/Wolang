@@ -4015,6 +4015,29 @@ class Lowerer {
     }
   }
 
+  // Whether |id| allocates an owned string that nobody holds yet: a call that
+  // returns one, a `+` that joined two, or an interpolation with something in
+  // it. `??` hands back a text it found and a constant literal is not
+  // allocated, so neither counts (D133).
+  bool BuildsOwnedText(ExprId id) {
+    if (!ast().Contains(id) || types_->KindOf(DeclaredTypeOf(id)) != TypeKind::kString) {
+      return false;
+    }
+    const Expr& built = ast().Get(id);
+    switch (built.kind) {
+      case ExprKind::kCall:
+        return true;
+      case ExprKind::kBinary:
+        return built.op == TokenKind::kPlus;
+      case ExprKind::kStringLiteral: {
+        const std::span<const ExprId> inner = ast().Get(built.args);
+        return !(inner.empty() || (inner.size() == 1 && ast().Contains(inner[0]) && ast().Get(inner[0]).kind == ExprKind::kStringText));
+      }
+      default:
+        return false;
+    }
+  }
+
   InstId LowerString(const Expr& expr, TypeId type) {
     const std::span<const ExprId> parts = ast().Get(expr.args);
     if (parts.size() == 1 && ast().Contains(parts[0]) &&
@@ -4056,6 +4079,13 @@ class Lowerer {
         // that was already one belongs to whoever made it.
         text_is_fresh = types_->KindOf(held) != TypeKind::kStr &&
                         types_->KindOf(held) != TypeKind::kString;
+        // An owned string a call, a nested interpolation or a `+` just
+        // built belongs to nobody yet, so the piece gives it back. `??`
+        // hands back the text it found, and a literal with nothing to
+        // interpolate is a constant, so neither is fresh (D133).
+        if (!text_is_fresh) {
+          text_is_fresh = BuildsOwnedText(part);
+        }
       }
       if (!text.is_valid()) {
         continue;
@@ -4729,7 +4759,14 @@ class Lowerer {
     // call an interpolated string makes (D110).
     if (opcode == Opcode::kAdd && IsView(TypeOf(expr.lhs)) &&
         IsView(TypeOf(expr.rhs))) {
-      return ConcatText(left, right);
+      const InstId joined = ConcatText(left, right);
+      if (BuildsOwnedText(expr.lhs)) {
+        FreeText(left);
+      }
+      if (BuildsOwnedText(expr.rhs)) {
+        FreeText(right);
+      }
+      return joined;
     }
     // Two strings are equal when they hold the same bytes. A pair of
     // pointers is not an answer to that, so this is a call -- and
@@ -6085,6 +6122,9 @@ class Lowerer {
     if (opcode == Opcode::kAdd && IsView(TypeOf(expr.lhs)) &&
         IsView(TypeOf(expr.rhs))) {
       answer = ConcatText(old, right);
+      if (BuildsOwnedText(expr.rhs)) {
+        FreeText(right);
+      }
     } else if (opcode == Opcode::kRem &&
                types_->KindOf(held) == TypeKind::kFloat) {
       const TypeId wide = types_->Float(FloatWidth::k64);

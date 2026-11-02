@@ -117,6 +117,8 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_objects_live", reinterpret_cast<void*>(&wolang_objects_live)},
       {"wolang_objects_allocated",
        reinterpret_cast<void*>(&wolang_objects_allocated)},
+
+      {"wolang_texts_live", reinterpret_cast<void*>(&wolang_texts_live)},
       {"wolang_object_retain",
        reinterpret_cast<void*>(&wolang_object_retain)},
       {"wolang_object_escaped",

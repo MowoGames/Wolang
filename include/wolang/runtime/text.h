@@ -60,6 +60,10 @@ void wolang_memory_copy(uint8_t* to, const uint8_t* from, uint64_t count);
 // out is left to the block.
 void wolang_text_free(const uint8_t* data);
 
+// How many strings the heap holds right now, for a test to prove that what
+// a program built went back (D275).
+int64_t wolang_texts_live();
+
 bool wolang_text_equal(const uint8_t* left,
                        uint64_t left_length,
                        const uint8_t* right,

@@ -4662,6 +4662,97 @@ fun Nothing() -> int uses unsafe {
   WOLANG_EXPECT_EQ(f.Run("Nothing", {}), "7");
 }
 
+WOLANG_TEST(CodegenTest, InterpolationGivesBackTheTextItBuilds) {
+  Fixture f(R"(
+extern "C" fun wolang_texts_live() -> s64
+
+fun Live() -> int uses unsafe {
+  return wolang_texts_live() as int
+}
+
+fun Make(n: int) -> Text => "m{n}"
+
+fun Called() -> int uses unsafe {
+  const before = Live()
+  var total = 0
+  for i in 0..20 {
+    const a = "x{Make(i)}y"
+    total = total + a.len
+  }
+  return (Live() - before) * 10000 + total
+}
+
+fun Nested() -> int uses unsafe {
+  const before = Live()
+  var total = 0
+  for i in 0..20 {
+    const a = "x{"<{i}>"}y"
+    total = total + a.len
+  }
+  return (Live() - before) * 10000 + total
+}
+
+fun Summed() -> int uses unsafe {
+  const before = Live()
+  var total = 0
+  for i in 0..20 {
+    const a = "x{Make(i) + "z"}y"
+    total = total + a.len
+  }
+  return (Live() - before) * 10000 + total
+}
+
+fun Alone() -> int uses unsafe {
+  const before = Live()
+  var total = 0
+  for i in 0..20 {
+    const a = "{Make(i)}"
+    total = total + a.len
+  }
+  return (Live() - before) * 10000 + total
+}
+
+fun Taken(name: Text) -> int {
+  const t = "x{name}y"
+  return t.len
+}
+
+fun Passed() -> int uses unsafe {
+  const before = Live()
+  var total = 0
+  for i in 0..20 {
+    const own = Make(i)
+    total = total + Taken(own) + Taken(Make(i))
+  }
+  return (Live() - before) * 10000 + total
+}
+
+fun Found(n: int) -> int {
+  const b = "bee{n}"
+  var a: Text? = null
+  if n > 2 {
+    a = "a{n}"
+  }
+  const t = "<{a ?? b}>"
+  return t.len
+}
+
+fun Coalesced() -> int {
+  var total = 0
+  for i in 0..6 {
+    total = total + Found(i)
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Called", {}), "90");
+  WOLANG_EXPECT_EQ(f.Run("Nested", {}), "110");
+  WOLANG_EXPECT_EQ(f.Run("Summed", {}), "110");
+  WOLANG_EXPECT_EQ(f.Run("Alone", {}), "50");
+  WOLANG_EXPECT_EQ(f.Run("Passed", {}), "180");
+  WOLANG_EXPECT_EQ(f.Run("Coalesced", {}), "30");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang
