@@ -921,6 +921,29 @@ class Formatter {
 
   // ----------------------------------------------------------- expressions --
 
+  // After `as float` a `<` opens generic arguments (D290), so an operand that
+  // ends in a cast cannot sit bare on the left of one.
+  bool EndsWithCast(ExprId id) const {
+    if (!ast_.Contains(id)) {
+      return false;
+    }
+    const Expr& expr = ast_.Get(id);
+    switch (expr.kind) {
+      case ExprKind::kCast:
+        return true;
+      case ExprKind::kBinary:
+      case ExprKind::kAssign:
+      case ExprKind::kRange:
+        return expr.rhs.is_valid() && EndsWithCast(expr.rhs);
+      case ExprKind::kUnary:
+      case ExprKind::kAwait:
+      case ExprKind::kSpawn:
+        return EndsWithCast(expr.lhs);
+      default:
+        return false;
+    }
+  }
+
   void EmitExpr(ExprId id, Precedence context = Precedence::kNone) {
     if (!ast_.Contains(id)) {
       Put("/* missing */");
@@ -1042,8 +1065,14 @@ class Formatter {
           // and `Length^2` is how a dimension is written -- including by the
           // diagnostic renderer, which the formatter should agree with.
           const bool power = in_dimension_ && expr.op == TokenKind::kCaret;
-          EmitExpr(expr.lhs,
-                   right_associative ? Tighter(precedence) : precedence);
+          if (expr.op == TokenKind::kLess && EndsWithCast(expr.lhs)) {
+            Put("(");
+            EmitExpr(expr.lhs);
+            Put(")");
+          } else {
+            EmitExpr(expr.lhs,
+                     right_associative ? Tighter(precedence) : precedence);
+          }
           if (!power) {
             Put(" ");
           }
