@@ -45,3 +45,5 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 *.qdb
+
+__pycache__/

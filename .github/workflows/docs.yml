@@ -44,6 +44,10 @@ jobs:
           cmake --build --preset release -j --target wolang_cli
       - name: The examples in the documentation compile
         run: python3 tools/package/check_docs.py
+      - name: The converter's own tests
+        run: python3 tools/package/test_make_site_docs.py
+      - name: The pages convert, and their links and anchors hold
+        run: python3 tools/package/check_site_docs.py
       - name: The bundle builds
         run: |
           mkdir -p /tmp/docs
