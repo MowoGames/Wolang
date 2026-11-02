@@ -7,9 +7,12 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <string>
 #include <system_error>
+#include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #include <process.h>
@@ -426,4 +429,93 @@ WOLANG_TEST(Workspace, ReportsADependencyThatCannotBeFetched) {
     said |= diagnostic.code == "E0061";
   }
   WOLANG_EXPECT(said);
+}
+
+static std::vector<wolang::MemoryFile> Files(
+    std::initializer_list<std::pair<const char*, const char*>> given) {
+  std::vector<wolang::MemoryFile> files;
+  for (const std::pair<const char*, const char*>& file : given) {
+    files.push_back(wolang::MemoryFile{file.first, file.second});
+  }
+  return files;
+}
+
+WOLANG_TEST(Workspace, LoadsAPackageFromMemory) {
+  wolang::Database db;
+  wolang::DiagnosticEngine diagnostics;
+  const std::string manifest = "[package]\nname = \"mowo\"\nversion = \"1.2.0\"\n";
+  WOLANG_ASSERT(wolang::LoadPackageFromMemory(&db, "mowo", &manifest, Files({{"src/main.wo", "offer fun Top() {}\n"}, {"src/ui/button.wo", "offer fun Click() {}\n"}, {"src/ui/label.wo", "offer fun Text() {}\n"}}), &diagnostics));
+  WOLANG_EXPECT(wolang::Codes(diagnostics).empty());
+
+  const wolang::ModuleId root = db.FindModule("mowo");
+  const wolang::ModuleId ui = db.FindModule("mowo.ui");
+  WOLANG_ASSERT(root.is_valid());
+  WOLANG_ASSERT(ui.is_valid());
+  WOLANG_EXPECT_EQ(db.GetModule(root)->files.size(), size_t{1});
+  WOLANG_EXPECT_EQ(db.GetModule(ui)->files.size(), size_t{2});
+
+  const std::string app_manifest = "[package]\nname = \"app\"\n\n[dependencies]\nmowo = { path = \".\", version = \"^1.1\" }\n";
+  WOLANG_ASSERT(wolang::LoadPackageFromMemory(&db, "app", &app_manifest, Files({{"src/main.wo", "need mowo.ui.{Click}\nfun main() { Click() }\n"}}), &diagnostics));
+  WOLANG_EXPECT(wolang::Codes(diagnostics).empty());
+  WOLANG_EXPECT(db.FindModule("app").is_valid());
+  WOLANG_EXPECT_EQ(db.package_count(), size_t{2});
+}
+
+WOLANG_TEST(Workspace, ReportsAMemoryPackageDependencyThatIsNotLoaded) {
+  wolang::Database db;
+  wolang::DiagnosticEngine diagnostics;
+  const std::string manifest = "[package]\nname = \"app\"\n\n[dependencies]\nmowo = { path = \".\" }\n";
+  WOLANG_EXPECT(!wolang::LoadPackageFromMemory(&db, "app", &manifest, Files({{"src/main.wo", "fun main() {}\n"}}), &diagnostics));
+  WOLANG_EXPECT_EQ(wolang::Codes(diagnostics), "E0060");
+  WOLANG_EXPECT_EQ(db.package_count(), size_t{0});
+}
+
+WOLANG_TEST(Workspace, AMemoryPackageWithoutAManifestDependsOnEverythingLoaded) {
+  wolang::Database db;
+  wolang::DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(wolang::LoadPackageFromMemory(&db, "first", nullptr, Files({{"src/a.wo", "offer fun A() {}\n"}}), &diagnostics));
+  WOLANG_ASSERT(wolang::LoadPackageFromMemory(&db, "second", nullptr, Files({{"src/a.wo", "offer fun B() {}\n"}}), &diagnostics));
+  WOLANG_EXPECT(wolang::Codes(diagnostics).empty());
+
+  const wolang::Package* second = db.GetPackage(wolang::PackageId{1});
+  WOLANG_ASSERT_NE(second, nullptr);
+  WOLANG_EXPECT_EQ(second->manifest.dependencies.size(), size_t{1});
+  WOLANG_EXPECT_EQ(second->manifest.dependencies[0].name, std::string("first"));
+}
+
+WOLANG_TEST(Workspace, RefusesAMemoryPackageWhoseManifestNamesAnother) {
+  wolang::Database db;
+  wolang::DiagnosticEngine diagnostics;
+  const std::string manifest = "[package]\nname = \"other\"\n";
+  WOLANG_EXPECT(!wolang::LoadPackageFromMemory(&db, "mowo", &manifest, Files({{"src/a.wo", "offer fun A() {}\n"}}), &diagnostics));
+  WOLANG_EXPECT_EQ(wolang::Codes(diagnostics), "E0060");
+
+  wolang::DiagnosticEngine agreeing;
+  const std::string fine = "[package]\nname = \"mowo\"\n";
+  WOLANG_EXPECT(wolang::LoadPackageFromMemory(&db, "mowo", &fine, Files({{"src/a.wo", "offer fun A() {}\n"}}), &agreeing));
+  WOLANG_EXPECT(wolang::Codes(agreeing).empty());
+}
+
+WOLANG_TEST(Workspace, RefusesASecondMemoryPackageWithTheSameName) {
+  wolang::Database db;
+  wolang::DiagnosticEngine diagnostics;
+  WOLANG_ASSERT(wolang::LoadPackageFromMemory(&db, "mowo", nullptr, Files({{"src/a.wo", "offer fun A() {}\n"}}), &diagnostics));
+  WOLANG_EXPECT(wolang::Codes(diagnostics).empty());
+  WOLANG_EXPECT(!wolang::LoadPackageFromMemory(&db, "mowo", nullptr, Files({{"src/b.wo", "offer fun B() {}\n"}}), &diagnostics));
+  WOLANG_EXPECT_EQ(wolang::Codes(diagnostics), "E0060");
+  WOLANG_EXPECT_EQ(db.package_count(), size_t{1});
+}
+
+WOLANG_TEST(Workspace, RefusesTheNameHostForAMemoryPackage) {
+  wolang::Database db;
+  wolang::DiagnosticEngine diagnostics;
+  WOLANG_EXPECT(!wolang::LoadPackageFromMemory(&db, "host", nullptr, Files({{"src/a.wo", "offer fun A() {}\n"}}), &diagnostics));
+  WOLANG_EXPECT_EQ(wolang::Codes(diagnostics), "E0060");
+}
+
+WOLANG_TEST(Workspace, RefusesAMemoryFileOutsideTheSourceDirectory) {
+  wolang::Database db;
+  wolang::DiagnosticEngine diagnostics;
+  WOLANG_EXPECT(!wolang::LoadPackageFromMemory(&db, "mowo", nullptr, Files({{"lib/a.wo", "offer fun A() {}\n"}}), &diagnostics));
+  WOLANG_EXPECT_EQ(wolang::Codes(diagnostics), "E0060");
 }

@@ -4,6 +4,26 @@ What changed in each release, newest first. The decision behind a change
 is cited as `(D<n>)` and written up in [docs/decisions.md](docs/decisions.md);
 how a release is made is in [docs/releasing.md](docs/releasing.md).
 
+## 1.4.0
+
+1.4.0 is the embedding fixes a game engine found while moving its scripts onto
+Wolang.
+
+### Added
+
+- `wolang_vm_load_package_source` (C API 1.7, D293) loads a package the host
+  holds as data under the name its scripts `need`, so a host can ship `mowo`
+  and `std` inside its program. A reload loads it again.
+- `wolang_vm_save` and `wolang_vm_load_save` (C API 1.6, D292) write and read an
+  object graph with the bytes `std.save` writes.
+
+### Fixed
+
+- An effect declared in a sibling file, or imported, can be named in `uses`
+  (`E0701`).
+- A name the host gives, as in `wolang_vm_expect_struct`, finds the program's
+  type and not a dependency's helper of the same name (D291).
+
 ## 1.3.0
 
 1.3.0 finishes what an engine needed from the language in 1.2.0, brings

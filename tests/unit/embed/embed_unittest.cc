@@ -2497,3 +2497,85 @@ WOLANG_TEST(EmbedTest, ASaveRefusesAClassWithAVirtualMethodAndJunkBytesAllocateN
   wolang_vm_destroy(vm);
   std::filesystem::remove_all(package);
 }
+
+WOLANG_TEST(EmbedTest, ALoadedPackageFromMemoryIsCalledByModuleAndReloads) {
+  WolangVm* vm = wolang_vm_create();
+  const char* paths[] = {"src/main.wo", "src/ui/button.wo"};
+  const char* sources[] = {"offer fun Top() -> int => 1\n", "offer fun Press() -> int => 41\n"};
+  WOLANG_EXPECT_EQ(wolang_vm_load_package_source(vm, "game", nullptr, paths, sources, 2), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "game.ui.Press", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 41);
+
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "game.ui.Press", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 41);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "game.Top", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 1);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, AMemoryPackageCanStateAnEffectDeclaredInAnotherFile) {
+  WolangVm* vm = wolang_vm_create();
+  const char* paths[] = {"src/a.wo", "src/b.wo"};
+  const char* sources[] = {"offer effect Beat\noffer fun Pulse() -> int uses Beat => 7\n", "offer fun Run() -> int uses Beat => Pulse()\n"};
+  WOLANG_EXPECT_EQ(wolang_vm_load_package_source(vm, "game", nullptr, paths, sources, 2), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("E0701") == std::string::npos);
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Run", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 7);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, AScriptPackageNeedsAMemoryPackageByItsName) {
+  WolangVm* vm = wolang_vm_create();
+  const char* library_paths[] = {"src/main.wo"};
+  const char* library_sources[] = {"offer fun Twice(n: int) -> int => n * 2\n"};
+  WOLANG_EXPECT_EQ(wolang_vm_load_package_source(vm, "mowo", "[package]\nname = \"mowo\"\nversion = \"1.0.0\"\n", library_paths, library_sources, 1), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  const char* app_paths[] = {"src/main.wo"};
+  const char* app_sources[] = {"need mowo.{Twice}\noffer fun Run() -> int => Twice(21)\n"};
+  WOLANG_EXPECT_EQ(wolang_vm_load_package_source(vm, "app", "[package]\nname = \"app\"\n\n[dependencies]\nmowo = { path = \".\" }\n", app_paths, app_sources, 1), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "app.Run", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 42);
+
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "app.Run", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 42);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, AMemoryPackageIsRefusedForABadNameManifestOrDependency) {
+  const char* paths[] = {"src/main.wo"};
+  const char* sources[] = {"offer fun One() -> int => 1\n"};
+
+  WolangVm* mismatch = wolang_vm_create();
+  WOLANG_EXPECT(wolang_vm_load_package_source(mismatch, "game", "[package]\nname = \"other\"\n", paths, sources, 1) != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(mismatch)).find("E0060") != std::string::npos);
+  wolang_vm_destroy(mismatch);
+
+  WolangVm* host = wolang_vm_create();
+  WOLANG_EXPECT(wolang_vm_load_package_source(host, "host", nullptr, paths, sources, 1) != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(host)).find("E0060") != std::string::npos);
+  wolang_vm_destroy(host);
+
+  WolangVm* twice = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_package_source(twice, "game", nullptr, paths, sources, 1), 0);
+  WOLANG_EXPECT(wolang_vm_load_package_source(twice, "game", nullptr, paths, sources, 1) != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(twice)).find("E0060") != std::string::npos);
+  wolang_vm_destroy(twice);
+
+  WolangVm* missing = wolang_vm_create();
+  WOLANG_EXPECT(wolang_vm_load_package_source(missing, "app", "[package]\nname = \"app\"\n\n[dependencies]\nmowo = { path = \".\" }\n", paths, sources, 1) != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(missing)).find("E0060") != std::string::npos);
+  wolang_vm_destroy(missing);
+}

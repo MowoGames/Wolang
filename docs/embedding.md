@@ -390,6 +390,37 @@ Together they are what a mod sandbox is. Memory a
 mod allocates is not bounded, and a host that runs mods from strangers
 should still give them a vm of their own.
 
+## Packages held as data
+
+A host that ships its bindings and the standard library inside the program has
+no directory to point `wolang_vm_load` at. `wolang_vm_load_package_source` (ABI
+1.7, D293) loads a package from memory under the name its scripts `need`:
+
+```c
+const char* paths[] = {"src/main.wo", "src/ui/button.wo"};
+const char* sources[] = {kMowoMain, kMowoButton};
+wolang_vm_load_package_source(vm, "mowo",
+    "[package]\nname = \"mowo\"\nversion = \"1.0.0\"\n", paths, sources, 2);
+
+const char* script_paths[] = {"src/main.wo"};
+const char* script_sources[] = {"need mowo.ui.{Press}\nfun main() { Press() }\n"};
+wolang_vm_load_package_source(vm, "app",
+    "[package]\nname = \"app\"\n\n[dependencies]\nmowo = { path = \".\" }\n",
+    script_paths, script_sources, 1);
+```
+
+A path is below the package root and `src/ui/button.wo` is in the module
+`mowo.ui`, as on disk. The manifest is the host's and is trusted like a package
+on disk (`unsafe` and `[link]` allowed); a mod is still sandboxed only through
+`wolang_vm_load_mod`. A dependency is found by the name of a package already
+loaded, so load `std` first; the `path` it needs to parse is a placeholder.
+Pass a null manifest and the package depends on everything loaded so far, as
+source from `wolang_vm_load_source` does, and the standard library is looked
+for the way it is for a lone file. `host`, a name already loaded, a manifest that
+names another package, a dependency that is not loaded and a path outside
+`src/` are refused with `E0060`. A reload loads the package again from the
+data the vm kept.
+
 ## Tasks on the host's clock
 
 A script writes code that waits as a `task`, and the host decides what time is:

@@ -30,7 +30,7 @@ extern "C" {
 // the low. A host compares it with `wolang_abi_version()` at load, since
 // the library it links may not be the one it compiled against (D241). A
 // different major is a different ABI; a larger minor only adds.
-#define WOLANG_ABI_VERSION ((1u << 16) | 6u)
+#define WOLANG_ABI_VERSION ((1u << 16) | 7u)
 
 uint32_t wolang_abi_version(void);
 
@@ -141,6 +141,24 @@ WolangStatus wolang_vm_load(WolangVm* vm, const char* path);
 WolangStatus wolang_vm_load_source(WolangVm* vm,
                               const char* name,
                               const char* source);
+
+// Loads a package the host holds as data, under the name its scripts `need`
+// (`mowo`, `std`, `game`). |paths| and |sources| are |count| files; a path is
+// below the package root, `src/ui/button.wo`, and belongs to the module
+// `<package_name>.ui` as it would on disk. |manifest_toml| is a manifest, or
+// null for a package that depends on everything loaded so far, as a source
+// handed to `wolang_vm_load_source` does. A manifest is trusted like one on
+// disk; its dependencies are found by name among the packages loaded before,
+// so load `std` first and write `std = { path = "." }` (the path is a
+// placeholder). A reload loads the package again from the same data.
+// Refused: the name `host`, a name already loaded, a manifest naming another
+// package, a dependency not loaded. Added in ABI 1.7 (D293).
+WolangStatus wolang_vm_load_package_source(WolangVm* vm,
+                                           const char* package_name,
+                                           const char* manifest_toml,
+                                           const char* const* paths,
+                                           const char* const* sources,
+                                           int32_t count);
 
 // Every diagnostic from the last load, rendered the way the command-line
 // compiler renders them. Owned by the vm; valid until the next call.

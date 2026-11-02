@@ -157,10 +157,17 @@ struct WolangVm {
   // What was loaded, so a reload can do it again and a host can watch
   // the files for changes. A path, or a name and the source the host
   // gave under it.
+  enum class LoadKind { kPath, kSource, kPackage };
   struct Loaded {
+    LoadKind kind = LoadKind::kPath;
     std::string path;
     std::string source;
-    bool from_source = false;
+    // A package held as data (D293): its name, its manifest if it had
+    // one, and the files, so a reload can load it again.
+    bool has_manifest = false;
+    std::string manifest;
+    std::vector<std::string> paths;
+    std::vector<std::string> sources;
   };
   std::vector<Loaded> loaded;
   std::vector<FileId> files;
@@ -1014,7 +1021,9 @@ WolangStatus wolang_vm_load(WolangVm* vm, const char* path) {
     vm->files.push_back(file);
     vm->own.push_back(file);
   }
-  vm->loaded.push_back(WolangVm::Loaded{path, std::string(), false});
+  WolangVm::Loaded again;
+  again.path = path;
+  vm->loaded.push_back(std::move(again));
   Prepare(vm);
   return vm->ok ? kWolangOk : kWolangError;
 }
@@ -1081,10 +1090,106 @@ WolangStatus wolang_vm_load_source(WolangVm* vm,
   }
   vm->files.push_back(file);
   vm->own.push_back(file);
-  vm->loaded.push_back(WolangVm::Loaded{
-      name == nullptr ? "<host>" : name, source, true});
+  WolangVm::Loaded again;
+  again.kind = WolangVm::LoadKind::kSource;
+  again.path = name == nullptr ? "<host>" : name;
+  again.source = source;
+  vm->loaded.push_back(std::move(again));
   Prepare(vm);
   return vm->ok ? kWolangOk : kWolangError;
+}
+
+// A package the host holds as data is its own package under its own name, so
+// a script's `need mowo.ui` finds the host's module and not a file on disk
+// (D293).
+WolangStatus wolang_vm_load_package_source(WolangVm* vm,
+                                           const char* package_name,
+                                           const char* manifest_toml,
+                                           const char* const* paths,
+                                           const char* const* sources,
+                                           int32_t count) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || package_name == nullptr || count < 0 ||
+      (count > 0 && (paths == nullptr || sources == nullptr))) {
+    return kWolangError;
+  }
+
+  std::vector<wolang::MemoryFile> files;
+  bool mentions_need = false;
+  for (int32_t i = 0; i < count; ++i) {
+    if (paths[i] == nullptr || sources[i] == nullptr) {
+      return kWolangError;
+    }
+    files.push_back(wolang::MemoryFile{paths[i], sources[i]});
+    mentions_need = mentions_need || files.back().text.find("need ") != std::string::npos;
+  }
+
+  // Only a package with no manifest of its own is promised the standard
+  // library; one that writes its dependencies gets exactly those.
+  if (manifest_toml == nullptr && mentions_need && std::string_view(package_name) != "std") {
+    LoadStandardFor(vm, "<host>");
+  }
+
+  const std::string manifest = manifest_toml == nullptr ? std::string() : manifest_toml;
+  DiagnosticEngine loading;
+  const bool loaded = wolang::LoadPackageFromMemory(&vm->database, package_name, manifest_toml == nullptr ? nullptr : &manifest, files, &loading);
+  if (!loaded || loading.has_errors()) {
+    vm->errors = Render(&vm->database, loading.diagnostics());
+    if (vm->errors.empty()) {
+      vm->errors = "wolang: cannot load the package\n";
+    }
+    vm->ok = false;
+    return kWolangError;
+  }
+
+  for (const Module& module : vm->database.modules()) {
+    for (FileId file : module.files) {
+      if (std::find(vm->files.begin(), vm->files.end(), file) == vm->files.end()) {
+        vm->files.push_back(file);
+      }
+    }
+  }
+  for (FileId file : vm->files) {
+    const wolang::ModuleId owner = vm->database.ModuleOf(file);
+    const wolang::Module* module = vm->database.GetModule(owner);
+    const wolang::Package* package = module == nullptr ? nullptr : vm->database.GetPackage(module->package);
+    if (package != nullptr && package->name == package_name && std::find(vm->own.begin(), vm->own.end(), file) == vm->own.end()) {
+      vm->own.push_back(file);
+    }
+  }
+
+  WolangVm::Loaded again;
+  again.kind = WolangVm::LoadKind::kPackage;
+  again.path = package_name;
+  again.has_manifest = manifest_toml != nullptr;
+  again.manifest = manifest;
+  for (const wolang::MemoryFile& file : files) {
+    again.paths.push_back(file.path);
+    again.sources.push_back(file.text);
+  }
+  vm->loaded.push_back(std::move(again));
+  Prepare(vm);
+  return vm->ok ? kWolangOk : kWolangError;
+}
+
+// One thing a reload loads again, whichever way the host first gave it.
+static WolangStatus LoadAgain(WolangVm* vm, const WolangVm::Loaded& what) {
+  switch (what.kind) {
+    case WolangVm::LoadKind::kSource:
+      return wolang_vm_load_source(vm, what.path.c_str(), what.source.c_str());
+    case WolangVm::LoadKind::kPackage: {
+      std::vector<const char*> paths;
+      std::vector<const char*> sources;
+      for (size_t i = 0; i < what.paths.size(); ++i) {
+        paths.push_back(what.paths[i].c_str());
+        sources.push_back(what.sources[i].c_str());
+      }
+      return wolang_vm_load_package_source(vm, what.path.c_str(), what.has_manifest ? what.manifest.c_str() : nullptr, paths.data(), sources.data(), static_cast<int32_t>(paths.size()));
+    }
+    case WolangVm::LoadKind::kPath:
+      break;
+  }
+  return wolang_vm_load(vm, what.path.c_str());
 }
 
 const char* wolang_vm_errors(const WolangVm* vm) {
@@ -3279,7 +3384,7 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
     wolang::runtime::SpaceCopyBindings(vm->globals.get(), staged->globals.get());
     int32_t staged_status = 0;
     for (const WolangVm::Loaded& file : again) {
-      staged_status |= file.from_source ? wolang_vm_load_source(staged.get(), file.path.c_str(), file.source.c_str()) : wolang_vm_load(staged.get(), file.path.c_str());
+      staged_status |= LoadAgain(staged.get(), file);
     }
     if (staged_status != 0 || !staged->ok) {
       vm->errors = staged->errors;
@@ -3355,10 +3460,7 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   const wolang::runtime::GlobalSpaceScope entered(vm->globals.get());
   int32_t status = 0;
   for (const WolangVm::Loaded& file : again) {
-    status |= file.from_source
-                  ? wolang_vm_load_source(vm, file.path.c_str(),
-                                          file.source.c_str())
-                  : wolang_vm_load(vm, file.path.c_str());
+    status |= LoadAgain(vm, file);
   }
   if (status == 0 && vm->ok) {
     ApplyMigration(vm, &migration);
