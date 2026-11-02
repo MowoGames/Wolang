@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,6 +28,10 @@ struct GlobalSpace {
   std::vector<SpaceClass> Classes;
   SpaceWriteHook WriteHook = nullptr;
   void* WriteUser = nullptr;
+  // The scheduler this space's tasks and clock belong to, made the first
+  // time something asks (D267).
+  void* Scheduler = nullptr;
+  void (*SchedulerDestroy)(void*) = nullptr;
 };
 
 static GlobalSpace& ProcessSpace() {
@@ -75,7 +80,22 @@ void GlobalSpaceDestroy(GlobalSpace* space) {
     return;
   }
   Clear(*space);
+  if (space->Scheduler != nullptr && space->SchedulerDestroy != nullptr) {
+    space->SchedulerDestroy(space->Scheduler);
+  }
   delete space;
+}
+
+void* SpaceSchedulerSlot(void* (*create)(), void (*destroy)(void*)) {
+  static std::mutex sm_Lock;
+  const std::lock_guard<std::mutex> held(sm_Lock);
+  GlobalSpace& space = CurrentGlobals();
+  if (space.Scheduler == nullptr) {
+    space.Scheduler = create();
+    space.SchedulerDestroy = destroy;
+  }
+
+  return space.Scheduler;
 }
 
 GlobalSpace* GlobalSpaceEnter(GlobalSpace* space) {

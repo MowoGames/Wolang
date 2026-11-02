@@ -63,6 +63,12 @@ void SpaceCopyBindings(const GlobalSpace* from, GlobalSpace* to);
 void SpaceSetWriteHook(GlobalSpace* space, SpaceWriteHook hook, void* user);
 bool SpaceWrite(int32_t fd, const uint8_t* bytes, uint64_t count, int64_t* result);
 
+// The scheduler of the space this thread has entered, made by |create| the
+// first time it is asked for and given to |destroy| when the space goes. A vm
+// has its own tasks and its own clock, so ticking one cannot resume the tasks
+// of another (D267).
+void* SpaceSchedulerSlot(void* (*create)(), void (*destroy)(void*));
+
 // While it lives, |space| is the current one on this thread.
 class GlobalSpaceScope {
  public:

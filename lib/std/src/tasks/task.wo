@@ -48,3 +48,109 @@ offer fun Pending() -> s32 uses unsafe {
 offer fun Join(handle: s32) -> s64 uses unsafe {
   return wolang_sched_join(handle)
 }
+
+extern "C" fun wolang_sched_tick(dt: f64) -> s64
+extern "C" fun wolang_sched_now() -> f64
+
+/// Suspends for `seconds` of the caller's clock, which moves only when the
+/// caller calls `Tick`: pausing is not ticking and slow motion is a smaller
+/// step, so a game needs no hook for its own time (D267). A wait of nothing
+/// finishes at once. Like `Yield` it has no body, and for the same reason: the
+/// compiler writes its machine, so `wait Wait(2.0)` works from any module.
+offer task fun Wait(seconds: f64)
+
+/// Hands the scheduler `dt` seconds of the caller's clock and gives every task
+/// that was ready one step. A task that is not finished comes back next tick
+/// and one spawned during this tick starts on the next. Returns how many steps
+/// were taken.
+offer fun Tick(dt: f64) -> s64 uses unsafe {
+  return wolang_sched_tick(dt)
+}
+
+/// The sum of every `dt` given to `Tick`.
+offer fun Now() -> f64 uses unsafe {
+  return wolang_sched_now()
+}
+
+/// Something a task can wait for. A task waits on one by looking at it each
+/// turn, `while !event.raised { wait Yield() }`, which keeps the waiting in
+/// the module that knows what the event means.
+offer class Event {
+  var raised: bool = false
+
+  /// Lets whoever is waiting go on.
+  fun Raise() {
+    raised = true
+  }
+
+  /// Makes it something to wait for again.
+  fun Clear() {
+    raised = false
+  }
+}
+
+class Counter {
+  var n: int = 0
+}
+
+task fun Count(counter: Counter) {
+  wait Wait(1.0)
+  counter.n = counter.n + 1
+  wait Wait(2.0)
+  counter.n = counter.n + 10
+}
+
+task fun Gate(event: Event, counter: Counter) {
+  while !event.raised {
+    wait Yield()
+  }
+  counter.n = 5
+}
+
+@Test
+fun WaitsOnTheCallersClock() -> bool uses unsafe {
+  const counter = Counter()
+  const start = Now()
+  const handle = spawn Count(counter)
+  const _first = Tick(0.5)
+  if counter.n != 0 {
+    return false
+  }
+  const _second = Tick(0.5)
+  if counter.n != 0 {
+    return false
+  }
+  const _third = Tick(0.5)
+  if counter.n != 1 {
+    return false
+  }
+  const _fourth = Tick(1.5)
+  if counter.n != 1 {
+    return false
+  }
+  const _fifth = Tick(0.5)
+  return counter.n == 11 && Done(handle) && Now() - start == 3.5
+}
+
+@Test
+fun NothingMovesUntilTheCallerTicks() -> bool uses unsafe {
+  const counter = Counter()
+  const start = Now()
+  const handle = spawn Count(counter)
+  return counter.n == 0 && !Done(handle) && Now() == start
+}
+
+@Test
+fun WaitsForAnEventTheCallerRaises() -> bool uses unsafe {
+  const event = Event()
+  const counter = Counter()
+  const handle = spawn Gate(event, counter)
+  const _first = Tick(0.1)
+  const _second = Tick(0.1)
+  if counter.n != 0 {
+    return false
+  }
+  event.Raise()
+  const _third = Tick(0.1)
+  return counter.n == 5 && Done(handle)
+}

@@ -893,6 +893,16 @@ runtime's own scheduler. A spawned task runs to its end: nothing cancels
 it when the scope that started it exits. Stopping one early is a flag it
 reads (D243).
 
+A task can wait on the caller's clock (D267). `std.tasks.Tick(dt)` gives
+every ready task one step with `dt` seconds added to the clock;
+`wait Wait(2.0)` finishes when two seconds of ticks have gone by and
+`wait Yield()` on the next tick. A wait counts from the tick it begins in. The
+clock is the caller's: pausing is not ticking and slow motion is a smaller
+`dt`, so there is no `routine` to learn beside `task`. `Wait`, like `Yield`,
+has no body and the compiler writes its machine, so it can be waited on from
+any module. A host ticks a vm with `wolang_vm_tick`, and each vm has its own
+tasks and clock.
+
 ## 9. State machines — draft
 
 ```wolang

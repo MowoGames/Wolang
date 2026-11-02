@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "wolang/runtime/builtins.h"
+#include "wolang/runtime/globals.h"
 
 namespace wolang {
 namespace runtime {
@@ -31,11 +32,28 @@ struct SchedulerState {
   std::deque<int32_t> ready;
   ResumeFn resume = nullptr;
   void* context = nullptr;
+  // How much time the caller has handed the scheduler through `tick` (D267).
+  double now = 0;
 };
 
+void* CreateState() {
+  return new SchedulerState();
+}
+
+void DestroyState(void* raw) {
+  auto* state = static_cast<SchedulerState*>(raw);
+  for (TaskEntry& task : state->tasks) {
+    if (!task.done && task.frame != nullptr) {
+      wolang_frame_free(task.frame);
+    }
+  }
+  delete state;
+}
+
+// Each space has its own: the process's, or a vm's, so that two vms cannot
+// resume each other's tasks or share a clock (D267).
 SchedulerState& Current() {
-  static SchedulerState state;
-  return state;
+  return *static_cast<SchedulerState*>(SpaceSchedulerSlot(&CreateState, &DestroyState));
 }
 
 }  // namespace
@@ -55,6 +73,7 @@ void ResetScheduler() {
   }
   state.tasks.clear();
   state.ready.clear();
+  state.now = 0;
 }
 
 extern "C" {
@@ -67,6 +86,33 @@ int32_t wolang_sched_spawn(int32_t kind, void* frame) {
   return handle;
 }
 
+// Advances the task at the front of the queue by one step. Returns whether
+// it was a step at all: a task that has finished is dropped without one.
+static bool StepFront(SchedulerState& state) {
+  const int32_t handle = state.ready.front();
+  state.ready.pop_front();
+  TaskEntry& task = state.tasks[static_cast<size_t>(handle)];
+  if (task.done) {
+    return false;
+  }
+  const bool finished = state.resume(state.context, task.kind, task.frame);
+  // Read again: resuming may have spawned, and the vector may have moved.
+  TaskEntry& after = state.tasks[static_cast<size_t>(handle)];
+  if (!finished) {
+    // Back of the queue: everything else that can run goes first, which
+    // is the whole of "cooperative and fair".
+    state.ready.push_back(handle);
+    return true;
+  }
+  after.done = true;
+  if (after.frame != nullptr) {
+    wolang_frame_free(after.frame);
+    after.frame = nullptr;
+  }
+
+  return true;
+}
+
 int64_t wolang_sched_run() {
   SchedulerState& state = Current();
   if (state.resume == nullptr) {
@@ -74,30 +120,35 @@ int64_t wolang_sched_run() {
   }
   int64_t steps = 0;
   while (!state.ready.empty()) {
-    const int32_t handle = state.ready.front();
-    state.ready.pop_front();
-    TaskEntry& task = state.tasks[static_cast<size_t>(handle)];
-    if (task.done) {
-      continue;
-    }
-    ++steps;
-    const bool finished =
-        state.resume(state.context, task.kind, task.frame);
-    // Read again: resuming may have spawned, and the vector may have moved.
-    TaskEntry& after = state.tasks[static_cast<size_t>(handle)];
-    if (!finished) {
-      // Back of the queue: everything else that can run goes first, which
-      // is the whole of "cooperative and fair".
-      state.ready.push_back(handle);
-      continue;
-    }
-    after.done = true;
-    if (after.frame != nullptr) {
-      wolang_frame_free(after.frame);
-      after.frame = nullptr;
+    if (StepFront(state)) {
+      ++steps;
     }
   }
   return steps;
+}
+
+// The caller's clock: one round of the queue, with time moved on by |dt|
+// first. A task that is not finished comes back next tick, not this one, and
+// one spawned during the round waits for the next. Pausing is not calling
+// this and slow motion is a smaller |dt|, which is why the host needs no hook
+// for its clock (D267).
+int64_t wolang_sched_tick(double dt) {
+  SchedulerState& state = Current();
+  state.now += dt;
+  if (state.resume == nullptr) {
+    return 0;
+  }
+  int64_t steps = 0;
+  for (size_t round = state.ready.size(); round > 0 && !state.ready.empty(); --round) {
+    if (StepFront(state)) {
+      ++steps;
+    }
+  }
+  return steps;
+}
+
+double wolang_sched_now() {
+  return Current().now;
 }
 
 // How many references an object has, kept in the word *in front of* it.

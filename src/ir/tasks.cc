@@ -33,6 +33,9 @@ constexpr std::string_view kDispatchName = "wolang$dispatch";
 // Handing a task to the scheduler.
 constexpr std::string_view kSpawnSymbol = "wolang_sched_spawn";
 
+// The caller's clock, which a task that sleeps reads (D267).
+constexpr std::string_view kClockSymbol = "wolang_sched_now";
+
 // What a task's frame holds, and where.
 //
 // The state comes first because every machine reads it before anything
@@ -218,6 +221,25 @@ class Splitter {
                                  static_cast<long>(position),
                              prelude.begin(), prelude.end());
     return position + prelude.size();
+  }
+
+  // A foreign declaration for the scheduler's clock.
+  uint32_t Clock() {
+    const Symbol symbol = interner_->Intern(std::string(kClockSymbol));
+    for (uint32_t i = 0; i < module_->functions.size(); ++i) {
+      if (module_->functions[i].name == symbol) {
+        return i;
+      }
+    }
+
+    Function declaration;
+    declaration.name = symbol;
+    declaration.type = types_->Function({}, types_->Float(FloatWidth::k64));
+    declaration.foreign_symbol = symbol;
+    declaration.effects_known = false;
+    module_->functions.push_back(std::move(declaration));
+
+    return static_cast<uint32_t>(module_->functions.size() - 1);
   }
 
   uint32_t Spawner() {
@@ -645,9 +667,14 @@ class Splitter {
     const Frame frame = BuildFrame(index);
     frames_.emplace(index, frame);
 
-    const uint32_t resume = module_->functions[index].is_declaration()
-                                ? EmitPrimitive(index, frames_[index])
-                                : EmitResume(index, frames_[index]);
+    uint32_t resume = 0;
+    if (!module_->functions[index].is_declaration()) {
+      resume = EmitResume(index, frames_[index]);
+    } else if (IsSleep(index)) {
+      resume = EmitSleep(index, frames_[index]);
+    } else {
+      resume = EmitPrimitive(index, frames_[index]);
+    }
     frames_[index].resume = resume;
     frames_[index].kind = static_cast<uint32_t>(kinds_.size());
     kinds_.emplace_back(index, resume);
@@ -701,6 +728,85 @@ class Splitter {
     Return(target, suspend, Bool(target, suspend, false));
 
     Return(target, done, Bool(target, done, true));
+    return position;
+  }
+
+  // A task with no body that is called `Wait` and takes one 64-bit float is
+  // the second suspension primitive: sleeping on the caller's clock (D267).
+  bool IsSleep(uint32_t index) {
+    const Function& function = module_->functions[index];
+    const std::string_view name = interner_->Text(function.name);
+    const bool called = name == "Wait" || (name.size() > 5 && name.substr(name.size() - 5) == ".Wait");
+    const std::vector<TypeId> parameters = types_->ArgumentsOf(function.type);
+    if (!called || parameters.size() != 1 || types_->KindOf(parameters[0]) != TypeKind::kFloat) {
+      return false;
+    }
+
+    return types_->Get(parameters[0]).float_width == FloatWidth::k64;
+  }
+
+  // Finishes once the scheduler's clock has passed the moment it began plus
+  // the seconds asked for. The first resume turns the parameter into that
+  // moment, which keeps the frame the size of a plain primitive's, and every
+  // resume after reads it back and compares. A wait of nothing finishes at
+  // once. The clock moves only when the caller ticks, so pausing is not
+  // ticking and slow motion is a smaller step (D267).
+  uint32_t EmitSleep(uint32_t index, const Frame& frame) {
+    const uint32_t clock = Clock();
+
+    Function resume;
+    resume.name = ResumeName(index);
+    resume.type = types_->Function({frame.pointer}, types_->bool_type());
+    resume.effects_known = true;
+
+    const auto position = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(resume));
+    Function* target = &module_->functions[position];
+
+    const BlockId entry = AddBlock(target, "entry");
+    const TypeId state_type = FieldType(frame, frame.state_field);
+    const TypeId seconds_type = FieldType(frame, frame.first_param_field);
+    Inst param;
+    param.opcode = Opcode::kParam;
+    param.type = frame.pointer;
+    const InstId frame_pointer{static_cast<uint32_t>(target->instructions.size())};
+    target->instructions.push_back(param);
+    target->owners.push_back(entry);
+    // The span table runs parallel to the instructions (D118).
+    target->spans.push_back(target->SpanOf(InstId{}));
+    target->Get(entry).instructions.push_back(frame_pointer);
+    target->Get(entry).param_count = 1;
+
+    const InstId state_address = FieldAddress(target, entry, frame, frame_pointer, frame.state_field, state_type);
+    const InstId seconds_address = FieldAddress(target, entry, frame, frame_pointer, frame.first_param_field, seconds_type);
+    const InstId state = Add(target, entry, Opcode::kLoad, state_type, {state_address});
+    const InstId zero = Constant(target, entry, state_type, 0);
+    const InstId first = Add(target, entry, Opcode::kEq, types_->bool_type(), {state, zero});
+
+    const BlockId begin = AddBlock(target, "begin");
+    const BlockId check = AddBlock(target, "check");
+    const BlockId suspend = AddBlock(target, "suspend");
+    const BlockId done = AddBlock(target, "done");
+    Branch(target, entry, first, begin, check);
+
+    const InstId started = Add(target, begin, Opcode::kCall, seconds_type);
+    target->Get(started).payload.callee = clock;
+    const InstId asked = Add(target, begin, Opcode::kLoad, seconds_type, {seconds_address});
+    const InstId until = Add(target, begin, Opcode::kAdd, seconds_type, {started, asked});
+    Add(target, begin, Opcode::kStore, TypeId{}, {seconds_address, until});
+    Add(target, begin, Opcode::kStore, TypeId{}, {state_address, Constant(target, begin, state_type, 1)});
+    const InstId due_at_once = Add(target, begin, Opcode::kLe, types_->bool_type(), {until, started});
+    Branch(target, begin, due_at_once, done, suspend);
+
+    const InstId now = Add(target, check, Opcode::kCall, seconds_type);
+    target->Get(now).payload.callee = clock;
+    const InstId moment = Add(target, check, Opcode::kLoad, seconds_type, {seconds_address});
+    const InstId due = Add(target, check, Opcode::kLe, types_->bool_type(), {moment, now});
+    Branch(target, check, due, done, suspend);
+
+    Return(target, suspend, Bool(target, suspend, false));
+    Return(target, done, Bool(target, done, true));
+
     return position;
   }
 

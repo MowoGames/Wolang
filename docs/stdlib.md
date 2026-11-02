@@ -701,6 +701,44 @@ which is what a frame's worth of work wants. `std.tasks` is the
 cooperative side: `Run`, `Done`, `Pending` and `Join` for `spawn`ed
 tasks.
 
+It is also how code waits on a clock the caller owns (D267). `Tick(dt)`
+hands the scheduler `dt` seconds and gives every task that was ready one
+step; `Wait(seconds)` is a task that finishes when that many seconds of
+ticks have gone by, and `Yield` finishes on the next tick. Pausing is not
+ticking and slow motion is a smaller step, so a game needs no hook for its
+own time.
+
+```wolang
+need std.io.{Print}
+need std.tasks.{Done, Now, Tick, Wait}
+
+class Door {
+  var open: bool = false
+}
+
+task fun OpenLater(door: Door) {
+  wait Wait(2.0)
+  door.open = true
+}
+
+fun main() uses io, unsafe {
+  const door = Door()
+  const handle = spawn OpenLater(door)
+  var frames = 0
+  while !Done(handle) {
+    const _steps = Tick(1.0)
+    frames = frames + 1
+  }
+  Print("open after {frames} frames, {Now()} seconds: {door.open}")
+}
+```
+
+It prints `open after 3 frames, 3 seconds: true`: the task begins in the first
+frame, so its two seconds end with the third. An event is a flag the task
+looks at, `while !event.raised { wait Yield() }`, which keeps the waiting in
+the module that knows what the event means; `Event` is that flag, with
+`Raise` and `Clear`. A host ticks a vm with `wolang_vm_tick`.
+
 ## std.mem
 
 `ArrayNew`, `Free`, `Prefix`, `PrefixMut`, `Suffix`, `BytesFromRaw`,

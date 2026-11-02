@@ -4577,6 +4577,72 @@ fun Balanced() -> int uses unsafe {
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Balanced", {}), "19000");
+
+WOLANG_TEST(CodegenTest, ATaskWaitsOnTheCallersClock) {
+  // `Wait` has no body, so the compiler writes its machine: it finishes when
+  // the scheduler's clock has passed the moment it began plus the seconds
+  // asked for, and the clock moves only when the caller ticks (D267). The
+  // interpreter and the JIT run the same machine, so they must agree.
+  Fixture f(R"(
+extern "C" fun wolang_sched_tick(dt: f64) -> s64
+extern "C" fun wolang_sched_now() -> f64
+
+task fun Wait(seconds: f64)
+
+class Counter {
+  var n: int = 0
+}
+
+task fun Count(counter: Counter) {
+  wait Wait(1.0)
+  counter.n = counter.n + 1
+  wait Wait(2.0)
+  counter.n = counter.n + 10
+}
+
+task fun Instant(counter: Counter) {
+  wait Wait(0.0)
+  counter.n = 7
+}
+
+fun Drive(ticks: int) -> int uses unsafe {
+  const counter = Counter()
+  const _handle = spawn Count(counter)
+  var i = 0
+  while i < ticks {
+    const _steps = wolang_sched_tick(0.5)
+    i = i + 1
+  }
+  return counter.n
+}
+
+fun Slow(ticks: int) -> int uses unsafe {
+  const counter = Counter()
+  const _handle = spawn Count(counter)
+  var i = 0
+  while i < ticks {
+    const _steps = wolang_sched_tick(0.25)
+    i = i + 1
+  }
+  return counter.n
+}
+
+fun Nothing() -> int uses unsafe {
+  const counter = Counter()
+  const _handle = spawn Instant(counter)
+  const _steps = wolang_sched_tick(0.0)
+  return counter.n
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(0)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(2)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(3)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(6)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(7)}), "11");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(100)}), "11");
+  WOLANG_EXPECT_EQ(f.Run("Slow", {Fixture::Int(4)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Slow", {Fixture::Int(5)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Nothing", {}), "7");
 }
 
 }  // namespace

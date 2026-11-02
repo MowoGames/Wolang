@@ -1690,6 +1690,19 @@ int RunTests(const Options& options) {
           checked != nullptr ? checked->resolution : kNoResolution;
       abi::LayoutStore layouts(database.types(), resolution);
       database.ShareMembers(&layouts);
+
+      // A test may spawn and tick, and running what it spawned is a call
+      // back in here. Each tier gets a scheduler of its own, so the second
+      // run cannot find the first one's tasks (D267).
+      TaskHost host;
+      host.database = &database;
+      host.module = &lowered->unoptimized;
+      host.layouts = &layouts;
+      host.foreign = foreign.get();
+      host.linked = modules;
+      host.dispatch = database.interner().Intern("wolang$dispatch");
+      runtime::ResetScheduler();
+      runtime::InstallResume(&ResumeTask, &host);
       const interp::Outcome outcome = interp::RunNamed(
           database.interner(), database.types(), lowered->unoptimized, name,
           {}, {}, nullptr, foreign.get(), &layouts, modules);
@@ -1699,6 +1712,9 @@ int RunTests(const Options& options) {
           !outcome.value.boolean();
 
       if (compiled != nullptr && compiled->Contains(name)) {
+        host.compiled = compiled.get();
+        runtime::ResetScheduler();
+        runtime::InstallResume(&ResumeTask, &host);
         const interp::Outcome machine = compiled->Run(name, {});
         if (machine.trap != outcome.trap ||
             machine.where != outcome.where ||

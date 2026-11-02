@@ -43,6 +43,13 @@ int32_t wolang_sched_spawn(int32_t kind, void* frame);
 // is what a benchmark wants to see.
 int64_t wolang_sched_run();
 
+// Hands the scheduler |dt| seconds of the caller's clock and runs one round:
+// every task that was ready takes one step. Answers how many steps that was
+// (D267). `wolang_sched_now` is the sum of every |dt| given since the
+// scheduler was reset, which is what a task that waits on time reads.
+int64_t wolang_sched_tick(double dt);
+double wolang_sched_now();
+
 // Storage for one object, which is what a `class` value points at. The
 // same allocator a frame comes from: there is one heap, and a collector --
 // when there is one -- will want to know about both.
