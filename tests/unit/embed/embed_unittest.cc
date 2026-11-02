@@ -1242,6 +1242,56 @@ WOLANG_TEST(EmbedTest, AnOptionalHostObjectIsPresentOrAbsent) {
   CheckAnOptionalHostParameter(false);
 }
 
+WOLANG_TEST(EmbedTest, BindingsForAnotherAbiAreRefused) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_expect_abi(vm, WOLANG_ABI_VERSION), kWolangOk);
+  WOLANG_EXPECT_EQ(wolang_vm_expect_abi(vm, (1u << 16) | 0u), kWolangOk);
+  WOLANG_EXPECT_EQ(wolang_vm_expect_abi(vm, (2u << 16) | 0u), kWolangError);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("ABI 2.0") != std::string::npos);
+  WOLANG_EXPECT_EQ(wolang_vm_expect_abi(vm, WOLANG_ABI_VERSION + 1u), kWolangError);
+  wolang_vm_destroy(vm);
+}
+
+static const char* const kVec3Source = R"(
+offer struct Vec3 {
+  var x: f32
+  var y: f32
+  var z: f32
+}
+
+offer fun Length(v: Vec3) -> f32 => v.x
+)";
+
+WOLANG_TEST(EmbedTest, ALayoutTheBindingsExpectIsCheckedWhenTheProgramLoads) {
+  const uint32_t right[] = {12, 4, 0, 4, 8};
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec3", right, 5), kWolangOk);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "layout_ok.wo", kVec3Source), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  wolang_vm_destroy(vm);
+
+  const uint32_t wrong[] = {16, 8, 0, 8, 12};
+  vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec3", wrong, 5), kWolangOk);
+  WOLANG_EXPECT(wolang_vm_load_source(vm, "layout_bad.wo", kVec3Source) != 0);
+  const std::string errors = wolang_vm_errors(vm);
+  WOLANG_EXPECT(errors.find("expect `Vec3` to be size 16, align 8, offsets 0, 8, 12") != std::string::npos);
+  WOLANG_EXPECT(errors.find("lays it out as size 12, align 4, offsets 0, 4, 8") != std::string::npos);
+  WOLANG_EXPECT_EQ(wolang_vm_ok(vm), 0);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ALayoutIsAlsoCheckedWhenTheProgramIsAlreadyLoaded) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "layout_late.wo", kVec3Source), 0);
+  const uint32_t right[] = {12, 4, 0, 4, 8};
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec3", right, 5), kWolangOk);
+  const uint32_t wrong[] = {12, 4, 0, 4, 12};
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec3", wrong, 5), kWolangError);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("expect `Vec3`") != std::string::npos);
+  wolang_vm_destroy(vm);
+}
+
 static void CheckAnOptionalHostField(bool compiled) {
   WolangVm* vm = wolang_vm_create();
   wolang_vm_set_compiled(vm, compiled ? 1 : 0);

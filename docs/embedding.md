@@ -264,6 +264,21 @@ to give passes `--no-token`, and the glue registers without one, as before. With
 `--effect World` every engine call carries `uses World`, so a mod has to
 be granted `World` to touch the world at all.
 
+**Which compiler the bindings fit (D271).** The first thing `MowoWolang_Bind_*`
+does is call `wolang_vm_expect_abi(vm, WOLANG_ABI_VERSION)` with the header the
+glue was compiled against, and then `wolang_vm_expect_struct` once for each
+struct it passes by pointer, with that struct's size, alignment and field
+offsets from `sizeof`, `alignof` and `offsetof`. The rule is the one the ABI
+already has: the major version must be equal and the bindings' minor must not
+be greater than the library's. A struct is checked when the program loads
+(or at once, if it is loaded already): the compiler's own layout of the
+struct of that name must be the same numbers. If either fails, the load fails
+and `wolang_vm_errors` says what each side expected, for example `the bindings
+expect `Vec3` to be size 16, align 8, offsets 0, 8, 12, but this compiler lays
+it out as size 12, align 4, offsets 0, 4, 8`. A change to how the compiler lays
+a struct out is therefore an ABI change: it bumps the major version, and
+bindings made before it say so instead of reading the wrong bytes.
+
 What is left out is printed, one line each: components (which belong on
 the ECS side), properties and functions of types with no binding, structs
 with a field that is not a number, a struct taken as a parameter, and

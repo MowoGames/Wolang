@@ -206,6 +206,14 @@ struct WolangVm {
   uint64_t generation = 0;
   // The packages loaded as mods, and what each was granted (D217).
   std::vector<std::pair<std::string, std::vector<std::string>>> sandboxes;
+  // How the host's bindings lay out each struct they rely on: size, alignment
+  // and field offsets, checked against the compiler's own when the program
+  // is built (D271).
+  struct ExpectedLayout {
+    std::string name;
+    std::vector<uint32_t> words;
+  };
+  std::vector<ExpectedLayout> expected_layouts;
   // Where this vm's output goes when its host asked for it (D257).
   WolangWriter writer = nullptr;
   void* writer_user = nullptr;
@@ -286,6 +294,48 @@ std::string DocumentationFor(WolangVm* vm, FileId file, Symbol name) {
   return std::string();
 }
 
+std::string DescribeLayout(const std::vector<uint32_t>& words) {
+  if (words.size() < 2) {
+    return "nothing";
+  }
+  std::string text = "size " + std::to_string(words[0]) + ", align " + std::to_string(words[1]) + ", offsets";
+  for (size_t i = 2; i < words.size(); ++i) {
+    text += (i == 2 ? " " : ", ") + std::to_string(words[i]);
+  }
+  return text;
+}
+
+// What the host's bindings said about a struct against what the compiler
+// lays that struct out as; one line per disagreement (D271).
+std::string LayoutProblems(WolangVm* vm) {
+  std::string problems;
+  const wolang::TypeStore& types = vm->database.types();
+  for (const WolangVm::ExpectedLayout& expected : vm->expected_layouts) {
+    for (size_t i = 0; i < types.size(); ++i) {
+      const TypeId id{static_cast<uint32_t>(i)};
+      if (types.KindOf(id) != TypeKind::kNamed || types.IsHandle(id) || types.Describe(vm->database.interner(), id) != expected.name) {
+        continue;
+      }
+      const CheckedFile* checked = vm->database.Checked(FileId{types.Get(id).declaring_file});
+      if (checked == nullptr) {
+        continue;
+      }
+      wolang::abi::LayoutStore layouts(vm->database.types(), checked->resolution);
+      vm->database.ShareMembers(&layouts);
+      const wolang::abi::Layout& layout = layouts.Of(id);
+      std::vector<uint32_t> found;
+      found.push_back(layout.size);
+      found.push_back(layout.align);
+      found.insert(found.end(), layout.offsets.begin(), layout.offsets.end());
+      if (found != expected.words) {
+        problems += "error: the bindings expect `" + expected.name + "` to be " + DescribeLayout(expected.words) + ", but this compiler lays it out as " + DescribeLayout(found) + " (D271)\n";
+      }
+      break;
+    }
+  }
+  return problems;
+}
+
 // Builds what a call needs: the code, the machine code where there is
 // any, and the list of functions a host may name.
 void Prepare(WolangVm* vm) {
@@ -363,6 +413,11 @@ void Prepare(WolangVm* vm) {
     failed |= diagnostic.severity == Severity::kError;
   }
   vm->errors = Render(&vm->database, all);
+  const std::string layout_problems = failed ? std::string() : LayoutProblems(vm);
+  if (!layout_problems.empty()) {
+    vm->errors += layout_problems;
+    failed = true;
+  }
   vm->ok = !failed && !vm->files.empty();
   if (!vm->ok) {
     vm->compiled.reset();
@@ -691,6 +746,41 @@ WolangVm* wolang_vm_create_with(const WolangVmOptions* options) {
 
 uint32_t wolang_abi_version(void) {
   return WOLANG_ABI_VERSION;
+}
+
+WolangStatus wolang_vm_expect_abi(WolangVm* vm, uint32_t version) {
+  if (vm == nullptr) {
+    return kWolangError;
+  }
+  const VmTurn turn(vm);
+  const uint32_t library = WOLANG_ABI_VERSION;
+  if ((version >> 16) != (library >> 16) || (version & 0xffffu) > (library & 0xffffu)) {
+    vm->errors = "error: the bindings were generated for ABI " + std::to_string(version >> 16) + "." + std::to_string(version & 0xffffu) + " and this library speaks ABI " + std::to_string(library >> 16) + "." + std::to_string(library & 0xffffu) + "; generate them again with this compiler (D271)\n";
+    vm->ok = false;
+    return kWolangError;
+  }
+  return kWolangOk;
+}
+
+WolangStatus wolang_vm_expect_struct(WolangVm* vm, const char* name, const uint32_t* layout, int32_t count) {
+  if (vm == nullptr || name == nullptr || layout == nullptr || count < 2) {
+    return kWolangError;
+  }
+  const VmTurn turn(vm);
+  WolangVm::ExpectedLayout expected;
+  expected.name = name;
+  expected.words.assign(layout, layout + count);
+  vm->expected_layouts.push_back(std::move(expected));
+  if (!vm->ok) {
+    return kWolangOk;
+  }
+  const std::string problems = LayoutProblems(vm);
+  if (problems.empty()) {
+    return kWolangOk;
+  }
+  vm->errors = problems;
+  vm->ok = false;
+  return kWolangError;
 }
 
 static void ReleaseGlobals(WolangVm* vm);
@@ -2330,6 +2420,7 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
     staged->initialize = false;
     staged->allow_compiled = false;
     staged->sandboxes = vm->sandboxes;
+    staged->expected_layouts = vm->expected_layouts;
     wolang::runtime::SpaceCopyBindings(vm->globals.get(), staged->globals.get());
     int32_t staged_status = 0;
     for (const WolangVm::Loaded& file : again) {
@@ -2367,6 +2458,7 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   const bool allow_compiled = vm->allow_compiled;
   const bool initialize = vm->initialize;
   const std::vector<std::pair<std::string, std::vector<std::string>>> sandboxes = vm->sandboxes;
+  const std::vector<WolangVm::ExpectedLayout> expected_layouts = vm->expected_layouts;
   const WolangWriter writer = vm->writer;
   void* const writer_user = vm->writer_user;
   const WolangWriter reporter = vm->reporter;
@@ -2386,6 +2478,7 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   vm->allow_compiled = allow_compiled;
   vm->initialize = initialize;
   vm->sandboxes = sandboxes;
+  vm->expected_layouts = expected_layouts;
   vm->writer = writer;
   vm->writer_user = writer_user;
   vm->reporter = reporter;

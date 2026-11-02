@@ -3463,3 +3463,19 @@ enough to move it.
 **D288. The Wolang parser reads valid programs and is checked against the C++ one.** `tools/selfhost/syntax` parses to a tree shaped like `ast.h` and prints it as `ast_printer.cc` does. `diff_ast.py` compares the two dumps on every tracked `.wo` file and every `wolang` block of the guides; files the C++ parser rejects are counted and left out. It leaves out recovery, diagnostics and the depth limit, which are stage 2 work of their own, and it fails with the token it stopped at rather than guess. Writing it found that `Class()` ignores field initializers and leaves class-typed fields null (`docs/plans/self-hosting.md`, gap 7), which is a question for the language and not decided here.
 
 **D289. A class owns the bytes of its `Text` fields.** A `Text` field is stored as the two words a borrowed `text` is, the pointer and the length, so an object that has one is allocated with room for both. The layout read a class member by its declared type, `Text`, which it did not know, and gave it no bytes: the two-word store at construction ran past the allocation and corrupted the heap when the handle went. The rule is the one a local follows (D133): the object takes the bytes it is built with or assigned, writing a new `Text` into the field gives back the old, and the last release of the object gives back what it holds, in `Class$drop`. A `text` field is a view and is never freed. Fields of a struct are not changed: lowering erases them before they are laid out, and a struct's owned text is a separate question.
+
+**D271. Generated bindings say which ABI and which struct layouts they were made
+for.** The glue `wolang bind --reflection` writes begins `MowoWolang_Bind_*`
+with `wolang_vm_expect_abi(vm, WOLANG_ABI_VERSION)` and, for each value struct
+it passes by pointer (a vector, a rotator, a reflected struct), one
+`wolang_vm_expect_struct(vm, name, layout, count)`. The layout is the host C++
+compiler's own answer, `{sizeof, alignof, offsetof...}`, and not a hash of it:
+a mismatch can then say what each side expected, and a hash could not. The
+library accepts the bindings when the ABI major is equal and their minor is no
+greater than its own; it compares a struct's numbers with the layout the
+compiler gives the struct of that name in the program, when the program loads
+or at once if it is loaded. Any difference fails the load, with a line naming
+the struct and both layouts, and `wolang_vm_ok` is zero. The expectations
+survive a reload. A change to how the compiler lays a struct out is an ABI
+change and bumps the major version. No syntax; ABI 1.4 adds the two calls.
+This is the compatibility rule the engine asked for (engine items 13 and 16).

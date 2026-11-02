@@ -30,7 +30,7 @@ extern "C" {
 // the low. A host compares it with `wolang_abi_version()` at load, since
 // the library it links may not be the one it compiled against (D241). A
 // different major is a different ABI; a larger minor only adds.
-#define WOLANG_ABI_VERSION ((1u << 16) | 3u)
+#define WOLANG_ABI_VERSION ((1u << 16) | 4u)
 
 uint32_t wolang_abi_version(void);
 
@@ -116,6 +116,15 @@ typedef struct WolangVmOptions {
 
 WolangVm* wolang_vm_create_with(const WolangVmOptions* options);
 void wolang_vm_destroy(WolangVm* vm);
+
+// Generated bindings call these first, with the ABI they were generated for
+// and the layout of every struct they pass by pointer: the struct's size,
+// its alignment, then the offset of each field, as the host's C++ compiler
+// lays it out. A binding the library cannot speak, or a struct the compiler
+// lays out differently, fails the load with a message naming both, rather
+// than reading garbage (D271). Added in ABI 1.4.
+WolangStatus wolang_vm_expect_abi(WolangVm* vm, uint32_t version);
+WolangStatus wolang_vm_expect_struct(WolangVm* vm, const char* name, const uint32_t* layout, int32_t count);
 
 // Loads a package directory -- one with a `wolang.toml` in it -- or a
 // single `.wo` file. Zero on success; anything else means the program has

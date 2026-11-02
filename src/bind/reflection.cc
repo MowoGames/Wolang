@@ -191,13 +191,20 @@ class Generator {
     for (const std::string& include : includes) {
       glue += "#include \"" + include + "\"\n";
     }
-    glue += "\n#include <cstdint>\n#include <string>\n\n#include \"wolang/embed/wolang.h\"\n\n";
+    glue += "\n#include <cstddef>\n#include <cstdint>\n#include <string>\n\n#include \"wolang/embed/wolang.h\"\n\n";
+    std::string expectations = "\twolang_vm_expect_abi(vm, WOLANG_ABI_VERSION);\n";
     for (const ValueType* type : used) {
       glue += "struct Wolang" + type->name + " {\n";
       for (const ValueField& field : type->fields) {
         glue += "\t" + field.c + " " + field.name + ";\n";
       }
       glue += "};\n\n";
+      glue += "static const uint32_t kMowoLayout_" + type->name + "[] = {sizeof(Wolang" + type->name + "), alignof(Wolang" + type->name + ")";
+      for (const ValueField& field : type->fields) {
+        glue += ", offsetof(Wolang" + type->name + ", " + field.name + ")";
+      }
+      glue += "};\n\n";
+      expectations += "\twolang_vm_expect_struct(vm, \"" + type->name + "\", kMowoLayout_" + type->name + ", " + std::to_string(type->fields.size() + 2) + ");\n";
     }
     glue += "extern \"C\" uint32_t MowoWolangPropertyOffset(const char* className, const char* key);\n";
     glue += "extern \"C\" void MowoWolangRetain(void* object, void* user);\n";
@@ -219,7 +226,7 @@ class Generator {
     }
     glue += "\n";
     glue += "namespace Mowo {\n\n" + m_Glue + "}\n\n";
-    glue += "extern \"C\" void MowoWolang_Bind_" + m_Options.module + "(WolangVm* vm) {\n" + m_Registrations + "}\n";
+    glue += "extern \"C\" void MowoWolang_Bind_" + m_Options.module + "(WolangVm* vm) {\n" + expectations + m_Registrations + "}\n";
   }
 
  private:
