@@ -1,7 +1,0 @@
-[package]
-name = "wolexer"
-version = "0.1.0"
-source = "src"
-
-[dependencies]
-std = { path = "../../../lib/std" }

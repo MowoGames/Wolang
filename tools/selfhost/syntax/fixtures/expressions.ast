@@ -1,0 +1,176 @@
+(file
+  (need std.list
+    (names List ListNew))
+  (fun Score offer
+    (params
+      (param n
+        (type int))
+      (param scale
+        (type float)
+        (default
+          (float 1.5)))
+      (param label
+        (optional
+          (type text))))
+    (returns
+      (fallible
+        (type int)))
+    (uses
+      (type io)
+      (type unsafe))
+    (block
+      (var
+        (bind total)
+        (binary |
+          (binary <<
+            (binary +
+              (binary *
+                (path n)
+                (int 2))
+              (int 1))
+            (int 3))
+          (int 4)))
+      (const
+        (bind parts)
+        (array
+          (int 1)
+          (int 2)
+          (int 31)
+          (float 2500)
+          (int 10 unit=m)
+          (int 7 suffix=u8)))
+      (const
+        (bind pair)
+        (tuple
+          (path n)
+          (string
+            (text "x")
+            (binary +
+              (path n)
+              (int 1))
+            (text "y"))
+          (char 122)
+          (char 10)))
+      (expr
+        (for
+          (bind i)
+          (range ..=
+            (from
+              (int 0))
+            (to
+              (path n)))
+          (block
+            (expr
+              (if
+                (binary &&
+                  (binary ==
+                    (binary %
+                      (path i)
+                      (int 2))
+                    (int 0))
+                  (unary !
+                    (binary >
+                      (path i)
+                      (int 9))))
+                (block
+                  (expr
+                    (assign +=
+                      (path total)
+                      (path i))))
+                (else
+                  (if
+                    (bind found)
+                    (path label)
+                    (block
+                      (expr
+                        (assign =
+                          (path total)
+                          (binary ??
+                            (path total)
+                            (field len
+                              (path found))))))
+                    (else
+                      (block
+                        (continue))))))))))
+      (expr
+        (while label=outer
+          (binary >
+            (path total)
+            (int 0))
+          (block
+            (break outer))))
+      (const
+        (bind doubled)
+        (call
+          (field Map
+            (path parts))
+          (args
+            (closure
+              (params
+                (param x)
+                (param y mut
+                  (type int)))
+              (binary *
+                (path x)
+                (int 2))))))
+      (const
+        (bind read)
+        (optional-field value
+          (optional-field first
+            (call
+              (path Convert)
+              (generics
+                (type List
+                  (type int)))
+              (args
+                (path parts))))))
+      (const
+        (bind cast)
+        (cast
+          (path total)
+          (type float)))
+      (defer
+        (block
+          (expr
+            (assign =
+              (path total)
+              (int 0)))))
+      (return
+        (match
+          (path total)
+          (arm
+            (literal
+              (int 0))
+            (literal
+              (int 1))
+            (int 10))
+          (arm
+            (bind n)
+            (guard
+              (binary >
+                (path n)
+                (int 5)))
+            (int 20))
+          (arm
+            (struct-pattern Point
+              (bind x field=x)
+              (bind inner field=y))
+            (binary +
+              (path x)
+              (path inner)))
+          (arm
+            (variant-pattern Shape.Circle
+              (bind radius))
+            (path radius))
+          (arm
+            (present
+              (bind value))
+            (path value))
+          (arm
+            (literal
+              (null))
+            (int 0))
+          (arm
+            (wildcard)
+            (unary -
+              (int 1))))))))

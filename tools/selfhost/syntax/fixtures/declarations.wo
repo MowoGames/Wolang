@@ -1,0 +1,41 @@
+need std.io.{Print, Write}
+need std.text
+
+@Test
+offer class Turret<T: Spawnable + Named> : Actor where T: Sized {
+  var range: float = 15.0
+  weak var target: Actor?
+  deinit { Print("gone") }
+  override unsafe fun Fire(shots: []mut u8, f: keep fun(int) -> bool) -> (int, text) uses io {
+    return (1, "ok")
+  }
+}
+
+extend Turret as Describe {
+  fun Describe() -> text => "turret"
+}
+
+enum Shape {
+  Circle(radius: float)
+  Square(side: float)
+  Dot
+}
+
+error Missing, Corrupt(line: int, why: text)
+type Handle = *mut u8
+dimension Length, Time
+unit m: Length
+component Health { var hp: int }
+tag Hostile
+signal Died(who: Actor)
+on Died(who) { Print("down") }
+system Move(dt: float, q: Query<mut Position, with Hostile>) after Input before Render { }
+machine Door {
+  state Closed {
+    enter { Print("closed") }
+    on Open -> Opened
+    always after 2s -> Locked
+  }
+  state Opened { }
+}
+extern "C" fun abs(n: s32) -> s32 = "abs"
