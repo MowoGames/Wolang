@@ -19,7 +19,7 @@ be embedded into.
 
 **Status:** the language runs, compiles to machine code for five
 targets, embeds in other programs, opens a window, serves HTTP and has
-a standard library of thirty-six modules. Three tiers agree on every test: an
+a standard library of thirty-eight modules. Three tiers agree on every test: an
 interpreter as the reference, a just-in-time tier for `run`, and an
 ahead-of-time tier through LLVM for `build`. A differential fuzzer
 compares all of them on generated programs, which is what finds

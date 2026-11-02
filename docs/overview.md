@@ -65,7 +65,7 @@ fun main() uses io {
 3. [A tour](/docs/wolang/tour/) — the whole language in half an hour,
    every example compiled on each commit.
 4. [Cookbook](/docs/wolang/cookbook/) — short answers to "how do I…".
-5. [Standard library](/docs/wolang/stdlib/) — thirty-seven modules, from
+5. [Standard library](/docs/wolang/stdlib/) — thirty-eight modules, from
    text and collections to HTTP, TLS, compression and time zones.
 6. [Language reference](/docs/wolang/spec/) — the grammar and the rules,
    for when the tour is not precise enough.
