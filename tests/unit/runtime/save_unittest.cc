@@ -199,5 +199,41 @@ WOLANG_TEST(RuntimeSave, TakesItsNumbersFromTheTableWhenTheSchemaAsksForThem) {
   FreeAll({cell, static_cast<SaveTestCell*>(roots[0])});
 }
 
+struct SaveTestVirtual {
+  uint64_t Header;
+  int64_t Steps;
+};
+
+WOLANG_TEST(RuntimeSave, GivesARebuiltObjectItsClassDescriptorAndReportsBothTables) {
+  const std::string schema = "WSCHEMA 1\nROOT V\nTYPE C V 16 1\nHEAD 777\nFIELD steps 8 i8 i8\n";
+  auto* object = static_cast<SaveTestVirtual*>(wolang_object_alloc(sizeof(SaveTestVirtual)));
+  object->Header = 777;
+  object->Steps = 4;
+
+  SaveRoot start;
+  start.Object = object;
+  start.Class = "V";
+
+  std::vector<uint8_t> bytes;
+  std::vector<const void*> written;
+  WOLANG_ASSERT_EQ(static_cast<int32_t>(SaveEncode(schema, nullptr, std::span<const SaveRoot>(&start, 1), &bytes, &written)), 0);
+  WOLANG_ASSERT_EQ(written.size(), 1u);
+  WOLANG_EXPECT(written[0] == object);
+
+  std::vector<void*> roots;
+  std::vector<void*> every;
+  WOLANG_ASSERT_EQ(static_cast<int32_t>(SaveDecode(schema, nullptr, bytes, &roots, &every)), 0);
+  WOLANG_ASSERT_EQ(roots.size(), 1u);
+  WOLANG_ASSERT_EQ(every.size(), 1u);
+  WOLANG_EXPECT(every[0] == roots[0]);
+
+  auto* back = static_cast<SaveTestVirtual*>(roots[0]);
+  WOLANG_EXPECT_EQ(back->Header, 777u);
+  WOLANG_EXPECT_EQ(back->Steps, 4);
+
+  wolang_object_free(object);
+  wolang_object_free(back);
+}
+
 }  // namespace runtime
 }  // namespace wolang

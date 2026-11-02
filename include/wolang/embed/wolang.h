@@ -400,6 +400,25 @@ WolangStatus wolang_vm_reload(WolangVm* vm);
 // across.
 const char* wolang_vm_notes(const WolangVm* vm);
 
+// Where to hear that a reload moved an object the host holds (D266).
+//
+// A reload that changes a class the host holds an object of used to be
+// refused. With a function registered here it is not: the object, and every
+// object it reaches through the fields it stores, is written down under the
+// old layout and read back under the new one -- a field that is still there
+// keeps its value by name and shape, a new field is zero, a removed one is
+// dropped -- and then |remap| is called once per object the host held with
+// the old object and the new one. From then on the host uses the new one; the
+// vm has moved the host's references over, so each `wolang_vm_object_release`
+// of the old object becomes one of the new. The old object is left to the
+// retired program and is not to be used again. A module-level `var` that
+// pointed at the object points at the new one. A class the new program no
+// longer has, or a field a reload cannot carry (an array, a closure, a weak
+// reference, a host object), still refuses the reload and says which. Pass a
+// null |remap| to go back to refusing. Added in ABI 1.4.
+typedef void (*WolangRemap)(WolangVm* vm, WolangValue old_object, WolangValue new_object, void* user);
+void wolang_vm_set_remap(WolangVm* vm, WolangRemap remap, void* user);
+
 // What was loaded, so a host can watch it for changes: the files of the
 // program, in load order.
 int32_t wolang_vm_file_count(const WolangVm* vm);

@@ -35,7 +35,7 @@ struct SaveRoot {
 // reader built from another version of the program can tell which fields it
 // still has (D266). |offsets| is the table the schema's `@k` places index; it
 // may be null when the schema spells every number out.
-SaveStatus SaveEncode(std::string_view schema, const uint64_t* offsets, std::span<const SaveRoot> roots, std::vector<uint8_t>* out);
+SaveStatus SaveEncode(std::string_view schema, const uint64_t* offsets, std::span<const SaveRoot> roots, std::vector<uint8_t>* out, std::vector<const void*>* objects = nullptr);
 
 // Rebuilds the graph |data| holds, as objects of the program |schema|
 // describes. A field the bytes have and the schema lacks, or holds under
@@ -43,7 +43,7 @@ SaveStatus SaveEncode(std::string_view schema, const uint64_t* offsets, std::spa
 // stays zero. Nothing is allocated unless the whole of |data| reads cleanly.
 // Every root comes back with one reference for the caller, and a root the
 // bytes hold as null comes back null.
-SaveStatus SaveDecode(std::string_view schema, const uint64_t* offsets, std::span<const uint8_t> data, std::vector<void*>* roots);
+SaveStatus SaveDecode(std::string_view schema, const uint64_t* offsets, std::span<const uint8_t> data, std::vector<void*>* roots, std::vector<void*>* objects = nullptr);
 
 extern "C" {
 

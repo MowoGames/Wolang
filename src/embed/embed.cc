@@ -27,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -46,6 +47,7 @@
 #include "wolang/runtime/env.h"
 #include "wolang/runtime/globals.h"
 #include "wolang/runtime/host.h"
+#include "wolang/runtime/save.h"
 #include "wolang/runtime/scheduler.h"
 #include "wolang/runtime/sockets.h"
 #include "wolang/runtime/system.h"
@@ -222,6 +224,9 @@ struct WolangVm {
   void* writer_user = nullptr;
   WolangWriter reporter = nullptr;
   void* reporter_user = nullptr;
+  // Told where an object the host held went when a reload moved it (D266).
+  WolangRemap remap = nullptr;
+  void* remap_user = nullptr;
   // The program's objects the host took a reference to, by address: what a
   // reload must not leave pointing at a class whose layout changed (D255).
   struct Held {
@@ -2155,6 +2160,15 @@ void wolang_vm_set_reporter(WolangVm* vm, WolangWriter reporter, void* user) {
   InstallWriter(vm);
 }
 
+void wolang_vm_set_remap(WolangVm* vm, WolangRemap remap, void* user) {
+  if (vm == nullptr) {
+    return;
+  }
+  const VmTurn turn(vm);
+  vm->remap = remap;
+  vm->remap_user = user;
+}
+
 // -------------------------------------------------------------- limits ---
 
 void wolang_vm_set_step_limit(WolangVm* vm, uint64_t steps) {
@@ -2401,7 +2415,7 @@ static void CarryFields(WolangVm* vm, Database& before, const GlobalSlot& old, c
 // A value is moved rather than copied: the old program's globals are
 // never read or released again, so what they held belongs to the new
 // program from here on, references and all.
-static void Carry(WolangVm* vm, Database& before, const std::vector<GlobalSlot>& old) {
+static void Carry(WolangVm* vm, Database& before, const std::vector<GlobalSlot>& old, const std::map<const void*, void*>& moved) {
   for (const GlobalSlot& now : GlobalsOf(vm)) {
     const GlobalSlot* match = nullptr;
     for (const GlobalSlot& slot : old) {
@@ -2411,6 +2425,20 @@ static void Carry(WolangVm* vm, Database& before, const std::vector<GlobalSlot>&
     }
     if (match == nullptr) {
       continue;
+    }
+
+    // An object the host held moved, and a global that pointed at it points
+    // at the new one, so the host and the program still share one (D266).
+    if (!moved.empty() && before.types().IsHandle(match->Type) && vm->database.types().IsHandle(now.Type) && !before.types().IsOptional(match->Type) && !vm->database.types().IsOptional(now.Type) && !vm->database.types().IsForeignClass(now.Type) && before.types().Describe(before.interner(), match->Type) == vm->database.types().Describe(vm->database.interner(), now.Type)) {
+      const void* was = nullptr;
+      std::memcpy(&was, match->Storage, sizeof(was));
+      const auto found = moved.find(was);
+      if (found != moved.end()) {
+        LetGo(vm, now.Type, now.Storage, now.Weak);
+        wolang::runtime::wolang_object_retain(found->second);
+        std::memcpy(now.Storage, &found->second, sizeof(found->second));
+        continue;
+      }
     }
     if (Shape(before, match->Type) == Shape(vm->database, now.Type)) {
       wolang::abi::LayoutStore layouts(vm->database.types(), now.Checked->resolution);
@@ -2447,23 +2475,331 @@ static std::string LayoutKey(Database& database, TypeId type) {
   return (header ? "virtual;" : "plain;") + key;
 }
 
+/// The text a save reads and writes objects by, for the classes the host holds
+// and whatever their stored fields reach, with every offset and size spelled
+// out from this program's own layout (D266).
+class MigrationSchema {
+ public:
+  explicit MigrationSchema(Database& database) : m_Database(database) {}
+
+  bool Build(const std::vector<TypeId>& roots, std::string* text, std::string* why) {
+    m_Why = why;
+    m_Roots = roots;
+    m_Queue = roots;
+
+    std::string body;
+    for (size_t at = 0; at < m_Queue.size(); ++at) {
+      const TypeId type = m_Queue[at];
+      if (std::find(m_Done.begin(), m_Done.end(), type) != m_Done.end()) {
+        continue;
+      }
+      m_Done.push_back(type);
+      if (!Describe(type, &body)) {
+        return false;
+      }
+    }
+
+    *text = "WSCHEMA 1\nROOT " + (roots.empty() ? std::string() : NameOf(roots[0])) + "\n" + body;
+
+    return true;
+  }
+
+  std::string NameOf(TypeId type) {
+    for (const auto& [seen, name] : m_Names) {
+      if (seen == type) {
+        return name;
+      }
+    }
+
+    std::string spelled = m_Database.types().Describe(m_Database.interner(), type);
+    for (char& letter : spelled) {
+      if (letter == ' ' || letter == '\t' || letter == '\n') {
+        letter = '_';
+      }
+    }
+
+    int same = 0;
+    for (const auto& [seen, name] : m_Names) {
+      if (name == spelled || name.rfind(spelled + "~", 0) == 0) {
+        ++same;
+      }
+    }
+    if (same != 0) {
+      spelled += "~" + std::to_string(same);
+    }
+    m_Names.emplace_back(type, spelled);
+
+    return spelled;
+  }
+
+ private:
+  bool Refuse(TypeId type, const std::string& field, const std::string& reason) {
+    std::string where = m_Database.types().Describe(m_Database.interner(), type);
+    if (!field.empty()) {
+      where += "." + field;
+    }
+    *m_Why += "`" + where + "` cannot be carried across a reload: " + reason + "\n";
+
+    return false;
+  }
+
+  bool IsRoot(TypeId type) const {
+    return std::find(m_Roots.begin(), m_Roots.end(), type) != m_Roots.end();
+  }
+
+  bool Describe(TypeId type, std::string* body) {
+    const wolang::TypeStore& types = m_Database.types();
+    const bool is_class = types.IsHandle(type);
+    const CheckedFile* checked = m_Database.Checked(FileId{types.Get(types.StripWrappers(type)).declaring_file});
+    if (checked == nullptr) {
+      return Refuse(type, std::string(), "its declaration is not available");
+    }
+
+    wolang::abi::LayoutStore layouts(types, checked->resolution);
+    m_Database.ShareMembers(&layouts);
+    const wolang::abi::Layout& layout = is_class ? layouts.ObjectOf(type) : layouts.Of(type);
+    bool header = false;
+    const std::vector<const wolang::Member*> stored = StoredMembers(checked->resolution, type, &header);
+
+    *body += is_class ? "TYPE C " : "TYPE S ";
+    *body += NameOf(type) + " " + std::to_string(layout.size) + " " + std::to_string(stored.size()) + "\n";
+    if (is_class && header) {
+      *body += "HEAD " + std::to_string(wolang::ir::ClassTokenOf(types, type)) + "\n";
+    }
+
+    const uint32_t first = header ? 1u : 0u;
+    for (size_t i = 0; i < stored.size(); ++i) {
+      const uint32_t index = first + static_cast<uint32_t>(i);
+      const std::string name(m_Database.interner().Text(stored[i]->name));
+      if (index >= layout.offsets.size()) {
+        return Refuse(type, name, "it has no place in the layout");
+      }
+      if (stored[i]->is_weak) {
+        return Refuse(type, name, "a weak field is not carried yet");
+      }
+
+      std::string shape;
+      std::string wire;
+      std::string reason;
+      if (!Field(layouts.FieldType(type, index), layouts, &shape, &wire, &reason, 0)) {
+        return Refuse(type, name, reason.empty() ? std::string("its layout is not one a reload knows") : reason);
+      }
+      *body += "FIELD " + name + " " + std::to_string(layout.offsets[index]) + " " + wire + " " + shape + "\n";
+    }
+
+    return true;
+  }
+
+  bool Field(TypeId type, wolang::abi::LayoutStore& layouts, std::string* shape, std::string* wire, std::string* reason, int depth) {
+    const wolang::TypeStore& types = m_Database.types();
+    if (depth > 8) {
+      *reason = "it nests too deep";
+      return false;
+    }
+
+    switch (types.KindOf(type)) {
+      case TypeKind::kBool:
+        *shape = *wire = "b";
+        return layouts.SizeOf(type) == 1;
+      case TypeKind::kChar:
+        *shape = *wire = "c";
+        return layouts.SizeOf(type) == 4;
+      case TypeKind::kInt: {
+        const wolang::Type& info = types.Get(type);
+        const uint32_t bytes = 1u << static_cast<uint32_t>(info.int_width);
+        *shape = *wire = std::string(info.is_signed ? "i" : "u") + std::to_string(bytes);
+        return layouts.SizeOf(type) == bytes;
+      }
+      case TypeKind::kFloat:
+        *shape = *wire = types.Get(type).float_width == wolang::FloatWidth::k32 ? "f4" : "f8";
+        return true;
+      case TypeKind::kStr:
+        *shape = *wire = "s";
+        return layouts.SizeOf(type) == 16;
+      case TypeKind::kOptional: {
+        const wolang::abi::Layout& optional = layouts.Of(type);
+        std::string inner_shape;
+        std::string inner_wire;
+        if (optional.offsets.size() < 2 || optional.offsets[0] != 0 || !Field(types.ElementOf(type), layouts, &inner_shape, &inner_wire, reason, depth + 1)) {
+          if (reason->empty()) {
+            *reason = "an optional of this shape is not carried";
+          }
+          return false;
+        }
+        *shape = "o " + std::to_string(optional.offsets[1]) + " " + inner_shape;
+        *wire = "o(" + inner_wire + ")";
+        return true;
+      }
+      case TypeKind::kNamed:
+      case TypeKind::kInstance: {
+        if (types.IsForeignClass(type)) {
+          *reason = "a host object belongs to the host";
+          return false;
+        }
+        if (types.IsHandle(type)) {
+          if (layouts.HasHeader(type)) {
+            *reason = "a class with a virtual method is only carried when the host holds it";
+            return false;
+          }
+          *shape = "r " + NameOf(type);
+          *wire = "r:" + NameOf(type);
+          m_Queue.push_back(type);
+          return true;
+        }
+        if (layouts.IsTagged(type)) {
+          *reason = "an enum that carries values is not carried yet";
+          return false;
+        }
+        if (layouts.IsTagOnly(type)) {
+          *shape = "e";
+          *wire = "e:" + NameOf(type);
+          return layouts.SizeOf(type) == 4;
+        }
+        *shape = "v " + NameOf(type);
+        *wire = "v:" + NameOf(type);
+        m_Queue.push_back(type);
+        return true;
+      }
+      default:
+        *reason = "`" + types.Describe(m_Database.interner(), type) + "` is not a type a reload can carry";
+        return false;
+    }
+  }
+
+  Database& m_Database;
+  std::string* m_Why = nullptr;
+  std::vector<TypeId> m_Roots;
+  std::vector<TypeId> m_Queue;
+  std::vector<TypeId> m_Done;
+  std::vector<std::pair<TypeId, std::string>> m_Names;
+};
+
+// What a reload carries across for the objects the host holds: the graph
+// they reach, written under the old program's layout before it is replaced
+// and read back under the new program's after (D266).
+struct Migration {
+  bool Active = false;
+  std::vector<uint8_t> Bytes;
+  std::vector<void*> Held;
+  std::vector<std::string> Classes;
+  std::vector<const void*> Written;
+  std::vector<std::tuple<void*, void*, std::string>> Moved;
+  std::map<const void*, void*> Table;
+};
+
 // Why a reload would hurt an object the host holds, or nothing when it
-// would not: |staged| is the new program, loaded and not yet running.
-static std::string HeldObjectsBlock(WolangVm* vm, WolangVm* staged) {
+// would not: |staged| is the new program, loaded and not yet running. An
+// object whose class changed is written down when the host said where to
+// tell it the object moved; otherwise it blocks the reload as it always did.
+static std::string PlanMigration(WolangVm* vm, WolangVm* staged, Migration* migration) {
   std::string blocked;
+  std::vector<TypeId> old_roots;
+  std::vector<TypeId> new_roots;
   for (const auto& [address, held] : vm->held) {
-    (void)address;
     const TypeId before = FindClassNamed(vm->database, held.Type);
     const TypeId after = FindClassNamed(staged->database, held.Type);
     if (!before.is_valid() || !after.is_valid()) {
       blocked += "the host holds a `" + held.Type + "` and the new program has no such class\n";
       continue;
     }
-    if (LayoutKey(vm->database, before) != LayoutKey(staged->database, after)) {
-      blocked += "the host holds a `" + held.Type + "` and its fields changed\n";
+    if (LayoutKey(vm->database, before) == LayoutKey(staged->database, after)) {
+      continue;
+    }
+    if (vm->remap == nullptr) {
+      blocked += "the host holds a `" + held.Type + "` and its fields changed; register `wolang_vm_set_remap` to have it carried across\n";
+      continue;
+    }
+    migration->Held.push_back(address);
+    migration->Classes.push_back(held.Type);
+    old_roots.push_back(before);
+    new_roots.push_back(after);
+  }
+  if (!blocked.empty() || migration->Held.empty()) {
+    return blocked;
+  }
+
+  std::string old_text;
+  std::string new_text;
+  std::string why;
+  MigrationSchema old_schema(vm->database);
+  MigrationSchema new_schema(staged->database);
+  if (!old_schema.Build(old_roots, &old_text, &why) || !new_schema.Build(new_roots, &new_text, &why)) {
+    return why;
+  }
+
+  std::vector<std::string> names;
+  for (size_t i = 0; i < migration->Held.size(); ++i) {
+    names.push_back(old_schema.NameOf(old_roots[i]));
+  }
+
+  std::vector<wolang::runtime::SaveRoot> roots;
+  for (size_t i = 0; i < migration->Held.size(); ++i) {
+    wolang::runtime::SaveRoot root;
+    root.Object = migration->Held[i];
+    root.Class = names[i];
+    roots.push_back(root);
+  }
+  if (wolang::runtime::SaveEncode(old_text, nullptr, roots, &migration->Bytes, &migration->Written) != wolang::runtime::SaveStatus::kOk) {
+    return "the objects the host holds could not be written down to carry them across\n";
+  }
+  migration->Active = true;
+
+  return std::string();
+}
+
+// Reads the written objects back under the new program's layout and moves the
+// host's references to them. Runs once the new program is loaded and before
+// its globals are carried, so a global that held a moved object can be given
+// the new one (D266).
+static void ApplyMigration(WolangVm* vm, Migration* migration) {
+  if (!migration->Active) {
+    return;
+  }
+
+  std::vector<TypeId> roots;
+  for (const std::string& name : migration->Classes) {
+    roots.push_back(FindClassNamed(vm->database, name));
+  }
+
+  std::string text;
+  std::string why;
+  MigrationSchema schema(vm->database);
+  if (!schema.Build(roots, &text, &why)) {
+    vm->notes += why;
+
+    return;
+  }
+
+  std::vector<void*> now;
+  std::vector<void*> every;
+  const wolang::runtime::SaveStatus status = wolang::runtime::SaveDecode(text, nullptr, migration->Bytes, &now, &every);
+  if (status != wolang::runtime::SaveStatus::kOk || now.size() != migration->Held.size()) {
+    vm->notes += "the objects the host holds could not be carried across: the bytes did not read back\n";
+
+    return;
+  }
+
+  for (size_t i = 0; i < migration->Written.size() && i < every.size(); ++i) {
+    if (every[i] != nullptr) {
+      migration->Table[migration->Written[i]] = every[i];
     }
   }
-  return blocked;
+
+  for (size_t i = 0; i < migration->Held.size(); ++i) {
+    const auto found = vm->held.find(migration->Held[i]);
+    if (found == vm->held.end() || now[i] == nullptr) {
+      continue;
+    }
+
+    WolangVm::Held entry = found->second;
+    vm->held.erase(found);
+    entry.Index = roots[i].index;
+    for (int32_t extra = 1; extra < entry.Count; ++extra) {
+      wolang::runtime::wolang_object_retain(now[i]);
+    }
+    vm->held[now[i]] = entry;
+    migration->Moved.emplace_back(migration->Held[i], now[i], migration->Classes[i]);
+  }
 }
 
 WolangStatus wolang_vm_reload(WolangVm* vm) {
@@ -2472,6 +2808,7 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   }
   const VmTurn turn(vm);
   const std::vector<WolangVm::Loaded> again = vm->loaded;
+  Migration migration;
 
   // The new program is loaded beside the old one first, without starting
   // anything. Only a program that compiles, and that leaves every object
@@ -2493,7 +2830,7 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
       vm->notes = "the reload was refused; the program that was running keeps running\n";
       return kWolangError;
     }
-    const std::string blocked = HeldObjectsBlock(vm, staged.get());
+    const std::string blocked = PlanMigration(vm, staged.get(), &migration);
     if (!blocked.empty()) {
       vm->errors = "wolang: the reload was refused: " + blocked;
       vm->notes = blocked;
@@ -2526,6 +2863,8 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   void* const writer_user = vm->writer_user;
   const WolangWriter reporter = vm->reporter;
   void* const reporter_user = vm->reporter_user;
+  const WolangRemap remap = vm->remap;
+  void* const remap_user = vm->remap_user;
   std::map<void*, WolangVm::Held> held = std::move(vm->held);
   std::deque<std::string> answers = std::move(vm->answers);
 
@@ -2547,6 +2886,8 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
   vm->writer_user = writer_user;
   vm->reporter = reporter;
   vm->reporter_user = reporter_user;
+  vm->remap = remap;
+  vm->remap_user = remap_user;
   vm->held = std::move(held);
   vm->answers = std::move(answers);
   wolang::runtime::SpaceCopyBindings(graveyard_space.get(), vm->globals.get());
@@ -2564,12 +2905,19 @@ WolangStatus wolang_vm_reload(WolangVm* vm) {
                   : wolang_vm_load(vm, file.path.c_str());
   }
   if (status == 0 && vm->ok) {
-    Carry(vm, before, old);
+    ApplyMigration(vm, &migration);
+    Carry(vm, before, old, migration.Table);
     for (auto& [address, entry] : vm->held) {
       (void)address;
       const TypeId now = FindClassNamed(vm->database, entry.Type);
       if (now.is_valid()) {
         entry.Index = now.index;
+      }
+    }
+    if (vm->remap != nullptr) {
+      for (const auto& [from, to, name] : migration.Moved) {
+        const TypeId type = FindClassNamed(vm->database, name);
+        vm->remap(vm, ObjectOf(vm, reinterpret_cast<uint64_t>(from), type), ObjectOf(vm, reinterpret_cast<uint64_t>(to), type), vm->remap_user);
       }
     }
   }

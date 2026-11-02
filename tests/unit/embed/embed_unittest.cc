@@ -1893,3 +1893,221 @@ class Plain {
   WOLANG_EXPECT_EQ(wolang_vm_class_field_count(vm, "Missing"), 0);
   wolang_vm_destroy(vm);
 }
+
+struct RemapRecord {
+  int Count = 0;
+  WolangValue Old;
+  WolangValue Now;
+};
+
+static void RecordRemap(WolangVm* vm, WolangValue old_object, WolangValue new_object, void* user) {
+  (void)vm;
+  auto* record = static_cast<RemapRecord*>(user);
+  record->Count += 1;
+  record->Old = old_object;
+  record->Now = new_object;
+}
+
+WOLANG_TEST(EmbedTest, AReloadMovesAnObjectTheHostHoldsWhenItsClassGainsAField) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_remap_reload_test.wo";
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5)
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+)");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  RemapRecord record;
+  wolang_vm_set_remap(vm, &RecordRemap, &record);
+  WolangValue mover = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Make", nullptr, 0, &mover), 0);
+
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+  var speed: int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5, 2)
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+offer fun Speed(mover: Mover) -> int => mover.speed
+)");
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_ASSERT_EQ(record.Count, 1);
+  WOLANG_EXPECT(record.Old.handle == mover.handle);
+  WOLANG_EXPECT(record.Now.handle != mover.handle);
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &record.Now, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 5);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Speed", &record.Now, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, record.Now), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, AGlobalThatPointedAtAMovedObjectPointsAtTheNewOne) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_remap_global_test.wo";
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+}
+
+var current: Mover = Mover(1)
+
+offer fun Current() -> Mover => current
+offer fun Bump() {
+  current.steps = current.steps + 1
+}
+offer fun Steps(mover: Mover) -> int => mover.steps
+offer fun CurrentSteps() -> int => current.steps
+)");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  RemapRecord record;
+  wolang_vm_set_remap(vm, &RecordRemap, &record);
+  WolangValue held = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Current", nullptr, 0, &held), 0);
+
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+  var speed: int
+}
+
+var current: Mover = Mover(1, 0)
+
+offer fun Current() -> Mover => current
+offer fun Bump() {
+  current.steps = current.steps + 1
+}
+offer fun Steps(mover: Mover) -> int => mover.steps
+offer fun CurrentSteps() -> int => current.steps
+)");
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_ASSERT_EQ(record.Count, 1);
+
+  WolangValue ignored = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Bump", nullptr, 0, &ignored), 0);
+  WolangValue through_host = wolang_void();
+  WolangValue through_program = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &record.Now, 1, &through_host), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "CurrentSteps", nullptr, 0, &through_program), 0);
+  WOLANG_EXPECT_EQ(through_host.integer, 2);
+  WOLANG_EXPECT_EQ(through_program.integer, 2);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, record.Now), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, AReloadMovesTheObjectsAMovedObjectReaches) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_remap_graph_test.wo";
+  WriteFile(path, R"(
+class Leg {
+  var length: int
+}
+
+class Walker {
+  var leg: Leg
+  var steps: int
+}
+
+offer fun Make() -> Walker {
+  return Walker(Leg(3), 7)
+}
+
+offer fun Steps(walker: Walker) -> int => walker.steps
+offer fun LegLength(walker: Walker) -> int => walker.leg.length
+)");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  RemapRecord record;
+  wolang_vm_set_remap(vm, &RecordRemap, &record);
+  WolangValue walker = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Make", nullptr, 0, &walker), 0);
+
+  WriteFile(path, R"(
+class Leg {
+  var length: int
+  var width: int
+}
+
+class Walker {
+  var leg: Leg
+  var steps: int
+}
+
+offer fun Make() -> Walker {
+  return Walker(Leg(3, 1), 7)
+}
+
+offer fun Steps(walker: Walker) -> int => walker.steps
+offer fun LegLength(walker: Walker) -> int => walker.leg.length
+)");
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_ASSERT_EQ(record.Count, 1);
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &record.Now, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 7);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "LegLength", &record.Now, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 3);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, record.Now), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, AReloadStillRefusesAFieldItCannotCarry) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_remap_refuse_test.wo";
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+  var cells: [4]int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5, [1, 2, 3, 4])
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+)");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  RemapRecord record;
+  wolang_vm_set_remap(vm, &RecordRemap, &record);
+  WolangValue mover = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Make", nullptr, 0, &mover), 0);
+
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+  var cells: [4]int
+  var speed: int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5, [1, 2, 3, 4], 2)
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+)");
+  WOLANG_EXPECT(wolang_vm_reload(vm) != 0);
+  WOLANG_EXPECT_EQ(record.Count, 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("Mover.cells") != std::string::npos);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &mover, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 5);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, mover), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}

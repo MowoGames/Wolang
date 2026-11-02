@@ -400,9 +400,35 @@ A reload that cannot work changes nothing (D255). The new program is
 loaded beside the old one first, without starting anything. If it does not
 compile, `wolang_vm_reload` answers an error, `wolang_vm_errors` says why, and
 the program that was running keeps running. The same goes for a program that
-would change the class of an object the host holds: the host's objects are not
-rebuilt, so the reload is refused with a line naming the class, and goes
-through once the host has let go of the object.
+would change the class of an object the host holds, unless the host said where
+to hear about it:
+
+```c
+static void Moved(WolangVm* vm, WolangValue was, WolangValue now, void* user) {
+  Swap(user, was.handle, now);       // from here on, use `now`
+}
+
+wolang_vm_set_remap(vm, Moved, engine);
+wolang_vm_reload(vm);                // a class gained `speed`; the mover is carried over
+```
+
+With a function registered through `wolang_vm_set_remap` (ABI 1.4, D266) the
+objects the host holds are carried to the new layout: each one, and every object
+it reaches through the fields it stores, is written down under the old layout
+and read back under the new one. A field that is still there keeps its value, a
+new field is zero, a removed one is dropped, and a field whose type changed starts
+from zero. The function is called once per object the host held, with the old
+object and the new one; the vm has moved the host's references over, so each
+`wolang_vm_object_release` of the old object is now one of the new. A
+module-level `var` that pointed at the object points at the new one, so the host
+and the program still share one object. The old object stays with the retired
+program and is not to be used again.
+
+A class the new program no longer has, or a field a reload cannot carry (an array,
+a closure, a weak reference, a host object, an enum that carries values), still
+refuses the reload with a line naming it; so does a changed class when no function
+is registered. Nothing changes until the host has let go of the object or fixed
+the field.
 
 Function handles from `wolang_vm_function` survive a reload and call the
 new code. The program as it was is kept until the vm is destroyed —

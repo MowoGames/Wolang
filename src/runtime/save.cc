@@ -39,6 +39,10 @@ struct SaveType {
   std::string Name;
   bool IsClass = false;
   uint64_t Size = 0;
+  // A class with a virtual method begins with the number that says which
+  // class an object is, and a rebuilt object has to begin with it too (D266).
+  bool HasHeader = false;
+  uint64_t HeaderToken = 0;
   std::vector<SaveField> Fields;
 };
 
@@ -196,6 +200,14 @@ static bool ParseSchema(std::string_view text, const uint64_t* offsets, SaveSche
       }
       schema->ByName[type.Name] = static_cast<uint32_t>(schema->Types.size());
       schema->Types.push_back(std::move(type));
+    } else if (words[0] == "HEAD") {
+      if (schema->Types.empty() || words.size() != 2 || !schema->Types.back().IsClass) {
+        return false;
+      }
+      schema->Types.back().HasHeader = true;
+      if (!ParseNumber(words[1], offsets, &schema->Types.back().HeaderToken)) {
+        return false;
+      }
     } else if (words[0] == "FIELD") {
       if (schema->Types.empty() || words.size() < 5) {
         return false;
@@ -293,7 +305,7 @@ class SaveEncoder {
  public:
   explicit SaveEncoder(const SaveSchemaText& schema) : m_Schema(schema) {}
 
-  SaveStatus Run(std::string_view schema_text, std::span<const SaveRoot> roots, std::vector<uint8_t>* out) {
+  SaveStatus Run(std::string_view schema_text, std::span<const SaveRoot> roots, std::vector<uint8_t>* out, std::vector<const void*>* objects) {
     std::vector<uint32_t> root_ids;
     for (const SaveRoot& root : roots) {
       const SaveType* type = m_Schema.Find(root.Class);
@@ -323,6 +335,12 @@ class SaveEncoder {
     }
     PutU32(out, static_cast<uint32_t>(m_Objects.size()));
     out->insert(out->end(), body.begin(), body.end());
+    if (objects != nullptr) {
+      objects->clear();
+      for (const Pending& pending : m_Objects) {
+        objects->push_back(pending.Object);
+      }
+    }
 
     return SaveStatus::kOk;
   }
@@ -517,7 +535,7 @@ class SaveDecoder {
  public:
   SaveDecoder(const SaveSchemaText& schema, std::span<const uint8_t> data) : m_Schema(schema), m_Data(data) {}
 
-  SaveStatus Run(std::vector<void*>* roots) {
+  SaveStatus Run(std::vector<void*>* roots, std::vector<void*>* objects) {
     SaveReader header(m_Data.data(), m_Data.size());
     const uint8_t* magic = header.Here();
     if (!header.Skip(4) || std::memcmp(magic, "WSAV", 4) != 0 || header.U32() != kSaveVersion) {
@@ -591,6 +609,9 @@ class SaveDecoder {
         return SaveStatus::kCorrupt;
       }
       std::memset(object, 0, size);
+      if (m_Records[i].Type->HasHeader && size >= sizeof(uint64_t)) {
+        std::memcpy(object, &m_Records[i].Type->HeaderToken, sizeof(uint64_t));
+      }
       m_Records[i].Object = static_cast<uint8_t*>(object);
     }
     for (uint32_t i = 0; i < object_count; ++i) {
@@ -618,6 +639,12 @@ class SaveDecoder {
     for (uint32_t i = 0; i < object_count; ++i) {
       if (m_Records[i].Reached && !is_root[i]) {
         wolang_object_release(m_Records[i].Object);
+      }
+    }
+    if (objects != nullptr) {
+      objects->clear();
+      for (const Record& record : m_Records) {
+        objects->push_back(record.Object);
       }
     }
 
@@ -782,7 +809,7 @@ class SaveDecoder {
   std::vector<Record> m_Records;
 };
 
-SaveStatus SaveEncode(std::string_view schema, const uint64_t* offsets, std::span<const SaveRoot> roots, std::vector<uint8_t>* out) {
+SaveStatus SaveEncode(std::string_view schema, const uint64_t* offsets, std::span<const SaveRoot> roots, std::vector<uint8_t>* out, std::vector<const void*>* objects) {
   SaveSchemaText parsed;
   if (!LoadSchema(schema, offsets, &parsed)) {
     return SaveStatus::kBadSchema;
@@ -790,10 +817,10 @@ SaveStatus SaveEncode(std::string_view schema, const uint64_t* offsets, std::spa
 
   SaveEncoder encoder(parsed);
 
-  return encoder.Run(schema, roots, out);
+  return encoder.Run(schema, roots, out, objects);
 }
 
-SaveStatus SaveDecode(std::string_view schema, const uint64_t* offsets, std::span<const uint8_t> data, std::vector<void*>* roots) {
+SaveStatus SaveDecode(std::string_view schema, const uint64_t* offsets, std::span<const uint8_t> data, std::vector<void*>* roots, std::vector<void*>* objects) {
   SaveSchemaText parsed;
   if (!LoadSchema(schema, offsets, &parsed)) {
     return SaveStatus::kBadSchema;
@@ -801,7 +828,7 @@ SaveStatus SaveDecode(std::string_view schema, const uint64_t* offsets, std::spa
 
   SaveDecoder decoder(parsed, data);
 
-  return decoder.Run(roots);
+  return decoder.Run(roots, objects);
 }
 
 // The table `ShapeOf` built is the call's to give back: nothing else holds it
@@ -832,7 +859,7 @@ uint8_t* wolang_save_encode(const uint8_t* schema, uint64_t schema_length, const
 
   std::vector<uint8_t> bytes;
   SaveEncoder encoder(parsed);
-  if (encoder.Run(text, std::span<const SaveRoot>(&start, 1), &bytes) != SaveStatus::kOk) {
+  if (encoder.Run(text, std::span<const SaveRoot>(&start, 1), &bytes, nullptr) != SaveStatus::kOk) {
     return nullptr;
   }
 
@@ -850,7 +877,7 @@ uint64_t wolang_save_decode(const uint8_t* schema, uint64_t schema_length, const
   const std::string_view text(reinterpret_cast<const char*>(schema), schema_length);
 
   std::vector<void*> roots;
-  const SaveStatus made = SaveDecode(text, offsets, std::span<const uint8_t>(data, data_length), &roots);
+  const SaveStatus made = SaveDecode(text, offsets, std::span<const uint8_t>(data, data_length), &roots, nullptr);
   FreeOffsets(offsets);
   *status = static_cast<int32_t>(made);
   if (made != SaveStatus::kOk) {
