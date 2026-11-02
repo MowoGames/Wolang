@@ -271,6 +271,45 @@ fun main() uses unsafe {
   WOLANG_EXPECT_EQ(program.Output(), "exit 51");
 }
 
+WOLANG_TEST(AotTest, AClassWithAnOwnedTextFieldGivesItBack) {
+  if (!Links()) {
+    return;
+  }
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+class Holder {
+  var label: Text
+}
+
+fun FromBorrowed(word: Text) -> int {
+  const h = Holder("{word}")
+  return h.label.len
+}
+
+fun FromNumber(n: int) -> int {
+  const h = Holder("n={n}")
+  return h.label.len
+}
+
+fun Replaced(n: int) -> int {
+  const h = Holder("a{n}")
+  h.label = "bb{n}"
+  return h.label.len
+}
+
+fun main() uses unsafe {
+  var total = 0
+  for i in 0..20 {
+    const word = "w{i}"
+    total = total + FromBorrowed(word) + FromNumber(i) + Replaced(i)
+  }
+  exit(total as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 190");
+}
+
 WOLANG_TEST(AotTest, RunsStructsOptionalsAndEnums) {
   if (!Links()) {
     return;
