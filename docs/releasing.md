@@ -5,7 +5,7 @@ which builds every archive, publishes them on GitHub with a `SHA256SUMS`,
 and then installs the result the way a user would (D248). The version is
 written once, in `CMakeLists.txt`; everything else follows it.
 
-The examples below release 1.2.0. Run them from a clean checkout of
+The examples below release 1.3.0. Run them from a clean checkout of
 `alpha`.
 
 ## Before you start
@@ -31,17 +31,17 @@ Settings the repository needs, once:
 
    ```sh
    git switch alpha && git pull
-   git switch -c release/1.2.0
-   python3 tools/package/bump_version.py 1.2.0
+   git switch -c release/1.3.0
+   python3 tools/package/bump_version.py 1.3.0
    ```
 
-2. Write the `## 1.2.0` section at the top of `CHANGELOG.md`, above the
+2. Write the `## 1.3.0` section at the top of `CHANGELOG.md`, above the
    previous one: grouped, plain, and about what a user will notice. This
    text becomes the release notes. Then check that everything agrees:
 
    ```sh
    python3 tools/package/check_version.py
-   python3 tools/package/release_notes.py 1.2.0
+   python3 tools/package/release_notes.py 1.3.0
    ```
 
    The second command prints what the release page will say.
@@ -51,9 +51,9 @@ Settings the repository needs, once:
 
    ```sh
    .claude/scripts/wl ci
-   git commit -am "chore: release 1.2.0"
-   git push -u origin release/1.2.0
-   gh pr create --base alpha --title "chore: release 1.2.0" --body "Version 1.2.0 and its changelog."
+   git commit -am "chore: release 1.3.0"
+   git push -u origin release/1.3.0
+   gh pr create --base alpha --title "chore: release 1.3.0" --body "Version 1.3.0 and its changelog."
    ```
 
 4. Tag the merge commit on `alpha` and push the tag. An annotated tag, so
@@ -61,8 +61,8 @@ Settings the repository needs, once:
 
    ```sh
    git switch alpha && git pull
-   git tag -a v1.2.0 -m "Wolang 1.2.0"
-   git push origin v1.2.0
+   git tag -a v1.3.0 -m "Wolang 1.3.0"
+   git push origin v1.3.0
    ```
 
 5. Watch it:
@@ -83,7 +83,7 @@ Settings the repository needs, once:
 | `msi` | The Windows installer, with the PATH entry and the Add/Remove Programs record. |
 | `extension` | The VS Code extension as a `.vsix`. |
 | `publish` | Collects the checksums into one `SHA256SUMS` and creates the GitHub release with every file. The notes are the `CHANGELOG.md` section for the version, then the pull requests GitHub generates. This is the only job with write access. |
-| `smoke` (2) | On Ubuntu and Windows: runs `install.sh` or `install.ps1` from the tagged checkout with `--version 1.2.0`, checks `wolang --version` prints `wolang 1.2.0`, and runs `examples/hello.wo`. It tests the published files, the checksums and the scripts together. |
+| `smoke` (2) | On Ubuntu and Windows: runs `install.sh` or `install.ps1` from the tagged checkout with `--version 1.3.0`, checks `wolang --version` prints `wolang 1.3.0`, and runs `examples/hello.wo`. It tests the published files, the checksums and the scripts together. |
 | `notify` | Tells the chat channels that the release did or did not happen. |
 | `changelog` | Posts the commits since the previous tag to the changelog channels. Never fails the release. |
 
@@ -98,7 +98,7 @@ installer does:
 
 ```sh
 mkdir verify && cd verify
-base=https://github.com/MowoGames/Wolang/releases/download/v1.2.0
+base=https://github.com/MowoGames/Wolang/releases/download/v1.3.0
 curl -fLO "$base/wolang-linux-x86_64.tar.gz"
 curl -fLO "$base/SHA256SUMS"
 sha256sum -c SHA256SUMS --ignore-missing
@@ -107,7 +107,7 @@ wolang-linux-x86_64/bin/wolang --version
 ```
 
 On macOS use `shasum -a 256 -c SHA256SUMS --ignore-missing`. The release
-page should list, for 1.2.0: three `wolang-<system>-<arch>` archives (a
+page should list, for 1.3.0: three `wolang-<system>-<arch>` archives (a
 `.zip` on Windows), three `wolang-embed-...` archives, the `.msi`, the
 `.vsix` and `SHA256SUMS`. Then install it the user's way
 ([install.md](install.md)):
@@ -123,8 +123,8 @@ built or published. Delete the tag, fix the version (or the tag), and tag
 again:
 
 ```sh
-git push origin --delete v1.2.0
-git tag -d v1.2.0
+git push origin --delete v1.3.0
+git tag -d v1.3.0
 ```
 
 **A build job failed, nothing was published.** If it was a flake, re-run
@@ -138,8 +138,8 @@ the same version if nobody has used it yet, or under a new patch version
 if they have. A tag people have already fetched should not move.
 
 ```sh
-gh release delete v1.2.0 --yes --cleanup-tag
-git tag -d v1.2.0
+gh release delete v1.3.0 --yes --cleanup-tag
+git tag -d v1.3.0
 ```
 
 **Only `smoke` failed.** The files are published. Read its log. It runs
@@ -165,7 +165,7 @@ There is no previous tag, so:
   `install.sh` with no `--version` fails with "could not find a release".
   Once it is out, `latest` is resolved through the API, and through the
   `/releases/latest` redirect when the API is rate limited. Pinning works
-  from the first minute: `--version 1.2.0`.
+  from the first minute: `--version 1.3.0`.
 - A release created as a draft or a pre-release is not `latest`. The
   workflow publishes a normal release.
 - The install one-liners fetch the script from the `alpha` branch, so the

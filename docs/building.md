@@ -199,7 +199,7 @@ No npm needed:
 
 ```sh
 python3 tools/package/make_vsix.py
-code --install-extension build/wolang-1.2.0.vsix
+code --install-extension build/wolang-1.3.0.vsix
 ```
 
 ## Building programs with no C compiler
