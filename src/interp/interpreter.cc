@@ -151,6 +151,17 @@ class Interpreter {
       outcome->where = std::move(where);
       outcome->message = std::move(message);
       outcome->span = span;
+      for (auto it = stack_.rbegin(); it != stack_.rend() && outcome->stack.size() < 64; ++it) {
+        TraceFrame frame;
+        frame.function = std::string(interner_.Text((*it)->function->name));
+        if (it == stack_.rbegin() && span.file.index != FileId::kInvalidIndex) {
+          frame.span = span;
+        }
+        else if ((*it)->at.is_valid()) {
+          frame.span = (*it)->function->SpanOf((*it)->at);
+        }
+        outcome->stack.push_back(std::move(frame));
+      }
     }
     return Value();
   }
@@ -954,6 +965,9 @@ class Interpreter {
   Value Execute(Frame* frame, Outcome* outcome) {
     const ir::Function& function = *frame->function;
     ir::BlockId block = function.entry();
+    if (++ticks_ > limits_.ticks) {
+      return Trap(outcome, TrapKind::kStepLimit, "@" + std::string(interner_.Text(function.name)), "budget used up");
+    }
 
     while (function.Contains(block)) {
       const ir::Block& body = function.Get(block);
@@ -969,6 +983,9 @@ class Interpreter {
           return Value();
         }
         const ir::Inst& inst = function.Get(id);
+        if (inst.opcode == ir::Opcode::kCall || inst.opcode == ir::Opcode::kCallIndirect || inst.opcode == ir::Opcode::kVirtualCall) {
+          frame->at = id;
+        }
         if (!ir::IsTerminator(inst.opcode)) {
           frame->values[id.index] = Evaluate(frame, id, inst, outcome);
           if (!outcome->ok()) {
@@ -985,6 +1002,9 @@ class Interpreter {
         }
         if (!next.is_valid()) {
           return returned;
+        }
+        if (next.index <= block.index && ++ticks_ > limits_.ticks) {
+          return Trap(outcome, TrapKind::kStepLimit, At(function, id), "budget used up", function.SpanOf(id));
         }
         block = next;
         break;
@@ -1365,6 +1385,21 @@ class Interpreter {
           return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
                 "asked how big a type is without a layout to ask");
         }
+        if (inst.field == ir::kObjectSizeField) {
+          return Value::Int(std::max(layouts_->ObjectOf(measured).size, 1u), IntWidth::k64, /*is_signed=*/true);
+        }
+        if (inst.field != 0) {
+          // Where a field sits, which `std.save` needs to read an object
+          // the way compiled code lays it out (D266).
+          const abi::Layout& layout = layouts_->ObjectOf(measured);
+          if (inst.field > layout.offsets.size()) {
+            return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                  "asked where a field is that the type does not have");
+          }
+
+          return Value::Int(layout.offsets[inst.field - 1], IntWidth::k64, /*is_signed=*/true);
+        }
+
         return Value::Int(std::max(layouts_->SizeOf(measured), 1u),
                           IntWidth::k64, /*is_signed=*/true);
       }
@@ -2056,6 +2091,21 @@ class Interpreter {
     if (left.kind() == Value::Kind::kFloat) {
       return FloatArithmetic(inst, left, right);
     }
+    // An or-pattern joins its alternatives' tests with `or`, and a test is a
+    // bool; the compiled tiers took that, the reference tier trapped (D287).
+    if (left.kind() == Value::Kind::kBool &&
+        right.kind() == Value::Kind::kBool) {
+      switch (inst.opcode) {
+        case ir::Opcode::kBitOr:
+          return Value::Bool(left.boolean() || right.boolean());
+        case ir::Opcode::kBitAnd:
+          return Value::Bool(left.boolean() && right.boolean());
+        case ir::Opcode::kBitXor:
+          return Value::Bool(left.boolean() != right.boolean());
+        default:
+          break;
+      }
+    }
     if (left.kind() != Value::Kind::kInt) {
       // A comparison on anything else is structural; nothing else applies.
       if (inst.opcode == ir::Opcode::kEq) {
@@ -2448,6 +2498,7 @@ class Interpreter {
   // Function values handed to the runtime, by the token it holds instead.
   mutable std::vector<Value> tokens_;
   uint64_t steps_ = 0;
+  uint64_t ticks_ = 0;
   uint32_t depth_ = 0;
   // The activations, outermost first, for a debugger to look at.
   std::vector<Frame*> stack_;

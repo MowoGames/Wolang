@@ -1,0 +1,334 @@
+need std.map.{Map, TextMapNew}
+
+offer enum Kind {
+  EndOfFile
+  Unknown
+  Identifier
+  IntLiteral
+  FloatLiteral
+  StringLiteral
+  CharLiteral
+  DocComment
+  LeftParen
+  RightParen
+  LeftBrace
+  RightBrace
+  LeftBracket
+  RightBracket
+  Comma
+  Semicolon
+  Colon
+  Dot
+  DotDot
+  DotDotEq
+  Arrow
+  FatArrow
+  At
+  Underscore
+  Plus
+  PlusEq
+  Minus
+  MinusEq
+  Star
+  StarEq
+  Slash
+  SlashEq
+  Percent
+  PercentEq
+  Eq
+  EqEq
+  Bang
+  BangEq
+  Less
+  LessEq
+  Greater
+  GreaterEq
+  Shl
+  ShlEq
+  Shr
+  ShrEq
+  Amp
+  AmpEq
+  AmpAmp
+  Pipe
+  PipeEq
+  PipePipe
+  Caret
+  CaretEq
+  Tilde
+  Question
+  QuestionDot
+  QuestionQuestion
+  QuestionQuestionEq
+  KwAbility
+  KwAfter
+  KwArena
+  KwAs
+  KwBefore
+  KwBreak
+  KwClass
+  KwComponent
+  KwConst
+  KwComptime
+  KwContinue
+  KwDefer
+  KwElse
+  KwEnum
+  KwError
+  KwExtend
+  KwExtern
+  KwFalse
+  KwFor
+  KwForeach
+  KwFun
+  KwIf
+  KwIn
+  KwLoop
+  KwMatch
+  KwMut
+  KwNeed
+  KwNull
+  KwOn
+  KwOffer
+  KwOverride
+  KwPtrNull
+  KwPriv
+  KwReturn
+  KwSelf
+  KwSignal
+  KwSpawn
+  KwStruct
+  KwSystem
+  KwTag
+  KwTask
+  KwTrue
+  KwType
+  KwUnsafe
+  KwUses
+  KwWait
+  KwVar
+  KwVirtual
+  KwWhere
+  KwWhile
+}
+
+offer fun KindName(kind: Kind) -> text {
+  return match kind {
+    Kind.EndOfFile => "EndOfFile"
+    Kind.Unknown => "Unknown"
+    Kind.Identifier => "Identifier"
+    Kind.IntLiteral => "IntLiteral"
+    Kind.FloatLiteral => "FloatLiteral"
+    Kind.StringLiteral => "StringLiteral"
+    Kind.CharLiteral => "CharLiteral"
+    Kind.DocComment => "DocComment"
+    Kind.LeftParen => "LeftParen"
+    Kind.RightParen => "RightParen"
+    Kind.LeftBrace => "LeftBrace"
+    Kind.RightBrace => "RightBrace"
+    Kind.LeftBracket => "LeftBracket"
+    Kind.RightBracket => "RightBracket"
+    Kind.Comma => "Comma"
+    Kind.Semicolon => "Semicolon"
+    Kind.Colon => "Colon"
+    Kind.Dot => "Dot"
+    Kind.DotDot => "DotDot"
+    Kind.DotDotEq => "DotDotEq"
+    Kind.Arrow => "Arrow"
+    Kind.FatArrow => "FatArrow"
+    Kind.At => "At"
+    Kind.Underscore => "Underscore"
+    Kind.Plus => "Plus"
+    Kind.PlusEq => "PlusEq"
+    Kind.Minus => "Minus"
+    Kind.MinusEq => "MinusEq"
+    Kind.Star => "Star"
+    Kind.StarEq => "StarEq"
+    Kind.Slash => "Slash"
+    Kind.SlashEq => "SlashEq"
+    Kind.Percent => "Percent"
+    Kind.PercentEq => "PercentEq"
+    Kind.Eq => "Eq"
+    Kind.EqEq => "EqEq"
+    Kind.Bang => "Bang"
+    Kind.BangEq => "BangEq"
+    Kind.Less => "Less"
+    Kind.LessEq => "LessEq"
+    Kind.Greater => "Greater"
+    Kind.GreaterEq => "GreaterEq"
+    Kind.Shl => "Shl"
+    Kind.ShlEq => "ShlEq"
+    Kind.Shr => "Shr"
+    Kind.ShrEq => "ShrEq"
+    Kind.Amp => "Amp"
+    Kind.AmpEq => "AmpEq"
+    Kind.AmpAmp => "AmpAmp"
+    Kind.Pipe => "Pipe"
+    Kind.PipeEq => "PipeEq"
+    Kind.PipePipe => "PipePipe"
+    Kind.Caret => "Caret"
+    Kind.CaretEq => "CaretEq"
+    Kind.Tilde => "Tilde"
+    Kind.Question => "Question"
+    Kind.QuestionDot => "QuestionDot"
+    Kind.QuestionQuestion => "QuestionQuestion"
+    Kind.QuestionQuestionEq => "QuestionQuestionEq"
+    Kind.KwAbility => "KwAbility"
+    Kind.KwAfter => "KwAfter"
+    Kind.KwArena => "KwArena"
+    Kind.KwAs => "KwAs"
+    Kind.KwBefore => "KwBefore"
+    Kind.KwBreak => "KwBreak"
+    Kind.KwClass => "KwClass"
+    Kind.KwComponent => "KwComponent"
+    Kind.KwConst => "KwConst"
+    Kind.KwComptime => "KwComptime"
+    Kind.KwContinue => "KwContinue"
+    Kind.KwDefer => "KwDefer"
+    Kind.KwElse => "KwElse"
+    Kind.KwEnum => "KwEnum"
+    Kind.KwError => "KwError"
+    Kind.KwExtend => "KwExtend"
+    Kind.KwExtern => "KwExtern"
+    Kind.KwFalse => "KwFalse"
+    Kind.KwFor => "KwFor"
+    Kind.KwForeach => "KwForeach"
+    Kind.KwFun => "KwFun"
+    Kind.KwIf => "KwIf"
+    Kind.KwIn => "KwIn"
+    Kind.KwLoop => "KwLoop"
+    Kind.KwMatch => "KwMatch"
+    Kind.KwMut => "KwMut"
+    Kind.KwNeed => "KwNeed"
+    Kind.KwNull => "KwNull"
+    Kind.KwOn => "KwOn"
+    Kind.KwOffer => "KwOffer"
+    Kind.KwOverride => "KwOverride"
+    Kind.KwPtrNull => "KwPtrNull"
+    Kind.KwPriv => "KwPriv"
+    Kind.KwReturn => "KwReturn"
+    Kind.KwSelf => "KwSelf"
+    Kind.KwSignal => "KwSignal"
+    Kind.KwSpawn => "KwSpawn"
+    Kind.KwStruct => "KwStruct"
+    Kind.KwSystem => "KwSystem"
+    Kind.KwTag => "KwTag"
+    Kind.KwTask => "KwTask"
+    Kind.KwTrue => "KwTrue"
+    Kind.KwType => "KwType"
+    Kind.KwUnsafe => "KwUnsafe"
+    Kind.KwUses => "KwUses"
+    Kind.KwWait => "KwWait"
+    Kind.KwVar => "KwVar"
+    Kind.KwVirtual => "KwVirtual"
+    Kind.KwWhere => "KwWhere"
+    Kind.KwWhile => "KwWhile"
+  }
+}
+
+offer fun KeywordKinds() -> Map<text, Kind> uses unsafe {
+  var table = TextMapNew<Kind>()
+  table.Put("ability", Kind.KwAbility)
+  table.Put("after", Kind.KwAfter)
+  table.Put("arena", Kind.KwArena)
+  table.Put("as", Kind.KwAs)
+  table.Put("before", Kind.KwBefore)
+  table.Put("break", Kind.KwBreak)
+  table.Put("class", Kind.KwClass)
+  table.Put("component", Kind.KwComponent)
+  table.Put("const", Kind.KwConst)
+  table.Put("comptime", Kind.KwComptime)
+  table.Put("continue", Kind.KwContinue)
+  table.Put("defer", Kind.KwDefer)
+  table.Put("else", Kind.KwElse)
+  table.Put("enum", Kind.KwEnum)
+  table.Put("error", Kind.KwError)
+  table.Put("extend", Kind.KwExtend)
+  table.Put("extern", Kind.KwExtern)
+  table.Put("false", Kind.KwFalse)
+  table.Put("for", Kind.KwFor)
+  table.Put("foreach", Kind.KwForeach)
+  table.Put("fun", Kind.KwFun)
+  table.Put("if", Kind.KwIf)
+  table.Put("in", Kind.KwIn)
+  table.Put("loop", Kind.KwLoop)
+  table.Put("match", Kind.KwMatch)
+  table.Put("mut", Kind.KwMut)
+  table.Put("need", Kind.KwNeed)
+  table.Put("null", Kind.KwNull)
+  table.Put("on", Kind.KwOn)
+  table.Put("offer", Kind.KwOffer)
+  table.Put("override", Kind.KwOverride)
+  table.Put("ptrnull", Kind.KwPtrNull)
+  table.Put("priv", Kind.KwPriv)
+  table.Put("return", Kind.KwReturn)
+  table.Put("self", Kind.KwSelf)
+  table.Put("signal", Kind.KwSignal)
+  table.Put("spawn", Kind.KwSpawn)
+  table.Put("struct", Kind.KwStruct)
+  table.Put("system", Kind.KwSystem)
+  table.Put("tag", Kind.KwTag)
+  table.Put("task", Kind.KwTask)
+  table.Put("true", Kind.KwTrue)
+  table.Put("type", Kind.KwType)
+  table.Put("unsafe", Kind.KwUnsafe)
+  table.Put("uses", Kind.KwUses)
+  table.Put("wait", Kind.KwWait)
+  table.Put("var", Kind.KwVar)
+  table.Put("virtual", Kind.KwVirtual)
+  table.Put("where", Kind.KwWhere)
+  table.Put("while", Kind.KwWhile)
+  return table
+}
+
+offer fun ReservedWords() -> Map<text, bool> uses unsafe {
+  var words = TextMapNew<bool>()
+  words.Put("abstract", true)
+  words.Put("actor", true)
+  words.Put("await", true)
+  words.Put("case", true)
+  words.Put("catch", true)
+  words.Put("delete", true)
+  words.Put("do", true)
+  words.Put("final", true)
+  words.Put("fn", true)
+  words.Put("goto", true)
+  words.Put("impl", true)
+  words.Put("import", true)
+  words.Put("interface", true)
+  words.Put("is", true)
+  words.Put("kernel", true)
+  words.Put("lazy", true)
+  words.Put("let", true)
+  words.Put("macro", true)
+  words.Put("module", true)
+  words.Put("namespace", true)
+  words.Put("new", true)
+  words.Put("nil", true)
+  words.Put("operator", true)
+  words.Put("package", true)
+  words.Put("private", true)
+  words.Put("protected", true)
+  words.Put("pub", true)
+  words.Put("public", true)
+  words.Put("region", true)
+  words.Put("rollback", true)
+  words.Put("shader", true)
+  words.Put("sizeof", true)
+  words.Put("static", true)
+  words.Put("super", true)
+  words.Put("switch", true)
+  words.Put("template", true)
+  words.Put("this", true)
+  words.Put("throw", true)
+  words.Put("trait", true)
+  words.Put("transactional", true)
+  words.Put("try", true)
+  words.Put("typedef", true)
+  words.Put("typeof", true)
+  words.Put("union", true)
+  words.Put("using", true)
+  words.Put("void", true)
+  words.Put("yield", true)
+  return words
+}

@@ -29,6 +29,13 @@ struct FileCode {
   const ir::Module* module = nullptr;
 };
 
+struct CompileOptions {
+  // Emit a tick at each function entry and each jump back to an earlier
+  // block, so that `SetBudget` can stop a runaway call (D265). Off, the code
+  // is exactly what it was before budgets existed.
+  bool budgeted = false;
+};
+
 // A module's functions as machine code.
 //
 // The dev tier compiles what it can and says what it could not: the
@@ -120,13 +127,19 @@ class CompiledModule {
   uint32_t compiled_count() const;
   uint32_t skipped_count() const;
 
+  // How many ticks one call into the code may take before it traps with a
+  // step limit; zero for no limit. Counts only in code compiled with
+  // `CompileOptions::budgeted`, and every entry starts the count again.
+  void SetBudget(uint64_t ticks);
+
   class Impl;
 
  private:
   friend std::unique_ptr<CompiledModule> Compile(
       const StringInterner&,
       const TypeStore&,
-      std::span<const FileCode>);
+      std::span<const FileCode>,
+      const CompileOptions&);
 
   std::unique_ptr<Impl> impl_;
 };
@@ -145,7 +158,8 @@ class CompiledModule {
 // and the interpreter runs it all.
 std::unique_ptr<CompiledModule> Compile(const StringInterner& interner,
                                         const TypeStore& types,
-                                        std::span<const FileCode> files);
+                                        std::span<const FileCode> files,
+                                        const CompileOptions& options = {});
 
 // One file on its own, which is what a test and a single-file program want.
 std::unique_ptr<CompiledModule> Compile(const StringInterner& interner,

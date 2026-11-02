@@ -75,6 +75,23 @@
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
       }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "Windows (clang-cl), optimized",
+      "inherits": "windows",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "windows-arm64",
+      "displayName": "Windows on ARM64 (clang-cl, cross-targeted)",
+      "inherits": "windows",
+      "cacheVariables": {
+        "CMAKE_C_FLAGS": "--target=arm64-pc-windows-msvc",
+        "CMAKE_CXX_FLAGS": "--target=arm64-pc-windows-msvc"
+      }
     }
   ],
   "buildPresets": [
@@ -101,6 +118,14 @@
     {
       "name": "windows",
       "configurePreset": "windows"
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release"
+    },
+    {
+      "name": "windows-arm64",
+      "configurePreset": "windows-arm64"
     }
   ],
   "testPresets": [
@@ -142,6 +167,13 @@
     {
       "name": "windows",
       "configurePreset": "windows",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-arm64",
+      "configurePreset": "windows-arm64",
       "output": {
         "outputOnFailure": true
       }

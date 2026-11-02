@@ -23,19 +23,19 @@ why nothing may hold a row index across a removal.
 #### field `rows`
 
 ```wolang
-var rows: soa []T
+var rows: soa []mut T
 ```
 
 #### field `owners`
 
 ```wolang
-var owners: []int
+var owners: []mut int
 ```
 
 #### field `slots`
 
 ```wolang
-var slots: []int
+var slots: []mut int
 ```
 
 #### field `count`
@@ -149,19 +149,19 @@ only difference between the two, and a system reads them the same way.
 #### field `rows`
 
 ```wolang
-var rows: []T
+var rows: []mut T
 ```
 
 #### field `owners`
 
 ```wolang
-var owners: []int
+var owners: []mut int
 ```
 
 #### field `slots`
 
 ```wolang
-var slots: []int
+var slots: []mut int
 ```
 
 #### field `count`
@@ -337,7 +337,7 @@ How many entities have the component `of` names.
 ### function `RunSystems`
 
 ```wolang
-offer fun RunSystems(world: World, delta: f32) uses unsafe
+offer unsafe fun RunSystems(world: World, delta: f32)
 ```
 
 Runs every `system` of the calling file, stage by stage.

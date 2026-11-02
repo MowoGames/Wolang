@@ -4,9 +4,9 @@
 > below; if it disagrees with the code, the code is right and this file
 > needs fixing.
 
-**Date:** 2026-11-01
+**Date:** 2026-11-02
 **Waves are closed through the 11th**; after that the work was "a complete
-language" without waves, and everything below belongs to it (D119–D264). **1.2.0 is on `feature/1.2.0`, awaiting CI on the other platforms; 1.1.0 is the last release.**
+language" without waves, and everything below belongs to it (D119–D289). **1.3.0 is on `feature/1.3.0`, awaiting CI on the other platforms; 1.2.0 is the last release.**
 
 ## In short
 
@@ -21,10 +21,54 @@ that they do.
 | Tiers | interpreter (the reference), arm64/x64 dev tier for `run`, LLVM for `build` |
 | Platforms | macOS arm64/x86-64, Linux x86-64/arm64, Windows x86-64 (clang-cl) |
 | Cross targets | `--target`: Windows COFF, Linux ELF, WebAssembly, RISC-V |
-| std | 35 modules (see [docs/stdlib.md](docs/stdlib.md)) |
-| Packages | `http` (server and client), `db` (storage), `gfx` (window/GPU/sound/gamepads), `image` (PNG/QOI/BMP), `tls`, `game`, `core`, `math` (vectors, matrices, quaternions) |
-| Tests | 963 unit tests + 317 library tests, a three-tier fuzzer, a check of every example in the docs |
+| std | 38 modules (see [docs/stdlib.md](docs/stdlib.md)) |
+| Packages | `http` (server and client), `db` (storage), `gfx` (window/GPU/sound/gamepads), `image` (PNG/QOI/BMP), `tls`, `game`, `core`, `math` (vectors, matrices, quaternions), `font` (TrueType), `ui` (immediate mode), `audio` (mixer, WAV), `gpu` (null and OpenGL 3.3), `app` (the shell) |
+| Tests | 1032 unit tests + 460 library tests, a three-tier fuzzer, a check of every example in the docs |
 | Server | 53,900 requests/s on one thread, 58,900 on eight |
+
+## Done since 1.2.0: 1.3.0 (D265–D289)
+
+Verified on Windows x86-64: 1032 unit tests, the library tests of every
+package, the docs check, `wl fuzz 200` on seeds 16586 and 4242, and `wl ci`.
+The pull request's CI also passes on Linux x86-64 (plain, release, ubsan) and
+Linux arm64. Windows on ARM64 builds and passes 52 of its 55 unit suites; the
+other three (`CodegenTest`, `EmbedTest`, `FuzzTest`) crash with
+`STATUS_BAD_FUNCTION_TABLE` where generated code traps, so that job leaves
+them out until someone with the hardware fixes the JIT's trap exit. macOS has
+not run. See
+[docs/plans/1.3.0-status.md](docs/plans/1.3.0-status.md) for what was and was
+not checked.
+
+**Language.** `@Save` and `std.save` write an object graph by field name
+(D266). A `task fun` waits on the caller's clock through `Tick(dt)`,
+`Wait(seconds)` and `Event` (D267); there is no `routine` keyword.
+`@Replicated`, `@Server`, `@Client` and `@Multicast` are checked and reported to
+the host (D268). An unknown error name in a `match` arm is `E0166`; a function
+held in a local and handed to a `@Thread` function is `E0163` (D275). An
+annotated local of an ability type keeps its annotation (D275). A class owns
+the bytes of its `Text` fields (D289), and the text an interpolation or a `+`
+builds is given back (D275).
+
+**Embedding.** C ABI 1.4 and 1.5: a tick budget for one call (D265), bindings
+that state their layouts (D271), a mod is never granted `unsafe` (D270), a trap
+carries its place and call stack (D269), a reload migrates the objects a host
+holds through a remap callback (D266), and a VM ticks its tasks
+(`wolang_vm_tick`) and reports replication through the class reflection.
+
+**Libraries.** `font` (D276), `ui` (D277), `audio` (D279), `gpu` (D280) and
+`app` (D281); `std.arena` (D285) and faster copies, file reads and map slots
+(D284). Ogg files have their headers read and are not decoded.
+
+**Tools.** A lexer and a parser for Wolang in Wolang, checked against the C++
+ones on 200 and 186 files (D283, D288); package fetch and lock in Wolang
+(D286); `wl bench` and [docs/benchmarks.md](docs/benchmarks.md) (D273); AOT
+output links without a C compiler against a bundled musl sysroot (D272, not
+yet run on Linux); `AotTest` runs under `asan` on Windows; CI rows for macOS
+and Windows on ARM64.
+
+**Breaking.** Little: `E0163` and `E0105` can reject a program that 1.2.0
+accepted, a mod is never granted `unsafe`, and a reload that would change a
+held object's class is refused unless the host registered a remap.
 
 ## Done since 31.10: 1.2.0 (D235–D264)
 
@@ -558,34 +602,35 @@ These are the ones that shape everything else.
 
 ## Not done yet
 
-**Next: self-hosting** (D250, [docs/plans/self-hosting.md](docs/plans/self-hosting.md)),
-stage by stage, and **1.3.0**. Cut from 1.2.0 on purpose: `font`, `audio`,
-`gpu`, an immediate-mode `ui` and `app`. They bind devices and platform
-services that could not be run on the machine this release was built on.
-
-From [docs/plans/engine-needs.md](docs/plans/engine-needs.md), still open:
-host-held objects do not migrate on reload (item 6): a reload that would
-change one is refused with a note instead; the engine's suggested additions
-(replication, a debug protocol, an execution budget, coroutines tied to the
-game clock, serialization, sandboxing, AOT without a system `cc`,
-published benchmarks) each need a decision first.
+**Next: self-hosting, stage 2** (D250,
+[docs/plans/self-hosting.md](docs/plans/self-hosting.md)). The lexer and the
+parser exist in Wolang and match the C++ ones; sema and lowering are next,
+with the C++ compiler kept as the bootstrap. After that, the engine's
+remaining wishes and 1.3.x: see [docs/plans/1.3.0-status.md](docs/plans/1.3.0-status.md).
 
 Known gaps:
 
-- A name that is not imported, used as an error in a `match` arm, reports
-  `E0201` (not exhaustive) and not an unknown-name error.
-- A function held in a variable and handed to a `@Thread` parameter is not
-  judged by `E0147` (D252).
-- `"{MakeText()}"` leaks its temporary: a text piece is never fresh.
-- A payload error held in a `const` before it reaches a `T!` leaks its box.
+- **Ogg Vorbis audio is not decoded.** `audio` reads the headers (D279).
+- **`Class()` with no arguments** ignores field initializers and leaves
+  class-typed fields null, so using one crashes. It needs a language
+  decision (gap 7 in [docs/plans/self-hosting.md](docs/plans/self-hosting.md)).
+- Assigning to an owned `Text` variable (`s += Make(i)`) does not give back
+  the old value; a `??` that picks its right operand leaves it to nobody;
+  a `Text` in a struct field or in an optional field of a class follows the
+  old rules.
+- `E0163` judges function-typed locals and parameters only, not a call result
+  or a field of function type; `E0166` judges variant-style patterns on `T!`.
+- `routine` is not a keyword: `task fun` and `wait` are the spelling (D267).
+- The execution budget (D265) is compiled for x64 only; on arm64 a budgeted
+  VM runs the interpreter. Ticks differ slightly between tiers, so it guards a
+  loop that never ends and is not a meter.
+- Save and load, tasks and the new libraries have no fuzz coverage.
 - A closure that stores itself in `self` is a cycle (D240); a kept closure
   made inside an `arena` block must not outlive it.
-- Windows `asan` runs everything except `AotTest`, whose link step is not
-  given the sanitizer runtime (`<linker failed>`); CI runs `asan` on macOS.
-- `docs/api/*.md` still show the old signatures for `keep` and `unsafe`.
-- Written but never compiled or run here: the Windows paths of UDP and the
-  `gfx` features, the Cocoa ones, the arm64 emitter and JIT paths for 64-bit
-  `int`, and everything changed in `aot.cc`. CI is what runs them.
+- Written but never run: the bundled-linker AOT link on Linux (D272), the
+  OpenGL backend and its C shims against a real context (D280), the Windows
+  UDP and `gfx` paths, the Cocoa ones, and the arm64 emitter and JIT paths.
+  CI and a hand run of `examples/app` are what run them.
 
 ### Older open items
 

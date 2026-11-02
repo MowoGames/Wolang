@@ -16,6 +16,7 @@
 #include "wolang/runtime/threads.h"
 #include "wolang/runtime/trap.h"
 #include "wolang/runtime/world.h"
+#include "wolang/runtime/save.h"
 #include "wolang/runtime/signal.h"
 #include "wolang/runtime/sockets.h"
 #include "wolang/runtime/spawn.h"
@@ -105,6 +106,8 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_sched_spawn",
        reinterpret_cast<void*>(&wolang_sched_spawn)},
       {"wolang_sched_run", reinterpret_cast<void*>(&wolang_sched_run)},
+      {"wolang_sched_tick", reinterpret_cast<void*>(&wolang_sched_tick)},
+      {"wolang_sched_now", reinterpret_cast<void*>(&wolang_sched_now)},
       {"wolang_sched_done", reinterpret_cast<void*>(&wolang_sched_done)},
       {"wolang_sched_join", reinterpret_cast<void*>(&wolang_sched_join)},
       {"wolang_object_alloc",
@@ -112,6 +115,10 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_object_free",
        reinterpret_cast<void*>(&wolang_object_free)},
       {"wolang_objects_live", reinterpret_cast<void*>(&wolang_objects_live)},
+      {"wolang_objects_allocated",
+       reinterpret_cast<void*>(&wolang_objects_allocated)},
+
+      {"wolang_texts_live", reinterpret_cast<void*>(&wolang_texts_live)},
       {"wolang_object_retain",
        reinterpret_cast<void*>(&wolang_object_retain)},
       {"wolang_object_escaped",
@@ -291,6 +298,8 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_text_from_bool)},
       {"wolang_text_concat",
        reinterpret_cast<void*>(&wolang_text_concat)},
+      {"wolang_memory_copy",
+       reinterpret_cast<void*>(&wolang_memory_copy)},
       {"wolang_text_free",
        reinterpret_cast<void*>(&wolang_text_free)},
       {"wolang_text_equal",
@@ -309,6 +318,8 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_signal_disconnect)},
       {"wolang_sched_pending",
        reinterpret_cast<void*>(&wolang_sched_pending)},
+      {"wolang_save_encode", reinterpret_cast<void*>(&wolang_save_encode)},
+      {"wolang_save_decode", reinterpret_cast<void*>(&wolang_save_decode)},
       {"wolang_fd_read", reinterpret_cast<void*>(&wolang_fd_read)},
       {"wolang_fd_write", reinterpret_cast<void*>(&wolang_fd_write)},
       {"wolang_fd_close", reinterpret_cast<void*>(&wolang_fd_close)},

@@ -770,6 +770,21 @@ class TypedReader {
           return;
         }
         inst.payload.integer = measured.index;
+        if (Consume('@')) {
+          if (Peek() == 's') {
+            if (ReadWord() != "size") {
+              Fail("expected a field number or `size` after `@`");
+              return;
+            }
+            inst.field = kObjectSizeField;
+          } else {
+            uint32_t field_number = 0;
+            if (!ReadU32(&field_number)) {
+              return;
+            }
+            inst.field = field_number + 1;
+          }
+        }
         break;
       }
       case Opcode::kAlloca:

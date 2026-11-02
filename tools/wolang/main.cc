@@ -21,6 +21,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -101,6 +102,9 @@ struct Options {
   // bug, which is otherwise the hardest thing to tell apart.
   bool interpret = false;
   bool show_trivia = false;
+  // `tokens` only: one `Kind offset length flags` line per token, which the
+  // Wolang lexer is compared against (D283).
+  bool stable_tokens = false;
   // `fmt` only: read the file from standard input and write the result to
   // standard output, which is what an editor that formats a buffer it has
   // not saved needs.
@@ -117,6 +121,7 @@ struct Options {
   std::string bind_module = "mowo";
   std::string bind_effect;
   bool bind_unchecked = false;
+  bool bind_tokenless = false;
   std::vector<std::string> bind_includes;
   // `new` only: a library has no `main` and no `run`.
   bool new_library = false;
@@ -240,6 +245,7 @@ void PrintUsage() {
       "  -O<n>           `build`: how hard the back end optimizes, 0 to 3\n"
       "  --no-color      never emit ANSI colors\n"
       "  --trivia        include comments in `tokens` output\n"
+      "  --stable        `tokens`: one `Kind offset length flags` line per token\n"
       "  --spans         annotate `ast` output with positions\n"
       "  --check         `fmt` only: fail if a file is not formatted\n"
       "  --write         `fmt` and `fix`: change the files in place\n"
@@ -337,6 +343,13 @@ bool CollectInputs(Database* database,
     }
   }
   return true;
+}
+
+void PrintStableTokens(const SourceManager& sources, const TokenStream& stream) {
+  std::fprintf(stdout, "# %s\n", std::string(sources.Path(stream.file)).c_str());
+  for (const Token& token : stream.tokens) {
+    std::fprintf(stdout, "%s %u %u %u\n", std::string(TokenKindName(token.kind)).c_str(), token.offset, token.length, static_cast<unsigned>(token.flags));
+  }
 }
 
 void PrintTokens(const SourceManager& sources,
@@ -465,7 +478,9 @@ int RunSyntaxCommand(const Options& options) {
   for (FileId file : files) {
     if (options.command == "tokens") {
       const TokenizedFile* tokens = database.Tokens(file);
-      if (tokens != nullptr) {
+      if (tokens != nullptr && options.stable_tokens) {
+        PrintStableTokens(database.sources(), tokens->tokens);
+      } else if (tokens != nullptr) {
         PrintTokens(database.sources(), database.interner(), tokens->tokens,
                     options.show_trivia);
       }
@@ -1675,6 +1690,19 @@ int RunTests(const Options& options) {
           checked != nullptr ? checked->resolution : kNoResolution;
       abi::LayoutStore layouts(database.types(), resolution);
       database.ShareMembers(&layouts);
+
+      // A test may spawn and tick, and running what it spawned is a call
+      // back in here. Each tier gets a scheduler of its own, so the second
+      // run cannot find the first one's tasks (D267).
+      TaskHost host;
+      host.database = &database;
+      host.module = &lowered->unoptimized;
+      host.layouts = &layouts;
+      host.foreign = foreign.get();
+      host.linked = modules;
+      host.dispatch = database.interner().Intern("wolang$dispatch");
+      runtime::ResetScheduler();
+      runtime::InstallResume(&ResumeTask, &host);
       const interp::Outcome outcome = interp::RunNamed(
           database.interner(), database.types(), lowered->unoptimized, name,
           {}, {}, nullptr, foreign.get(), &layouts, modules);
@@ -1684,6 +1712,9 @@ int RunTests(const Options& options) {
           !outcome.value.boolean();
 
       if (compiled != nullptr && compiled->Contains(name)) {
+        host.compiled = compiled.get();
+        runtime::ResetScheduler();
+        runtime::InstallResume(&ResumeTask, &host);
         const interp::Outcome machine = compiled->Run(name, {});
         if (machine.trap != outcome.trap ||
             machine.where != outcome.where ||
@@ -2489,6 +2520,7 @@ int RunBindReflection(const Options& options) {
   settings.module = options.bind_module;
   settings.effect = options.bind_effect;
   settings.check_alive = !options.bind_unchecked;
+  settings.use_tokens = !options.bind_tokenless;
   const bind::ReflectionResult result = bind::GenerateFromReflection(documents, settings);
   if (options.output.empty()) {
     WriteAll(result.source, stdout);
@@ -2980,6 +3012,12 @@ int RunDoc(const Options& options) {
 
   // The package the directory names, not its dependencies: a package's
   // documentation is what *it* offers, and `std` has its own page.
+  // The paths are compared as paths: on Windows `lib/math` and
+  // `D:\x\lib\math` name one directory but share no substring, and a
+  // package that matched nothing documented every module (D116).
+  std::error_code path_error;
+  const std::filesystem::path asked = std::filesystem::weakly_canonical(
+      std::filesystem::path(options.inputs.front()), path_error);
   PackageId wanted;
   for (size_t i = 0; i < database.package_count(); ++i) {
     const PackageId id{static_cast<uint32_t>(i)};
@@ -2987,11 +3025,26 @@ int RunDoc(const Options& options) {
     if (package == nullptr) {
       continue;
     }
-    if (package->directory.find(options.inputs.front()) !=
-            std::string::npos ||
-        options.inputs.front().find(package->directory) !=
-            std::string::npos) {
+    std::error_code held_error;
+    const std::filesystem::path held = std::filesystem::weakly_canonical(
+        std::filesystem::path(package->directory), held_error);
+    if (!path_error && !held_error && held == asked) {
       wanted = id;
+    }
+  }
+  if (!wanted.is_valid()) {
+    for (size_t i = 0; i < database.package_count(); ++i) {
+      const PackageId id{static_cast<uint32_t>(i)};
+      const Package* package = database.GetPackage(id);
+      if (package == nullptr) {
+        continue;
+      }
+      if (package->directory.find(options.inputs.front()) !=
+              std::string::npos ||
+          options.inputs.front().find(package->directory) !=
+              std::string::npos) {
+        wanted = id;
+      }
     }
   }
 
@@ -3096,6 +3149,8 @@ int Run(int argc, char** argv) {
       options.bind_effect = argv[++i];
     } else if (argument == "--no-alive-check") {
       options.bind_unchecked = true;
+    } else if (argument == "--no-token") {
+      options.bind_tokenless = true;
     } else if (argument == "-I" && i + 1 < argc) {
       options.bind_includes.push_back(argv[++i]);
     } else if (argument.rfind("-I", 0) == 0 && argument.size() > 2) {
@@ -3122,6 +3177,8 @@ int Run(int argc, char** argv) {
       options.color = false;
     } else if (argument == "--trivia") {
       options.show_trivia = true;
+    } else if (argument == "--stable") {
+      options.stable_tokens = true;
     } else if (argument == "--spans") {
       options.show_spans = true;
     } else if (argument == "--check") {

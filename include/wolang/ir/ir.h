@@ -18,6 +18,11 @@
 namespace wolang {
 namespace ir {
 
+// TypeSize's `field`: zero asks how big a value of the type is, a number
+// asks where field `field - 1` sits, and this asks how big the object of a
+// class is rather than the handle to it (D266).
+constexpr uint32_t kObjectSizeField = 0xFFFFFFFFu;
+
 // ---------------------------------------------------------------- opcodes ---
 
 enum class Opcode : uint8_t {

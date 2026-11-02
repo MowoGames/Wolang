@@ -261,6 +261,80 @@ class Fixture {
   Host host_;
 };
 
+static const char* const kBudgetSource = R"(
+fun Spin() -> int {
+  var i = 0
+  loop {
+    i = i + 1
+  }
+}
+
+fun Count(n: int) -> int {
+  var i = 0
+  while i < n {
+    i = i + 1
+  }
+  return i
+}
+
+fun Fall(n: int) -> int {
+  if n == 0 {
+    return 0
+  }
+  return Fall(n - 1) + 1
+}
+)";
+
+WOLANG_TEST(CodegenTest, ABudgetStopsCompiledCodeAtLoopsAndCalls) {
+  Database db;
+  const FileId file = db.AddFile("<test>", std::string(kBudgetSource));
+  const LoweredFile* lowered = db.Lowered(file);
+  const CheckedFile* checked = db.Checked(file);
+  WOLANG_ASSERT(lowered != nullptr && checked != nullptr);
+  const FileCode code{&checked->resolution, &lowered->module};
+
+  CompileOptions options;
+  options.budgeted = true;
+  std::unique_ptr<CompiledModule> budgeted = Compile(db.interner(), db.types(), std::span<const FileCode>(&code, 1), options);
+  const Symbol spin = db.interner().Intern("Spin");
+  const Symbol count = db.interner().Intern("Count");
+  const Symbol fall = db.interner().Intern("Fall");
+  if (!budgeted->Contains(spin)) {
+    return;
+  }
+
+  budgeted->SetBudget(1000);
+  WOLANG_EXPECT_EQ(budgeted->Run(spin, {}).trap, ir::TrapKind::kStepLimit);
+  const interp::Outcome small = budgeted->Run(count, {Fixture::Int(10)});
+  WOLANG_EXPECT(small.ok());
+  WOLANG_EXPECT_EQ(small.value.Describe(), "10");
+  WOLANG_EXPECT_EQ(budgeted->Run(count, {Fixture::Int(100000)}).trap, ir::TrapKind::kStepLimit);
+  WOLANG_EXPECT(budgeted->Run(fall, {Fixture::Int(10)}).ok());
+  WOLANG_EXPECT_EQ(budgeted->Run(fall, {Fixture::Int(5000)}).trap, ir::TrapKind::kStepLimit);
+  WOLANG_EXPECT(budgeted->Run(count, {Fixture::Int(10)}).ok());
+
+  budgeted->SetBudget(0);
+  WOLANG_EXPECT(budgeted->Run(count, {Fixture::Int(100000)}).ok());
+}
+
+WOLANG_TEST(CodegenTest, CodeCompiledWithoutABudgetDoesNotCountOne) {
+  Database db;
+  const FileId file = db.AddFile("<test>", std::string(kBudgetSource));
+  const LoweredFile* lowered = db.Lowered(file);
+  const CheckedFile* checked = db.Checked(file);
+  WOLANG_ASSERT(lowered != nullptr && checked != nullptr);
+  std::unique_ptr<CompiledModule> plain = Compile(db.interner(), db.types(), checked->resolution, lowered->module);
+  const Symbol count = db.interner().Intern("Count");
+  if (!plain->Contains(count)) {
+    return;
+  }
+
+  plain->SetBudget(10);
+  const interp::Outcome outcome = plain->Run(count, {Fixture::Int(100000)});
+  WOLANG_EXPECT(outcome.ok());
+  WOLANG_EXPECT_EQ(outcome.value.Describe(), "100000");
+}
+
 WOLANG_TEST(CodegenTest, RunsArithmetic) {
   Fixture f("fun Add(a: int, b: int) -> int => a + b\n");
   WOLANG_EXPECT_EQ(f.Run("Add", {Fixture::Int(2), Fixture::Int(3)}), "5");
@@ -4365,6 +4439,420 @@ fun Generic() -> int {
   WOLANG_EXPECT_EQ(f.Run("InPlace", {}), "23");
   WOLANG_EXPECT_EQ(f.Run("Classes", {}), "1430");
   WOLANG_EXPECT_EQ(f.Run("Generic", {}), "494");
+}
+
+WOLANG_TEST(CodegenTest, AnOrPatternAgreesInEveryTier) {
+  // An or-pattern joins its tests with `or` on bools. The compiled tiers took
+  // that and the reference interpreter trapped "undefined value ... or on
+  // false", so the self-hosted parser, which matches on a token kind in nearly
+  // every function, could not run there (D287).
+  Fixture f(R"(
+enum Color {
+  Red
+  Green
+  Blue
+  Black
+}
+
+fun OnInts(n: int) -> int {
+  return match n {
+    1 | 2 => 10
+    7 | 8 | 9 => 20
+    _ => 0
+  }
+}
+
+fun OnColors(color: Color) -> int {
+  return match color {
+    Color.Red | Color.Green => 1
+    Color.Blue => 2
+    _ => 0
+  }
+}
+
+fun Pick(n: int) -> int {
+  if n == 0 {
+    return OnColors(Color.Red)
+  }
+  if n == 1 {
+    return OnColors(Color.Green)
+  }
+  if n == 2 {
+    return OnColors(Color.Blue)
+  }
+  return OnColors(Color.Black)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("OnInts", {Fixture::Int(1)}), "10");
+  WOLANG_EXPECT_EQ(f.Run("OnInts", {Fixture::Int(2)}), "10");
+  WOLANG_EXPECT_EQ(f.Run("OnInts", {Fixture::Int(8)}), "20");
+  WOLANG_EXPECT_EQ(f.Run("OnInts", {Fixture::Int(3)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(0)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(1)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(2)}), "2");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(3)}), "0");
+}
+
+WOLANG_TEST(CodegenTest, TwoEnumsOfTagsAreComparedByTheirTags) {
+  // `==` on an enum that carries nothing compares tags: the dev tier would
+  // not compare two aggregates, and a function it refused took every caller
+  // of it into the interpreter (D287).
+  Fixture f(R"(
+enum Color {
+  Red
+  Green
+  Blue
+}
+
+fun Make(n: int) -> Color {
+  if n == 0 {
+    return Color.Red
+  }
+  if n == 1 {
+    return Color.Green
+  }
+  return Color.Blue
+}
+
+fun Same(a: int, b: int) -> int {
+  if Make(a) == Make(b) {
+    return 1
+  }
+  return 0
+}
+
+fun Differ(a: int, b: int) -> int {
+  if Make(a) != Make(b) {
+    return 1
+  }
+  return 0
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Same", {Fixture::Int(1), Fixture::Int(1)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Same", {Fixture::Int(0), Fixture::Int(2)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Differ", {Fixture::Int(0), Fixture::Int(2)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Differ", {Fixture::Int(2), Fixture::Int(2)}), "0");
+}
+
+WOLANG_TEST(CodegenTest, AClassWithAnOwnedTextFieldGivesItBack) {
+  Fixture f(R"(
+extern "C" fun wolang_objects_live() -> s64
+
+class Holder {
+  var label: Text
+}
+
+fun Live() -> int uses unsafe {
+  return wolang_objects_live() as int
+}
+
+fun FromBorrowed(word: Text) -> int {
+  const h = Holder("{word}")
+  return h.label.len
+}
+
+fun FromNumber(n: int) -> int {
+  const h = Holder("n={n}")
+  return h.label.len
+}
+
+fun Replaced(n: int) -> int {
+  const h = Holder("a{n}")
+  h.label = "bb{n}"
+  return h.label.len
+}
+
+fun Looped() -> int {
+  var total = 0
+  for i in 0..20 {
+    const word = "w{i}"
+    total = total + FromBorrowed(word) + FromNumber(i) + Replaced(i)
+  }
+  return total
+}
+
+fun Balanced() -> int uses unsafe {
+  const before = Live()
+  const total = Looped()
+  return total * 100 + (Live() - before)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Balanced", {}), "19000");
+}
+
+WOLANG_TEST(CodegenTest, ATaskWaitsOnTheCallersClock) {
+  // `Wait` has no body, so the compiler writes its machine: it finishes when
+  // the scheduler's clock has passed the moment it began plus the seconds
+  // asked for, and the clock moves only when the caller ticks (D267). The
+  // interpreter and the JIT run the same machine, so they must agree. Each
+  // function runs its tasks to the end before it returns: the scheduler is
+  // shared, and a task left behind would write to an object that is gone.
+  Fixture f(R"(
+extern "C" fun wolang_sched_tick(dt: f64) -> s64
+extern "C" fun wolang_sched_now() -> f64
+extern "C" fun wolang_sched_pending() -> s32
+
+task fun Wait(seconds: f64)
+
+class Counter {
+  var n: int = 0
+}
+
+task fun Count(counter: Counter) {
+  wait Wait(1.0)
+  counter.n = counter.n + 1
+  wait Wait(2.0)
+  counter.n = counter.n + 10
+}
+
+task fun Instant(counter: Counter) {
+  wait Wait(0.0)
+  counter.n = 7
+}
+
+fun Drive(ticks: int) -> int uses unsafe {
+  const counter = Counter()
+  const _handle = spawn Count(counter)
+  var i = 0
+  while i < ticks {
+    const _steps = wolang_sched_tick(0.5)
+    i = i + 1
+  }
+  const answer = counter.n
+  while wolang_sched_pending() > 0 {
+    const _more = wolang_sched_tick(100.0)
+  }
+  return answer
+}
+
+fun Slow(ticks: int) -> int uses unsafe {
+  const counter = Counter()
+  const _handle = spawn Count(counter)
+  var i = 0
+  while i < ticks {
+    const _steps = wolang_sched_tick(0.25)
+    i = i + 1
+  }
+  const answer = counter.n
+  while wolang_sched_pending() > 0 {
+    const _more = wolang_sched_tick(100.0)
+  }
+  return answer
+}
+
+fun Nothing() -> int uses unsafe {
+  const counter = Counter()
+  const _handle = spawn Instant(counter)
+  const _steps = wolang_sched_tick(0.0)
+  const answer = counter.n
+  while wolang_sched_pending() > 0 {
+    const _more = wolang_sched_tick(100.0)
+  }
+  return answer
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(0)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(2)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(3)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(6)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(7)}), "11");
+  WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(100)}), "11");
+  WOLANG_EXPECT_EQ(f.Run("Slow", {Fixture::Int(4)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Slow", {Fixture::Int(5)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Nothing", {}), "7");
+}
+
+WOLANG_TEST(CodegenTest, InterpolationGivesBackTheTextItBuilds) {
+  Fixture f(R"(
+extern "C" fun wolang_texts_live() -> s64
+
+fun Live() -> int uses unsafe {
+  return wolang_texts_live() as int
+}
+
+fun Make(n: int) -> Text => "m{n}"
+
+fun Called() -> int uses unsafe {
+  const before = Live()
+  var total = 0
+  for i in 0..20 {
+    const a = "x{Make(i)}y"
+    total = total + a.len
+  }
+  return (Live() - before) * 10000 + total
+}
+
+fun Nested() -> int uses unsafe {
+  const before = Live()
+  var total = 0
+  for i in 0..20 {
+    const a = "x{"<{i}>"}y"
+    total = total + a.len
+  }
+  return (Live() - before) * 10000 + total
+}
+
+fun Summed() -> int uses unsafe {
+  const before = Live()
+  var total = 0
+  for i in 0..20 {
+    const a = "x{Make(i) + "z"}y"
+    total = total + a.len
+  }
+  return (Live() - before) * 10000 + total
+}
+
+fun Alone() -> int uses unsafe {
+  const before = Live()
+  var total = 0
+  for i in 0..20 {
+    const a = "{Make(i)}"
+    total = total + a.len
+  }
+  return (Live() - before) * 10000 + total
+}
+
+fun Taken(name: Text) -> int {
+  const t = "x{name}y"
+  return t.len
+}
+
+fun Passed() -> int uses unsafe {
+  const before = Live()
+  var total = 0
+  for i in 0..20 {
+    const own = Make(i)
+    total = total + Taken(own) + Taken(Make(i))
+  }
+  return (Live() - before) * 10000 + total
+}
+
+fun Found(n: int) -> int {
+  const b = "bee{n}"
+  var a: Text? = null
+  if n > 2 {
+    a = "a{n}"
+  }
+  const t = "<{a ?? b}>"
+  return t.len
+}
+
+fun Coalesced() -> int {
+  var total = 0
+  for i in 0..6 {
+    total = total + Found(i)
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Called", {}), "90");
+  WOLANG_EXPECT_EQ(f.Run("Nested", {}), "110");
+  WOLANG_EXPECT_EQ(f.Run("Summed", {}), "110");
+  WOLANG_EXPECT_EQ(f.Run("Alone", {}), "50");
+  WOLANG_EXPECT_EQ(f.Run("Passed", {}), "180");
+  WOLANG_EXPECT_EQ(f.Run("Coalesced", {}), "30");
+}
+
+WOLANG_TEST(CodegenTest, AnErrorHeldInAnAnnotatedConstGivesItsBoxBack) {
+  Fixture f(R"(
+extern "C" fun wolang_objects_live() -> s64
+
+error P(x: int, why: text)
+
+fun Live() -> int uses unsafe {
+  return wolang_objects_live() as int
+}
+
+fun Held(n: int) -> int!(P) {
+  const e: int!(P) = P(n, "late")
+  if n > 0 {
+    return e
+  }
+  return 1
+}
+
+fun Dropped(n: int) -> int {
+  const e: int!(P) = P(n, "late")
+  return n
+}
+
+fun Matched(n: int) -> int {
+  const e: int!(P) = P(n, "late")
+  return match e {
+    Ok(v) => v
+    P(x, why) => x
+  }
+}
+
+fun RunHeld() -> int uses unsafe {
+  const before = Live()
+  for i in 0..5 {
+    const r = Held(i)
+  }
+  return Live() - before
+}
+
+fun RunDropped() -> int uses unsafe {
+  const before = Live()
+  for i in 0..5 {
+    const r = Dropped(i)
+  }
+  return Live() - before
+}
+
+fun RunMatched() -> int uses unsafe {
+  const before = Live()
+  for i in 0..5 {
+    const r = Matched(i)
+  }
+  return Live() - before
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("RunHeld", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("RunDropped", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("RunMatched", {}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Matched", {Fixture::Int(7)}), "7");
+}
+
+WOLANG_TEST(CodegenTest, AnAnnotatedAbilityLocalTakesAnotherImplementer) {
+  Fixture f(R"(
+ability Backend {
+  fun Id() -> int
+}
+
+class Null {
+  var n: int = 0
+}
+
+class Real {
+  var n: int = 1
+}
+
+extend Null as Backend {
+  fun Id() -> int => 0
+}
+
+extend Real as Backend {
+  fun Id() -> int => 1
+}
+
+fun NullNew() -> Null => Null(0)
+
+fun RealNew() -> Real => Real(1)
+
+fun Pick(real: bool) -> int {
+  var backend: Backend = NullNew()
+  if real {
+    backend = RealNew()
+  }
+  return backend.Id()
+}
+
+fun Both() -> int {
+  return Pick(false) * 10 + Pick(true)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Both", {}), "1");
 }
 
 }  // namespace

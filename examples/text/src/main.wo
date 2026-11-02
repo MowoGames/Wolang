@@ -1,0 +1,54 @@
+need font.{DrawText, Measure, SampleFont}
+need image.{Image, ImageNew}
+need std.io.{Print}
+need std.text.{BuilderNew}
+need ui.{Render, StyleDefault, UiNew}
+
+fun Show(picture: Image) uses io, unsafe {
+  var y = 0
+  while y < picture.height {
+    var line = BuilderNew()
+    var x = 0
+    while x < picture.width {
+      if picture.Get(x, y) >> 24 > 127 {
+        line.Append("#")
+      } else {
+        line.Append(" ")
+      }
+      x = x + 1
+    }
+    Print(line.Text())
+    y = y + 1
+  }
+}
+
+fun main() uses io, unsafe {
+  match SampleFont() {
+    Ok(face) => {
+      const words = "HELLO TEXT"
+      const width = Measure(face, words, 16.0) as int + 2
+      match ImageNew(width, 18) {
+        Ok(picture) => {
+          DrawText(picture, face, words, 16.0, 1, 1, 4294967295)
+          Show(picture)
+        }
+        _ => Print("no image")
+      }
+      const screen = UiNew(face, StyleDefault())
+      screen.Begin()
+      screen.Place(0, 0, 100)
+      screen.Label("SCORE 7")
+      const pressed = screen.Button("RESET")
+      screen.End()
+      Print("{screen.commands.Len()} commands, pressed {pressed}")
+      match ImageNew(100, 70) {
+        Ok(frame) => {
+          Render(frame, screen)
+          Show(frame)
+        }
+        _ => Print("no image")
+      }
+    }
+    _ => Print("no font")
+  }
+}

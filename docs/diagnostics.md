@@ -34,8 +34,13 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0159` | retired: an `after` delay that is not a number is `E0101` | D243, D260 |
 | `E0160` | an `@Operator` ability that is not one operator-shaped method | D239 |
 | `E0161`, `E0162` | a borrowed function value in a place that keeps it, an escaping closure that takes a reference, pointer, slice or borrowed function | D240 |
+| `E0163` | a function held in a variable, handed to a `@Thread` function | D252, D275 |
 | `E0164` | a script class that derives from an `extern class` | D256 |
 | `E0165` | an element written through a slice that is not `[]mut T` | D251 |
+| `E0175`, `E0176` | `@Save` on something that is not a stored field of a class or a struct, a saved field of a type `std.save` cannot write | D266 |
+| `E0178`, `E0179` | a replication attribute where it means nothing, a replicated field or an RPC that carries a type a host cannot send | D268 |
+
+| `E0166` | an arm of a `match` on a `T!` that names no error in scope | D275 |
 
 | `E0149` | an owning field moved out of the value that holds it | D233 |
 | `E0201` | pattern matching | implemented (wave 4) |
@@ -215,7 +220,7 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0102` | wrong number of arguments | calling a two-parameter function with one |
 | `E0103` | no value with that name is in scope | `const x = nothing_here` |
 | `E0104` | a value that may be absent was used directly | `p.field` where `p: Pawn?` |
-| `E0105` | assignment to a `const` binding | `const a = 1` then `a = 2` |
+| `E0105` | assignment to a `const` binding, or a `const` array handed to a `[]mut T` parameter (D275) | `const a = 1` then `a = 2` |
 | `E0106` | the callee is not callable | calling an integer |
 | `E0107` | the value cannot be indexed | `n[0]` where `n: int` |
 | `E0108` | an operator got the wrong kind of operand | `-s` where `s: text` |
@@ -257,8 +262,14 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0157` | an ability whose method names `Self` used as the type of a value; use it as a bound instead (D239) | `const e: Eq = a`, `fun F(e: Eq)` |
 | `E0161` | a function value from a parameter that is not `keep` stored, returned, or given to a `keep` parameter, field or kept local (D240) | `fun Hold(f: fun()) { saved = f }` |
 | `E0162` | a closure that outlives its call taking a reference, a pointer, a slice or a borrowed function with it (D240) | `fun M(r: &int) -> fun() -> int { return \|\| r }` |
+| `E0175` | `@Save` on a method, a derived or weak field, a host class's member, or anything that is not a stored field of a `class` or a `struct` (D266) | `class Mover { @Save fun Step() {} }` |
+| `E0176` | a `@Save` field whose type `std.save` cannot write back: an array, a slice, a function, a class with a virtual method, an enum that carries values, a struct holding one of these (D266) | `class Mover { @Save var cells: [4]int }` |
+| `E0178` | `@Replicated`, `@Server`, `@Client` or `@Multicast` on a member of a struct, on a free function, on the wrong kind of member (a field for an RPC attribute, a method for `@Replicated`), two of them on one member, or an argument the attribute does not take (D268) | `struct S { @Replicated var n: int }` |
+| `E0179` | a replicated field or an RPC parameter a host cannot send (an object reference, an array, a struct that holds one), or an RPC that returns a value (D268) | `class P { @Server fun Fire() -> int => 1 }` |
 | `E0165` | an element written, or `&mut` taken of one, through a slice that is `[]T` and not `[]mut T`; a write through a handle the slice holds is not one (D251) | `fun Fill(xs: []int) { xs[0] = 1 }` |
+| `E0163` | a local that holds a function, handed to a `@Thread` function: the checker cannot follow it to the globals it reaches, so the caller must pass the function by name or as a closure, state `uses unsafe`, or be `@Thread` itself and pass on what it was given (D252, D275) | `@Thread fun Launch(body: fun()) {}` then `fun Go(f: fun()) { Launch(f) }` |
 | `E0164` | a script `class` with an `extern class` as its base: no host object stands behind it, and an upcast would hand the host a pointer it never made (D256) | `extern class A {}` then `class B : A {}` |
+| `E0166` | a pattern in a `match` on a `T!` that is not `Ok` and names no error in scope: a typo, or an error that was not imported with `need` (D275) | `match Parse(s) { Ok(v) => v  Gone(x) => x  _ => 0 }` |
 | `E0160` | an `@Operator` ability that is not exactly one method named `Plus`, `Minus`, `Times`, `Divide`, `Negate`, `Equals` or `Compare` with that operator's shape (D239) | `@Operator ability A { fun Frob(o: Self) -> Self }` |
 
 | `E0149` | a value with a `deinit` taken out of a field of the struct or enum that owns it (D233) | `Take(o.r)` where `o: Outer` holds `r: Res` |

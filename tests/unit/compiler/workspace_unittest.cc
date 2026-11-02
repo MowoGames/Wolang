@@ -3,8 +3,11 @@
 
 #include "wolang/compiler/workspace.h"
 
+#include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <system_error>
 
@@ -351,4 +354,76 @@ WOLANG_TEST(Workspace, RefusesARemoteDependencyThatIsNotFetched) {
   }
   WOLANG_EXPECT(said);
   std::filesystem::remove_all(root, failed);
+}
+
+static int RunQuietly(const std::string& command) {
+#if defined(_WIN32)
+  return std::system((command + " >NUL 2>NUL").c_str());
+#else
+  return std::system((command + " >/dev/null 2>&1").c_str());
+#endif
+}
+
+static std::string Slashes(std::string path) {
+  std::replace(path.begin(), path.end(), '\\', '/');
+  return path;
+}
+
+static std::string ReadWhole(const std::filesystem::path& path) {
+  std::ifstream in(path.string(), std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+WOLANG_TEST(Workspace, FetchesAGitDependencyAndLocksIt) {
+  // The clone ran through a shell that did not understand its quotes or
+  // `/dev/null` on Windows, so no fetch ever got past the first `git` there
+  // (D286).
+  if (RunQuietly("git --version") != 0) {
+    return;
+  }
+
+  wolang::testing::TempTree remote("fetch_remote");
+  remote.Write("wolang.toml", "[package]\nname = \"math\"\nversion = \"1.4.0\"\n");
+  remote.Write("src/math.wo", "offer fun One() -> int => 1\n");
+  const std::string git = "git -c user.name=t -c user.email=t@t.invalid -C \"" + std::string(remote.path()) + "\" ";
+  WOLANG_ASSERT_EQ(RunQuietly(git + "init --quiet"), 0);
+  WOLANG_ASSERT_EQ(RunQuietly(git + "add ."), 0);
+  WOLANG_ASSERT_EQ(RunQuietly(git + "commit --quiet -m first"), 0);
+  WOLANG_ASSERT_EQ(RunQuietly(git + "tag v1"), 0);
+
+  wolang::testing::TempTree app("fetch_app");
+  app.Write("wolang.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmath = { git = \"" + Slashes(std::string(remote.path())) + "\", tag = \"v1\" }\n");
+  app.Write("src/main.wo", "fun main() {}\n");
+
+  wolang::Database database;
+  wolang::DiagnosticEngine diagnostics;
+  WOLANG_EXPECT(wolang::FetchDependencies(&database, app.path(), &diagnostics));
+  WOLANG_EXPECT(diagnostics.diagnostics().empty());
+
+  const std::string lock = ReadWhole(std::filesystem::path(std::string(app.path())) / "wolang.lock");
+  WOLANG_EXPECT(lock.find("name = \"math\"") != std::string::npos);
+  WOLANG_EXPECT(lock.find("requested = \"v1\"") != std::string::npos);
+  WOLANG_EXPECT(lock.find("version = \"1.4.0\"") != std::string::npos);
+  const size_t commit = lock.find("commit = \"");
+  WOLANG_ASSERT(commit != std::string::npos);
+  WOLANG_EXPECT(lock[commit + 10] != '"');
+}
+
+WOLANG_TEST(Workspace, ReportsADependencyThatCannotBeFetched) {
+  if (RunQuietly("git --version") != 0) {
+    return;
+  }
+
+  wolang::testing::TempTree app("fetch_missing");
+  app.Write("wolang.toml", "[package]\nname = \"app\"\n\n[dependencies]\nmath = { git = \"" + Slashes(std::string(app.path())) + "/no-such-repository\", tag = \"v1\" }\n");
+  app.Write("src/main.wo", "fun main() {}\n");
+
+  wolang::Database database;
+  wolang::DiagnosticEngine diagnostics;
+  WOLANG_EXPECT(!wolang::FetchDependencies(&database, app.path(), &diagnostics));
+  bool said = false;
+  for (const wolang::Diagnostic& diagnostic : diagnostics.diagnostics()) {
+    said |= diagnostic.code == "E0061";
+  }
+  WOLANG_EXPECT(said);
 }

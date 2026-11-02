@@ -1,0 +1,2335 @@
+need std.fmt.{Int}
+need std.list.{List, ListNew}
+need std.text.{Bytes, BuilderNew, StartsWith, Substring}
+
+// src/syntax/parser.cc in Wolang (D283). It reads a token list and builds the
+// tree of ast.wo, which prints the way `wolang ast` does. What it leaves out is
+// what only matters for broken input: recovery, the diagnostics and the depth
+// limits. A construct it does not expect marks the parse as failed instead.
+
+fun IsKeywordKind(kind: Kind) -> bool uses unsafe {
+  return StartsWith(KindName(kind), "Kw")
+}
+
+fun CanBeName(kind: Kind) -> bool uses unsafe {
+  if !IsKeywordKind(kind) {
+    return false
+  }
+  return match kind {
+    Kind.KwIf | Kind.KwMatch | Kind.KwLoop | Kind.KwWhile | Kind.KwFor | Kind.KwForeach | Kind.KwUnsafe | Kind.KwArena | Kind.KwSpawn | Kind.KwWait | Kind.KwSelf | Kind.KwTrue | Kind.KwFalse | Kind.KwNull | Kind.KwComptime | Kind.KwReturn | Kind.KwBreak | Kind.KwContinue | Kind.KwDefer | Kind.KwAs | Kind.KwIn | Kind.KwElse | Kind.KwUses | Kind.KwWhere | Kind.KwMut => false
+    _ => true
+  }
+}
+
+fun InfixPrecedence(kind: Kind) -> int {
+  return match kind {
+    Kind.Eq | Kind.PlusEq | Kind.MinusEq | Kind.StarEq | Kind.SlashEq | Kind.PercentEq | Kind.AmpEq | Kind.PipeEq | Kind.CaretEq | Kind.ShlEq | Kind.ShrEq | Kind.QuestionQuestionEq => 1
+    Kind.DotDot | Kind.DotDotEq => 2
+    Kind.QuestionQuestion => 3
+    Kind.PipePipe => 4
+    Kind.AmpAmp => 5
+    Kind.EqEq | Kind.BangEq | Kind.Less | Kind.LessEq | Kind.Greater | Kind.GreaterEq => 6
+    Kind.Pipe => 7
+    Kind.Caret => 8
+    Kind.Amp => 9
+    Kind.Shl | Kind.Shr => 10
+    Kind.Plus | Kind.Minus => 11
+    Kind.Star | Kind.Slash | Kind.Percent => 12
+    Kind.KwAs => 13
+    _ => 0
+  }
+}
+
+fun StartsExpression(kind: Kind, allow_brace: bool) -> bool {
+  if kind == Kind.LeftBrace {
+    return allow_brace
+  }
+  return match kind {
+    Kind.Identifier | Kind.IntLiteral | Kind.FloatLiteral | Kind.StringLiteral | Kind.CharLiteral | Kind.KwTrue | Kind.KwFalse | Kind.KwNull | Kind.KwSelf | Kind.LeftParen | Kind.LeftBracket | Kind.Minus | Kind.Bang | Kind.Tilde | Kind.Star | Kind.Amp | Kind.Pipe | Kind.PipePipe | Kind.KwWait | Kind.KwSpawn | Kind.KwIf | Kind.KwMatch | Kind.KwLoop | Kind.KwWhile | Kind.KwFor | Kind.KwForeach | Kind.KwUnsafe | Kind.KwArena => true
+    _ => false
+  }
+}
+
+fun StartsLoop(kind: Kind) -> bool {
+  return match kind {
+    Kind.KwLoop | Kind.KwWhile | Kind.KwFor | Kind.KwForeach => true
+    _ => false
+  }
+}
+
+fun StartsItem(kind: Kind) -> bool {
+  return match kind {
+    Kind.At | Kind.KwOffer | Kind.KwPriv | Kind.KwComptime | Kind.KwExtern | Kind.KwTask | Kind.KwVirtual | Kind.KwOverride | Kind.KwFun | Kind.KwClass | Kind.KwStruct | Kind.KwEnum | Kind.KwAbility | Kind.KwExtend | Kind.KwComponent | Kind.KwTag | Kind.KwSystem | Kind.KwSignal | Kind.KwOn | Kind.KwNeed | Kind.KwType | Kind.KwError => true
+    _ => false
+  }
+}
+
+fun CanAppearInGenericArguments(kind: Kind) -> bool {
+  return match kind {
+    Kind.Identifier | Kind.Dot | Kind.Comma | Kind.Question | Kind.Star | Kind.Amp | Kind.KwMut | Kind.Underscore | Kind.IntLiteral | Kind.LeftBracket | Kind.RightBracket | Kind.KwFun | Kind.LeftParen | Kind.RightParen | Kind.Arrow | Kind.Bang => true
+    _ => false
+  }
+}
+
+fun U64Text(value: u64) -> text uses unsafe {
+  if value == 0 {
+    return "0"
+  }
+
+  var digits = ListNew<u8>()
+  var rest = value
+  while rest > 0 {
+    digits.Push((48 + (rest % 10)) as u8)
+    rest = rest / 10
+  }
+
+  var out = BuilderNew()
+  var k = digits.Len() - 1
+  while k >= 0 {
+    out.AppendByte(digits.At(k))
+    k = k - 1
+  }
+  return out.Release()
+}
+
+// printf's `%g`: six significant digits, no trailing zeros, an exponent when it
+// is below -4 or at least six. The literals this prints are small and typed by
+// people, so the digits come from repeated scaling and not from exact
+// arithmetic.
+fun FormatG(value: f64) -> text uses unsafe {
+  if value <= 0.0 {
+    return "0"
+  }
+
+  var scaled = value
+  var exponent = 0
+  while scaled >= 10.0 {
+    scaled = scaled / 10.0
+    exponent = exponent + 1
+  }
+  while scaled < 1.0 {
+    scaled = scaled * 10.0
+    exponent = exponent - 1
+  }
+
+  var digits = (scaled * 100000.0 + 0.5) as int
+  if digits >= 1000000 {
+    digits = digits / 10
+    exponent = exponent + 1
+  }
+
+  var all = U64Text(digits as u64)
+  var end = 6
+  const bytes = Bytes(all)
+  while end > 1 && bytes[end - 1] == 48 {
+    end = end - 1
+  }
+  const kept = Substring(all, 0, end)
+
+  var out = BuilderNew()
+  if exponent < 0 - 4 || exponent >= 6 {
+    out.Append(Substring(kept, 0, 1))
+    if end > 1 {
+      out.Append(".")
+      out.Append(Substring(kept, 1, end))
+    }
+    out.Append("e")
+    var magnitude = exponent
+    if exponent < 0 {
+      out.Append("-")
+      magnitude = 0 - exponent
+    } else {
+      out.Append("+")
+    }
+    if magnitude < 10 {
+      out.Append("0")
+    }
+    out.Append(Int(magnitude))
+    return out.Release()
+  }
+
+  if exponent < 0 {
+    out.Append("0.")
+    var zeros = 0 - exponent - 1
+    while zeros > 0 {
+      out.Append("0")
+      zeros = zeros - 1
+    }
+    out.Append(kept)
+    return out.Release()
+  }
+
+  const integer_digits = exponent + 1
+  var k = 0
+  while k < integer_digits {
+    if k < end {
+      out.Append(Substring(kept, k, k + 1))
+    } else {
+      out.Append("0")
+    }
+    k = k + 1
+  }
+  if end > integer_digits {
+    out.Append(".")
+    out.Append(Substring(kept, integer_digits, end))
+  }
+  return out.Release()
+}
+
+fun Quote(value: text) -> text uses unsafe {
+  const bytes = Bytes(value)
+  var out = BuilderNew()
+  out.AppendByte(34)
+  var k = 0
+  while k < bytes.len {
+    const c = bytes[k]
+    if c == 34 {
+      out.Append("\\\"")
+    } else if c == 92 {
+      out.Append("\\\\")
+    } else if c == 10 {
+      out.Append("\\n")
+    } else if c == 9 {
+      out.Append("\\t")
+    } else if c == 13 {
+      out.Append("\\r")
+    } else {
+      out.AppendByte(c)
+    }
+    k = k + 1
+  }
+  out.AppendByte(34)
+  return out.Release()
+}
+
+class Parser {
+  var source: text
+  var tokens: List<Token>
+  var numbers: List<Number>
+  var strings: List<StringLit>
+  var pos: int
+  var allow_struct: bool
+  var keep_allowed: bool
+  var pending_angle: bool
+  var pending_question: bool
+  var labels: List<text>
+  var abi: text
+  var failed: bool
+  var problems: List<text>
+
+  // ----------------------------------------------------------------- cursor
+
+  fun Peek(ahead: int) -> Token {
+    const index = pos + ahead
+    if index < tokens.Len() {
+      return tokens.At(index)
+    }
+    return tokens.At(tokens.Len() - 1)
+  }
+
+  fun PeekKind(ahead: int) -> Kind {
+    return Peek(ahead).kind
+  }
+
+  fun At(kind: Kind) -> bool {
+    return PeekKind(0) == kind
+  }
+
+  fun AtEnd() -> bool {
+    return PeekKind(0) == Kind.EndOfFile
+  }
+
+  fun StartsLine(ahead: int) -> bool {
+    return (Peek(ahead).flags & 1) != 0
+  }
+
+  fun TextOf(token: Token) -> text uses unsafe {
+    return Substring(source, token.offset, token.offset + token.length)
+  }
+
+  fun AtContextual(word: text, ahead: int) -> bool uses unsafe {
+    const token = Peek(ahead)
+    return token.kind == Kind.Identifier && TextOf(token) == word
+  }
+
+  fun Advance() -> Token {
+    const token = Peek(0)
+    if !AtEnd() {
+      pos = pos + 1
+    }
+    return token
+  }
+
+  fun Eat(kind: Kind) -> bool {
+    if !At(kind) {
+      return false
+    }
+    const _token = Advance()
+    return true
+  }
+
+  fun Fail(message: text) uses unsafe {
+    failed = true
+    problems.Push(message + " at token " + Int(pos) + " (" + KindName(PeekKind(0)) + ")")
+  }
+
+  fun Expect(kind: Kind) -> bool uses unsafe {
+    if Eat(kind) {
+      return true
+    }
+    Fail("expected " + KindName(kind))
+    return false
+  }
+
+  fun ExpectName() -> text uses unsafe {
+    if At(Kind.Identifier) {
+      return TextOf(Advance())
+    }
+    if IsKeywordKind(PeekKind(0)) {
+      return TextOf(Advance())
+    }
+    Fail("expected a name")
+    return ""
+  }
+
+  fun ExpectIdentifier() -> text uses unsafe {
+    if At(Kind.Identifier) {
+      return TextOf(Advance())
+    }
+    Fail("expected an identifier")
+    return ""
+  }
+
+  fun ExpectCloseBrace() -> bool uses unsafe {
+    if Eat(Kind.RightBrace) {
+      return true
+    }
+    Fail("expected }")
+    return false
+  }
+
+  fun ExpectStatementEnd() uses unsafe {
+    if Eat(Kind.Semicolon) {
+      return
+    }
+    if At(Kind.RightBrace) || AtEnd() || StartsLine(0) {
+      return
+    }
+    Fail("expected a line break")
+    SkipToStatementBoundary()
+  }
+
+  fun SkipToStatementBoundary() {
+    while !AtEnd() {
+      if At(Kind.RightBrace) {
+        return
+      }
+      if Eat(Kind.Semicolon) {
+        return
+      }
+      if StartsLine(0) {
+        return
+      }
+      const _token = Advance()
+    }
+  }
+
+  fun SkipToItemBoundary() uses unsafe {
+    while !AtEnd() {
+      if At(Kind.RightBrace) {
+        return
+      }
+      if StartsLine(0) && (StartsItem(PeekKind(0)) || StartsUnsafeFunction()) {
+        return
+      }
+      const _token = Advance()
+    }
+  }
+
+  fun SkipBalancedTo(closing: Kind) {
+    var depth = 0
+    while !AtEnd() {
+      const kind = PeekKind(0)
+      if kind == Kind.LeftBrace || kind == Kind.LeftParen || kind == Kind.LeftBracket {
+        depth = depth + 1
+      } else if kind == closing && depth == 0 {
+        const _token = Advance()
+        return
+      } else if kind == Kind.RightBrace || kind == Kind.RightParen || kind == Kind.RightBracket {
+        if depth == 0 {
+          return
+        }
+        depth = depth - 1
+      }
+      const _token = Advance()
+    }
+  }
+
+  // ------------------------------------------------------------------ items
+
+  fun ParseFile() -> List<Item> uses unsafe {
+    var items = ListNew<Item>()
+    while !AtEnd() {
+      const before = pos
+      if const item = ParseItem(true) {
+        items.Push(item)
+      }
+      if pos == before {
+        Fail("expected a declaration")
+        if At(Kind.RightBrace) {
+          const _token = Advance()
+        }
+        SkipToItemBoundary()
+        if pos == before {
+          const _token = Advance()
+        }
+      }
+    }
+    return items
+  }
+
+  fun CollectDocComments() {
+    while At(Kind.DocComment) {
+      const _token = Advance()
+    }
+  }
+
+  fun ParseAttributes() -> List<Attr> uses unsafe {
+    var attributes = ListNew<Attr>()
+    while At(Kind.At) {
+      const _token = Advance()
+      var attribute = NewAttr()
+      attribute.name = ExpectIdentifier()
+      if At(Kind.LeftParen) {
+        attribute.args = ParseCallArguments()
+      }
+      attributes.Push(attribute)
+      if attribute.name == "" {
+        return attributes
+      }
+    }
+    return attributes
+  }
+
+  fun StartsUnsafeFunction() -> bool {
+    if !At(Kind.KwUnsafe) {
+      return false
+    }
+    return match PeekKind(1) {
+      Kind.KwFun | Kind.KwTask | Kind.KwVirtual | Kind.KwOverride | Kind.KwExtern => true
+      _ => false
+    }
+  }
+
+  fun ParseModifiers() -> int uses unsafe {
+    var flags = 0
+    abi = ""
+    loop {
+      const kind = PeekKind(0)
+      if kind == Kind.KwOffer {
+        flags = flags | 1
+        const _token = Advance()
+        continue
+      }
+      if kind == Kind.KwPriv {
+        flags = flags | 2
+        const _token = Advance()
+        continue
+      }
+      if kind == Kind.KwTask {
+        flags = flags | 4
+        const _token = Advance()
+        continue
+      }
+      if kind == Kind.KwVirtual {
+        flags = flags | 8
+        const _token = Advance()
+        continue
+      }
+      if kind == Kind.KwOverride {
+        flags = flags | 16
+        const _token = Advance()
+        continue
+      }
+      if kind == Kind.KwComptime {
+        flags = flags | 32
+        const _token = Advance()
+        continue
+      }
+      if kind == Kind.KwUnsafe && StartsUnsafeFunction() {
+        flags = flags | 512
+        const _token = Advance()
+        continue
+      }
+      if kind == Kind.KwExtern {
+        flags = flags | 256
+        const _token = Advance()
+        if At(Kind.StringLiteral) {
+          abi = SimpleString(Advance())
+        }
+        continue
+      }
+      if AtContextual("derived", 0) && (PeekKind(1) == Kind.KwVar || PeekKind(1) == Kind.KwConst) {
+        flags = flags | 64
+        const _token = Advance()
+        continue
+      }
+      if AtContextual("weak", 0) && (PeekKind(1) == Kind.KwVar || PeekKind(1) == Kind.KwConst) {
+        flags = flags | 128
+        const _token = Advance()
+        continue
+      }
+      break
+    }
+    return flags
+  }
+
+  fun SimpleString(token: Token) -> text uses unsafe {
+    const literal = strings.At(token.aux)
+    if literal.parts.Len() == 0 {
+      return ""
+    }
+    const part = literal.parts.At(0)
+    if part.interpolated {
+      return ""
+    }
+    return part.text
+  }
+
+  fun ParseItem(allow_error_item: bool) -> Item? uses unsafe {
+    const start = pos
+    CollectDocComments()
+    const attributes = ParseAttributes()
+    const flags = ParseModifiers()
+    const found_abi = abi
+    const had_prefix = pos != start
+
+    var item = NewItem("error")
+    item.flags = flags
+    item.abi = found_abi
+    item.attributes = attributes
+
+    const kind = PeekKind(0)
+    if kind == Kind.KwNeed {
+      return ParseImport(item)
+    }
+    if kind == Kind.KwFun {
+      return ParseFunction(item)
+    }
+    if kind == Kind.KwClass {
+      return ParseAggregate(item, "class")
+    }
+    if kind == Kind.KwStruct {
+      return ParseAggregate(item, "struct")
+    }
+    if kind == Kind.KwAbility {
+      return ParseAggregate(item, "ability")
+    }
+    if kind == Kind.KwComponent {
+      return ParseAggregate(item, "component")
+    }
+    if kind == Kind.KwEnum {
+      return ParseEnum(item)
+    }
+    if kind == Kind.KwExtend {
+      return ParseExtend(item)
+    }
+    if kind == Kind.KwTag {
+      return ParseTag(item)
+    }
+    if kind == Kind.KwSystem {
+      return ParseSystem(item)
+    }
+    if kind == Kind.KwSignal {
+      return ParseSignal(item)
+    }
+    if kind == Kind.KwOn {
+      return ParseOn(item)
+    }
+    if kind == Kind.KwConst || kind == Kind.KwVar {
+      return ParseBinding(item)
+    }
+    if kind == Kind.KwType {
+      return ParseTypeAlias(item)
+    }
+    if kind == Kind.KwError {
+      return ParseErrorSet(item)
+    }
+
+    if AtContextual("deinit", 0) && PeekKind(1) == Kind.LeftBrace {
+      return ParseDeinit(item)
+    }
+
+    if PeekKind(1) == Kind.Identifier {
+      if AtContextual("dimension", 0) {
+        return ParseDimension(item)
+      }
+      if AtContextual("unit", 0) {
+        return ParseUnit(item)
+      }
+      if AtContextual("effect", 0) {
+        return ParseEffect(item)
+      }
+      if AtContextual("machine", 0) {
+        return ParseMachine(item)
+      }
+    }
+
+    if !had_prefix || !allow_error_item {
+      pos = start
+      return null
+    }
+
+    Fail("expected a declaration after this")
+    item.kind = "error"
+    item.flags = item.flags | 1024
+    SkipToItemBoundary()
+    return item
+  }
+
+  fun ParseItemBlock() -> List<Item> uses unsafe {
+    var members = ListNew<Item>()
+    while !AtEnd() && !At(Kind.RightBrace) {
+      const before = pos
+      if const member = ParseItem(true) {
+        members.Push(member)
+      }
+      if pos == before {
+        Fail("expected a member declaration")
+        SkipToItemBoundary()
+        if pos == before {
+          const _token = Advance()
+        }
+      }
+    }
+    const _closed = ExpectCloseBrace()
+    return members
+  }
+
+  fun ParseImport(item: Item) -> Item uses unsafe {
+    const _need = Advance()
+    item.kind = "need"
+    var segments = ListNew<text>()
+    var names = ListNew<text>()
+    loop {
+      if At(Kind.LeftBrace) {
+        const _open = Advance()
+        while !AtEnd() && !At(Kind.RightBrace) {
+          const name = ExpectName()
+          if name != "" {
+            names.Push(name)
+          } else {
+            break
+          }
+          if !Eat(Kind.Comma) {
+            break
+          }
+        }
+        const _closed = ExpectCloseBrace()
+        break
+      }
+
+      const segment = ExpectName()
+      if segment == "" {
+        item.flags = item.flags | 1024
+        break
+      }
+      segments.Push(segment)
+      if !Eat(Kind.Dot) {
+        break
+      }
+    }
+
+    if segments.Len() > 0 {
+      item.name = segments.At(segments.Len() - 1)
+    }
+    item.path = segments
+    item.names = names
+    return item
+  }
+
+  fun ParseParameterList(types_required: bool, allow_keep: bool) -> List<Param> uses unsafe {
+    var params = ListNew<Param>()
+    if !Expect(Kind.LeftParen) {
+      return params
+    }
+
+    while !AtEnd() && !At(Kind.RightParen) {
+      var param = NewParam()
+      param.attributes = ParseAttributes()
+      param.is_mutable = Eat(Kind.KwMut)
+      param.name = ExpectName()
+      if param.name == "" {
+        SkipBalancedTo(Kind.RightParen)
+        break
+      }
+
+      if Eat(Kind.Colon) {
+        keep_allowed = allow_keep
+        param.type = ParseType()
+      } else if types_required {
+        Fail("expected : and a parameter type")
+      }
+
+      if Eat(Kind.Eq) {
+        param.default_value = ParseExpression(1)
+      }
+
+      params.Push(param)
+      if !Eat(Kind.Comma) {
+        break
+      }
+    }
+
+    const _closed = Expect(Kind.RightParen)
+    return params
+  }
+
+  fun ParseGenericParameters() -> List<Generic> uses unsafe {
+    var generics = ListNew<Generic>()
+    if !At(Kind.Less) {
+      return generics
+    }
+    const _open = Advance()
+
+    while !AtEnd() && !AtAngleClose() {
+      var param = NewGeneric()
+      param.name = ExpectName()
+      if param.name == "" {
+        break
+      }
+
+      if Eat(Kind.Colon) {
+        loop {
+          param.bounds.Push(ParseType())
+          if !Eat(Kind.Plus) {
+            break
+          }
+        }
+      }
+      generics.Push(param)
+
+      if !Eat(Kind.Comma) {
+        break
+      }
+    }
+
+    if !EatAngleClose() {
+      const _closed = Expect(Kind.Greater)
+    }
+    return generics
+  }
+
+  fun ParseWhereClause(generics: List<Generic>) uses unsafe {
+    if !At(Kind.KwWhere) {
+      return
+    }
+    const _where = Advance()
+
+    loop {
+      const name = ExpectIdentifier()
+      if name == "" {
+        return
+      }
+
+      var bounds = ListNew<Ty>()
+      if Expect(Kind.Colon) {
+        loop {
+          bounds.Push(ParseType())
+          if !Eat(Kind.Plus) {
+            break
+          }
+        }
+      }
+
+      var found = false
+      var k = 0
+      while k < generics.Len() {
+        if generics.At(k).name == name {
+          var m = 0
+          while m < bounds.Len() {
+            generics.At(k).bounds.Push(bounds.At(m))
+            m = m + 1
+          }
+          found = true
+          break
+        }
+        k = k + 1
+      }
+      if !found {
+        Fail("not a type parameter of this declaration")
+      }
+
+      if !Eat(Kind.Comma) {
+        return
+      }
+    }
+  }
+
+  fun ParseEffectList() -> List<Ty> uses unsafe {
+    var effects = ListNew<Ty>()
+    if !Eat(Kind.KwUses) {
+      return effects
+    }
+    loop {
+      if PeekKind(0) == Kind.KwUnsafe {
+        const _token = Advance()
+        var effect = NewTy("type")
+        effect.path.Push("unsafe")
+        effects.Push(effect)
+      } else {
+        effects.Push(ParseType())
+      }
+      if !Eat(Kind.Comma) {
+        break
+      }
+    }
+    return effects
+  }
+
+  fun ParseFunction(item: Item) -> Item uses unsafe {
+    const _fun = Advance()
+    item.kind = "fun"
+    item.name = ExpectName()
+
+    var generics = ParseGenericParameters()
+    item.params = ParseParameterList(true, true)
+
+    if Eat(Kind.Arrow) {
+      item.type = ParseType()
+    }
+    item.effects = ParseEffectList()
+    ParseWhereClause(generics)
+    item.generics = generics
+
+    if At(Kind.LeftBrace) {
+      item.body = ParseBlock()
+    } else if Eat(Kind.FatArrow) {
+      item.flags = item.flags | 4096
+      item.body = ParseExpression(1)
+    } else if Eat(Kind.Eq) {
+      if At(Kind.StringLiteral) {
+        item.link_name = SimpleString(Advance())
+      } else {
+        Fail("expected the linker symbol as a string literal")
+      }
+    } else if !StartsLine(0) && !At(Kind.RightBrace) && !AtEnd() {
+      Fail("expected a function body")
+    }
+    return item
+  }
+
+  fun ParseAggregate(item: Item, kind: text) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = kind
+    item.name = ExpectName()
+
+    var generics = ParseGenericParameters()
+    if Eat(Kind.Colon) {
+      item.super_type = ParseType()
+    }
+    ParseWhereClause(generics)
+    item.generics = generics
+
+    if Expect(Kind.LeftBrace) {
+      item.members = ParseItemBlock()
+    } else {
+      item.flags = item.flags | 1024
+    }
+    return item
+  }
+
+  fun ParseEnum(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "enum"
+    item.name = ExpectName()
+    item.generics = ParseGenericParameters()
+
+    if !Expect(Kind.LeftBrace) {
+      item.flags = item.flags | 1024
+      return item
+    }
+
+    var variants = ListNew<Item>()
+    while !AtEnd() && !At(Kind.RightBrace) {
+      var variant = NewItem("variant")
+      CollectDocComments()
+      variant.attributes = ParseAttributes()
+      variant.name = ExpectName()
+      if variant.name == "" {
+        SkipToItemBoundary()
+        break
+      }
+      if At(Kind.LeftParen) {
+        variant.params = ParseParameterList(true, false)
+      }
+      variants.Push(variant)
+      const _comma = Eat(Kind.Comma)
+    }
+
+    const _closed = ExpectCloseBrace()
+    item.members = variants
+    return item
+  }
+
+  fun ParseExtend(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "extend"
+
+    var generics = ParseGenericParameters()
+    const target = ParseType()
+    item.target_type = target
+    if Eat(Kind.KwAs) {
+      item.flags = item.flags | 2048
+      item.super_type = ParseType()
+    }
+
+    if target.path.Len() > 0 {
+      item.name = target.path.At(target.path.Len() - 1)
+    }
+
+    ParseWhereClause(generics)
+    item.generics = generics
+
+    if Expect(Kind.LeftBrace) {
+      item.members = ParseItemBlock()
+    } else {
+      item.flags = item.flags | 1024
+    }
+    return item
+  }
+
+  fun ParseTag(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "tag"
+    item.name = ExpectName()
+    return item
+  }
+
+  fun ParseSystem(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "system"
+    item.name = ExpectName()
+    item.params = ParseParameterList(true, false)
+    item.effects = ParseEffectList()
+
+    loop {
+      const is_after = At(Kind.KwAfter)
+      if !is_after && !At(Kind.KwBefore) {
+        break
+      }
+      const _word = Advance()
+      var ordering = NewOrder()
+      ordering.is_after = is_after
+      ordering.path = ParseDottedPath()
+      item.orderings.Push(ordering)
+      const _comma = Eat(Kind.Comma)
+    }
+
+    if At(Kind.LeftBrace) {
+      item.body = ParseBlock()
+    } else {
+      Fail("expected a system body")
+      item.flags = item.flags | 1024
+    }
+    return item
+  }
+
+  fun ParseDeinit(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "deinit"
+    item.name = "deinit"
+    item.body = ParseBlock()
+    return item
+  }
+
+  fun ParseSignal(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "signal"
+    item.name = ExpectName()
+    item.params = ParseParameterList(true, false)
+    return item
+  }
+
+  fun ParseOn(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "on"
+    item.path = ParseDottedPath()
+    if item.path.Len() > 0 {
+      item.name = item.path.At(item.path.Len() - 1)
+    }
+
+    item.params = ParseParameterList(false, false)
+    if At(Kind.LeftBrace) {
+      item.body = ParseBlock()
+    } else {
+      Fail("expected a handler body")
+      item.flags = item.flags | 1024
+    }
+    return item
+  }
+
+  fun ParseBinding(item: Item) -> Item uses unsafe {
+    item.kind = "binding"
+    if At(Kind.KwVar) {
+      item.flags = item.flags | 8192
+    }
+    const _word = Advance()
+
+    item.name = ExpectName()
+    if Eat(Kind.Colon) {
+      item.type = ParseType()
+    }
+    if Eat(Kind.FatArrow) {
+      item.flags = item.flags | 4096
+      item.init = ParseExpression(1)
+    } else if Eat(Kind.Eq) {
+      item.init = ParseExpression(1)
+    }
+    return item
+  }
+
+  fun ParseTypeAlias(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "type"
+    item.name = ExpectName()
+    item.generics = ParseGenericParameters()
+    if Eat(Kind.Colon) {
+      item.super_type = ParseType()
+    }
+    if Eat(Kind.Eq) {
+      item.type = ParseType()
+    }
+    return item
+  }
+
+  fun ParseDimension(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "dimension"
+    var names = ListNew<text>()
+    loop {
+      const name = ExpectIdentifier()
+      if name == "" {
+        break
+      }
+      names.Push(name)
+      if names.Len() == 1 && Eat(Kind.Eq) {
+        item.init = ParseExpression(1)
+        break
+      }
+      if !Eat(Kind.Comma) {
+        break
+      }
+    }
+    if names.Len() > 0 {
+      item.name = names.At(0)
+    }
+    item.names = names
+    return item
+  }
+
+  fun ParseUnit(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "unit"
+    item.name = ExpectName()
+
+    if Eat(Kind.Colon) {
+      item.path = ParseDottedPath()
+    } else if Eat(Kind.Eq) {
+      item.init = ParseExpression(1)
+    } else {
+      Fail("expected : Dimension or = factor")
+      item.flags = item.flags | 1024
+    }
+    return item
+  }
+
+  fun ParseErrorSet(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "error"
+    var names = ListNew<text>()
+    loop {
+      const name = ExpectIdentifier()
+      if name == "" {
+        break
+      }
+      if names.Len() == 0 {
+        item.name = name
+      }
+      names.Push(name)
+
+      if At(Kind.LeftParen) && !StartsLine(0) {
+        const fields = ParseParameterList(true, false)
+        var k = 0
+        while k < fields.Len() {
+          item.params.Push(fields.At(k))
+          k = k + 1
+        }
+      }
+
+      if !Eat(Kind.Comma) {
+        break
+      }
+    }
+    item.names = names
+    return item
+  }
+
+  fun ParseEffect(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "effect"
+    item.name = ExpectName()
+    return item
+  }
+
+  fun ParseMachine(item: Item) -> Item uses unsafe {
+    const _word = Advance()
+    item.kind = "machine"
+    item.name = ExpectName()
+
+    if !Expect(Kind.LeftBrace) {
+      item.flags = item.flags | 1024
+      return item
+    }
+
+    while !AtEnd() && !At(Kind.RightBrace) {
+      const before = pos
+      if AtContextual("state", 0) {
+        item.states.Push(ParseState())
+      } else {
+        Fail("expected a state declaration")
+        item.flags = item.flags | 1024
+        while !AtEnd() && !At(Kind.RightBrace) && !(StartsLine(0) && AtContextual("state", 0)) {
+          const _token = Advance()
+        }
+      }
+      if pos == before {
+        const _token = Advance()
+      }
+    }
+
+    const _closed = ExpectCloseBrace()
+    return item
+  }
+
+  fun ParseState() -> State uses unsafe {
+    const _word = Advance()
+    var state = NewState()
+    state.name = ExpectName()
+
+    if !Expect(Kind.LeftBrace) {
+      return state
+    }
+
+    while !AtEnd() && !At(Kind.RightBrace) {
+      const before = pos
+      if AtContextual("enter", 0) {
+        const _word = Advance()
+        state.enter = ParseBlock()
+      } else if AtContextual("exit", 0) {
+        const _word = Advance()
+        state.exit = ParseBlock()
+      } else if !ParseTransition(state) {
+        SkipToStatementBoundary()
+      }
+      if pos == before {
+        const _token = Advance()
+      }
+    }
+
+    const _closed = ExpectCloseBrace()
+    return state
+  }
+
+  fun ParseTransition(state: State) -> bool uses unsafe {
+    var transition = NewTrans()
+    if Eat(Kind.KwOn) {
+      transition.event = ExpectIdentifier()
+    } else if AtContextual("always", 0) {
+      const _word = Advance()
+      transition.is_always = true
+    } else {
+      Fail("expected on, always, enter or exit")
+      return false
+    }
+
+    if Eat(Kind.KwAfter) {
+      transition.delay = ParseExpression(1)
+    }
+    if !Expect(Kind.Arrow) {
+      return false
+    }
+    transition.target = ExpectIdentifier()
+    state.transitions.Push(transition)
+    return true
+  }
+
+  // ------------------------------------------------------------- statements
+
+  fun ParseBlock() -> Expr uses unsafe {
+    var block = NewExpr("block")
+    if !Expect(Kind.LeftBrace) {
+      block.kind = "error"
+      block.flags = 1
+      return block
+    }
+
+    const saved = allow_struct
+    allow_struct = true
+    while !AtEnd() && !At(Kind.RightBrace) {
+      const before = pos
+      if const stmt = ParseStatement() {
+        block.stmts.Push(stmt)
+      }
+      if pos == before {
+        const _token = Advance()
+      }
+    }
+    const _closed = ExpectCloseBrace()
+    allow_struct = saved
+    return block
+  }
+
+  fun ParseStatement() -> Stmt? uses unsafe {
+    const kind = PeekKind(0)
+
+    if kind == Kind.Semicolon {
+      const _token = Advance()
+      return null
+    }
+
+    if kind == Kind.KwConst || kind == Kind.KwVar {
+      var stmt = NewStmt("var")
+      if kind == Kind.KwConst {
+        stmt.kind = "const"
+      }
+      const _word = Advance()
+      stmt.pattern = ParsePattern()
+      if Eat(Kind.Colon) {
+        stmt.type = ParseType()
+      }
+      if Eat(Kind.Eq) {
+        stmt.expr = ParseExpression(1)
+      }
+      ExpectStatementEnd()
+      return stmt
+    }
+
+    if kind == Kind.KwReturn {
+      var stmt = NewStmt("return")
+      const _word = Advance()
+      if !At(Kind.RightBrace) && !AtEnd() && !At(Kind.Semicolon) && !StartsLine(0) {
+        stmt.expr = ParseExpression(1)
+      }
+      ExpectStatementEnd()
+      return stmt
+    }
+
+    if kind == Kind.KwBreak || kind == Kind.KwContinue {
+      var stmt = NewStmt("continue")
+      if kind == Kind.KwBreak {
+        stmt.kind = "break"
+      }
+      const _word = Advance()
+      if At(Kind.Identifier) && !StartsLine(0) {
+        stmt.label = TextOf(Advance())
+      }
+      ExpectStatementEnd()
+      return stmt
+    }
+
+    if kind == Kind.KwDefer {
+      var stmt = NewStmt("defer")
+      const _word = Advance()
+      if At(Kind.LeftBrace) {
+        stmt.expr = ParseBlock()
+      } else {
+        stmt.expr = ParseExpression(1)
+      }
+      ExpectStatementEnd()
+      return stmt
+    }
+
+    if StartsItem(kind) || StartsUnsafeFunction() || (PeekKind(1) == Kind.Identifier && (AtContextual("machine", 0) || AtContextual("dimension", 0) || AtContextual("unit", 0) || AtContextual("effect", 0))) {
+      if const item = ParseItem(false) {
+        var stmt = NewStmt("item")
+        stmt.item = item
+        return stmt
+      }
+    }
+
+    var stmt = NewStmt("expr")
+    stmt.expr = ParseExpression(1)
+    ExpectStatementEnd()
+    return stmt
+  }
+
+  // ------------------------------------------------------------ expressions
+
+  fun MakeError() -> Expr uses unsafe {
+    var expr = NewExpr("error")
+    expr.flags = 1
+    return expr
+  }
+
+  fun ParseExpression(min_precedence: int) -> Expr uses unsafe {
+    if At(Kind.DotDot) || At(Kind.DotDotEq) {
+      const op = PeekKind(0)
+      const spelled = TextOf(Advance())
+      var range = NewExpr("range")
+      range.atom = " " + spelled
+      if op == Kind.DotDotEq {
+        range.flags = range.flags | 8
+      }
+      if StartsExpression(PeekKind(0), allow_struct) {
+        range.rhs = ParseExpression(InfixPrecedence(Kind.DotDot) + 1)
+      }
+      return range
+    }
+
+    var left = ParseUnary()
+
+    loop {
+      const token = Peek(0)
+      const precedence = InfixPrecedence(token.kind)
+      if precedence == 0 || precedence < min_precedence {
+        break
+      }
+      if (token.flags & 1) != 0 {
+        break
+      }
+
+      const op = token.kind
+      const spelled = TextOf(Advance())
+
+      if op == Kind.KwAs {
+        var cast = NewExpr("cast")
+        cast.lhs = left
+        cast.type = ParseType()
+        left = cast
+        continue
+      }
+
+      if (op == Kind.DotDot || op == Kind.DotDotEq) && !StartsExpression(PeekKind(0), allow_struct) {
+        var range = NewExpr("range")
+        range.atom = " " + spelled
+        if op == Kind.DotDotEq {
+          range.flags = range.flags | 8
+        }
+        range.lhs = left
+        left = range
+        continue
+      }
+
+      var next_precedence = precedence + 1
+      if precedence == 1 {
+        next_precedence = precedence
+      }
+      const right = ParseExpression(next_precedence)
+
+      var expr = NewExpr("binary")
+      if precedence == 1 {
+        expr.kind = "assign"
+        expr.atom = " " + spelled
+      } else if op == Kind.DotDot || op == Kind.DotDotEq {
+        expr.kind = "range"
+        expr.atom = " " + spelled
+        if op == Kind.DotDotEq {
+          expr.flags = expr.flags | 8
+        }
+      } else {
+        expr.atom = " " + spelled
+      }
+      expr.lhs = left
+      expr.rhs = right
+      left = expr
+    }
+    return left
+  }
+
+  fun ParseUnary() -> Expr uses unsafe {
+    const kind = PeekKind(0)
+    if kind == Kind.Minus || kind == Kind.Bang || kind == Kind.Tilde || kind == Kind.Star || kind == Kind.Amp {
+      const spelled = TextOf(Advance())
+      var expr = NewExpr("unary")
+      expr.atom = " " + spelled
+      if kind == Kind.Amp && Eat(Kind.KwMut) {
+        expr.flags = expr.flags | 4
+      }
+      expr.lhs = ParseUnary()
+      return expr
+    }
+
+    if kind == Kind.KwWait || kind == Kind.KwSpawn {
+      const _word = Advance()
+      var expr = NewExpr("spawn")
+      if kind == Kind.KwWait {
+        expr.kind = "wait"
+      }
+      expr.lhs = ParseUnary()
+      return expr
+    }
+
+    return ParsePostfix(ParsePrimary())
+  }
+
+  fun ParsePostfix(start: Expr) -> Expr uses unsafe {
+    var operand = start
+    loop {
+      const token = Peek(0)
+      const kind = token.kind
+
+      if (token.flags & 1) != 0 && kind != Kind.Dot && kind != Kind.QuestionDot {
+        return operand
+      }
+
+      if kind == Kind.LeftParen {
+        var call = NewExpr("call")
+        call.lhs = operand
+        call.args = ParseCallArguments()
+        operand = call
+        continue
+      }
+
+      if kind == Kind.LeftBracket {
+        const _open = Advance()
+        var index = NewExpr("index")
+        index.lhs = operand
+        const saved = allow_struct
+        allow_struct = true
+        index.rhs = ParseExpression(1)
+        allow_struct = saved
+        const _closed = Expect(Kind.RightBracket)
+        operand = index
+        continue
+      }
+
+      if kind == Kind.Dot || kind == Kind.QuestionDot {
+        const _dot = Advance()
+        var field = NewExpr("field")
+        if kind == Kind.QuestionDot {
+          field.kind = "optional-field"
+        }
+        field.lhs = operand
+        const name = ExpectName()
+        if name == "" {
+          field.atom = " <missing>"
+        } else {
+          field.atom = " " + name
+        }
+        operand = field
+        continue
+      }
+
+      if kind == Kind.Question {
+        const _mark = Advance()
+        var attempt = NewExpr("try")
+        attempt.lhs = operand
+        operand = attempt
+        continue
+      }
+
+      if kind == Kind.Less {
+        if !LooksLikeGenericCall() {
+          return operand
+        }
+        const generics = ParseGenericArguments()
+        if !At(Kind.LeftParen) {
+          Fail("expected ( after the generic arguments")
+          return operand
+        }
+        var call = NewExpr("call")
+        call.lhs = operand
+        call.generics = generics
+        call.args = ParseCallArguments()
+        operand = call
+        continue
+      }
+
+      if kind == Kind.LeftBrace {
+        if !allow_struct {
+          return operand
+        }
+        if operand.kind != "path" && operand.kind != "field" && operand.kind != "call" {
+          return operand
+        }
+
+        const _open = Advance()
+        var literal = NewExpr("struct-literal")
+        const saved = allow_struct
+        allow_struct = true
+        while !AtEnd() && !At(Kind.RightBrace) {
+          const before = pos
+          literal.args.Push(ParseExpression(1))
+          if !Eat(Kind.Comma) && !StartsLine(0) && !At(Kind.RightBrace) {
+            break
+          }
+          if pos == before {
+            break
+          }
+        }
+        allow_struct = saved
+        const _closed = ExpectCloseBrace()
+        literal.lhs = operand
+        operand = literal
+        continue
+      }
+
+      return operand
+    }
+  }
+
+  fun ParseCallArguments() -> List<Expr> uses unsafe {
+    var args = ListNew<Expr>()
+    if !Expect(Kind.LeftParen) {
+      return args
+    }
+
+    const saved = allow_struct
+    allow_struct = true
+    while !AtEnd() && !At(Kind.RightParen) {
+      const before = pos
+      args.Push(ParseExpression(1))
+      if !Eat(Kind.Comma) {
+        break
+      }
+      if pos == before {
+        break
+      }
+    }
+    allow_struct = saved
+
+    if !Eat(Kind.RightParen) {
+      Fail("unmatched (")
+      SkipBalancedTo(Kind.RightParen)
+    }
+    return args
+  }
+
+  fun LooksLikeGenericCall() -> bool {
+    var depth = 0
+    var i = pos
+    while i < pos + 64 {
+      const index = i
+      var token = tokens.At(tokens.Len() - 1)
+      if index < tokens.Len() {
+        token = tokens.At(index)
+      }
+      const kind = token.kind
+      if kind == Kind.Less {
+        depth = depth + 1
+      } else if kind == Kind.Shl {
+        depth = depth + 2
+      } else if kind == Kind.Greater || kind == Kind.Shr {
+        if kind == Kind.Greater {
+          depth = depth - 1
+        } else {
+          depth = depth - 2
+        }
+        if depth > 0 {
+          i = i + 1
+          continue
+        }
+        if depth < 0 {
+          return false
+        }
+        var following = tokens.At(tokens.Len() - 1)
+        if index + 1 < tokens.Len() {
+          following = tokens.At(index + 1)
+        }
+        return following.kind == Kind.LeftParen
+      } else if kind == Kind.EndOfFile {
+        return false
+      } else if !CanAppearInGenericArguments(kind) {
+        return false
+      }
+      i = i + 1
+    }
+    return false
+  }
+
+  fun ParseCondition(expr: Expr) -> Expr uses unsafe {
+    if Eat(Kind.KwConst) {
+      expr.pattern = ParsePattern()
+      expr.flags = expr.flags | 2
+      const _eq = Expect(Kind.Eq)
+    }
+    const saved = allow_struct
+    allow_struct = false
+    const condition = ParseExpression(1)
+    allow_struct = saved
+    return condition
+  }
+
+  fun ParseIf() -> Expr uses unsafe {
+    const _word = Advance()
+    var expr = NewExpr("if")
+    expr.lhs = ParseCondition(expr)
+    expr.rhs = ParseBlock()
+    if Eat(Kind.KwElse) {
+      if At(Kind.KwIf) {
+        expr.extra = ParseIf()
+      } else {
+        expr.extra = ParseBlock()
+      }
+    }
+    return expr
+  }
+
+  fun ParseMatch() -> Expr uses unsafe {
+    const _word = Advance()
+    var expr = NewExpr("match")
+    const saved = allow_struct
+    allow_struct = false
+    expr.lhs = ParseExpression(1)
+    allow_struct = saved
+
+    if !Expect(Kind.LeftBrace) {
+      expr.flags = expr.flags | 1
+      return expr
+    }
+
+    while !AtEnd() && !At(Kind.RightBrace) {
+      const arm_start = pos
+      var arm = NewArm()
+      arm.patterns = ParsePatternAlternatives()
+      if arm.patterns.Len() == 0 {
+        Fail("expected a match arm")
+        SkipToStatementBoundary()
+        if pos == arm_start {
+          const _token = Advance()
+        }
+        continue
+      }
+
+      if Eat(Kind.KwIf) {
+        const outer = allow_struct
+        allow_struct = false
+        arm.guard = ParseExpression(1)
+        allow_struct = outer
+      }
+
+      if Expect(Kind.FatArrow) {
+        if At(Kind.LeftBrace) {
+          arm.body = ParseBlock()
+        } else {
+          arm.body = ParseExpression(1)
+        }
+      } else {
+        arm.body = MakeError()
+        SkipToStatementBoundary()
+      }
+
+      expr.arms.Push(arm)
+      const _comma = Eat(Kind.Comma)
+      if pos == arm_start {
+        const _token = Advance()
+      }
+    }
+
+    const _closed = ExpectCloseBrace()
+    return expr
+  }
+
+  fun ParseLoopLike(label: text) -> Expr uses unsafe {
+    const keyword = PeekKind(0)
+    const _word = Advance()
+    var expr = NewExpr("loop")
+    expr.label = label
+
+    if keyword == Kind.KwLoop {
+      expr.rhs = ParseBlock()
+      return expr
+    }
+
+    if keyword == Kind.KwWhile {
+      expr.kind = "while"
+      expr.lhs = ParseCondition(expr)
+      expr.rhs = ParseBlock()
+      return expr
+    }
+
+    expr.kind = "foreach"
+    if keyword == Kind.KwFor {
+      expr.kind = "for"
+    }
+    expr.pattern = ParsePattern()
+    const _in = Expect(Kind.KwIn)
+    const saved = allow_struct
+    allow_struct = false
+    expr.lhs = ParseExpression(1)
+    allow_struct = saved
+    expr.rhs = ParseBlock()
+    return expr
+  }
+
+  fun ParseClosure() -> Expr uses unsafe {
+    var expr = NewExpr("closure")
+    if !Eat(Kind.PipePipe) {
+      const _open = Advance()
+      while !AtEnd() && !At(Kind.Pipe) {
+        var param = NewParam()
+        param.is_mutable = Eat(Kind.KwMut)
+        param.name = ExpectName()
+        if param.name == "" {
+          break
+        }
+        if Eat(Kind.Colon) {
+          keep_allowed = true
+          param.type = ParseType()
+        }
+        expr.params.Push(param)
+        if !Eat(Kind.Comma) {
+          break
+        }
+      }
+      const _closed = Expect(Kind.Pipe)
+    }
+
+    if Eat(Kind.Arrow) {
+      expr.type = ParseType()
+    }
+    if At(Kind.LeftBrace) {
+      expr.lhs = ParseBlock()
+    } else {
+      expr.lhs = ParseExpression(1)
+    }
+    return expr
+  }
+
+  fun ParseStringLiteral() -> Expr uses unsafe {
+    const token = Advance()
+    const literal = strings.At(token.aux)
+    var expr = NewExpr("string")
+    var k = 0
+    while k < literal.parts.Len() {
+      const part = literal.parts.At(k)
+      if part.interpolated {
+        expr.args.Push(ParseInterpolation(part.begin, part.end))
+      } else {
+        var piece = NewExpr("text")
+        piece.atom = " " + Quote(part.text)
+        expr.args.Push(piece)
+      }
+      k = k + 1
+    }
+    return expr
+  }
+
+  fun ParseInterpolation(begin: int, end: int) -> Expr uses unsafe {
+    if end == begin {
+      return MakeError()
+    }
+
+    const lexed = LexRange(source, begin, end)
+    var nested = Parser(source, lexed.tokens, lexed.numbers, lexed.strings, 0, true, false, false, false, ListNew<text>(), "", false, ListNew<text>())
+    const expr = nested.ParseExpression(1)
+    if nested.failed {
+      failed = true
+      var k = 0
+      while k < nested.problems.Len() {
+        problems.Push(nested.problems.At(k))
+        k = k + 1
+      }
+    }
+    return expr
+  }
+
+  fun ParseParenthesized() -> Expr uses unsafe {
+    const _open = Advance()
+    const saved = allow_struct
+    allow_struct = true
+
+    var elements = ListNew<Expr>()
+    var is_tuple = false
+    while !AtEnd() && !At(Kind.RightParen) {
+      const before = pos
+      elements.Push(ParseExpression(1))
+      if Eat(Kind.Comma) {
+        is_tuple = true
+      } else {
+        break
+      }
+      if pos == before {
+        break
+      }
+    }
+    const _closed = Expect(Kind.RightParen)
+    allow_struct = saved
+
+    if elements.Len() == 1 && !is_tuple {
+      return elements.At(0)
+    }
+    var expr = NewExpr("tuple")
+    expr.args = elements
+    return expr
+  }
+
+  fun ParseArrayLiteral() -> Expr uses unsafe {
+    const _open = Advance()
+    const saved = allow_struct
+    allow_struct = true
+
+    var expr = NewExpr("array")
+    while !AtEnd() && !At(Kind.RightBracket) {
+      const before = pos
+      expr.args.Push(ParseExpression(1))
+      if !Eat(Kind.Comma) {
+        break
+      }
+      if pos == before {
+        break
+      }
+    }
+    const _closed = Expect(Kind.RightBracket)
+    allow_struct = saved
+    return expr
+  }
+
+  fun NumberAtom(number: Number) -> text uses unsafe {
+    var atom = ""
+    if number.is_float {
+      atom = " " + FormatG(number.value)
+    } else {
+      atom = " " + U64Text(number.integer)
+    }
+    if number.suffix != "" {
+      atom = atom + " suffix=" + number.suffix
+    }
+    if number.unit != "" {
+      atom = atom + " unit=" + number.unit
+    }
+    return atom
+  }
+
+  fun ParsePrimary() -> Expr uses unsafe {
+    const kind = PeekKind(0)
+
+    if kind == Kind.IntLiteral || kind == Kind.FloatLiteral {
+      const token = Advance()
+      var expr = NewExpr("int")
+      if kind == Kind.FloatLiteral {
+        expr.kind = "float"
+      }
+      expr.atom = NumberAtom(numbers.At(token.aux))
+      return expr
+    }
+
+    if kind == Kind.StringLiteral {
+      return ParseStringLiteral()
+    }
+
+    if kind == Kind.CharLiteral {
+      const token = Advance()
+      var expr = NewExpr("char")
+      expr.atom = " " + Int(token.aux)
+      return expr
+    }
+
+    if kind == Kind.KwTrue || kind == Kind.KwFalse {
+      const _token = Advance()
+      var expr = NewExpr("bool")
+      if kind == Kind.KwTrue {
+        expr.atom = " true"
+      } else {
+        expr.atom = " false"
+      }
+      return expr
+    }
+
+    if kind == Kind.KwNull {
+      const _token = Advance()
+      return NewExpr("null")
+    }
+
+    if kind == Kind.KwPtrNull {
+      const _token = Advance()
+      return NewExpr("ptrnull")
+    }
+
+    if kind == Kind.KwSelf {
+      const _token = Advance()
+      return NewExpr("self")
+    }
+
+    if kind == Kind.LeftParen {
+      return ParseParenthesized()
+    }
+    if kind == Kind.LeftBracket {
+      return ParseArrayLiteral()
+    }
+    if kind == Kind.LeftBrace {
+      return ParseBlock()
+    }
+    if kind == Kind.KwIf {
+      return ParseIf()
+    }
+    if kind == Kind.KwMatch {
+      return ParseMatch()
+    }
+    if StartsLoop(kind) {
+      return ParseLoopLike("")
+    }
+
+    if kind == Kind.Identifier && PeekKind(1) == Kind.Colon && StartsLoop(PeekKind(2)) {
+      const label = TextOf(Advance())
+      const _colon = Advance()
+      labels.Push(label)
+      const loop_expr = ParseLoopLike(label)
+      labels.Pop()
+      return loop_expr
+    }
+
+    if kind == Kind.Pipe || kind == Kind.PipePipe {
+      return ParseClosure()
+    }
+
+    if kind == Kind.KwUnsafe || kind == Kind.KwArena {
+      const _word = Advance()
+      var expr = NewExpr("arena")
+      if kind == Kind.KwUnsafe {
+        expr.kind = "unsafe"
+      }
+      expr.lhs = ParseBlock()
+      return expr
+    }
+
+    if kind == Kind.Identifier || (CanBeName(kind) && !StartsLine(0)) {
+      var expr = NewExpr("path")
+      const name = ExpectName()
+      if name == "" {
+        expr.atom = " <missing>"
+      } else {
+        expr.atom = " " + name
+      }
+      return expr
+    }
+
+    Fail("expected an expression")
+    return MakeError()
+  }
+
+  // --------------------------------------------------------------- patterns
+
+  fun EatPatternQuestion() -> bool {
+    if pending_question {
+      pending_question = false
+      return true
+    }
+    if Eat(Kind.Question) {
+      return true
+    }
+    if At(Kind.QuestionQuestion) {
+      const _token = Advance()
+      pending_question = true
+      return true
+    }
+    return false
+  }
+
+  fun AtPatternStart() -> bool {
+    return match PeekKind(0) {
+      Kind.Underscore | Kind.DotDot | Kind.IntLiteral | Kind.FloatLiteral | Kind.StringLiteral | Kind.CharLiteral | Kind.KwTrue | Kind.KwFalse | Kind.KwNull | Kind.Minus | Kind.LeftParen | Kind.KwMut | Kind.Identifier => true
+      _ => false
+    }
+  }
+
+  fun ParsePatternAlternatives() -> List<Pat> uses unsafe {
+    var patterns = ListNew<Pat>()
+    if !AtPatternStart() {
+      return patterns
+    }
+    loop {
+      patterns.Push(ParsePattern())
+      if !Eat(Kind.Pipe) {
+        break
+      }
+    }
+    return patterns
+  }
+
+  fun WrapPresent(inner: Pat) -> Pat uses unsafe {
+    var current = inner
+    while EatPatternQuestion() {
+      var present = NewPat("present")
+      present.elements.Push(current)
+      current = present
+    }
+    return current
+  }
+
+  fun ParsePattern() -> Pat uses unsafe {
+    const kind = PeekKind(0)
+
+    if kind == Kind.Underscore {
+      const _token = Advance()
+      return WrapPresent(NewPat("wildcard"))
+    }
+
+    if kind == Kind.DotDot {
+      const _token = Advance()
+      return NewPat("rest")
+    }
+
+    if kind == Kind.IntLiteral || kind == Kind.FloatLiteral || kind == Kind.StringLiteral || kind == Kind.CharLiteral || kind == Kind.KwTrue || kind == Kind.KwFalse || kind == Kind.KwNull || kind == Kind.Minus {
+      var pattern = NewPat("literal")
+      pattern.literal = ParseUnary()
+      return pattern
+    }
+
+    if kind == Kind.LeftParen {
+      const _open = Advance()
+      var pattern = NewPat("tuple-pattern")
+      while !AtEnd() && !At(Kind.RightParen) {
+        const before = pos
+        pattern.elements.Push(ParsePattern())
+        if !Eat(Kind.Comma) {
+          break
+        }
+        if pos == before {
+          break
+        }
+      }
+      const _closed = Expect(Kind.RightParen)
+      return pattern
+    }
+
+    if kind == Kind.KwMut {
+      const _word = Advance()
+      var pattern = NewPat("bind")
+      pattern.flags = 2
+      pattern.name = ExpectName()
+      return pattern
+    }
+
+    if kind != Kind.Identifier {
+      if CanBeName(kind) {
+        var pattern = NewPat("bind")
+        pattern.name = ExpectName()
+        return pattern
+      }
+      Fail("expected a pattern")
+      var pattern = NewPat("error")
+      pattern.flags = 1
+      return pattern
+    }
+
+    const path = ParseDottedPath()
+
+    if (At(Kind.Question) || At(Kind.QuestionQuestion)) && path.Len() == 1 {
+      var inner = NewPat("bind")
+      inner.name = path.At(0)
+      return WrapPresent(inner)
+    }
+
+    if At(Kind.LeftParen) {
+      const _open = Advance()
+      var pattern = NewPat("variant-pattern")
+      pattern.path = path
+      while !AtEnd() && !At(Kind.RightParen) {
+        const before = pos
+        pattern.elements.Push(ParsePattern())
+        if !Eat(Kind.Comma) {
+          break
+        }
+        if pos == before {
+          break
+        }
+      }
+      const _closed = Expect(Kind.RightParen)
+      return pattern
+    }
+
+    if At(Kind.LeftBrace) {
+      const _open = Advance()
+      var pattern = NewPat("struct-pattern")
+      pattern.path = path
+      while !AtEnd() && !At(Kind.RightBrace) {
+        const name = ExpectIdentifier()
+        if name == "" {
+          break
+        }
+        var value = NewPat("bind")
+        if Eat(Kind.Colon) {
+          value = ParsePattern()
+        } else {
+          value.name = name
+        }
+        value.field = name
+        pattern.elements.Push(value)
+        if !Eat(Kind.Comma) {
+          break
+        }
+      }
+      const _closed = ExpectCloseBrace()
+      return pattern
+    }
+
+    if path.Len() == 1 {
+      var pattern = NewPat("bind")
+      pattern.name = path.At(0)
+      return pattern
+    }
+    var pattern = NewPat("variant-pattern")
+    pattern.path = path
+    return pattern
+  }
+
+  // ------------------------------------------------------------------ types
+
+  fun ParseErrorList() -> List<Ty> uses unsafe {
+    var members = ListNew<Ty>()
+    const grouped = Eat(Kind.LeftParen)
+    loop {
+      var member = NewTy("type")
+      member.path = ParseDottedPath()
+      members.Push(member)
+      if !grouped || !Eat(Kind.Comma) {
+        break
+      }
+    }
+    if grouped {
+      const _closed = Expect(Kind.RightParen)
+    }
+    return members
+  }
+
+  fun ParseDottedPath() -> List<text> uses unsafe {
+    var segments = ListNew<text>()
+    loop {
+      const segment = ExpectIdentifier()
+      if segment == "" {
+        break
+      }
+      segments.Push(segment)
+      if !At(Kind.Dot) || PeekKind(1) != Kind.Identifier {
+        break
+      }
+      const _dot = Advance()
+    }
+    return segments
+  }
+
+  fun AtAngleClose() -> bool {
+    return pending_angle || At(Kind.Greater) || At(Kind.Shr)
+  }
+
+  fun EatAngleClose() -> bool {
+    if pending_angle {
+      pending_angle = false
+      return true
+    }
+    if Eat(Kind.Greater) {
+      return true
+    }
+    if At(Kind.Shr) {
+      const _token = Advance()
+      pending_angle = true
+      return true
+    }
+    return false
+  }
+
+  fun ParseGenericArguments() -> List<Ty> uses unsafe {
+    var args = ListNew<Ty>()
+    if !Eat(Kind.Less) {
+      return args
+    }
+
+    while !AtEnd() && !AtAngleClose() {
+      const before = pos
+      args.Push(ParseType())
+      if AtAngleClose() {
+        break
+      }
+      if !Eat(Kind.Comma) {
+        break
+      }
+      if pos == before {
+        break
+      }
+    }
+
+    if !EatAngleClose() {
+      Fail("expected > to close the generic arguments")
+    }
+    return args
+  }
+
+  fun ParseTypeNoSuffix() -> Ty uses unsafe {
+    const kind = PeekKind(0)
+
+    if kind == Kind.KwMut {
+      const _word = Advance()
+      var ty = NewTy("mut")
+      ty.flags = 8
+      ty.element = ParseType()
+      return ty
+    }
+
+    if kind == Kind.Star || kind == Kind.Amp {
+      const _word = Advance()
+      var ty = NewTy("reference")
+      if kind == Kind.Star {
+        ty.kind = "pointer"
+      }
+      if Eat(Kind.KwMut) {
+        ty.flags = 8
+      }
+      ty.element = ParseType()
+      return ty
+    }
+
+    if kind == Kind.KwFun {
+      const _word = Advance()
+      var ty = NewTy("fun-type")
+      if Expect(Kind.LeftParen) {
+        while !AtEnd() && !At(Kind.RightParen) {
+          const before = pos
+          keep_allowed = true
+          ty.args.Push(ParseType())
+          if !Eat(Kind.Comma) {
+            break
+          }
+          if pos == before {
+            break
+          }
+        }
+        const _closed = Expect(Kind.RightParen)
+      }
+      if Eat(Kind.Arrow) {
+        ty.element = ParseType()
+      }
+      return ty
+    }
+
+    if kind == Kind.LeftParen {
+      const _open = Advance()
+      var ty = NewTy("tuple-type")
+      var trailing = false
+      while !AtEnd() && !At(Kind.RightParen) {
+        const before = pos
+        ty.args.Push(ParseType())
+        if !Eat(Kind.Comma) {
+          trailing = false
+          break
+        }
+        trailing = true
+        if pos == before {
+          break
+        }
+      }
+      const _closed = Expect(Kind.RightParen)
+      if ty.args.Len() == 1 && !trailing {
+        return ty.args.At(0)
+      }
+      return ty
+    }
+
+    if kind == Kind.LeftBracket {
+      const _open = Advance()
+      var ty = NewTy("array-type")
+      if Eat(Kind.RightBracket) {
+        ty.kind = "slice"
+        if Eat(Kind.KwMut) {
+          ty.flags = 8
+        }
+      } else {
+        ty.length = ParseExpression(1)
+        const _closed = Expect(Kind.RightBracket)
+      }
+      ty.element = ParseTypeNoSuffix()
+      return ty
+    }
+
+    if kind != Kind.Identifier {
+      Fail("expected a type")
+      var ty = NewTy("error")
+      return ty
+    }
+
+    if (AtContextual("soa", 0) || AtContextual("aos", 0)) && (PeekKind(1) == Kind.LeftBracket || PeekKind(1) == Kind.Identifier) {
+      const is_soa = AtContextual("soa", 0)
+      const _word = Advance()
+      const storage = ParseType()
+      if is_soa {
+        storage.flags = storage.flags | 1
+      } else {
+        storage.flags = storage.flags | 2
+      }
+      return storage
+    }
+
+    if (AtContextual("with", 0) || AtContextual("without", 0)) && PeekKind(1) == Kind.Identifier {
+      var ty = NewTy("without")
+      if AtContextual("with", 0) {
+        ty.kind = "with"
+      }
+      const _word = Advance()
+      ty.element = ParseType()
+      return ty
+    }
+
+    var ty = NewTy("type")
+    ty.path = ParseDottedPath()
+    if At(Kind.Less) {
+      ty.args = ParseGenericArguments()
+    }
+    return ty
+  }
+
+  fun ParseType() -> Ty uses unsafe {
+    const keep_here = keep_allowed
+    keep_allowed = false
+
+    var kept = false
+    if AtContextual("keep", 0) && PeekKind(1) == Kind.KwFun {
+      if !keep_here {
+        Fail("keep belongs on the function type of a parameter")
+      }
+      const _word = Advance()
+      kept = true
+    }
+
+    var inner = ParseTypeNoSuffix()
+    if kept {
+      inner.flags = inner.flags | 4
+    }
+
+    loop {
+      if At(Kind.Question) {
+        const _mark = Advance()
+        var optional = NewTy("optional")
+        optional.element = inner
+        inner = optional
+        continue
+      }
+      if At(Kind.Bang) {
+        const _mark = Advance()
+        var fallible = NewTy("fallible")
+        fallible.element = inner
+        if !StartsLine(0) && (At(Kind.LeftParen) || At(Kind.Identifier)) {
+          fallible.args = ParseErrorList()
+        }
+        inner = fallible
+        continue
+      }
+      break
+    }
+    return inner
+  }
+}
+
+offer fun ParseSource(source: text) -> Parser uses unsafe {
+  const lexed = Lex(source)
+  return Parser(source, lexed.tokens, lexed.numbers, lexed.strings, 0, true, false, false, false, ListNew<text>(), "", false, ListNew<text>())
+}
+
+offer fun DumpAst(source: text) -> text uses unsafe {
+  var parser = ParseSource(source)
+  const items = parser.ParseFile()
+  if parser.failed {
+    return "(failed " + parser.problems.At(0) + ")\n"
+  }
+  return PrintFile(items)
+}

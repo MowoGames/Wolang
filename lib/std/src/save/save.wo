@@ -1,0 +1,188 @@
+// Save games, and what hot reload keeps (D266).
+//
+// A field marked `@Save` is written by name, with a code for its type, so a
+// program that gained or lost a field since the save still reads it: a field
+// the save has and the class lacks is dropped, and one the class has and the
+// save lacks stays zero. An object is written once however many fields point
+// at it, so a shared reference stays shared and a cycle comes back as a cycle.
+//
+// What it writes is a closed set: numbers, bool, char, `text`, enums with no
+// payload, structs, classes without a virtual method, and optionals of those.
+// Anything else on a `@Save` field is `E0176`, because a hole in a save file
+// is found the day a player loses a game.
+//
+// A struct is a value, so a `@Save` field of a struct type keeps all of it,
+// unless the struct marks fields of its own, and then only those.
+
+need std.mem.{ArrayNew, BytesFromRaw, Free, Prefix}
+
+extern "C" fun wolang_save_encode(
+    schema: *u8,
+    schema_length: u64,
+    offsets: u64,
+    root: u64,
+    out_length: *mut u64) -> *mut u8 uses unsafe
+extern "C" fun wolang_save_decode(
+    schema: *u8,
+    schema_length: u64,
+    offsets: u64,
+    data: *u8,
+    data_length: u64,
+    status: *mut s32) -> u64 uses unsafe
+
+/// The bytes are not a save of this class: they end early, name a class the
+/// program does not have, or are not a save at all.
+offer error Corrupt
+
+/// What the compiler knows about `T` that the runtime needs: a description of
+/// its saved fields, and the numbers only the tier running the program can
+/// give, such as where a field sits.
+offer struct Shape<T> {
+  var schema: text
+  var offsets: u64
+}
+
+/// The shape of `T`. Answered by the compiler, so it has no body.
+offer fun ShapeOf<T>() -> Shape<T>
+
+/// An object as the word the runtime takes. Answered by the compiler.
+offer fun HandleOf<T>(value: T) -> u64
+
+/// The object a word the runtime gave back stands for, with one reference for
+/// the caller. Answered by the compiler.
+offer fun FromHandle<T>(word: u64) -> T
+
+/// The saved fields of `value` and of every object they reach, as bytes. Give
+/// them back with `Free` when done. Empty when `T` cannot be saved.
+offer fun Save<T>(value: T) -> []mut u8 uses unsafe {
+  const shape = ShapeOf<T>()
+  var length: u64 = 0
+  const made = wolang_save_encode(
+      shape.schema.data,
+      shape.schema.length,
+      shape.offsets,
+      HandleOf(value),
+      &mut length)
+  return BytesFromRaw(made, length as int)
+}
+
+/// The object `data` holds, with every object it reached.
+offer fun Load<T>(data: []u8) -> T!Corrupt uses unsafe {
+  const shape = ShapeOf<T>()
+  var status: s32 = 0
+  const made = wolang_save_decode(
+      shape.schema.data,
+      shape.schema.length,
+      shape.offsets,
+      data.data,
+      data.len as u64,
+      &mut status)
+  if status != 0 || made == 0 {
+    return Corrupt
+  }
+  return FromHandle<T>(made)
+}
+
+enum Mood {
+  Calm
+  Angry
+}
+
+struct Spot {
+  var x: float
+  var y: float
+}
+
+class Mover {
+  @Save
+  var steps: int = 0
+  @Save
+  var name: text = ""
+  @Save
+  var mood: Mood = Mood.Calm
+  @Save
+  var spot: Spot = Spot(0.0, 0.0)
+  @Save
+  var alive: bool = false
+  @Save
+  var note: text? = null
+  @Save
+  var next: Mover? = null
+  var scratch: int = 0
+}
+
+@Test
+fun KeepsTheMarkedFieldsAndOnlyThose() -> bool uses unsafe {
+  const mover = Mover()
+  mover.steps = 5
+  mover.name = "walker"
+  mover.mood = Mood.Angry
+  mover.spot = Spot(1.5, 2.5)
+  mover.alive = true
+  mover.note = "kept"
+  mover.scratch = 99
+  const bytes = Save(mover)
+  const back = match Load<Mover>(bytes) {
+    Ok(found) => found
+    Corrupt => Mover()
+  }
+  Free(bytes)
+  if back.steps != 5 || back.name != "walker" || back.mood != Mood.Angry {
+    return false
+  }
+  if back.spot.x != 1.5 || back.spot.y != 2.5 || !back.alive || back.scratch != 0 {
+    return false
+  }
+  return (back.note ?? "") == "kept"
+}
+
+@Test
+fun KeepsASharedObjectOnceAndACycleAsACycle() -> bool uses unsafe {
+  const first = Mover()
+  const second = Mover()
+  first.steps = 1
+  second.steps = 2
+  first.next = second
+  second.next = first
+  const bytes = Save(first)
+  const back = match Load<Mover>(bytes) {
+    Ok(found) => found
+    Corrupt => Mover()
+  }
+  Free(bytes)
+  if back.steps != 1 {
+    return false
+  }
+  if const ahead = back.next {
+    if const around = ahead.next {
+      around.steps = 7
+      return ahead.steps == 2 && back.steps == 7
+    }
+  }
+  return false
+}
+
+@Test
+fun RefusesBytesThatAreNotASave() -> bool uses unsafe {
+  var junk = ArrayNew<u8>(6)
+  const answer = match Load<Mover>(junk) {
+    Ok(_kept) => false
+    Corrupt => true
+  }
+  Free(junk)
+  return answer
+}
+
+@Test
+fun RefusesASaveThatEndsEarly() -> bool uses unsafe {
+  const mover = Mover()
+  mover.name = "cut short"
+  const bytes = Save(mover)
+  const cut = Prefix(bytes, bytes.len - 3)
+  const answer = match Load<Mover>(cut) {
+    Ok(_kept) => false
+    Corrupt => true
+  }
+  Free(bytes)
+  return answer
+}

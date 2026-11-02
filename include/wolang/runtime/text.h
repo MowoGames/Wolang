@@ -50,11 +50,19 @@ Text* wolang_text_concat(const uint8_t* left,
                          const uint8_t* right,
                          uint64_t right_length);
 
+// Copies |count| bytes that do not overlap: what `std.mem.Copy` is, so that a
+// builder appends a text with one call rather than one call per byte (D284).
+void wolang_memory_copy(uint8_t* to, const uint8_t* from, uint64_t count);
+
 // Whether two strings hold the same bytes. A pair of pointers is not an
 // answer to that question, which is why `==` on a string is a call.
 // Gives back a string this allocated. A string an `arena` block handed
 // out is left to the block.
 void wolang_text_free(const uint8_t* data);
+
+// How many strings the heap holds right now, for a test to prove that what
+// a program built went back (D275).
+int64_t wolang_texts_live();
 
 bool wolang_text_equal(const uint8_t* left,
                        uint64_t left_length,

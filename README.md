@@ -19,7 +19,7 @@ be embedded into.
 
 **Status:** the language runs, compiles to machine code for five
 targets, embeds in other programs, opens a window, serves HTTP and has
-a standard library of thirty-five modules. Three tiers agree on every test: an
+a standard library of thirty-eight modules. Three tiers agree on every test: an
 interpreter as the reference, a just-in-time tier for `run`, and an
 ahead-of-time tier through LLVM for `build`. A differential fuzzer
 compares all of them on generated programs, which is what finds
@@ -193,7 +193,7 @@ include/wolang/   public headers, mirrored by src/
   lsp/            the language server
 src/              implementation (.cc)
 tools/wolang/     the `wolang` command line driver
-lib/              std, http, game, core -- written in Wolang
+lib/              std, core, game, http, db, gfx, image, tls, math -- written in Wolang
 editors/          VS Code, Zed, Neovim, Sublime, Emacs, Helix, JetBrains
 tests/            unit tests and the dependency-free test harness
 examples/         .wo sources used by hand and as compiler corpus
@@ -213,10 +213,13 @@ docs/             specification, architecture, decisions, diagnostics, style
 - [docs/install.md](docs/install.md) — installing it, on each system
 - [docs/releasing.md](docs/releasing.md) — making a release
 - [docs/building.md](docs/building.md) — building it, on each system
+- [docs/whats-new.md](docs/whats-new.md) — what each release changed, and how to move a program to it
 - [docs/stdlib.md](docs/stdlib.md) — the standard library, module by module
+- [docs/api/](docs/api/README.md) — every package's declarations, generated from the source
 - [docs/style.md](docs/style.md) — code and commit conventions
 - [docs/embedding.md](docs/embedding.md) — Wolang inside another program
 - [docs/debugging.md](docs/debugging.md) — debuggers, profiles, replays
+- [docs/benchmarks.md](docs/benchmarks.md) — what a script call costs, in each tier
 - [editors/README.md](editors/README.md) — editor support, all over `wolang lsp`
 - [assets/](assets/) — the logo, the wordmark and the mascot, and the script that draws them
 

@@ -271,6 +271,45 @@ fun main() uses unsafe {
   WOLANG_EXPECT_EQ(program.Output(), "exit 51");
 }
 
+WOLANG_TEST(AotTest, AClassWithAnOwnedTextFieldGivesItBack) {
+  if (!Links()) {
+    return;
+  }
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+
+class Holder {
+  var label: Text
+}
+
+fun FromBorrowed(word: Text) -> int {
+  const h = Holder("{word}")
+  return h.label.len
+}
+
+fun FromNumber(n: int) -> int {
+  const h = Holder("n={n}")
+  return h.label.len
+}
+
+fun Replaced(n: int) -> int {
+  const h = Holder("a{n}")
+  h.label = "bb{n}"
+  return h.label.len
+}
+
+fun main() uses unsafe {
+  var total = 0
+  for i in 0..20 {
+    const word = "w{i}"
+    total = total + FromBorrowed(word) + FromNumber(i) + Replaced(i)
+  }
+  exit(total as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 190");
+}
+
 WOLANG_TEST(AotTest, RunsStructsOptionalsAndEnums) {
   if (!Links()) {
     return;
@@ -401,6 +440,148 @@ fun main() uses unsafe {
 }
 )");
   WOLANG_EXPECT_EQ(program.Output(), "exit 40");
+}
+
+static std::string ObjectBytes(std::string_view code, std::string_view tag) {
+  Database database;
+  const FileId file = database.AddFile("<test>", std::string(code));
+  const LoweredFile* lowered = database.Lowered(file);
+  const CheckedFile* checked = database.Checked(file);
+  if (lowered == nullptr || checked == nullptr) {
+    return "<not lowered>";
+  }
+
+  const FileCode files[1] = {FileCode{&checked->resolution, &lowered->module}};
+  AotOptions options;
+  options.object_path = (std::filesystem::temp_directory_path() / ("wolang-repro-" + std::string(tag) + ".o")).string();
+  options.optimization = 2;
+  const AotResult result = EmitObject(database.interner(), database.types(), files, options);
+  if (!result.error.empty()) {
+    return "<backend: " + result.error + ">";
+  }
+
+  std::string bytes;
+  if (FILE* held = std::fopen(options.object_path.c_str(), "rb"); held != nullptr) {
+    char chunk[4096];
+    size_t got = 0;
+    while ((got = std::fread(chunk, 1, sizeof(chunk), held)) > 0) {
+      bytes.append(chunk, got);
+    }
+    std::fclose(held);
+  }
+  std::remove(options.object_path.c_str());
+  return bytes;
+}
+
+WOLANG_TEST(AotTest, TheSameSourceMakesTheSameObjectBytes) {
+  if (!Links()) {
+    return;
+  }
+
+  const std::string_view code = R"(
+class Cell { var n: int }
+
+fun Bump(c: Cell, by: int) -> int {
+  c.n = c.n + by
+  return c.n
+}
+
+fun main() uses unsafe {
+  const c = Cell(1)
+  var total = 0
+  for i in 0..10 {
+    total += Bump(c, i)
+  }
+  exit(total as s32)
+}
+)";
+  const std::string first = ObjectBytes(code, "a");
+  const std::string second = ObjectBytes(code, "b");
+  WOLANG_EXPECT(first.size() > 0u && first[0] != '<');
+  WOLANG_EXPECT(first == second);
+}
+
+WOLANG_TEST(AotTest, TheBundledLinkNeedsNoCCompiler) {
+  const std::string command = BundledLinkCommand("program.o", "program", "/opt/wolang/sysroot", "/opt/wolang/sysroot/bin/ld.lld");
+  WOLANG_EXPECT(command.find("c++") == std::string::npos || command.find("-lc++") != std::string::npos);
+  WOLANG_EXPECT(command.find("--build-id=none") != std::string::npos);
+  WOLANG_EXPECT(command.find("-static") != std::string::npos);
+  WOLANG_EXPECT(command.find("'/opt/wolang/sysroot/bin/ld.lld'") == 0u);
+  WOLANG_EXPECT(command.find("crt1.o") < command.find("program.o"));
+  WOLANG_EXPECT(command.find("program.o") < command.find("libwolang_runtime.a"));
+  WOLANG_EXPECT(command.find("libwolang_runtime.a") < command.find("--start-group"));
+  WOLANG_EXPECT(command.find("--end-group") < command.find("crtn.o"));
+}
+
+WOLANG_TEST(AotTest, TheLinkLineCarriesTheSanitizersTheRuntimeWasBuiltWith) {
+  const std::string command = LinkCommand("program.o", "program");
+  const std::string flag = "-fsanitize=" + std::string(RuntimeSanitizers());
+  if (RuntimeSanitizers().empty()) {
+    WOLANG_EXPECT(command.find("-fsanitize=") == std::string::npos);
+  } else {
+    WOLANG_EXPECT(command.find(flag) != std::string::npos);
+  }
+}
+
+WOLANG_TEST(AotTest, SavesAndLoadsAnObjectGraph) {
+  if (!Links()) {
+    return;
+  }
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+extern "C" fun wolang_save_encode(schema: *u8, schema_length: u64, offsets: u64, root: u64, out_length: *mut u64) -> *mut u8
+extern "C" fun wolang_save_decode(schema: *u8, schema_length: u64, offsets: u64, data: *u8, data_length: u64, status: *mut s32) -> u64
+
+struct Shape<T> {
+  var schema: text
+  var offsets: u64
+}
+
+fun ShapeOf<T>() -> Shape<T>
+fun HandleOf<T>(value: T) -> u64
+fun FromHandle<T>(word: u64) -> T
+
+class Node {
+  @Save
+  var n: int = 0
+  @Save
+  var name: text = ""
+  @Save
+  var next: Node? = null
+  var scratch: int = 0
+}
+
+fun main() uses unsafe {
+  const a = Node()
+  const b = Node()
+  a.n = 1
+  b.n = 2
+  a.name = "ab"
+  a.scratch = 50
+  a.next = b
+  b.next = a
+
+  const first = ShapeOf<Node>()
+  var length: u64 = 0
+  const bytes = wolang_save_encode(first.schema.data, first.schema.length, first.offsets, HandleOf(a), &mut length)
+
+  const second = ShapeOf<Node>()
+  var status: s32 = 0
+  const word = wolang_save_decode(second.schema.data, second.schema.length, second.offsets, bytes, length, &mut status)
+  const back = FromHandle<Node>(word)
+
+  var code = back.n + (back.name.length as int) * 100 + back.scratch
+  if const hop = back.next {
+    code = code + hop.n * 10
+    if const around = hop.next {
+      around.n = 3
+      code = code + back.n * 1000
+    }
+  }
+  exit((code % 256) as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 149");
 }
 
 }  // namespace

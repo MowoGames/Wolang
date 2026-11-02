@@ -31,7 +31,7 @@ std::string Describe(const interp::Outcome& outcome) {
 
 // Runs one generated program through every tier and reports the first
 // disagreement, or an empty string when they all agree.
-constexpr uint64_t kProgramsHash = 5119149921832355542ull;
+constexpr uint64_t kProgramsHash = 9968837394971193967ull;
 
 std::string CompareTiers(uint64_t seed, bool traps) {
   fuzz::Options options;

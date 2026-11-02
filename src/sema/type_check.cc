@@ -32,6 +32,14 @@ constexpr std::string_view kMissingAbilityMethod = "E0402";
 constexpr std::string_view kBoundNotSatisfied = "E0403";
 constexpr std::string_view kReferenceInField = "E0120";
 constexpr std::string_view kBadWeak = "E0137";
+// `@Save` somewhere that is not a stored field of a class or a struct (D266).
+constexpr std::string_view kBadSave = "E0175";
+// A saved field whose type `std.save` cannot write and read back (D266).
+constexpr std::string_view kUnsavableField = "E0176";
+// A replication attribute somewhere it means nothing (D268).
+constexpr std::string_view kBadReplication = "E0178";
+// A replicated field or an RPC that carries a type a host cannot send (D268).
+constexpr std::string_view kUnsendable = "E0179";
 constexpr std::string_view kTypeWithoutTarget = "E0138";
 // An ability that takes `Self` used as the type of a value (D239).
 constexpr std::string_view kSelfAbilityValue = "E0157";
@@ -97,6 +105,8 @@ constexpr std::string_view kUnsafeMismatch = "E0154";
 constexpr std::string_view kUnknownEffect = "E0158";
 constexpr std::string_view kAmbiguousName = "E0143";
 constexpr std::string_view kUnknownModuleItem = "E0144";
+constexpr std::string_view kUnknownPatternError = "E0166";
+constexpr std::string_view kOpaqueThreadArgument = "E0163";
 constexpr std::string_view kLiteralOutOfRange = "E0109";
 constexpr std::string_view kDimensionMismatch = "E1001";
 constexpr std::string_view kUnknownUnit = "E1002";
@@ -363,6 +373,31 @@ class Checker {
            "function that lives on");
   }
 
+  // An array bound with `const` handed to a `[]mut T` would let the callee
+  // write what the binding promised nobody would (D251).
+  void RefuseConstArrayAsMut(ExprId id, TypeId target) {
+    if (!ast_.Contains(id) || !target.is_valid()) {
+      return;
+    }
+    const TypeId wanted = types_->StripWrappers(target);
+    if (types_->KindOf(wanted) != TypeKind::kSlice || !types_->Get(wanted).is_mutable) {
+      return;
+    }
+    const Expr& argument = ast_.Get(id);
+    if (argument.kind != ExprKind::kPath) {
+      return;
+    }
+    const Binding* binding = Lookup(argument.name);
+    if (binding == nullptr || (binding->kind != BindingKind::kValue && binding->kind != BindingKind::kLocal) || binding->is_mutable ||
+        types_->KindOf(types_->StripWrappers(result_.TypeOf(id))) != TypeKind::kArray) {
+      return;
+    }
+    std::string message = "the elements of `";
+    message.append(interner_->Text(argument.name));
+    message.append("` cannot be written: it is a `const`");
+    Report(kAssignToLet, std::move(message), argument.span, "declare it with `var` to hand it to a `[]mut` parameter (D251)");
+  }
+
   bool IsFrameBound(TypeId type) const {
     while (types_->IsOptional(type)) {
       type = types_->ElementOf(type);
@@ -505,6 +540,9 @@ class Checker {
   // `uses unsafe` on the declaration being checked: the caller takes
   // responsibility for what the threads share.
   bool caller_unsafe_ = false;
+  // The function being checked is itself `@Thread`: the function values it
+  // is given are judged where it is called, so it may pass them on (D252).
+  bool in_thread_function_ = false;
   ExprId negated_literal_;
 
   bool InsideClosure(ExprId closure) const {
@@ -560,6 +598,19 @@ class Checker {
     return nullptr;
   }
 
+  // Whether |name| is a local whose value is a function: a parameter or a
+  // `const` the checker cannot see through to the function it names.
+  bool HoldsFunctionValue(Symbol name) const {
+    for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
+      for (auto local = scope->bindings.rbegin(); local != scope->bindings.rend(); ++local) {
+        if (local->binding.name == name) {
+          return local->binding.type.is_valid() && types_->KindOf(local->binding.type) == TypeKind::kFunction;
+        }
+      }
+    }
+    return false;
+  }
+
   // Looks at the arguments of a call to a `@Thread` function.
   void CollectThreadArguments(const Expr& call) {
     if (!ast_.Contains(call.lhs)) {
@@ -585,6 +636,11 @@ class Checker {
           root.span = value.span;
           root.callees.emplace_back(named->file, named->item);
           result_.thread_roots.push_back(std::move(root));
+        } else if (value.kind == ExprKind::kPath && !in_thread_function_ && HoldsFunctionValue(value.name)) {
+          std::string message = "`";
+          message.append(interner_->Text(value.name));
+          message.append("` holds a function that cannot be followed onto another thread");
+          Report(kOpaqueThreadArgument, std::move(message), value.span, "pass the function by name or write it as a closure, or state `uses unsafe` (D252)");
         }
       }
     }
@@ -718,6 +774,10 @@ class Checker {
   // Reports a value type that contains itself, which would have no size.
   void CheckSized(const Item& item, TypeId type);
   void CheckBaseChain(const Item& item, TypeId type);
+  // Why `std.save` cannot write |type|, or an empty string when it can (D266).
+  std::string SaveBlocker(TypeId type, bool wire, int depth) const;
+  void CheckSavedMember(const Item& owner, const Item& member);
+  void CheckReplicatedMember(const Item& owner, const Item& member);
   // True when |type| reaches |target| through fields stored inline.
   bool ReachesByValue(TypeId type, TypeId target, int depth) const;
   void CheckOverride(const Item& item);
@@ -2285,6 +2345,7 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
         ReportMismatch(expected, found[i], ast_.Get(args[i]).span);
       }
       KeepInto(args[i], expected, "given to a parameter that keeps it");
+      RefuseConstArrayAsMut(args[i], expected);
     }
     CheckBounds(substitution, expr.span);
     // A parameter nothing narrowed stands for itself.
@@ -2334,6 +2395,7 @@ TypeId Checker::CheckCall(ExprId id, const Expr& expr) {
       ReportMismatch(expected, found, ast_.Get(args[i]).span);
     }
     KeepInto(args[i], expected, "given to a parameter that keeps it");
+    RefuseConstArrayAsMut(args[i], expected);
   }
   return result;
 }
@@ -3960,7 +4022,16 @@ void Checker::BindPattern(PatternId id, TypeId type,
           interner_->Text(name) == "Ok") {
         carried.push_back(types_->ElementOf(type));
       } else if (const Binding* error_tag = types_->KindOf(type) == TypeKind::kFallible ? PatternBinding(ast_.Get(pattern.path), name) : nullptr;
-                 error_tag != nullptr && error_tag->kind == BindingKind::kErrorTag) {
+                 types_->KindOf(type) == TypeKind::kFallible && pattern.kind == PatternKind::kVariant && ast_.Get(pattern.path).size() < 2 && (error_tag == nullptr || error_tag->kind != BindingKind::kErrorTag)) {
+        std::string message = "`";
+        message.append(interner_->Text(name));
+        message.append("` is not an error this `match` can see");
+        Report(kUnknownPatternError, std::move(message), pattern.span, "declare it with `error`, or import it with `need` (D235)");
+        for (PatternId element : ast_.Get(pattern.elements)) {
+          BindPattern(element, types_->error());
+        }
+        return;
+      } else if (error_tag != nullptr && error_tag->kind == BindingKind::kErrorTag) {
         const std::vector<ErrorMember> stated = types_->StatedErrorsOf(error_tag->type);
         if (stated.size() == 1 && stated[0].detail.is_valid()) {
           for (const Member& field : resolution_->MembersOf(stated[0].detail)) {
@@ -4037,8 +4108,21 @@ void Checker::CheckStmt(StmtId id) {
       if (!value.is_valid()) {
         value = types_->error();
       }
-      BindPattern(stmt.pattern, Adapt(value, declared, stmt.span),
-                  stmt.kind == StmtKind::kVar);
+      TypeId bound = Adapt(value, declared, stmt.span);
+      // A `T!` annotation makes the binding a `T!` when what it is given is
+      // an error that carries data, so the box is held where a `T!` drops it
+      // and not in a tuple nothing releases (D275).
+      if (declared.is_valid() && types_->KindOf(declared) == TypeKind::kFallible && types_->KindOf(value) == TypeKind::kErrorSet && types_->ErrorSetHasPayload(value)) {
+        bound = declared;
+        Record(stmt.expr, declared);
+      }
+      // `var backend: Backend = NullNew()` is a `Backend` that can be given
+      // any other, not the one concrete type it started as (D275).
+      if (declared.is_valid() && value.is_valid() && declared != value && resolution_ != nullptr && Accepts(declared, value) &&
+          (resolution_->IsAbility(declared) || (types_->IsHandle(declared) && types_->IsHandle(value)))) {
+        bound = declared;
+      }
+      BindPattern(stmt.pattern, bound, stmt.kind == StmtKind::kVar);
       return;
     }
 
@@ -4254,6 +4338,11 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   const bool previous_task = in_task_;
   in_task_ = HasFlag(item.flags, ItemFlags::kAsync);
   const bool previous_unsafe = caller_unsafe_;
+  const bool previous_thread = in_thread_function_;
+  in_thread_function_ = false;
+  for (AttributeId attribute : ast_.Get(item.attributes)) {
+    in_thread_function_ |= interner_->Text(ast_.Get(attribute).name) == "Thread";
+  }
   caller_unsafe_ = HasFlag(item.flags, ItemFlags::kUnsafe);
   for (TypeRefId effect : ast_.Get(item.effects)) {
     const std::span<const Symbol> path = ast_.Get(ast_.Get(effect).path);
@@ -4345,6 +4434,7 @@ void Checker::CheckFunction(const Item& item, uint32_t owner) {
   return_type_ = previous_return;
   in_task_ = previous_task;
   caller_unsafe_ = previous_unsafe;
+  in_thread_function_ = previous_thread;
   in_deinit_ = previous_deinit;
   if (framed) {
     result_.allocation.push_back(std::move(alloc_open_.back()));
@@ -4697,6 +4787,208 @@ void Checker::CheckBaseChain(const Item& item, TypeId type) {
       return;
     }
     current = resolution_->BaseOf(current);
+  }
+}
+
+// What `std.save` can write is a closed set, so that a saved field never
+// turns into a silent hole in a save file (D266). A class is written as a
+// reference to an object that is written once, which needs the object to say
+// which class it is without a descriptor: a class with a virtual method has
+// one, and is refused. With |wire| set the rule is the one for a field a host
+// sends: no object at all, and a struct is sent whole (D268).
+std::string Checker::SaveBlocker(TypeId type, bool wire, int depth) const {
+  if (!type.is_valid() || depth > 8) {
+    return std::string();
+  }
+  switch (types_->KindOf(type)) {
+    case TypeKind::kBool:
+    case TypeKind::kChar:
+    case TypeKind::kInt:
+    case TypeKind::kFloat:
+    case TypeKind::kStr:
+      return std::string();
+    case TypeKind::kOptional:
+      return SaveBlocker(types_->ElementOf(type), wire, depth + 1);
+    case TypeKind::kNamed:
+    case TypeKind::kInstance: {
+      if (resolution_->IsAbility(type)) {
+        return "an ability value has no fixed shape";
+      }
+      if (types_->IsForeignClass(type)) {
+        return "a host object belongs to the host";
+      }
+      if (types_->IsHandle(type)) {
+        if (wire) {
+          return "an object reference means nothing on the other side; send its fields or an id";
+        }
+        for (TypeId current = type; current.is_valid(); current = resolution_->BaseOf(current)) {
+          for (const Member& member : resolution_->MembersOf(current)) {
+            if (member.kind == MemberKind::kMethod && (member.is_virtual || member.is_override)) {
+              return "a class with a virtual method does not say which class an object is";
+            }
+          }
+        }
+        return std::string();
+      }
+      for (const Member& member : resolution_->MembersOf(type)) {
+        if (member.kind == MemberKind::kVariant && types_->KindOf(member.type) == TypeKind::kFunction) {
+          return "an enum whose variants carry values is not saved yet";
+        }
+      }
+      bool marked = false;
+      for (const Member& member : resolution_->MembersOf(type)) {
+        marked = marked || (member.kind == MemberKind::kField && member.is_save);
+      }
+      if (wire || !marked) {
+        for (const Member& member : resolution_->MembersOf(type)) {
+          if (member.kind != MemberKind::kField) {
+            continue;
+          }
+          const std::string inner = SaveBlocker(member.type, wire, depth + 1);
+          if (!inner.empty()) {
+            return "its field `" + std::string(interner_->Text(member.name)) + (wire ? "` is not sendable: " : "` cannot be saved: ") + inner;
+          }
+        }
+      }
+      return std::string();
+    }
+    default:
+      break;
+  }
+  std::string reason = "`";
+  reason.append(Describe(type));
+  reason.append("` is not a number, a bool, a char, a `text`, an enum, a struct, a class or an optional of one");
+  return reason;
+}
+
+void Checker::CheckSavedMember(const Item& owner, const Item& member) {
+  bool saved = false;
+  SourceSpan where = member.name_span;
+  for (AttributeId attribute_id : ast_.Get(member.attributes)) {
+    const Attribute& attribute = ast_.Get(attribute_id);
+    if (interner_->Text(attribute.name) == "Save") {
+      saved = true;
+      where = attribute.span;
+    }
+  }
+  if (!saved) {
+    return;
+  }
+
+  const bool holder = owner.kind == ItemKind::kClass || owner.kind == ItemKind::kStruct;
+  const bool stored = member.kind == ItemKind::kBinding && !HasFlag(member.flags, ItemFlags::kDerived) && !HasFlag(member.flags, ItemFlags::kWeak) && !HasFlag(member.flags, ItemFlags::kExtern);
+  if (!holder || !stored || HasFlag(owner.flags, ItemFlags::kExtern)) {
+    std::string message = "`@Save` marks a stored field of a class or a struct; `";
+    message.append(interner_->Text(member.name));
+    message.append("` is not one");
+    Report(kBadSave, std::move(message), where, "a method, a derived or weak field and a host class's member keep nothing to save");
+    return;
+  }
+
+  const TypeId held = member.type.is_valid() ? resolver_.Resolve(ast_, member.type) : TypeId{};
+  const std::string reason = SaveBlocker(held, false, 0);
+  if (!reason.empty()) {
+    std::string message = "`";
+    message.append(interner_->Text(member.name));
+    message.append("` cannot be saved: ");
+    message.append(reason);
+    Report(kUnsavableField, std::move(message), where, "leave `@Save` off it, or keep the number or name that rebuilds it");
+  }
+}
+
+void Checker::CheckReplicatedMember(const Item& owner, const Item& member) {
+  int seen = 0;
+  std::string_view first;
+  SourceSpan where = member.name_span;
+  for (AttributeId attribute_id : ast_.Get(member.attributes)) {
+    const Attribute& attribute = ast_.Get(attribute_id);
+    const std::string_view name = interner_->Text(attribute.name);
+    if (name != "Replicated" && name != "Server" && name != "Client" && name != "Multicast") {
+      continue;
+    }
+    if (seen == 0) {
+      first = name;
+      where = attribute.span;
+    }
+    ++seen;
+    for (ExprId argument : ast_.Get(attribute.args)) {
+      const std::string_view written = ast_.Contains(argument) ? interner_->Text(ast_.Get(argument).name) : std::string_view();
+      const bool known = name == "Replicated" ? written == "owner" : written == "owner" || written == "reliable" || written == "unreliable";
+      if (!known) {
+        std::string message = "`@";
+        message.append(name);
+        message.append("` takes ");
+        message.append(name == "Replicated" ? "`owner`" : "`owner`, `reliable` or `unreliable`");
+        message.append(" and not `");
+        message.append(written);
+        message.append("`");
+        Report(kBadReplication, std::move(message), attribute.span);
+      }
+    }
+  }
+  if (seen == 0) {
+    return;
+  }
+
+  const bool in_class = owner.kind == ItemKind::kClass && !HasFlag(owner.flags, ItemFlags::kExtern);
+  if (seen > 1 || !in_class) {
+    std::string message = "`@";
+    message.append(first);
+    message.append(seen > 1 ? "`: one replication attribute at a time" : "` belongs to a member of a script class, where there is an object to replicate");
+    Report(kBadReplication, std::move(message), where);
+    return;
+  }
+
+  const bool field = first == "Replicated";
+  if (field) {
+    if (member.kind != ItemKind::kBinding || HasFlag(member.flags, ItemFlags::kDerived) || HasFlag(member.flags, ItemFlags::kWeak)) {
+      std::string message = "`@Replicated` marks a stored field; `";
+      message.append(interner_->Text(member.name));
+      message.append("` is not one");
+      Report(kBadReplication, std::move(message), where);
+      return;
+    }
+    const TypeId held = member.type.is_valid() ? resolver_.Resolve(ast_, member.type) : TypeId{};
+    std::string reason = SaveBlocker(held, true, 0);
+    if (!reason.empty()) {
+      std::string message = "`";
+      message.append(interner_->Text(member.name));
+      message.append("` cannot be replicated: ");
+      message.append(reason);
+      Report(kUnsendable, std::move(message), where, "a host sends numbers, bools, chars, text, enums, structs and optionals of those");
+    }
+    return;
+  }
+
+  if (member.kind != ItemKind::kFunction) {
+    std::string message = "`@";
+    message.append(first);
+    message.append("` marks a method; `");
+    message.append(interner_->Text(member.name));
+    message.append("` is not one");
+    Report(kBadReplication, std::move(message), where);
+    return;
+  }
+  const TypeId result = member.type.is_valid() ? resolver_.Resolve(ast_, member.type) : TypeId{};
+  if (result.is_valid() && types_->KindOf(result) != TypeKind::kVoid) {
+    std::string message = "`";
+    message.append(interner_->Text(member.name));
+    message.append("` is an RPC and returns nothing");
+    Report(kUnsendable, std::move(message), where, "the call goes one way; send the answer back with another RPC");
+  }
+  for (ParamId parameter_id : ast_.Get(member.params)) {
+    if (!ast_.Contains(parameter_id) || !ast_.Get(parameter_id).type.is_valid()) {
+      continue;
+    }
+    const Param& parameter = ast_.Get(parameter_id);
+    const std::string reason = SaveBlocker(resolver_.Resolve(ast_, parameter.type), true, 0);
+    if (!reason.empty()) {
+      std::string message = "`";
+      message.append(interner_->Text(parameter.name));
+      message.append("` cannot be sent: ");
+      message.append(reason);
+      Report(kUnsendable, std::move(message), parameter.span);
+    }
   }
 }
 
@@ -5103,6 +5395,10 @@ void Checker::CheckItem(ItemId id) {
             message.append("` is not one");
             Report(kBadWeak, std::move(message), field.name_span, "write `weak var name: Node?` inside a `class`");
           }
+        }
+        if (ast_.Contains(member)) {
+          CheckSavedMember(item, ast_.Get(member));
+          CheckReplicatedMember(item, ast_.Get(member));
         }
         // What a variant carries is resolved here as well, so that an
         // import used only by a payload counts as used: `Array(items:

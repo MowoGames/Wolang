@@ -1,0 +1,141 @@
+(file
+  (need std.io
+    (names Print Write))
+  (need std.text)
+  (class Turret offer
+    (attr Test)
+    (generic T
+      (type Spawnable)
+      (type Named)
+      (type Sized))
+    (extends
+      (type Actor))
+    (var range
+      (of
+        (type float))
+      (init
+        (float 15)))
+    (var target weak
+      (of
+        (optional
+          (type Actor))))
+    (deinit deinit
+      (block
+        (expr
+          (call
+            (path Print)
+            (args
+              (string
+                (text "gone")))))))
+    (fun Fire override unsafe
+      (params
+        (param shots
+          (slice mut
+            (type u8)))
+        (param f
+          (fun-type keep
+            (type int)
+            (type bool))))
+      (returns
+        (tuple-type
+          (type int)
+          (type text)))
+      (uses
+        (type io))
+      (block
+        (return
+          (tuple
+            (int 1)
+            (string
+              (text "ok")))))))
+  (extend Turret
+    (as
+      (type Describe))
+    (target
+      (type Turret))
+    (fun Describe
+      (returns
+        (type text))
+      (string
+        (text "turret"))))
+  (enum Shape
+    (variant Circle
+      (params
+        (param radius
+          (type float))))
+    (variant Square
+      (params
+        (param side
+          (type float))))
+    (variant Dot))
+  (error Missing
+    (names Missing Corrupt)
+    (params
+      (param line
+        (type int))
+      (param why
+        (type text))))
+  (type Handle
+    (of
+      (pointer mut
+        (type u8))))
+  (dimension Length
+    (names Length Time))
+  (unit m
+    (dimension Length))
+  (component Health
+    (var hp
+      (of
+        (type int))))
+  (tag Hostile)
+  (signal Died
+    (params
+      (param who
+        (type Actor))))
+  (on Died
+    (signal Died)
+    (params
+      (param who))
+    (block
+      (expr
+        (call
+          (path Print)
+          (args
+            (string
+              (text "down")))))))
+  (system Move
+    (params
+      (param dt
+        (type float))
+      (param q
+        (type Query
+          (mut
+            (type Position))
+          (with
+            (type Hostile)))))
+    (after Input)
+    (before Render)
+    (block))
+  (machine Door
+    (state Closed
+      (enter
+        (block
+          (expr
+            (call
+              (path Print)
+              (args
+                (string
+                  (text "closed")))))))
+      (transition Open -> Opened)
+      (transition always -> Locked
+        (after
+          (int 2 unit=s))))
+    (state Opened))
+  (fun abs extern
+    (params
+      (param n
+        (type s32)))
+    (returns
+      (type s32))
+    (symbol abs)
+    (abi C)))

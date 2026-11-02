@@ -60,12 +60,14 @@ fun main() uses io {
 
 1. [Install](/docs/wolang/install/) — one line on macOS and Linux, an
    `.msi` on Windows.
-2. [A tour](/docs/wolang/tour/) — the whole language in half an hour,
+2. [What is new](/docs/wolang/whats-new/) — what the latest release
+   changed, and how to move a program to it.
+3. [A tour](/docs/wolang/tour/) — the whole language in half an hour,
    every example compiled on each commit.
-3. [Cookbook](/docs/wolang/cookbook/) — short answers to "how do I…".
-4. [Standard library](/docs/wolang/stdlib/) — thirty-five modules, from
+4. [Cookbook](/docs/wolang/cookbook/) — short answers to "how do I…".
+5. [Standard library](/docs/wolang/stdlib/) — thirty-eight modules, from
    text and collections to HTTP, TLS, compression and time zones.
-5. [Language reference](/docs/wolang/spec/) — the grammar and the rules,
+6. [Language reference](/docs/wolang/spec/) — the grammar and the rules,
    for when the tour is not precise enough.
 
 ## Platforms

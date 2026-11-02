@@ -1,0 +1,1131 @@
+need std.fmt.{Int}
+need std.list.{List, ListNew}
+need std.map.{Map}
+need std.text.{Builder, BuilderNew, Bytes, Substring}
+
+offer struct Token {
+  var kind: Kind
+  var offset: int
+  var length: int
+  var flags: int
+  var aux: int
+}
+
+offer struct Number {
+  var is_float: bool
+  var integer: u64
+  var value: f64
+  var suffix: text
+  var unit: text
+}
+
+offer struct StringPart {
+  var interpolated: bool
+  var text: text
+  var begin: int
+  var end: int
+}
+
+offer struct StringLit {
+  var is_raw: bool
+  var parts: List<StringPart>
+}
+
+offer class Lexed {
+  var tokens: List<Token>
+  var numbers: List<Number>
+  var strings: List<StringLit>
+}
+
+struct Decoded {
+  var length: int
+  var point: int
+}
+
+fun IsDigit(c: u8) -> bool {
+  return c >= 48 && c <= 57
+}
+
+fun IsHex(c: u8) -> bool {
+  return IsDigit(c) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70)
+}
+
+fun IsOctal(c: u8) -> bool {
+  return c >= 48 && c <= 55
+}
+
+fun IsBinary(c: u8) -> bool {
+  return c == 48 || c == 49
+}
+
+fun HexValue(c: u8) -> int {
+  if IsDigit(c) {
+    return (c as int) - 48
+  }
+  if c >= 97 && c <= 102 {
+    return (c as int) - 87
+  }
+  return (c as int) - 55
+}
+
+fun IsIdentStart(c: u8) -> bool {
+  return c == 95 || (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
+}
+
+fun IsIdentPart(c: u8) -> bool {
+  return IsIdentStart(c) || IsDigit(c)
+}
+
+fun IsOperatorStart(c: u8) -> bool {
+  return c == 40 || c == 41 || c == 123 || c == 125 || c == 91 || c == 93 || c == 44 || c == 59 || c == 58 || c == 46 || c == 64 || c == 126 || c == 43 || c == 45 || c == 42 || c == 47 || c == 37 || c == 61 || c == 33 || c == 60 || c == 62 || c == 38 || c == 124 || c == 94 || c == 63
+}
+
+fun CanStartToken(c: u8) -> bool {
+  return IsIdentStart(c) || IsDigit(c) || c >= 128 || IsOperatorStart(c) || c == 34 || c == 39 || c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12
+}
+
+fun IsLetterPoint(point: int) -> bool {
+  if point < 192 {
+    return point == 170 || point == 181 || point == 186
+  }
+  if point == 215 || point == 247 {
+    return false
+  }
+  if point >= 8192 && point <= 8303 {
+    return false
+  }
+  if point >= 8592 && point <= 11263 {
+    return false
+  }
+  if point >= 12288 && point <= 12351 {
+    return point == 12293 || point == 12294 || point == 12295 || (point >= 12321 && point <= 12329)
+  }
+  if point >= 57344 && point <= 63743 {
+    return false
+  }
+  if point >= 65520 && point <= 65535 {
+    return false
+  }
+  if point >= 126976 && point <= 130047 {
+    return false
+  }
+  return true
+}
+
+fun LooksLikeNumericSuffix(word: []u8) -> bool {
+  if word.len < 2 {
+    return false
+  }
+  if word[0] != 105 && word[0] != 117 && word[0] != 102 {
+    return false
+  }
+
+  var k = 1
+  while k < word.len {
+    if !IsDigit(word[k]) {
+      return false
+    }
+    k = k + 1
+  }
+  return true
+}
+
+fun U64ToFloat(value: u64) -> f64 {
+  const high = (value >> 32) as u32
+  const low = (value & 4294967295) as u32
+  return (high as f64) * 4294967296.0 + (low as f64)
+}
+
+class Lexer {
+  var bytes: []u8
+  var source: text
+  var pos: int
+  var pending: int
+  var failed: bool
+  var tokens: List<Token>
+  var keywords: Map<text, Kind>
+  var reserved: Map<text, bool>
+  var limit: int
+  var aux: int
+  var acc: u64
+  var overflowed: bool
+  var numbers: List<Number>
+  var strings: List<StringLit>
+
+  fun Peek(ahead: int) -> u8 {
+    const index = pos + ahead
+    if index < limit {
+      return bytes[index]
+    }
+    return 0
+  }
+
+  fun AtEnd() -> bool {
+    return pos >= limit
+  }
+
+  fun Push(kind: Kind, begin: int) uses unsafe {
+    var flags = pending
+    if failed {
+      flags = flags | 4
+    }
+    tokens.Push(Token(kind, begin, pos - begin, flags, aux))
+    pending = 0
+    failed = false
+    aux = 0
+  }
+
+  fun Operator(kind: Kind, length: int) uses unsafe {
+    const begin = pos
+    pos = pos + length
+    Push(kind, begin)
+  }
+
+  fun Decode(at: int) -> Decoded {
+    const first = bytes[at] as int
+    if first < 128 {
+      return Decoded(1, first)
+    }
+
+    var extra = 0
+    var point = 0
+    var minimum = 0
+    if first >= 194 && first <= 223 {
+      extra = 1
+      point = first & 31
+      minimum = 128
+    } else if first >= 224 && first <= 239 {
+      extra = 2
+      point = first & 15
+      minimum = 2048
+    } else if first >= 240 && first <= 244 {
+      extra = 3
+      point = first & 7
+      minimum = 65536
+    } else {
+      return Decoded(0, 0)
+    }
+
+    if at + extra >= limit {
+      return Decoded(0, 0)
+    }
+
+    var k = 1
+    while k <= extra {
+      const next = bytes[at + k] as int
+      if (next & 192) != 128 {
+        return Decoded(0, 0)
+      }
+      point = (point << 6) | (next & 63)
+      k = k + 1
+    }
+
+    if point < minimum || point > 1114111 || (point >= 55296 && point <= 57343) {
+      return Decoded(0, 0)
+    }
+    return Decoded(extra + 1, point)
+  }
+
+  fun SkipTrivia() {
+    var newlines = 0
+    while pos < limit {
+      const c = bytes[pos]
+      if c == 10 {
+        pos = pos + 1
+        newlines = newlines + 1
+        continue
+      }
+      if c == 32 || c == 9 || c == 13 || c == 11 || c == 12 {
+        pos = pos + 1
+        continue
+      }
+      if c == 47 && Peek(1) == 47 {
+        if AtDocComment() {
+          break
+        }
+        while pos < limit && bytes[pos] != 10 {
+          pos = pos + 1
+        }
+        continue
+      }
+      if c == 47 && Peek(1) == 42 {
+        if !SkipBlockComment() {
+          break
+        }
+        continue
+      }
+      break
+    }
+
+    if newlines > 0 {
+      pending = pending | 1
+    }
+    if newlines > 1 {
+      pending = pending | 2
+    }
+  }
+
+  fun AtDocComment() -> bool {
+    return Peek(0) == 47 && Peek(1) == 47 && Peek(2) == 47 && Peek(3) != 47
+  }
+
+  fun SkipBlockComment() -> bool {
+    pos = pos + 2
+    var depth = 1
+    while pos < limit {
+      if Peek(0) == 47 && Peek(1) == 42 {
+        depth = depth + 1
+        pos = pos + 2
+        continue
+      }
+      if Peek(0) == 42 && Peek(1) == 47 {
+        depth = depth - 1
+        pos = pos + 2
+        if depth == 0 {
+          return true
+        }
+        continue
+      }
+      pos = pos + 1
+    }
+    failed = true
+    return false
+  }
+
+  fun LexToken() uses unsafe {
+    const c = Peek(0)
+    if c == 47 && AtDocComment() {
+      const begin = pos
+      while pos < limit && bytes[pos] != 10 {
+        pos = pos + 1
+      }
+      Push(Kind.DocComment, begin)
+      return
+    }
+    if c == 114 && Peek(1) == 34 {
+      LexString(true)
+      return
+    }
+    if IsIdentStart(c) {
+      LexIdentifier()
+      return
+    }
+    if c >= 128 {
+      const decoded = Decode(pos)
+      if decoded.length == 0 {
+        LexInvalidByte()
+      } else if IsLetterPoint(decoded.point) {
+        LexIdentifier()
+      } else {
+        const begin = pos
+        pos = pos + decoded.length
+        failed = true
+        Push(Kind.Unknown, begin)
+      }
+      return
+    }
+    if IsDigit(c) {
+      LexNumber()
+      return
+    }
+    if c == 34 {
+      LexString(false)
+      return
+    }
+    if c == 39 {
+      LexChar()
+      return
+    }
+    if LexOperator() {
+      return
+    }
+
+    const begin = pos
+    while pos < limit && !CanStartToken(bytes[pos]) {
+      pos = pos + 1
+    }
+    failed = true
+    Push(Kind.Unknown, begin)
+  }
+
+  fun LexInvalidByte() uses unsafe {
+    const begin = pos
+    while pos < limit && bytes[pos] >= 128 && Decode(pos).length == 0 {
+      pos = pos + 1
+    }
+    failed = true
+    Push(Kind.Unknown, begin)
+  }
+
+  fun LexIdentifier() uses unsafe {
+    const begin = pos
+    while pos < limit {
+      const c = bytes[pos]
+      if IsIdentPart(c) {
+        pos = pos + 1
+        continue
+      }
+      if c >= 128 {
+        const decoded = Decode(pos)
+        if decoded.length == 0 || !IsLetterPoint(decoded.point) {
+          break
+        }
+        pos = pos + decoded.length
+        continue
+      }
+      break
+    }
+
+    const word = Substring(source, begin, pos)
+    if word == "_" {
+      Push(Kind.Underscore, begin)
+      return
+    }
+    if keywords.Has(word) {
+      Push(keywords.Get(word, Kind.Unknown), begin)
+      return
+    }
+    if reserved.Has(word) {
+      failed = true
+    }
+    Push(Kind.Identifier, begin)
+  }
+
+  fun AppendPoint(out: Builder, point: int) uses unsafe {
+    if point <= 127 {
+      out.AppendByte(point as u8)
+    } else if point <= 2047 {
+      out.AppendByte((192 | (point >> 6)) as u8)
+      out.AppendByte((128 | (point & 63)) as u8)
+    } else if point <= 65535 {
+      out.AppendByte((224 | (point >> 12)) as u8)
+      out.AppendByte((128 | ((point >> 6) & 63)) as u8)
+      out.AppendByte((128 | (point & 63)) as u8)
+    } else {
+      out.AppendByte((240 | (point >> 18)) as u8)
+      out.AppendByte((128 | ((point >> 12) & 63)) as u8)
+      out.AppendByte((128 | ((point >> 6) & 63)) as u8)
+      out.AppendByte((128 | (point & 63)) as u8)
+    }
+  }
+
+  fun Accumulate(digit: int, radix: int) {
+    const most: u64 = 0xFFFFFFFFFFFFFFFFu64
+    if acc > (most - (digit as u64)) / (radix as u64) {
+      overflowed = true
+      return
+    }
+    acc = acc * (radix as u64) + (digit as u64)
+  }
+
+  fun Digits(radix: int) -> int {
+    var count = 0
+    loop {
+      const c = Peek(0)
+      if c == 95 {
+        pos = pos + 1
+        continue
+      }
+      var valid = IsBinary(c)
+      if radix == 16 {
+        valid = IsHex(c)
+      } else if radix == 8 {
+        valid = IsOctal(c)
+      }
+      if !valid {
+        break
+      }
+      Accumulate(HexValue(c), radix)
+      count = count + 1
+      pos = pos + 1
+    }
+    return count
+  }
+
+  fun FloatFrom(begin: int, end: int) -> f64 {
+    var mantissa: u64 = 0
+    var digits = 0
+    var scale = 0
+    var exponent = 0
+    var seen_dot = false
+    var k = begin
+    while k < end {
+      const c = bytes[k]
+      if c == 95 {
+        k = k + 1
+        continue
+      }
+      if c == 46 {
+        seen_dot = true
+        k = k + 1
+        continue
+      }
+      if c == 101 || c == 69 {
+        k = k + 1
+        var negative = false
+        if k < end && (bytes[k] == 43 || bytes[k] == 45) {
+          negative = bytes[k] == 45
+          k = k + 1
+        }
+        while k < end {
+          if IsDigit(bytes[k]) {
+            exponent = exponent * 10 + ((bytes[k] as int) - 48)
+          }
+          k = k + 1
+        }
+        if negative {
+          exponent = 0 - exponent
+        }
+        break
+      }
+      if digits < 19 {
+        mantissa = mantissa * 10 + (((c as int) - 48) as u64)
+        digits = digits + 1
+        if seen_dot {
+          scale = scale - 1
+        }
+      } else if !seen_dot {
+        scale = scale + 1
+      }
+      k = k + 1
+    }
+
+    var value = U64ToFloat(mantissa)
+    var power = scale + exponent
+    while power > 0 {
+      value = value * 10.0
+      power = power - 1
+    }
+    while power < 0 {
+      value = value / 10.0
+      power = power + 1
+    }
+    return value
+  }
+
+  fun LexNumber() uses unsafe {
+    const begin = pos
+    var is_float = false
+    var based = false
+    acc = 0
+    overflowed = false
+    const marker = Peek(1)
+    if Peek(0) == 48 && (marker == 120 || marker == 88 || marker == 98 || marker == 66 || marker == 111 || marker == 79) {
+      based = true
+      var radix = 8
+      if marker == 120 || marker == 88 {
+        radix = 16
+      } else if marker == 98 || marker == 66 {
+        radix = 2
+      }
+      pos = pos + 2
+
+      const count = Digits(radix)
+      if count == 0 {
+        failed = true
+      } else if IsDigit(Peek(0)) || Peek(0) == 46 {
+        while pos < limit && (IsDigit(bytes[pos]) || bytes[pos] == 46 || bytes[pos] == 95) {
+          pos = pos + 1
+        }
+        failed = true
+      }
+    } else {
+      loop {
+        const c = Peek(0)
+        if c == 95 {
+          pos = pos + 1
+          continue
+        }
+        if !IsDigit(c) {
+          break
+        }
+        Accumulate((c as int) - 48, 10)
+        pos = pos + 1
+      }
+
+      if Peek(0) == 46 && IsDigit(Peek(1)) {
+        is_float = true
+        pos = pos + 1
+        while IsDigit(Peek(0)) || Peek(0) == 95 {
+          pos = pos + 1
+        }
+      }
+
+      if Peek(0) == 101 || Peek(0) == 69 {
+        const signed = Peek(1) == 43 || Peek(1) == 45
+        var following = Peek(1)
+        if signed {
+          following = Peek(2)
+        }
+        if IsDigit(following) {
+          is_float = true
+          pos = pos + 1
+          if signed {
+            pos = pos + 1
+          }
+          while IsDigit(Peek(0)) || Peek(0) == 95 {
+            pos = pos + 1
+          }
+        }
+      }
+    }
+
+    const digits_end = pos
+    var suffix_name = ""
+    var unit_name = ""
+    if IsIdentStart(Peek(0)) {
+      const suffix_begin = pos
+      while IsIdentPart(Peek(0)) {
+        pos = pos + 1
+      }
+      const suffix = Substring(source, suffix_begin, pos)
+      var matched = false
+      var suffix_is_float = false
+      if suffix == "s8" || suffix == "s16" || suffix == "s32" || suffix == "s64" || suffix == "u8" || suffix == "u16" || suffix == "u32" || suffix == "u64" {
+        matched = true
+      } else if suffix == "f32" || suffix == "f64" {
+        matched = true
+        suffix_is_float = true
+      }
+
+      if matched {
+        if is_float && !suffix_is_float {
+          failed = true
+        } else {
+          suffix_name = suffix
+          if suffix_is_float {
+            is_float = true
+          }
+        }
+      } else if LooksLikeNumericSuffix(Bytes(suffix)) {
+        failed = true
+      } else if based {
+        failed = true
+      } else {
+        unit_name = suffix
+      }
+    }
+
+    if overflowed {
+      failed = true
+    }
+
+    var value = U64ToFloat(acc)
+    if is_float {
+      value = FloatFrom(begin, digits_end)
+    }
+    numbers.Push(Number(is_float, acc, value, suffix_name, unit_name))
+    aux = numbers.Len() - 1
+    if is_float {
+      Push(Kind.FloatLiteral, begin)
+    } else {
+      Push(Kind.IntLiteral, begin)
+    }
+  }
+
+  fun LexEscape(out: Builder) -> int uses unsafe {
+    pos = pos + 1
+    if pos >= limit {
+      failed = true
+      return 0 - 1
+    }
+
+    const escape = bytes[pos]
+    pos = pos + 1
+    var point = 0 - 1
+    if escape == 110 {
+      point = 10
+    } else if escape == 114 {
+      point = 13
+    } else if escape == 116 {
+      point = 9
+    } else if escape == 48 {
+      point = 0
+    } else if escape == 92 || escape == 34 || escape == 39 || escape == 123 || escape == 125 {
+      point = escape as int
+    } else if escape == 117 {
+      return LexUnicodeEscape(out)
+    } else {
+      failed = true
+      out.AppendByte(escape)
+      return escape as int
+    }
+    AppendPoint(out, point)
+    return point
+  }
+
+  fun LexUnicodeEscape(out: Builder) -> int uses unsafe {
+    if Peek(0) != 123 {
+      failed = true
+      return 0 - 1
+    }
+    pos = pos + 1
+
+    var value = 0
+    var digits = 0
+    while IsHex(Peek(0)) && digits < 6 {
+      value = value * 16 + HexValue(Peek(0))
+      digits = digits + 1
+      pos = pos + 1
+    }
+
+    if digits == 0 {
+      failed = true
+      return 0 - 1
+    }
+    if Peek(0) != 125 {
+      failed = true
+      return 0 - 1
+    }
+    pos = pos + 1
+
+    if value > 1114111 || (value >= 55296 && value <= 57343) {
+      failed = true
+      return 0 - 1
+    }
+    AppendPoint(out, value)
+    return value
+  }
+
+  fun SkipNestedQuoted(quote: u8) {
+    pos = pos + 1
+    while pos < limit && bytes[pos] != quote && bytes[pos] != 10 {
+      if bytes[pos] == 92 && pos + 1 < limit {
+        pos = pos + 2
+        continue
+      }
+      pos = pos + 1
+    }
+    if pos < limit && bytes[pos] == quote {
+      pos = pos + 1
+    }
+  }
+
+  fun LexInterpolation(parts: List<StringPart>) uses unsafe {
+    pos = pos + 1
+    const expression_begin = pos
+
+    var depth = 1
+    while pos < limit {
+      const c = bytes[pos]
+      if c == 10 {
+        break
+      }
+      if c == 34 || c == 39 {
+        SkipNestedQuoted(c)
+        continue
+      }
+      if c == 123 {
+        depth = depth + 1
+        pos = pos + 1
+        continue
+      }
+      if c == 125 {
+        depth = depth - 1
+        pos = pos + 1
+        if depth == 0 {
+          break
+        }
+        continue
+      }
+      pos = pos + 1
+    }
+
+    var expression_end = pos
+    if depth == 0 {
+      expression_end = pos - 1
+    }
+    if depth != 0 {
+      failed = true
+    } else if expression_end == expression_begin {
+      failed = true
+    }
+    parts.Push(StringPart(true, "", expression_begin, expression_end))
+  }
+
+  fun FlushText(parts: List<StringPart>, text: Builder, begin: int, end: int) uses unsafe {
+    if text.Len() == 0 && parts.Len() > 0 {
+      return
+    }
+    if text.Len() == 0 && parts.Len() == 0 && end == begin {
+      return
+    }
+    parts.Push(StringPart(false, text.Release(), begin, end))
+  }
+
+  fun LexString(is_raw: bool) uses unsafe {
+    const begin = pos
+    if is_raw {
+      pos = pos + 2
+    } else {
+      pos = pos + 1
+    }
+
+    var parts = ListNew<StringPart>()
+    var text = BuilderNew()
+    var text_begin = pos
+    var terminated = false
+    while pos < limit {
+      const c = bytes[pos]
+      if c == 34 {
+        FlushText(parts, text, text_begin, pos)
+        pos = pos + 1
+        terminated = true
+        break
+      }
+      if c == 10 && !is_raw {
+        break
+      }
+      if !is_raw && c == 92 {
+        const _point = LexEscape(text)
+        continue
+      }
+      if !is_raw && c == 123 {
+        FlushText(parts, text, text_begin, pos)
+        LexInterpolation(parts)
+        text_begin = pos
+        continue
+      }
+      if c >= 128 {
+        const decoded = Decode(pos)
+        if decoded.length == 0 {
+          failed = true
+          pos = pos + 1
+          continue
+        }
+        var k = 0
+        while k < decoded.length {
+          text.AppendByte(bytes[pos + k])
+          k = k + 1
+        }
+        pos = pos + decoded.length
+        continue
+      }
+      text.AppendByte(c)
+      pos = pos + 1
+    }
+
+    if !terminated {
+      FlushText(parts, text, text_begin, pos)
+      failed = true
+    }
+    strings.Push(StringLit(is_raw, parts))
+    aux = strings.Len() - 1
+    Push(Kind.StringLiteral, begin)
+  }
+
+  fun LexChar() uses unsafe {
+    const begin = pos
+    pos = pos + 1
+
+    if pos >= limit || bytes[pos] == 10 {
+      failed = true
+      aux = 0
+      Push(Kind.CharLiteral, begin)
+      return
+    }
+
+    if bytes[pos] == 39 {
+      pos = pos + 1
+      failed = true
+      aux = 0
+      Push(Kind.CharLiteral, begin)
+      return
+    }
+
+    var value = 0
+    if bytes[pos] == 92 {
+      value = LexEscape(BuilderNew())
+      if value < 0 {
+        value = 0
+      }
+    } else if bytes[pos] >= 128 {
+      const decoded = Decode(pos)
+      if decoded.length == 0 {
+        failed = true
+        pos = pos + 1
+      } else {
+        value = decoded.point
+        pos = pos + decoded.length
+      }
+    } else {
+      value = bytes[pos] as int
+      pos = pos + 1
+    }
+
+    if pos >= limit || bytes[pos] != 39 {
+      failed = true
+    } else {
+      pos = pos + 1
+    }
+    aux = value
+    Push(Kind.CharLiteral, begin)
+  }
+
+  fun LexOperator() -> bool uses unsafe {
+    const c = Peek(0)
+    const n1 = Peek(1)
+    const n2 = Peek(2)
+    if c == 40 {
+      Operator(Kind.LeftParen, 1)
+    } else if c == 41 {
+      Operator(Kind.RightParen, 1)
+    } else if c == 123 {
+      Operator(Kind.LeftBrace, 1)
+    } else if c == 125 {
+      Operator(Kind.RightBrace, 1)
+    } else if c == 91 {
+      Operator(Kind.LeftBracket, 1)
+    } else if c == 93 {
+      Operator(Kind.RightBracket, 1)
+    } else if c == 44 {
+      Operator(Kind.Comma, 1)
+    } else if c == 59 {
+      Operator(Kind.Semicolon, 1)
+    } else if c == 58 {
+      Operator(Kind.Colon, 1)
+    } else if c == 64 {
+      Operator(Kind.At, 1)
+    } else if c == 126 {
+      Operator(Kind.Tilde, 1)
+    } else if c == 46 {
+      if n1 == 46 && n2 == 61 {
+        Operator(Kind.DotDotEq, 3)
+      } else if n1 == 46 {
+        Operator(Kind.DotDot, 2)
+      } else {
+        Operator(Kind.Dot, 1)
+      }
+    } else if c == 43 {
+      if n1 == 61 {
+        Operator(Kind.PlusEq, 2)
+      } else {
+        Operator(Kind.Plus, 1)
+      }
+    } else if c == 45 {
+      if n1 == 62 {
+        Operator(Kind.Arrow, 2)
+      } else if n1 == 61 {
+        Operator(Kind.MinusEq, 2)
+      } else {
+        Operator(Kind.Minus, 1)
+      }
+    } else if c == 42 {
+      if n1 == 61 {
+        Operator(Kind.StarEq, 2)
+      } else {
+        Operator(Kind.Star, 1)
+      }
+    } else if c == 47 {
+      if n1 == 61 {
+        Operator(Kind.SlashEq, 2)
+      } else {
+        Operator(Kind.Slash, 1)
+      }
+    } else if c == 37 {
+      if n1 == 61 {
+        Operator(Kind.PercentEq, 2)
+      } else {
+        Operator(Kind.Percent, 1)
+      }
+    } else if c == 94 {
+      if n1 == 61 {
+        Operator(Kind.CaretEq, 2)
+      } else {
+        Operator(Kind.Caret, 1)
+      }
+    } else if c == 33 {
+      if n1 == 61 {
+        Operator(Kind.BangEq, 2)
+      } else {
+        Operator(Kind.Bang, 1)
+      }
+    } else if c == 61 {
+      if n1 == 61 {
+        Operator(Kind.EqEq, 2)
+      } else if n1 == 62 {
+        Operator(Kind.FatArrow, 2)
+      } else {
+        Operator(Kind.Eq, 1)
+      }
+    } else if c == 60 {
+      if n1 == 60 && n2 == 61 {
+        Operator(Kind.ShlEq, 3)
+      } else if n1 == 60 {
+        Operator(Kind.Shl, 2)
+      } else if n1 == 61 {
+        Operator(Kind.LessEq, 2)
+      } else {
+        Operator(Kind.Less, 1)
+      }
+    } else if c == 62 {
+      if n1 == 62 && n2 == 61 {
+        Operator(Kind.ShrEq, 3)
+      } else if n1 == 62 {
+        Operator(Kind.Shr, 2)
+      } else if n1 == 61 {
+        Operator(Kind.GreaterEq, 2)
+      } else {
+        Operator(Kind.Greater, 1)
+      }
+    } else if c == 38 {
+      if n1 == 38 {
+        Operator(Kind.AmpAmp, 2)
+      } else if n1 == 61 {
+        Operator(Kind.AmpEq, 2)
+      } else {
+        Operator(Kind.Amp, 1)
+      }
+    } else if c == 124 {
+      if n1 == 124 {
+        Operator(Kind.PipePipe, 2)
+      } else if n1 == 61 {
+        Operator(Kind.PipeEq, 2)
+      } else {
+        Operator(Kind.Pipe, 1)
+      }
+    } else if c == 63 {
+      if n1 == 63 && n2 == 61 {
+        Operator(Kind.QuestionQuestionEq, 3)
+      } else if n1 == 63 {
+        Operator(Kind.QuestionQuestion, 2)
+      } else if n1 == 46 {
+        Operator(Kind.QuestionDot, 2)
+      } else {
+        Operator(Kind.Question, 1)
+      }
+    } else {
+      return false
+    }
+    return true
+  }
+
+  fun Run() -> Lexed uses unsafe {
+    if pos == 0 {
+      if limit >= 3 && bytes[0] == 239 && bytes[1] == 187 && bytes[2] == 191 {
+        pos = 3
+      }
+      if Peek(0) == 35 && Peek(1) == 33 {
+        while pos < limit && bytes[pos] != 10 {
+          pos = pos + 1
+        }
+      }
+    }
+
+    loop {
+      SkipTrivia()
+      if AtEnd() {
+        break
+      }
+
+      const before = pos
+      LexToken()
+      if pos <= before {
+        pos = pos + 1
+      }
+    }
+
+    tokens.Push(Token(Kind.EndOfFile, limit, 0, pending | 1, 0))
+    return Lexed(tokens, numbers, strings)
+  }
+}
+
+offer fun LexRange(source: text, begin: int, end: int) -> Lexed uses unsafe {
+  const bytes = Bytes(source)
+  var lexer = Lexer(bytes, source, begin, 1, false, ListNew<Token>(), KeywordKinds(), ReservedWords(), end, 0, 0, false, ListNew<Number>(), ListNew<StringLit>())
+  return lexer.Run()
+}
+
+offer fun Lex(source: text) -> Lexed uses unsafe {
+  return LexRange(source, 0, Bytes(source).len)
+}
+
+offer fun DumpTokens(source: text) -> text uses unsafe {
+  const tokens = Lex(source).tokens
+  var out = BuilderNew()
+  var k = 0
+  while k < tokens.Len() {
+    const token = tokens.At(k)
+    out.Append(KindName(token.kind))
+    out.Append(" ")
+    out.Append(Int(token.offset))
+    out.Append(" ")
+    out.Append(Int(token.length))
+    out.Append(" ")
+    out.Append(Int(token.flags))
+    out.Append("\n")
+    k = k + 1
+  }
+  return out.Release()
+}
+
+fun Names(source: text) -> text uses unsafe {
+  const tokens = Lex(source).tokens
+  var out = BuilderNew()
+  var k = 0
+  while k < tokens.Len() {
+    out.Append(KindName(tokens.At(k).kind))
+    out.Append(" ")
+    k = k + 1
+  }
+  return out.Release()
+}
+
+fun FlagsOf(source: text) -> text uses unsafe {
+  const tokens = Lex(source).tokens
+  var out = BuilderNew()
+  var k = 0
+  while k < tokens.Len() {
+    out.Append(Int(tokens.At(k).flags))
+    out.Append(" ")
+    k = k + 1
+  }
+  return out.Release()
+}
+
+@Test
+fun LexesADeclaration() -> bool uses unsafe {
+  return Names("fun Add(a: int) -> int \{ return a + 1 \}") == "KwFun Identifier LeftParen Identifier Colon Identifier RightParen Arrow Identifier LeftBrace KwReturn Identifier Plus IntLiteral RightBrace EndOfFile "
+}
+
+@Test
+fun TakesTheLongestOperator() -> bool uses unsafe {
+  return Names("a ..= b >>= c ?? d ?. e ??= f .. g") == "Identifier DotDotEq Identifier ShrEq Identifier QuestionQuestion Identifier QuestionDot Identifier QuestionQuestionEq Identifier DotDot Identifier EndOfFile "
+}
+
+@Test
+fun ReadsNumbersWithSuffixesAndRanges() -> bool uses unsafe {
+  return Names("0xFF 1_000 2.5e3 10m 1..5 3e-2 0b101u8 7f32") == "IntLiteral IntLiteral FloatLiteral IntLiteral IntLiteral DotDot IntLiteral FloatLiteral IntLiteral FloatLiteral EndOfFile "
+}
+
+@Test
+fun ReadsAStringWithAnInterpolationAsOneToken() -> bool uses unsafe {
+  const source = "x = \"a \{f(\"y\")\} b\" r\"raw \{ text\" 'c' '\\n'"
+  return Names(source) == "Identifier Eq StringLiteral StringLiteral CharLiteral CharLiteral EndOfFile "
+}
+
+@Test
+fun SkipsCommentsAndKeepsDocComments() -> bool uses unsafe {
+  const source = "// plain\n/// doc\nfun /* a /* nested */ b */ x //// four\n"
+  return Names(source) == "DocComment KwFun Identifier EndOfFile "
+}
+
+@Test
+fun MarksWhereALineStartsAndWhereABlankLinePrecedes() -> bool uses unsafe {
+  return FlagsOf("a b\n\nc /* x\ny */ d\ne") == "1 0 3 0 1 1 "
+}
+
+@Test
+fun SeparatesKeywordsReservedWordsAndUnknowns() -> bool uses unsafe {
+  return Names("let var state _ $") == "Identifier KwVar Identifier Underscore Unknown EndOfFile " && FlagsOf("let var state _ $") == "5 0 0 0 4 1 "
+}
+
+@Test
+fun FlagsWhatTheCompilerReports() -> bool uses unsafe {
+  return FlagsOf("0x \"open\n1.5i32 'ab'") == "5 4 5 4 0 4 1 "
+}
+
+@Test
+fun ReadsMultiByteIdentifiersAndSkipsAShebang() -> bool uses unsafe {
+  return Names("#!/usr/bin/wolang\nπ = 1") == "Identifier Eq IntLiteral EndOfFile "
+}

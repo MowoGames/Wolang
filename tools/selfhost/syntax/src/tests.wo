@@ -1,0 +1,55 @@
+need std.fs.{ReadText}
+need std.text.{Bytes, BuilderNew, StartsWith}
+
+// Run from the repository root, as `wl wo test tools/selfhost/syntax` does.
+// Each fixture is a program and the dump `wolang ast` writes for it (D283).
+
+fun WithoutCarriageReturns(value: text) -> text uses unsafe {
+  const bytes = Bytes(value)
+  var out = BuilderNew()
+  var k = 0
+  while k < bytes.len {
+    if bytes[k] != 13 {
+      out.AppendByte(bytes[k])
+    }
+    k = k + 1
+  }
+  return out.Release()
+}
+
+fun FixtureMatches(name: text) -> bool uses io, unsafe {
+  const source = ReadText("tools/selfhost/syntax/fixtures/" + name + ".wo", 1048576)
+  const expected = ReadText("tools/selfhost/syntax/fixtures/" + name + ".ast", 1048576)
+  return DumpAst(source) == WithoutCarriageReturns(expected)
+}
+
+@Test
+fun ParsesExpressionsLikeTheCppParser() -> bool uses io, unsafe {
+  return FixtureMatches("expressions")
+}
+
+@Test
+fun ParsesDeclarationsLikeTheCppParser() -> bool uses io, unsafe {
+  return FixtureMatches("declarations")
+}
+
+@Test
+fun FormatsAFloatLikePrintfG() -> bool uses unsafe {
+  return FormatG(0.5) == "0.5" && FormatG(15.0) == "15" && FormatG(2500.0) == "2500" && FormatG(100000.0) == "100000" && FormatG(1234567.0) == "1.23457e+06" && FormatG(0.0001) == "0.0001" && FormatG(0.00001) == "1e-05" && FormatG(3.14159265) == "3.14159" && FormatG(0.0) == "0"
+}
+
+@Test
+fun WritesAnUnsignedNumberInFull() -> bool uses unsafe {
+  const most: u64 = 0xFFFFFFFFFFFFFFFFu64
+  return U64Text(0) == "0" && U64Text(1234567) == "1234567" && U64Text(most) == "18446744073709551615"
+}
+
+@Test
+fun QuotesATextTheWayTheDumpDoes() -> bool uses unsafe {
+  return Quote("a\"b\\c\nd") == "\"a\\\"b\\\\c\\nd\""
+}
+
+@Test
+fun FailsOnAnUnexpectedConstructInsteadOfGuessing() -> bool uses unsafe {
+  return StartsWith(DumpAst("fun"), "(failed")
+}

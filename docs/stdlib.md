@@ -1,6 +1,6 @@
 # The standard library
 
-Thirty-five modules, all written in Wolang over a floor of about sixty C
+Thirty-six modules, all written in Wolang over a floor of about sixty C
 calls. This is what each one is for, what it gives you, and what it does
 not. Every example here compiles.
 
@@ -41,10 +41,15 @@ promise from the caller.
 | [`std.log`](#stdlog) | Levelled logging |
 | [`std.thread`](#stdthread), [`std.tasks`](#stdtasks) | Threads, locks, and a frame's worth of parallel work |
 | [`std.mem`](#stdmem), [`std.own`](#stdown) | Storage, views and ownership |
+| [`std.arena`](#stdarena) | A bump allocator freed as one |
 | [`std.ops`](#stdops) | Operators as abilities: `Add`, `Eq`, `Ord` and the rest |
+| [`std.iter`](#stditer) | What being walked means: `Iterator` and `Iterable` |
 
-And three first-party packages beside it: [`http`](#the-http-package),
-[`db`](#the-db-package), [`gfx`](#the-gfx-package), plus `tls` and
+| [`std.save`](#stdsave) | Save games: the `@Save` fields of an object graph, written and read back |
+
+And first-party packages beside it: [`http`](#the-http-package),
+[`db`](#the-db-package), [`gfx`](#the-gfx-package),
+[`image`](#the-image-package), [`math`](#the-math-package), plus `tls` and
 `game`.
 
 ---
@@ -687,7 +692,10 @@ calls, in any module, unless the function making the call states
 `uses unsafe` (`E0147`); a function that states it stops the walk
 (D252), and `Spawn`
 takes no capturing closure at all (`E0148`); `ParallelFor`'s closure
-may capture, each thread getting a copy (D232).
+may capture, each thread getting a copy (D232). A function the caller holds
+in a variable cannot be followed, so handing one to a `@Thread` function is
+`E0163`: pass the function by name or as a closure, state `uses unsafe`, or be
+a `@Thread` function that passes on what it was given (D275).
 
 ## std.tasks
 
@@ -696,13 +704,84 @@ which is what a frame's worth of work wants. `std.tasks` is the
 cooperative side: `Run`, `Done`, `Pending` and `Join` for `spawn`ed
 tasks.
 
+It is also how code waits on a clock the caller owns (D267). `Tick(dt)`
+hands the scheduler `dt` seconds and gives every task that was ready one
+step; `Wait(seconds)` is a task that finishes when that many seconds of
+ticks have gone by, and `Yield` finishes on the next tick. Pausing is not
+ticking and slow motion is a smaller step, so a game needs no hook for its
+own time.
+
+```wolang
+need std.io.{Print}
+need std.tasks.{Done, Now, Tick, Wait}
+
+class Door {
+  var open: bool = false
+}
+
+task fun OpenLater(door: Door) {
+  wait Wait(2.0)
+  door.open = true
+}
+
+fun main() uses io, unsafe {
+  const door = Door()
+  const handle = spawn OpenLater(door)
+  var frames = 0
+  while !Done(handle) {
+    const _steps = Tick(1.0)
+    frames = frames + 1
+  }
+  Print("open after {frames} frames, {Now()} seconds: {door.open}")
+}
+```
+
+It prints `open after 3 frames, 3 seconds: true`: the task begins in the first
+frame, so its two seconds end with the third. An event is a flag the task
+looks at, `while !event.raised { wait Yield() }`, which keeps the waiting in
+the module that knows what the event means; `Event` is that flag, with
+`Raise` and `Clear`. A host ticks a vm with `wolang_vm_tick`.
+
 ## std.mem
 
 `ArrayNew`, `Free`, `Prefix`, `PrefixMut`, `Suffix`, `BytesFromRaw`,
-`ViewFromRaw`, `SizeOf`, `SoaNew`. Storage and views; the language's arrays
-and lists are built on these. What allocates or views raw storage answers
-`[]mut T`; `Prefix` and `Suffix` take and answer a read-only `[]T`, and
-`PrefixMut` the writable one (D251).
+`ViewFromRaw`, `SizeOf`, `SoaNew`, `Copy`. Storage and views; the language's
+arrays and lists are built on these. What allocates or views raw storage
+answers `[]mut T`; `Prefix` and `Suffix` take and answer a read-only `[]T`,
+and `PrefixMut` the writable one (D251). `Copy(to, at, from, count)` is one
+call that moves `count` bytes into `to` from offset `at`, where a loop would
+make one call per byte (D284); `Builder` appends with it.
+
+## std.arena
+
+`Arena` and `ArenaNew(chunk_size)`: runs of bytes handed out in order from
+big chunks, freed together (D285). The language's `arena { }` block does that
+for one block; this is for a phase that spans many calls, such as the syntax
+tree of a compiler.
+
+- `pool.Take(count)` answers a `[]mut u8` of `count` bytes, aligned to eight
+  from the last run. A run bigger than a chunk gets a chunk of its own.
+- `pool.Reset()` hands the same storage out again from the start. Every view
+  taken before is dead, and the bytes are not cleared.
+- `pool.Capacity()` is how many bytes the arena holds, used or not.
+
+A run never moves, so a view of it stays valid until `Reset` or until the
+arena itself goes. Dropping the arena gives every chunk back.
+
+```wolang
+need std.arena.{ArenaNew}
+need std.io.{Print}
+
+fun main() uses io, unsafe {
+  var pool = ArenaNew(4096)
+  var name = pool.Take(16)
+  name[0] = 87
+  var scratch = pool.Take(64)
+  scratch[0] = 1
+  Print("{pool.Capacity()} bytes held")
+  pool.Reset()
+}
+```
 
 ## std.own
 
@@ -744,6 +823,50 @@ fun main() uses io {
 Numbers, `bool`, `char` and `text` have the operators they were always
 given, so `Max(3, 9)` is a compare and not a call. `Hash` is not an
 operator: it is the number `std.map` files a key under.
+
+## std.save
+
+`Save(object)` writes the fields marked `@Save` of an object and of every
+object they reach; `Load<T>(bytes)` builds them again, or answers `Corrupt`.
+A field is written by name with a code for its type, so a program that gained
+or lost a field since the save still reads it: a field the bytes have and the
+class lacks is dropped, and one the class has and the bytes lack stays zero.
+An object is written once however many fields point at it, so a shared
+reference stays shared and a cycle comes back as a cycle (D266).
+
+```wolang
+need std.io.{Print}
+need std.mem.{Free}
+need std.save.{Corrupt, Load, Save}
+
+class Hero {
+  @Save
+  var level: int = 1
+  @Save
+  var name: text = ""
+  var scratch: int = 0
+}
+
+fun main() uses io, unsafe {
+  const hero = Hero()
+  hero.level = 7
+  hero.name = "Ada"
+  hero.scratch = 99
+  const bytes = Save(hero)
+  const back = match Load<Hero>(bytes) {
+    Ok(found) => found,
+    Corrupt => Hero(),
+  }
+  Free(bytes)
+  Print("{back.name} {back.level} {back.scratch}")
+}
+```
+
+It prints `Ada 7 0`: `scratch` was not marked. What a marked field may hold
+is numbers, `bool`, `char`, `text`, enums that carry nothing, structs, classes
+without a virtual method, and an optional of any of those; a struct is saved
+whole unless it marks fields of its own. Anything else is `E0176`. An object
+is written as its declared class. `Save` gives back storage for `Free`.
 
 ## The `http` package
 
@@ -929,6 +1052,344 @@ fun main() uses io, unsafe {
 | `Rotate(v)`, `Conjugate()`, `Slerp(other, t)`, `ToMat3()`, `ToMat4()` | `Quat`; `Slerp` takes the short way round |
 
 There is no general matrix inverse and no projection matrix yet.
+
+## The `font` package
+
+TrueType fonts, read and drawn in Wolang (D276). `FontLoad(bytes)` parses a
+`.ttf` (or an OpenType file whose outlines are TrueType); `Rasterize` turns one
+glyph into an anti-aliased coverage bitmap; `LayoutText` places a string with
+advances, kerning and word wrapping; `Atlas` packs glyph bitmaps into one
+texture for a renderer. Everything is computation over bytes, so all of it runs
+and is tested with no window and no device.
+
+The reader treats the file as hostile. Every table, offset and count is checked
+against the bytes that are there, a glyph is capped in points and components,
+and the way out of a bad file is an error, never a trap: `Malformed` for bytes
+that are not a font, `Unsupported` for an OpenType file with CFF outlines
+(`OTTO`), `TooLarge` for a file over `kMaxFontBytes` (64 MiB) or a glyph over
+`kMaxBitmapSide` pixels, and `BadSize` for a text size that is not positive.
+Glyph positions come from the `hmtx` and `cmap` tables (formats 4 and 12) and
+pairs from the `kern` table; `GPOS` kerning and hinting are not read.
+
+`SampleFont()` is a small built-in font (letters in one case, digits, and the
+usual punctuation, drawn on a 5 by 7 grid), so a program can put text on screen
+with no font file. `FontLoadFile(path)` reads one from disk, and
+`SystemFontFile(name)` looks for `name.ttf` in the places each system keeps
+fonts and answers `null` when there is none; `Available()` says whether it found
+a common system font at all.
+
+```wolang
+need font.{LayoutText, Measure, SampleFont}
+need std.io.{Print}
+
+fun main() uses io, unsafe {
+  match SampleFont() {
+    Ok(font) => {
+      const width = Measure(font, "HELLO", 16.0)
+      Print("{width}")
+      const layout = LayoutText(font, "HELLO WORLD", 16.0, 60.0)
+      Print("{layout.lines}")
+    },
+    _ => Print("no font"),
+  }
+}
+```
+
+| Function | What |
+|---|---|
+| `FontLoad(bytes)`, `FontLoadFile(path)`, `SampleFont()` | a `Font`, or `Malformed`, `TooLarge`, `Unsupported` (and `Missing` for a path) |
+| `UnitsPerEm()`, `Ascent()`, `Descent()`, `LineGap()`, `GlyphCount()` | on `Font`, in font units |
+| `GlyphIndex(code)` | the glyph for a code point; 0 (the missing glyph) when there is none |
+| `Advance(glyph)`, `LeftBearing(glyph)`, `Kerning(left, right)` | in font units; `Scale(size)` is pixels per unit |
+| `GlyphOutline(glyph)` | the contours as points, composites resolved |
+| `Rasterize(font, glyph, size)` | a `Glyph`: `coverage` bytes, `width`, `height`, `left`, `top`, `advance` |
+| `Glyph.At(x, y)`, `Glyph.Total()`, `Glyph.ToImage(r, g, b)` | one coverage byte; the sum; an `image.Image` with the coverage as alpha |
+| `LayoutText(font, text, size, wrap)` | a `Layout` of `Placement`s; `wrap` of 0 or less does not wrap |
+| `Measure(font, text, size)`, `LineHeight(font, size)` | the width of the widest line; the distance between baselines |
+| `DrawText(image, font, text, size, x, y, colour)`, `DrawGlyph` | blend text into an `image.Image` in software |
+| `AtlasNew(width, height)`, `Atlas.Get(font, glyph, size)` | a shelf-packed coverage bitmap; a `Slot` per glyph and size, `null` when full |
+
+## The `audio` package
+
+Sound in memory, mixed in Wolang, played through `gfx` when there is a device
+(D279). A `Clip` is interleaved `f32` samples with a rate and a channel count.
+`WavDecode` reads 8, 16, 24 and 32-bit PCM and 32-bit float, mono or any
+channel count up to eight, and `WavEncode` writes 8, 16 or 24-bit PCM. A file
+whose data chunk is cut short keeps the frames that are there; a length that
+runs past the end, an unknown format or a size over `kMaxSamples` is an error,
+never a trap. `Resample` converts a clip to another rate by linear
+interpolation and `Remix` turns it into mono or stereo.
+
+A `Mixer` has a rate, one or two output channels, voices and buses. `Play`
+starts a clip with a volume, a pan from -1 (left) to 1 (right) and a loop flag
+and answers an id; `SetVolume`, `SetPan`, `SetPitch`, `SetBus` and `Stop` take
+that id and ignore one that is gone. A mono clip is panned with equal power, a
+stereo clip by balance. A bus is a gain shared by the voices on it, and bus 0
+exists from the start; the master gain applies to everything. `Render` fills
+a buffer with the sum of all voices, clamped to -1 to 1, and drops the voices
+that ended. It touches no device, so a test compares its output buffer.
+
+`OutputOpen` pairs a mixer with the default device. `Pump` renders as many
+frames as the device has room for and queues them; call it once per frame.
+With no device `IsOpen` is false and `Pump` does nothing, so one program runs
+on a server and on a desktop. `DeviceAvailable` says which it is.
+
+`OggVorbisInfo` reads an Ogg Vorbis file's headers: channels, sample rate,
+nominal bitrate, length in frames and the comments (`Comment("title")` ignores
+case). It checks every page's checksum. It does not decode the audio:
+a decoder needs a reference stream to be trusted, and none could be checked
+here, so decoding Vorbis waits for one (D279).
+
+```wolang
+need audio.{ClipNew, MixerNew, WavDecode, WavEncode}
+need std.io.{Print}
+need std.mem.{ArrayNew}
+
+fun Demo() -> int! uses io, unsafe {
+  var tone = ClipNew(100, 1, 100)?
+  var i = 0
+  while i < 100 {
+    tone.Set(i, 0, 0.5)
+    i = i + 1
+  }
+
+  var mixer = MixerNew(100, 2)?
+  const voice = mixer.Play(tone, 1.0, -1.0, false)
+  var out = ArrayNew<f32>(4)
+  mixer.Render(out)
+  Print("{out[0]} {out[1]} {mixer.IsPlaying(voice)}")
+
+  const wav = WavEncode(tone, 16)?
+  const back = WavDecode(wav)?
+  Print("{back.Frames()} frames at {back.rate} Hz")
+
+  return 0
+}
+
+fun main() uses io, unsafe {
+  match Demo() {
+    Ok(_) => {},
+    _ => {
+      Print("failed")
+    },
+  }
+}
+```
+
+| Function | What |
+|---|---|
+| `ClipNew(frames, channels, rate)` | a silent clip; `Get(frame, channel)`, `Set(...)`, `Frames()`, `Seconds()` |
+| `WavDecode(bytes)`, `WavEncode(clip, bits)` | `Malformed`, `Unsupported`, `TooLarge` |
+| `Resample(clip, rate)`, `Remix(clip, channels)` | a new clip |
+| `MixerNew(rate, channels)` | `Play`, `Stop`, `StopAll`, `IsPlaying`, `SetVolume`, `SetPan`, `SetPitch`, `SetBus`, `BusNew`, `SetBusGain`, `BusGain`, `SetMaster`, `Voices`, `Render` |
+| `OutputOpen(rate, channels)`, `DeviceAvailable()` | `IsOpen`, `Pump`, `Close` |
+| `OggVorbisInfo(bytes)` | `channels`, `rate`, `bitrate`, `frames`, `vendor`, `Comment(key)`, `Seconds()` |
+
+## The `ui` package
+
+An immediate-mode toolkit (D277): the program describes the interface again on
+every frame, and each widget call answers what happened to it. There is no
+widget tree to keep in step with the program's state and no callbacks; a button
+is `if ui.Button("Play") { ... }`. What a frame produces is a **draw list**, a
+list of `DrawCommand`s (a filled rectangle or a run of text, each with a
+position and a colour). The list is data, so layout and hit testing are tested
+with no window, and any renderer can draw it. `Render(image, ui)` draws it in
+software into an `image.Image`, which is how the tests check a frame against a
+stored picture, and how a program with no GPU gets its interface.
+
+A frame runs `Begin`, the widgets, then `End`. `Place(x, y, width)` or
+`Panel(x, y, width, height)` says where the next widgets go; each takes one row
+below the last. Input comes from `ui.input`: `input.Feed(event)` takes a `gfx`
+event as it is, and `MoveTo`, `Press`, `Release`, `Type` and `Key` set the same
+state by hand. A widget's identity is the order it is called in, so call the
+same widgets in the same order each frame; `Panel`, `Label` and `Spacer` take no
+part in it.
+
+```wolang
+need font.{SampleFont}
+need image.{ImageNew}
+need std.io.{Print}
+need ui.{Render, StyleDefault, UiNew}
+
+fun main() uses io, unsafe {
+  match SampleFont() {
+    Ok(font) => {
+      const ui = UiNew(font, StyleDefault())
+      ui.Begin()
+      ui.Place(4, 4, 80)
+      ui.Label("SCORE 7")
+      const pressed = ui.Button("RESET")
+      ui.End()
+      Print("{ui.commands.Len()} {pressed}")
+      match ImageNew(96, 80) {
+        Ok(picture) => {
+          Render(picture, ui)
+          Print("{picture.width}")
+        },
+        _ => Print("no image"),
+      }
+    },
+    _ => Print("no font"),
+  }
+}
+```
+
+| Function | What |
+|---|---|
+| `UiNew(font, style)`, `StyleDefault()` | a context, and the default colours, sizes and spacing |
+| `Begin()`, `End()` | start a frame (clears the draw list), and finish it (clears the one-frame input) |
+| `Place(x, y, width)`, `Panel(x, y, w, h)`, `Spacer(pixels)` | where the next row goes; a background plus a `Place` inside it |
+| `Label(text)` | a line of text |
+| `Button(text)` | `true` on the frame the mouse is released over a button it was pressed on |
+| `Checkbox(text, value)` | the value after this frame: it flips when clicked |
+| `Slider(value, low, high)` | the value after this frame: it follows the mouse while held, clamped to the range |
+| `TextField(edit)` | `true` when the text changed; `TextEdit` keeps the text and the cursor (`TextEditNew`, `Value`, `Insert`, `Backspace`, `Delete`, `Left`, `Right`) |
+| `ListBox(items, selected)` | the selected row after this frame |
+| `Render(image, ui)`, `FillRect(...)` | draw the list into an image, blending colours with alpha |
+
+Text is measured and drawn with a `font` (D276). The labels of a frame are kept
+in one builder that the context owns, and each command points into it, so a
+label can be built on the spot (`"score {n}"`).
+
+## The `gpu` package
+
+A thin, typed layer over the GPU, with the backend left open (D280). Buffers,
+vertex layouts, programs, textures, render targets, state and draw calls are
+methods of a `Device`, which holds a `Backend`. There are two backends in the
+box: `OpenGlStart(window)` is OpenGL 3.3 core over the context a `gfx` window
+opened with `kGl` (or null, when there is none), and `NullNew()` runs
+everywhere. The null backend draws nothing; it records every call as a line of
+text, hands out ids, counts misuse (a draw with no program, a deleted buffer
+used again, a texture with no size) and compiles a shader as far as checking
+it has a `main`. That is what the tests of this package and of programs
+written on it run against, on a machine with no display. A second backend,
+Metal or Vulkan, is another `extend T as Backend`; callers do not change.
+
+Handles are small structs (`Buffer`, `Layout`, `Program`, `Texture`, `Target`),
+and nothing frees itself: delete what you made. Vertex data is `f32`, indices
+are `u32`, and a layout is built from attributes of floats (`stride` and
+`offset` count floats, not bytes). `ProgramNew` returns `Program!(CompileFailed)`
+and the error carries the compiler's log (D235). A source with no `#version`
+line gets `#version 330 core` put in front; `kSpriteVertex`, `kSpriteFragment`
+and `kSolidFragment` are ready-made 2D shaders (position, uv, colour, one
+`u_view` matrix and one `u_texture`). Set uniforms after `ProgramUse`.
+
+```wolang
+need gpu.{CompileFailed, DeviceNew, NullNew, kSolidFragment, kSpriteVertex, kTriangles}
+need std.io.{Print}
+need std.mem.{ArrayNew, Free}
+
+fun main() uses io, unsafe {
+  var backend = NullNew()
+  var device = DeviceNew(backend)
+  var corners = ArrayNew<f32>(6)
+  corners[0] = 0.0
+  corners[1] = 0.0
+  corners[2] = 1.0
+  corners[3] = 0.0
+  corners[4] = 0.0
+  corners[5] = 1.0
+
+  const buffer = device.VertexBuffer(corners, false)
+  const layout = device.LayoutNew()
+  device.LayoutAttribute(layout, buffer, 0, 2, 2, 0)
+  match device.ProgramNew(kSpriteVertex, kSolidFragment) {
+    Ok(program) => {
+      device.ProgramUse(program)
+      device.Draw(layout, kTriangles, 0, 3)
+      Print("{backend.log.Len()} calls, {device.Error()} errors")
+    },
+    CompileFailed(log) => {
+      Print(log)
+    },
+    _ => {},
+  }
+  Free(corners)
+}
+```
+
+| Function | What |
+|---|---|
+| `DeviceNew(backend)` | `Name`, `Error` |
+| `VertexBuffer(data, dynamic)`, `IndexBuffer(data, dynamic)`, `BufferDelete(b)` | `Buffer` |
+| `LayoutNew()`, `LayoutAttribute(layout, buffer, index, count, stride, offset)`, `LayoutIndices(layout, buffer)`, `LayoutDelete(l)` | what feeds a draw |
+| `ProgramNew(vertex, fragment)`, `ProgramUse(p)`, `Uniform(p, name)`, `ProgramDelete(p)` | `CompileFailed(log)` on failure; `Uniform` is -1 for a name the shader lacks |
+| `SetFloat`, `SetVec2`, `SetVec3`, `SetVec4`, `SetInt`, `SetMatrix(location, 16 floats)` | uniforms of the program in use |
+| `TextureNew(width, height, rgba, linear, repeat)`, `TextureUpdate(...)`, `TextureBind(unit, t)`, `TextureDelete(t)` | RGBA8 |
+| `TargetNew(texture)`, `Begin(target, width, height, r, g, b, a, clear_depth)`, `End()`, `TargetDelete(t)` | `null` for the window; `Begin` sets the viewport and clears |
+| `Blend`, `Depth`, `Cull`, `Scissor` | state |
+| `Draw(layout, mode, first, count)`, `DrawIndexed(layout, mode, count, first)`, `Read(x, y, w, h)` | `kTriangles`, `kLines`, `kPoints`, `kTriangleStrip`, `kTriangleFan`, `kLineStrip` |
+
+The OpenGL backend is checked by tests only as far as "answers null with no
+window": the project's CI has no GL context on every platform, so a drawing
+program is run by hand with `examples/` before release.
+
+## The `app` package
+
+The loop that ties a window, a GPU device, sound and a clock together (D281).
+`ConfigNew(title, width, height)` makes a `Config`; `ConfigParse(text, base)`
+overlays an ini file on it (`[window]` title, width, height, resizable,
+vsync, gl; `[loop]` step, max_frame; `[audio]` rate, enabled), clamping what
+is absurd and keeping the default for what is missing or unreadable.
+`ConfigDirectory(name)` and `ConfigPath(name)` give the per-user place a
+program keeps its settings: `%APPDATA%` on Windows, `Library/Application
+Support` on macOS and `$XDG_CONFIG_HOME` or `~/.config` elsewhere.
+
+A game says what it does by having the `Game` ability: `Update(dt)` runs at a
+fixed step, `Draw(alpha)` once per frame with the fraction of a step left
+over, and `OnEvent(event)` answers whether to go on. The `Clock` turns frame
+times into steps: it clamps a long frame to `max_frame`, never owes more than
+eight steps in one frame (a stall does not turn into a spiral) and, with a
+step of zero, runs one variable step per frame. `AppNew(config)` opens the
+window (with a GL context when asked), picks the OpenGL backend when it is
+there and the null one when it is not, opens sound with a mixer that works
+whether or not a device does, and returns the `App`. `Run(game)` is the
+interactive loop; `RunFrames(game, count, frame_time)` runs the same
+update/draw/sound sequence with a time you give it and no window, which is
+how a server, a replay or a test runs a game.
+
+```wolang
+need app.{AppNew, ConfigNew, Game}
+need gfx.{Event}
+need std.io.{Print}
+
+class Spinner {
+  var turns: int = 0
+  var drawn: int = 0
+}
+
+extend Spinner as Game {
+  fun Update(dt: float) uses unsafe {
+    turns = turns + 1
+  }
+
+  fun Draw(alpha: float) uses unsafe {
+    drawn = drawn + 1
+  }
+
+  fun OnEvent(event: Event) -> bool uses unsafe {
+    return true
+  }
+}
+
+fun main() uses io, unsafe {
+  var config = ConfigNew("demo", 320, 200)
+  config.gl = false
+  config.sound = false
+  config.hidden = true
+  match AppNew(config) {
+    Ok(app) => {
+      var spinner = Spinner()
+      const frames = app.RunFrames(spinner, 60, 0.016666667)
+      Print("{frames} frames, {spinner.drawn} drawn")
+      app.Close()
+    },
+    _ => {
+      Print("no app")
+    },
+  }
+}
+```
 
 ## How this compares
 

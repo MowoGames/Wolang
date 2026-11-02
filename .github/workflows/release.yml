@@ -243,6 +243,44 @@ jobs:
           path: "build/*.msi"
 
   # The editor extension, which needs no compiler to build (D175).
+  # What `wolang build` links against on a Linux machine with no C compiler:
+  # musl, libc++ built for it, LLVM's linker and the runtime compiled against
+  # them, built in Alpine because Alpine is musl (D272). Unpacked into
+  # `lib/wolang/sysroot` of an installed compiler, or named by WOLANG_SYSROOT.
+  sysroot:
+    name: wolang-sysroot-${{ matrix.arch }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-24.04
+          - arch: arm64
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the sysroot in Alpine
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.22 \
+            sh tools/package/make_sysroot.sh build/sysroot
+          sudo chown -R "$USER" build/sysroot
+      - name: Pack
+        run: |
+          out="wolang-sysroot-linux-${{ matrix.arch }}"
+          mkdir -p "$out"
+          cp -R build/sysroot/. "$out/"
+          tar -czf "$out.tar.gz" "$out"
+          sha256sum "$out.tar.gz" > "$out.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wolang-sysroot-${{ matrix.arch }}
+          path: |
+            wolang-sysroot-linux-${{ matrix.arch }}.tar.gz
+            wolang-sysroot-linux-${{ matrix.arch }}.tar.gz.sha256
+
   extension:
     needs: check
     runs-on: ubuntu-24.04
@@ -255,7 +293,7 @@ jobs:
           path: "*.vsix"
 
   publish:
-    needs: [artifacts, extension, msi]
+    needs: [artifacts, extension, msi, sysroot]
     runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -349,7 +387,7 @@ jobs:
   # Secrets DISCORD_WEBHOOK_URL and TELEGRAM_BOT_TOKEN; without them nothing is sent, and a
   # message that cannot be sent never fails the job (.github/notify.sh).
   notify:
-    needs: [artifacts, msi, extension, publish, smoke]
+    needs: [artifacts, msi, extension, sysroot, publish, smoke]
     if: always() && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     # actions: read lets notify.sh list the run's jobs with their results and links

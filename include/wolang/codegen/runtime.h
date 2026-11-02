@@ -33,6 +33,10 @@ struct Context {
   // nothing promises the host is that close. The last argument is the frame
   // pointer at the trap, which is what makes the stack walkable.
   void (*report)(Context*, uint32_t, uint32_t, uint64_t) = nullptr;
+  // Ticks left before a host's budget is used up: generated code takes one at
+  // each function entry and each jump back to an earlier block, and traps when
+  // it goes below zero. Only code compiled with a budget looks at it (D265).
+  int64_t budget = INT64_MAX;
 
   // Where the code is, so that a walk knows which return addresses belong
   // to it and where to stop.
@@ -47,11 +51,13 @@ constexpr uint32_t kContextTrapKindOffset = 0;
 constexpr uint32_t kContextTrapSiteOffset = 4;
 constexpr uint32_t kContextLandingOffset = 8;
 constexpr uint32_t kContextReportOffset = 16;
+constexpr uint32_t kContextBudgetOffset = 24;
 
 static_assert(offsetof(Context, trap_kind) == kContextTrapKindOffset);
 static_assert(offsetof(Context, trap_site) == kContextTrapSiteOffset);
 static_assert(offsetof(Context, landing) == kContextLandingOffset);
 static_assert(offsetof(Context, report) == kContextReportOffset);
+static_assert(offsetof(Context, budget) == kContextBudgetOffset);
 
 // Records the trap, walks the frame chain, and leaves through
 // |context->landing|. Never returns.

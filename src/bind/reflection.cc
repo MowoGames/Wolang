@@ -191,20 +191,42 @@ class Generator {
     for (const std::string& include : includes) {
       glue += "#include \"" + include + "\"\n";
     }
-    glue += "\n#include <cstdint>\n#include <string>\n\n#include \"wolang/embed/wolang.h\"\n\n";
+    glue += "\n#include <cstddef>\n#include <cstdint>\n#include <string>\n\n#include \"wolang/embed/wolang.h\"\n\n";
+    std::string expectations = "\twolang_vm_expect_abi(vm, WOLANG_ABI_VERSION);\n";
     for (const ValueType* type : used) {
       glue += "struct Wolang" + type->name + " {\n";
       for (const ValueField& field : type->fields) {
         glue += "\t" + field.c + " " + field.name + ";\n";
       }
       glue += "};\n\n";
+      glue += "static const uint32_t kMowoLayout_" + type->name + "[] = {sizeof(Wolang" + type->name + "), alignof(Wolang" + type->name + ")";
+      for (const ValueField& field : type->fields) {
+        glue += ", offsetof(Wolang" + type->name + ", " + field.name + ")";
+      }
+      glue += "};\n\n";
+      expectations += "\twolang_vm_expect_struct(vm, \"" + type->name + "\", kMowoLayout_" + type->name + ", " + std::to_string(type->fields.size() + 2) + ");\n";
     }
     glue += "extern \"C\" uint32_t MowoWolangPropertyOffset(const char* className, const char* key);\n";
     glue += "extern \"C\" void MowoWolangRetain(void* object, void* user);\n";
     glue += "extern \"C\" void MowoWolangRelease(void* object, void* user);\n";
-    glue += "extern \"C\" int32_t MowoWolangAlive(void* object, void* user);\n\n";
+    glue += "extern \"C\" int32_t MowoWolangAlive(void* object, void* user);\n";
+    if (m_Options.use_tokens) {
+      glue += "extern \"C\" uint64_t MowoWolangToken(void* object, void* user);\n\n";
+      glue += "static void MowoWolangRegister(WolangVm* vm, const char* name) {\n";
+      glue += "\tWolangHostClass host;\n";
+      glue += "\thost.size = sizeof(host);\n";
+      glue += "\thost.name = name;\n";
+      glue += "\thost.retain = &MowoWolangRetain;\n";
+      glue += "\thost.release = &MowoWolangRelease;\n";
+      glue += "\thost.alive = &MowoWolangAlive;\n";
+      glue += "\thost.token = &MowoWolangToken;\n";
+      glue += "\thost.user = nullptr;\n";
+      glue += "\twolang_vm_register_class_ex(vm, &host);\n";
+      glue += "}\n";
+    }
+    glue += "\n";
     glue += "namespace Mowo {\n\n" + m_Glue + "}\n\n";
-    glue += "extern \"C\" void MowoWolang_Bind_" + m_Options.module + "(WolangVm* vm) {\n" + m_Registrations + "}\n";
+    glue += "extern \"C\" void MowoWolang_Bind_" + m_Options.module + "(WolangVm* vm) {\n" + expectations + m_Registrations + "}\n";
   }
 
  private:
@@ -465,7 +487,12 @@ class Generator {
     const bool derived = m_Known.count(info.base) != 0;
     m_Declarations += "offer extern class " + info.name + (derived ? ": " + info.base : "") + " {\n";
     std::string extension;
-    m_Registrations += "\twolang_vm_register_class(vm, \"" + info.name + "\", &MowoWolangRetain, &MowoWolangRelease, &MowoWolangAlive, nullptr);\n";
+    if (m_Options.use_tokens) {
+      m_Registrations += "\tMowoWolangRegister(vm, \"" + info.name + "\");\n";
+    }
+    else {
+      m_Registrations += "\twolang_vm_register_class(vm, \"" + info.name + "\", &MowoWolangRetain, &MowoWolangRelease, &MowoWolangAlive, nullptr);\n";
+    }
 
     std::set<std::string> names;
     const Json& functions = (*info.type)["functions"];

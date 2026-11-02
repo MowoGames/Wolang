@@ -495,7 +495,9 @@ match Load(p) {
 A `match` over a stated set must name every error in it, or have a `_` arm
 (`E0201`). A `match` over a bare `T!` must have a `_` arm, because the errors it
 may hold are not written anywhere. An offered function states its set
-(`E0150`): a caller in another module cannot read the body.
+(`E0150`): a caller in another module cannot read the body. An arm that
+names something that is not an error in scope, such as an error that was never
+imported with `need`, is `E0166` at the arm, not a missing arm (D275).
 
 An error may carry data: `error Malformed(line: int, column: int)`. It is built
 with its arguments, `return Malformed(3, 14)`, and a `match` arm binds them,
@@ -605,6 +607,37 @@ const v = Vec3(1.0, 2.0, 3.0)
 const zero = Vec3()
 const bad = Vec3(1.0)          // E0102: Vec3 has 3 fields, found 1 argument
 ```
+
+### 4.4a Saved and replicated members
+
+`@Save` marks a stored field of a class or a struct as one `std.save` writes
+and reads back (D266). Elsewhere it is `E0175`. The field's type must be one
+the format can hold: a number, `bool`, `char`, `text`, an enum whose variants
+carry nothing, a struct, a class without a virtual method, or an optional of
+those; anything else is `E0176`. A struct reached through a saved field is
+saved whole, unless it marks fields of its own.
+
+```wolang
+class Hero {
+  @Save
+  var level: int = 1
+  @Save
+  var friend: Hero? = null    // a reference: written once, restored shared
+  var scratch: int = 0        // not marked, not saved
+}
+```
+
+`@Replicated` on a stored field of a script class, and `@Server`, `@Client`
+and `@Multicast` on its methods, say what the host should send where (D268).
+Wolang does no networking: the checker validates the declaration and the
+reflection API reports it, and the host maps it to its own policy. A
+replicated field and every parameter of an RPC must be a type a host can read
+bytes of -- the saveable types, except that an object reference means nothing
+on the other side -- and an RPC returns nothing (`E0179`). `@Replicated(owner)`
+asks that only the owning connection receives the field; `@Server`,
+`@Client` and `@Multicast` take `owner`, `reliable` or `unreliable`. An
+attribute on a member of a struct, on a free function, on the wrong kind of
+member, two on one member, or an argument they do not take is `E0178`.
 
 ### 4.5 Generics
 
@@ -861,6 +894,16 @@ Coroutines are stackless and scheduled by the host's tick groups or by the
 runtime's own scheduler. A spawned task runs to its end: nothing cancels
 it when the scope that started it exits. Stopping one early is a flag it
 reads (D243).
+
+A task can wait on the caller's clock (D267). `std.tasks.Tick(dt)` gives
+every ready task one step with `dt` seconds added to the clock;
+`wait Wait(2.0)` finishes when two seconds of ticks have gone by and
+`wait Yield()` on the next tick. A wait counts from the tick it begins in. The
+clock is the caller's: pausing is not ticking and slow motion is a smaller
+`dt`, so there is no `routine` to learn beside `task`. `Wait`, like `Yield`,
+has no body and the compiler writes its machine, so it can be waited on from
+any module. A host ticks a vm with `wolang_vm_tick`, and each vm has its own
+tasks and clock.
 
 ## 9. State machines — draft
 

@@ -129,11 +129,11 @@ static void FakeRelease(void* object, void* user) {
   *static_cast<int32_t*>(user) += 1;
 }
 
-static int32_t FakeAlive(void* object, void* user) {
+static int32_t FakeAlive(void* object, void*) {
   return static_cast<FakeActor*>(object)->Alive ? 1 : 0;
 }
 
-static uint64_t FakeToken(void* object, void* user) {
+static uint64_t FakeToken(void* object, void*) {
   return static_cast<FakeActor*>(object)->Serial;
 }
 
@@ -612,6 +612,83 @@ offer fun Level() -> text {
   std::filesystem::remove(path);
 }
 
+WOLANG_TEST(EmbedTest, AReloadCarriesAWeakFieldWithoutReleasingItStrongly) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_weak_carry_test.wo";
+  WriteFile(path, R"(
+var drops: int = 0
+
+class Node {
+  var n: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+class Tracker {
+  weak var seen: Node? = null
+}
+
+var root: Node = Node(7)
+var tracker: Tracker = Tracker(root)
+
+offer fun Drops() -> int {
+  return drops
+}
+
+offer fun Seen() -> int {
+  if const node = tracker.seen {
+    return node.n
+  }
+  return -1
+}
+)");
+
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Seen", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 7);
+
+  WriteFile(path, R"(
+var drops: int = 0
+
+class Node {
+  var n: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+class Tracker {
+  weak var seen: Node? = null
+  var extra: int
+}
+
+var root: Node = Node(7)
+var tracker: Tracker = Tracker(root, 3)
+
+offer fun Drops() -> int {
+  return drops
+}
+
+offer fun Seen() -> int {
+  if const node = tracker.seen {
+    return node.n
+  }
+  return -1
+}
+)");
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Seen", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 7);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Drops", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 1);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
 WOLANG_TEST(EmbedTest, EachVmHasItsOwnGlobals) {
   WolangVm* first = wolang_vm_create();
   WolangVm* second = wolang_vm_create();
@@ -840,6 +917,55 @@ offer fun Grab() -> int {
   WOLANG_EXPECT(wolang_vm_load_mod(grabbing, prim.string().c_str(), "io") != 0);
   wolang_vm_destroy(grabbing);
   std::filesystem::remove_all(prim);
+}
+
+WOLANG_TEST(EmbedTest, AModNeverReachesTheNetworkOrAProcessWhateverTheHostGrants) {
+  const std::string std_path = std::string(WOLANG_PROJECT_DIR) + "/lib/std";
+  const std::string dependency = "\n[dependencies]\nstd = { path = \"" + std_path + "\" }\n";
+
+  const std::filesystem::path dialing = WritePackage("moddial", dependency.c_str(), R"(
+need std.net
+
+offer fun Dial() -> int uses net, unsafe {
+  const socket = net.Connect("127.0.0.1", 9)
+  return 0
+}
+)");
+  const std::filesystem::path spawning = WritePackage("modspawn", dependency.c_str(), R"(
+need std.process
+
+offer fun Launch() -> int uses io, unsafe {
+  return process.Run("echo hello")
+}
+)");
+
+  const char* const grants[] = {"io", "io, net", "io, net, unsafe", "unsafe"};
+  std::string observed;
+  for (const char* grant : grants) {
+    for (const std::filesystem::path& root : {dialing, spawning}) {
+      WolangVm* vm = wolang_vm_create();
+      const bool refused = wolang_vm_load_mod(vm, root.string().c_str(), grant) != 0;
+      const bool says_unsafe = std::string(wolang_vm_errors(vm)).find("unsafe") != std::string::npos;
+      observed += std::string(grant) + " " + root.filename().string() + (refused ? " refused" : " LOADED") + (says_unsafe ? " (unsafe)" : "") + "\n";
+      wolang_vm_destroy(vm);
+    }
+  }
+  WOLANG_EXPECT_EQ(observed, std::string("io wolang_moddial refused (unsafe)\nio wolang_modspawn refused (unsafe)\nio, net wolang_moddial refused (unsafe)\nio, net wolang_modspawn refused (unsafe)\nio, net, unsafe wolang_moddial refused (unsafe)\nio, net, unsafe wolang_modspawn refused (unsafe)\nunsafe wolang_moddial refused (unsafe)\nunsafe wolang_modspawn refused (unsafe)\n"));
+
+  const std::filesystem::path plain = WritePackage("modplain", dependency.c_str(), R"(
+need std.fs
+
+offer fun Peek() -> int uses io {
+  return fs.SizeOf("wolang.toml") as int
+}
+)");
+  WolangVm* fine = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_mod(fine, plain.string().c_str(), "io"), 0);
+  wolang_vm_destroy(fine);
+
+  for (const std::filesystem::path& root : {dialing, spawning, plain}) {
+    std::filesystem::remove_all(root);
+  }
 }
 
 WOLANG_TEST(EmbedTest, ASandboxedModCannotHideAnExternInsideAType) {
@@ -1163,6 +1289,234 @@ offer fun Hp(pawn: Actor?) -> int uses unsafe {
 WOLANG_TEST(EmbedTest, AnOptionalHostObjectIsPresentOrAbsent) {
   CheckAnOptionalHostParameter(true);
   CheckAnOptionalHostParameter(false);
+}
+
+static void CollectReport(void* user, const char* bytes, uint64_t length) {
+  static_cast<std::string*>(user)->append(bytes, static_cast<size_t>(length));
+}
+
+static void CheckATrapCarriesItsPlaceAndStack(bool compiled) {
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_compiled(vm, compiled ? 1 : 0);
+  std::string reported;
+  wolang_vm_set_reporter(vm, &CollectReport, &reported);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "trap.wo", R"(
+fun Down(n: int, zero: int) -> int {
+  if n == 0 {
+    return 10 / zero
+  }
+  return Down(n - 1, zero) + 1
+}
+
+offer fun Entry(depth: int, zero: int) -> int {
+  return Down(depth, zero)
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  WolangValue arguments[2] = {wolang_int(6), wolang_int(0)};
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Entry", arguments, 2, &answer), kWolangTrap);
+  const std::string errors = wolang_vm_errors(vm);
+  WOLANG_EXPECT(errors.find("division by zero") != std::string::npos);
+  WOLANG_EXPECT_EQ(reported, errors);
+  WOLANG_EXPECT(errors.find("  in Entry") != std::string::npos);
+  WOLANG_EXPECT(errors.find("Entry") != std::string::npos);
+  if (!compiled) {
+    WOLANG_EXPECT(errors.find("--> trap.wo:4:") != std::string::npos);
+    WOLANG_EXPECT(errors.find("  in Entry (trap.wo:4:") != std::string::npos);
+  }
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ATrapCarriesItsSourcePlaceAndTheScriptsCallStack) {
+  CheckATrapCarriesItsPlaceAndStack(false);
+  CheckATrapCarriesItsPlaceAndStack(true);
+}
+
+static void CheckABudget(bool compiled, bool before_load) {
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_compiled(vm, compiled ? 1 : 0);
+  if (before_load) {
+    wolang_vm_set_budget(vm, 10000);
+  }
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "budget.wo", R"(
+offer fun Spin() -> int {
+  var i = 0
+  loop {
+    i = i + 1
+  }
+}
+
+offer fun Count(n: int) -> int {
+  var i = 0
+  while i < n {
+    i = i + 1
+  }
+  return i
+}
+
+offer fun Fall(n: int) -> int {
+  if n == 0 {
+    return 0
+  }
+  return Fall(n - 1) + 1
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  if (!before_load) {
+    wolang_vm_set_budget(vm, 10000);
+  }
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Spin", nullptr, 0, &answer), kWolangTrap);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("step limit") != std::string::npos);
+
+  WolangValue argument = wolang_int(100);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Count", &argument, 1, &answer), kWolangOk);
+  WOLANG_EXPECT_EQ(answer.integer, 100);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Fall", &argument, 1, &answer), kWolangOk);
+  WOLANG_EXPECT_EQ(answer.integer, 100);
+
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Spin", nullptr, 0, &answer), kWolangTrap);
+  argument = wolang_int(1000000);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Count", &argument, 1, &answer), kWolangTrap);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Fall", &argument, 1, &answer), kWolangTrap);
+
+  argument = wolang_int(100);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Count", &argument, 1, &answer), kWolangOk);
+  WOLANG_EXPECT_EQ(answer.integer, 100);
+
+  wolang_vm_set_budget(vm, 0);
+  argument = wolang_int(100000);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Count", &argument, 1, &answer), kWolangOk);
+  WOLANG_EXPECT_EQ(answer.integer, 100000);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ABudgetStopsARunawayCallAndTheVmStaysUsable) {
+  CheckABudget(false, true);
+  CheckABudget(true, true);
+  CheckABudget(true, false);
+}
+
+WOLANG_TEST(EmbedTest, BindingsForAnotherAbiAreRefused) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_expect_abi(vm, WOLANG_ABI_VERSION), kWolangOk);
+  WOLANG_EXPECT_EQ(wolang_vm_expect_abi(vm, (1u << 16) | 0u), kWolangOk);
+  WOLANG_EXPECT_EQ(wolang_vm_expect_abi(vm, (2u << 16) | 0u), kWolangError);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("ABI 2.0") != std::string::npos);
+  WOLANG_EXPECT_EQ(wolang_vm_expect_abi(vm, WOLANG_ABI_VERSION + 1u), kWolangError);
+  wolang_vm_destroy(vm);
+}
+
+static const char* const kVec3Source = R"(
+offer struct Vec3 {
+  var x: f32
+  var y: f32
+  var z: f32
+}
+
+offer fun Length(v: Vec3) -> f32 => v.x
+)";
+
+WOLANG_TEST(EmbedTest, ALayoutTheBindingsExpectIsCheckedWhenTheProgramLoads) {
+  const uint32_t right[] = {12, 4, 0, 4, 8};
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec3", right, 5), kWolangOk);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "layout_ok.wo", kVec3Source), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  wolang_vm_destroy(vm);
+
+  const uint32_t wrong[] = {16, 8, 0, 8, 12};
+  vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec3", wrong, 5), kWolangOk);
+  WOLANG_EXPECT(wolang_vm_load_source(vm, "layout_bad.wo", kVec3Source) != 0);
+  const std::string errors = wolang_vm_errors(vm);
+  WOLANG_EXPECT(errors.find("expect `Vec3` to be size 16, align 8, offsets 0, 8, 12") != std::string::npos);
+  WOLANG_EXPECT(errors.find("lays it out as size 12, align 4, offsets 0, 4, 8") != std::string::npos);
+  WOLANG_EXPECT_EQ(wolang_vm_ok(vm), 0);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ALayoutIsAlsoCheckedWhenTheProgramIsAlreadyLoaded) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "layout_late.wo", kVec3Source), 0);
+  const uint32_t right[] = {12, 4, 0, 4, 8};
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec3", right, 5), kWolangOk);
+  const uint32_t wrong[] = {12, 4, 0, 4, 12};
+  WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec3", wrong, 5), kWolangError);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("expect `Vec3`") != std::string::npos);
+  wolang_vm_destroy(vm);
+}
+
+static void CheckAnOptionalHostField(bool compiled) {
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_compiled(vm, compiled ? 1 : 0);
+  int32_t calls = 0;
+  WOLANG_EXPECT_EQ(wolang_vm_register_class(vm, "Actor", &FakeRetain, &FakeRelease, &FakeAlive, &calls), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_bind(vm, "Actor_Health", reinterpret_cast<void*>(&Actor_Health)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "optional_field.wo", R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+class Slot {
+  var held: Actor? = null
+}
+
+var slot: Slot = Slot(null)
+
+offer fun Keep(pawn: Actor) {
+  slot.held = pawn
+}
+
+offer fun Clear() {
+  slot.held = null
+}
+
+offer fun Found() -> int uses unsafe {
+  if const pawn = slot.held {
+    return pawn.Health() as int
+  }
+  return -1
+}
+
+offer fun Chained() -> int uses unsafe {
+  const health = slot.held?.Health()
+  if const value = health {
+    return value as int
+  }
+  return -2
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  FakeActor actor;
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Found", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, -1);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Chained", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, -2);
+
+  WolangValue argument = wolang_handle(&actor);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Keep", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(actor.References, 1);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Found", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 100);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Chained", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 100);
+
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Clear", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Found", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, -1);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, AnOptionalHostFieldIsPresentOrAbsent) {
+  CheckAnOptionalHostField(true);
+  CheckAnOptionalHostField(false);
 }
 
 WOLANG_TEST(EmbedTest, ObjectParametersHaveAKind) {
@@ -1537,5 +1891,369 @@ class Plain {
   WOLANG_EXPECT_EQ(std::string(wolang_vm_class_attribute_name(vm, "Spot", 0)), "Replicated");
   WOLANG_EXPECT_EQ(wolang_vm_class_attribute_count(vm, "Plain"), 0);
   WOLANG_EXPECT_EQ(wolang_vm_class_field_count(vm, "Missing"), 0);
+  wolang_vm_destroy(vm);
+}
+
+struct RemapRecord {
+  int Count = 0;
+  WolangValue Old;
+  WolangValue Now;
+};
+
+static void RecordRemap(WolangVm* vm, WolangValue old_object, WolangValue new_object, void* user) {
+  (void)vm;
+  auto* record = static_cast<RemapRecord*>(user);
+  record->Count += 1;
+  record->Old = old_object;
+  record->Now = new_object;
+}
+
+WOLANG_TEST(EmbedTest, AReloadMovesAnObjectTheHostHoldsWhenItsClassGainsAField) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_remap_reload_test.wo";
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5)
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+)");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  RemapRecord record;
+  wolang_vm_set_remap(vm, &RecordRemap, &record);
+  WolangValue mover = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Make", nullptr, 0, &mover), 0);
+
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+  var speed: int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5, 2)
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+offer fun Speed(mover: Mover) -> int => mover.speed
+)");
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_ASSERT_EQ(record.Count, 1);
+  WOLANG_EXPECT(record.Old.handle == mover.handle);
+  WOLANG_EXPECT(record.Now.handle != mover.handle);
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &record.Now, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 5);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Speed", &record.Now, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, record.Now), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, AGlobalThatPointedAtAMovedObjectPointsAtTheNewOne) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_remap_global_test.wo";
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+}
+
+var current: Mover = Mover(1)
+
+offer fun Current() -> Mover => current
+offer fun Bump() {
+  current.steps = current.steps + 1
+}
+offer fun Steps(mover: Mover) -> int => mover.steps
+offer fun CurrentSteps() -> int => current.steps
+)");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  RemapRecord record;
+  wolang_vm_set_remap(vm, &RecordRemap, &record);
+  WolangValue held = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Current", nullptr, 0, &held), 0);
+
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+  var speed: int
+}
+
+var current: Mover = Mover(1, 0)
+
+offer fun Current() -> Mover => current
+offer fun Bump() {
+  current.steps = current.steps + 1
+}
+offer fun Steps(mover: Mover) -> int => mover.steps
+offer fun CurrentSteps() -> int => current.steps
+)");
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_ASSERT_EQ(record.Count, 1);
+
+  WolangValue ignored = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Bump", nullptr, 0, &ignored), 0);
+  WolangValue through_host = wolang_void();
+  WolangValue through_program = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &record.Now, 1, &through_host), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "CurrentSteps", nullptr, 0, &through_program), 0);
+  WOLANG_EXPECT_EQ(through_host.integer, 2);
+  WOLANG_EXPECT_EQ(through_program.integer, 2);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, record.Now), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, AReloadMovesTheObjectsAMovedObjectReaches) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_remap_graph_test.wo";
+  WriteFile(path, R"(
+class Leg {
+  var length: int
+}
+
+class Walker {
+  var leg: Leg
+  var steps: int
+}
+
+offer fun Make() -> Walker {
+  return Walker(Leg(3), 7)
+}
+
+offer fun Steps(walker: Walker) -> int => walker.steps
+offer fun LegLength(walker: Walker) -> int => walker.leg.length
+)");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  RemapRecord record;
+  wolang_vm_set_remap(vm, &RecordRemap, &record);
+  WolangValue walker = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Make", nullptr, 0, &walker), 0);
+
+  WriteFile(path, R"(
+class Leg {
+  var length: int
+  var width: int
+}
+
+class Walker {
+  var leg: Leg
+  var steps: int
+}
+
+offer fun Make() -> Walker {
+  return Walker(Leg(3, 1), 7)
+}
+
+offer fun Steps(walker: Walker) -> int => walker.steps
+offer fun LegLength(walker: Walker) -> int => walker.leg.length
+)");
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_ASSERT_EQ(record.Count, 1);
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &record.Now, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 7);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "LegLength", &record.Now, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 3);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, record.Now), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, AReloadStillRefusesAFieldItCannotCarry) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_remap_refuse_test.wo";
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+  var cells: [4]int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5, [1, 2, 3, 4])
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+)");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  RemapRecord record;
+  wolang_vm_set_remap(vm, &RecordRemap, &record);
+  WolangValue mover = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Make", nullptr, 0, &mover), 0);
+
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+  var cells: [4]int
+  var speed: int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5, [1, 2, 3, 4], 2)
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+)");
+  WOLANG_EXPECT(wolang_vm_reload(vm) != 0);
+  WOLANG_EXPECT_EQ(record.Count, 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("Mover.cells") != std::string::npos);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &mover, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 5);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, mover), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+static const char kDoorProgram[] = R"(
+task fun Wait(seconds: f64)
+
+class Door {
+  var open: bool = false
+}
+
+var door: Door = Door()
+
+task fun OpenLater(target: Door) {
+  wait Wait(2.0)
+  target.open = true
+}
+
+offer fun Start() {
+  const _handle = spawn OpenLater(door)
+}
+
+offer fun IsOpen() -> bool => door.open
+)";
+
+static int Opened(WolangVm* vm) {
+  WolangValue answer = wolang_void();
+  wolang_vm_call(vm, "IsOpen", nullptr, 0, &answer);
+
+  return answer.boolean;
+}
+
+WOLANG_TEST(EmbedTest, ATickMovesTheTasksOnTheHostsClock) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_tick_test.wo";
+  WriteFile(path, kDoorProgram);
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_ASSERT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+
+  WolangValue ignored = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Start", nullptr, 0, &ignored), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_tasks_pending(vm), 1);
+
+  int32_t steps = 0;
+  WOLANG_EXPECT_EQ(wolang_vm_tick(vm, 1.0, &steps), 0);
+  WOLANG_EXPECT_EQ(steps, 1);
+  WOLANG_EXPECT_EQ(Opened(vm), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_tick(vm, 1.0, &steps), 0);
+  WOLANG_EXPECT_EQ(Opened(vm), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_tick(vm, 1.0, &steps), 0);
+  WOLANG_EXPECT_EQ(Opened(vm), 1);
+  WOLANG_EXPECT_EQ(wolang_vm_tasks_pending(vm), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_tick(vm, 1.0, &steps), 0);
+  WOLANG_EXPECT_EQ(steps, 0);
+
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, EachVmHasItsOwnTasksAndClock) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_tick_pair_test.wo";
+  WriteFile(path, kDoorProgram);
+  WolangVm* first = wolang_vm_create();
+  WolangVm* second = wolang_vm_create();
+  WOLANG_ASSERT_EQ(wolang_vm_load(first, path.string().c_str()), 0);
+  WOLANG_ASSERT_EQ(wolang_vm_load(second, path.string().c_str()), 0);
+
+  WolangValue ignored = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(first, "Start", nullptr, 0, &ignored), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(second, "Start", nullptr, 0, &ignored), 0);
+  for (int i = 0; i < 3; ++i) {
+    WOLANG_EXPECT_EQ(wolang_vm_tick(first, 1.0, nullptr), 0);
+  }
+  WOLANG_EXPECT_EQ(Opened(first), 1);
+  WOLANG_EXPECT_EQ(Opened(second), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_tasks_pending(first), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_tasks_pending(second), 1);
+
+  wolang_vm_destroy(first);
+  wolang_vm_destroy(second);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, ATickWithNoTasksOnlyMovesTheClock) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_tick_idle_test.wo";
+  WriteFile(path, "offer fun Five() -> int => 5\n");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_ASSERT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+
+  int32_t steps = 7;
+  WOLANG_EXPECT_EQ(wolang_vm_tick(vm, 0.5, &steps), 0);
+  WOLANG_EXPECT_EQ(steps, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_tasks_pending(vm), 0);
+
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, ReflectionReportsWhatIsReplicatedAndWhichCallsAreRpcs) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_ASSERT_EQ(wolang_vm_load_source(vm, "pawn.wo", R"(
+class Pawn {
+  @Replicated
+  var health: int = 100
+  @Replicated(owner)
+  var ammo: int = 30
+  var scratch: int = 0
+
+  @Server
+  fun Fire(power: int) {}
+
+  @Client(unreliable)
+  fun Flash(strength: float) {}
+
+  @Multicast
+  fun Boom() {}
+
+  fun Plain() {}
+}
+)"), 0);
+
+  int32_t flags = -1;
+  WOLANG_EXPECT_EQ(wolang_vm_class_field_replication(vm, "Pawn", 0, &flags), kWolangReplicated);
+  WOLANG_EXPECT_EQ(flags, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_class_field_replication(vm, "Pawn", 1, &flags), kWolangReplicated);
+  WOLANG_EXPECT_EQ(flags, WOLANG_REPLICATION_OWNER);
+  WOLANG_EXPECT_EQ(wolang_vm_class_field_replication(vm, "Pawn", 2, &flags), kWolangNotReplicated);
+  WOLANG_EXPECT_EQ(flags, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_class_field_replication(vm, "Pawn", 9, &flags), kWolangNotReplicated);
+  WOLANG_EXPECT_EQ(wolang_vm_class_field_replication(vm, "Missing", 0, &flags), kWolangNotReplicated);
+
+  WOLANG_ASSERT_EQ(wolang_vm_class_method_count(vm, "Pawn"), 4);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_method_name(vm, "Pawn", 0)), "Fire");
+  WOLANG_EXPECT_EQ(wolang_vm_class_method_replication(vm, "Pawn", 0, &flags), kWolangServer);
+  WOLANG_EXPECT_EQ(flags, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_class_method_param_count(vm, "Pawn", 0), 1);
+  WOLANG_EXPECT_EQ(wolang_vm_class_method_param_kind(vm, "Pawn", 0, 0), kWolangInt);
+
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_method_name(vm, "Pawn", 1)), "Flash");
+  WOLANG_EXPECT_EQ(wolang_vm_class_method_replication(vm, "Pawn", 1, &flags), kWolangClient);
+  WOLANG_EXPECT_EQ(flags, WOLANG_REPLICATION_UNRELIABLE);
+  WOLANG_EXPECT_EQ(wolang_vm_class_method_param_kind(vm, "Pawn", 1, 0), kWolangFloat);
+
+  WOLANG_EXPECT_EQ(wolang_vm_class_method_replication(vm, "Pawn", 2, &flags), kWolangMulticast);
+  WOLANG_EXPECT_EQ(wolang_vm_class_method_param_count(vm, "Pawn", 2), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_class_method_replication(vm, "Pawn", 3, &flags), kWolangNotReplicated);
+  WOLANG_EXPECT_EQ(wolang_vm_class_method_param_kind(vm, "Pawn", 0, 5), kWolangVoid);
+  WOLANG_EXPECT_EQ(wolang_vm_class_method_count(vm, "Missing"), 0);
   wolang_vm_destroy(vm);
 }

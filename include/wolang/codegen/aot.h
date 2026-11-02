@@ -23,7 +23,7 @@ namespace codegen {
 // What `<library>_abi_version()` answers: the embedding ABI the library
 // was built to match, kept equal to WOLANG_ABI_VERSION in wolang.h by a
 // test (D241).
-inline constexpr uint32_t kLibraryAbiVersion = (1u << 16) | 3u;
+inline constexpr uint32_t kLibraryAbiVersion = (1u << 16) | 5u;
 
 // Ahead-of-time compilation: the same IR, through LLVM, into an object
 // file.
@@ -71,10 +71,32 @@ struct AotResult {
 // True when this build has the backend at all.
 bool HasAotBackend();
 
+// The sanitizers the runtime archive was built with, as `-fsanitize=` takes
+// them, or empty. A binary linked with such an archive needs the same ones
+// on its link line (D272).
+std::string_view RuntimeSanitizers();
+
 // The command that links |object| and the runtime into |binary| with the
 // system's own linker: `c++` where there is one, `clang-cl` on Windows.
 // What a package adds goes after it, in that linker's own spelling (D208).
 std::string LinkCommand(std::string_view object, std::string_view binary);
+
+// Where a bundled sysroot is: WOLANG_SYSROOT when it names a directory,
+// otherwise `wolang/sysroot` beside the runtime archive of an installed
+// compiler. Empty when there is none (D272).
+std::string SysrootDirectory();
+
+// True when `c++` or `cc` is on PATH, which is what the system link needs.
+bool HasSystemCompiler();
+
+// The command that links |object| into a static |binary| against the
+// musl sysroot at |sysroot| with |linker| (an `ld.lld`), no C compiler
+// needed. The same object and flags give the same bytes: no build id, no
+// timestamps (D272).
+std::string BundledLinkCommand(std::string_view object,
+                               std::string_view binary,
+                               std::string_view sysroot,
+                               std::string_view linker);
 
 // What the linker on this system calls a library search path and a
 // library, for the `[link]` table of a manifest.

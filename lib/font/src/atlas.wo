@@ -1,0 +1,285 @@
+need std.map.{IntMapNew, Map}
+need std.mem.{ArrayNew, Free}
+need image.{Image, ImageNew}
+
+offer struct Slot {
+  var x: int
+  var y: int
+  var width: int
+  var height: int
+  var left: int
+  var top: int
+  var advance: float
+}
+
+offer class Atlas {
+  var pixels: []mut u8
+  var width: int
+  var height: int
+  var slots: Map<int, Slot>
+  var cursor_x: int = 0
+  var cursor_y: int = 0
+  var row_height: int = 0
+
+  deinit  {
+    Free(pixels)
+  }
+
+  fun Count() -> int {
+    return slots.Len()
+  }
+
+  fun At(x: int, y: int) -> int {
+    if x < 0 || y < 0 || x >= width || y >= height {
+      return 0
+    }
+    return pixels[y * width + x] as int
+  }
+
+  fun Key(glyph: int, size: float) -> int {
+    return glyph * 1048576 + (size * 16.0) as int
+  }
+
+  fun Find(glyph: int, size: float) -> Slot? uses unsafe {
+    const key = Key(glyph, size)
+    if slots.Has(key) {
+      return slots.Get(key, Slot(0, 0, 0, 0, 0, 0, 0.0))
+    }
+    return null
+  }
+
+  fun Get(font: Font, glyph: int, size: float) -> Slot? uses unsafe {
+    if const known = Find(glyph, size) {
+      return known
+    }
+    match Rasterize(font, glyph, size) {
+      Ok(bitmap) => {
+        if bitmap.width == 0 {
+          const empty = Slot(
+              0,
+              0,
+              0,
+              0,
+              bitmap.left,
+              bitmap.top,
+              bitmap.advance)
+          slots.Put(Key(glyph, size), empty)
+          return empty
+        }
+        if bitmap.width + 1 > width || bitmap.height + 1 > height {
+          return null
+        }
+        if cursor_x + bitmap.width + 1 > width {
+          cursor_x = 0
+          cursor_y = cursor_y + row_height + 1
+          row_height = 0
+        }
+        if cursor_y + bitmap.height + 1 > height {
+          return null
+        }
+        var row = 0
+        while row < bitmap.height {
+          var column = 0
+          while column < bitmap.width {
+            pixels[(cursor_y + row) * width + cursor_x + column] = bitmap.coverage[row * bitmap.width + column]
+            column = column + 1
+          }
+          row = row + 1
+        }
+        const slot = Slot(
+            cursor_x,
+            cursor_y,
+            bitmap.width,
+            bitmap.height,
+            bitmap.left,
+            bitmap.top,
+            bitmap.advance)
+        cursor_x = cursor_x + bitmap.width + 1
+        if bitmap.height > row_height {
+          row_height = bitmap.height
+        }
+        slots.Put(Key(glyph, size), slot)
+        return slot
+      }
+      _ => {
+        return null
+      }
+    }
+  }
+
+  fun ToImage() -> Image? uses unsafe {
+    match ImageNew(width, height) {
+      Ok(image) => {
+        var y = 0
+        while y < height {
+          var x = 0
+          while x < width {
+            image.Set(x, y, Pack(255, 255, 255, pixels[y * width + x] as int))
+            x = x + 1
+          }
+          y = y + 1
+        }
+        return image
+      }
+      _ => {
+        return null
+      }
+    }
+  }
+}
+
+offer fun AtlasNew(width: int, height: int) -> Atlas!(BadSize, TooLarge) uses unsafe {
+  if width < 1 || height < 1 {
+    return BadSize
+  }
+  if width > kMaxBitmapSide * 4 || height > kMaxBitmapSide * 4 {
+    return TooLarge
+  }
+  var pixels = ArrayNew<u8>(width * height)
+  var i = 0
+  while i < pixels.len {
+    pixels[i] = 0
+    i = i + 1
+  }
+  return Atlas(pixels, width, height, IntMapNew<Slot>(), 0, 0, 0)
+}
+
+fun AtlasOf(width: int, height: int) -> Atlas? uses unsafe {
+  match AtlasNew(width, height) {
+    Ok(atlas) => {
+      return atlas
+    }
+    BadSize => {
+      return null
+    }
+    TooLarge => {
+      return null
+    }
+  }
+}
+
+@Test
+fun RefusesAnAtlasOfNoSizeOrTooMuch() -> bool uses unsafe {
+  const fine = AtlasOf(64, 64) != null
+  const empty = AtlasOf(0, 64) == null && AtlasOf(64, -1) == null
+  match AtlasNew(100000, 8) {
+    Ok(_atlas) => {
+      return false
+    }
+    BadSize => {
+      return false
+    }
+    TooLarge => {
+      return fine && empty
+    }
+  }
+}
+
+@Test
+fun PacksGlyphsSideBySideOnAShelf() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    if const atlas = AtlasOf(128, 128) {
+      if const first = atlas.Get(font, 0, 100.0) {
+        if const second = atlas.Get(font, 2, 100.0) {
+          return first.x == 0 && first.y == 0 && first.width == 42 && second.x == 43 && second.y == 0 && atlas.Count(
+              ) == 2
+        }
+      }
+    }
+  }
+  return false
+}
+
+@Test
+fun AGlyphAskedForTwiceIsRasterizedOnce() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    if const atlas = AtlasOf(128, 128) {
+      if const first = atlas.Get(font, 2, 100.0) {
+        if const again = atlas.Get(font, 2, 100.0) {
+          if const other = atlas.Get(font, 2, 50.0) {
+            return again.x == first.x && again.y == first.y && atlas.Count() == 2 && other.x != first.x
+          }
+        }
+      }
+    }
+  }
+  return false
+}
+
+@Test
+fun StartsANewShelfWhenTheRowIsFull() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    if const atlas = AtlasOf(90, 200) {
+      if const first = atlas.Get(font, 0, 100.0) {
+        if const second = atlas.Get(font, 2, 100.0) {
+          return first.y == 0 && second.x == 0 && second.y == 73
+        }
+      }
+    }
+  }
+  return false
+}
+
+@Test
+fun AnswersNullWhenTheAtlasIsFull() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    if const small = AtlasOf(16, 16) {
+      if const roomy = AtlasOf(128, 128) {
+        return small.Get(font, 0, 100.0) == null && small.Count() == 0 && roomy.Get(
+            font,
+            0,
+            100.0) != null
+      }
+    }
+  }
+  return false
+}
+
+@Test
+fun AnEmptyGlyphTakesNoRoomButKeepsItsAdvance() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    if const atlas = AtlasOf(64, 64) {
+      if const space = atlas.Get(font, 1, 100.0) {
+        return space.width == 0 && space.height == 0 && Near(
+            space.advance,
+            30.0,
+            0.01) && atlas.cursor_x == 0 && atlas.Count() == 1
+      }
+    }
+  }
+  return false
+}
+
+@Test
+fun TheAtlasHoldsTheGlyphPixels() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    if const atlas = AtlasOf(128, 128) {
+      if const slot = atlas.Get(font, 0, 100.0) {
+        if const bitmap = RasterOf(0, 0, 100.0) {
+          return atlas.At(slot.x + 1, slot.y + 1) == bitmap.At(1, 1) && atlas.At(
+              slot.x + 20,
+              slot.y + 30) == bitmap.At(20, 30) && atlas.At(slot.x, slot.y) == 0 && slot.left == bitmap.left && slot.top == bitmap.top && atlas.At(
+              -1,
+              0) == 0
+        }
+      }
+    }
+  }
+  return false
+}
+
+@Test
+fun ConvertsTheAtlasToAnImage() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    if const atlas = AtlasOf(64, 64) {
+      if const slot = atlas.Get(font, 0, 50.0) {
+        if const image = atlas.ToImage() {
+          return image.width == 64 && image.height == 64 && image.Get(
+              slot.x + 5,
+              slot.y + 5) == 4294967295 && image.Get(63, 63) == 16777215
+        }
+      }
+    }
+  }
+  return false
+}

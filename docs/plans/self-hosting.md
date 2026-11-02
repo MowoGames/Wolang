@@ -54,9 +54,9 @@ to be confirmed by a benchmark before it is fixed.
 
 | Need | What exists | Missing or slow |
 |---|---|---|
-| Fast `Map` | `std.map.Map<K, V>`: open addressing, linear probing, half load, backward-shift removal. `IntMapNew` and `TextMapNew` (1.2.0) choose the hashing. `std.hash` has FNV-style text hashing. | Slot finding is `hash % size` with a 64-bit divide on every probe start; a power-of-two table and a mask would not divide. `Get` takes a fallback rather than answering an optional, so a lookup of a class value needs a sentinel. The walk gives keys only, so values cost a second probe each. `Reserve` rehashes through `Put`, which hashes every key again; the hash is not stored. No `Entry` type. |
-| Arenas | The language `arena { }` block frees what was taken inside it at block end. | No arena a compiler can hold across calls and free as one: the IR, the AST and the type store each want their own lifetime. `Builder.Release` says "nothing frees the bytes yet", so text built by a compiler is never freed outside an `arena`. A `[]T` bump allocator with `Reset` is the missing piece. |
-| Text building | `std.text.Builder`: `Append`, `AppendByte`, `AppendLine` (1.2.0), `Text`, `Release`, `Clear`. `std.fmt` for numbers. | `Append` copies byte by byte; there is no bulk copy intrinsic, so a large append is a loop. `std.fmt` imports `std.text`, so `Builder` has no `AppendInt` without a cycle. No `Builder.Insert` or `Truncate`. |
+| Fast `Map` | `std.map.Map<K, V>`: open addressing, linear probing, half load, backward-shift removal. `IntMapNew` and `TextMapNew` (1.2.0) choose the hashing. `std.hash` has FNV-style text hashing. | Slot finding was `hash % size`, a 64-bit divide on every probe start; the table is always a power of two, so it is a mask now (D284). `Get` takes a fallback rather than answering an optional, so a lookup of a class value needs a sentinel. The walk gives keys only, so values cost a second probe each. `Reserve` rehashes through `Put`, which hashes every key again; the hash is not stored. No `Entry` type. |
+| Arenas | The language `arena { }` block frees what was taken inside it at block end. | `std.arena` (D285) is the bump allocator a compiler can hold across calls: `Take`, `Reset`, drop. `Builder.Release` still says "nothing frees the bytes yet", so text built by a compiler is never freed outside an `arena`; the arena hands out bytes, not text, and a typed view of them is `ViewFromRaw`. |
+| Text building | `std.text.Builder`: `Append`, `AppendByte`, `AppendLine` (1.2.0), `Text`, `Release`, `Clear`. `std.fmt` for numbers. | `Append` and `Reserve` copy with `std.mem.Copy` now (one call, D284), and `fs.ReadText` views the buffer it read instead of copying it. `std.fmt` imports `std.text`, so `Builder` has no `AppendInt` without a cycle. No `Builder.Insert` or `Truncate`. |
 | Text scanning | `Bytes`, `IndexOf`, `Substring`, `StartsWith`, `Trim`, `Split`, `ParseInt`, `ParseFloat`, `std.utf8`. | `Substring` is a view of the same bytes, not a copy, so token text is free; a lexer indexes `Bytes(source)` directly. No character classes (`IsDigit`, `IsAlpha`): each lexer writes its own. |
 | Lists and sorting | `List<T>`, `Heap<T>`, `Sort`, `SortBy<T: Ord>`, `LowerBound`, `Deque`, `Set`. | `List` has `Push`, `Pop`, `At`, `Set`, `Items`; no `Insert`, `RemoveAt` or `Last`. `Sort` is a quicksort with an insertion cutoff and is not stable; a compiler that prints diagnostics in source order needs a stable sort. |
 | Files | `std.fs`: `ReadAll`, `ReadText`, `WriteAll`, `WriteText`, `Append`, `Exists`, `List`, `Walk`, `Copy`, `RemoveTree`, `TempName`. `std.path`: `Join`, `Normalize`, `Parent`, `Name`, `Extension`. | `List` and `Walk` answer one `text` with separators, so a directory walk is a split. `ReadAll` takes a byte limit. No file timestamps beyond `ChangedAt`, no symlink question. |
@@ -66,8 +66,8 @@ to be confirmed by a benchmark before it is fixed.
 
 ## The throwaway lexer
 
-`tools/selfhost/lexer` is a Wolang lexer for Wolang (package `wolexer`, tests with
-`wl wo test tools/selfhost/lexer`): identifiers, keywords and reserved words,
+The first lexer, `tools/selfhost/lexer` (package `wolexer`), was replaced by the real one
+in `tools/selfhost/syntax` and is gone; this is what it was and what it found: identifiers, keywords and reserved words,
 numbers with suffixes and ranges, strings with interpolation, raw strings,
 character literals, nested block comments, doc comments, `starts_line` and line
 numbers, and the longest operator. It is not the stage 2 lexer: it does not
@@ -103,6 +103,140 @@ writing it ran into; the first run will add more.
 9. **Tables.** `Map<text, int>` answers a keyword lookup. `Get` with a fallback
    was enough here; a parser's symbol tables will want an optional-returning
    lookup.
+
+## The lexer and the parser
+
+`tools/selfhost/syntax` (package `wosyntax`, D283) is the stage 2 front end in Wolang:
+
+    wolang run tools/selfhost/syntax -- tokens <files>    # Kind offset length flags per token
+    wolang run tools/selfhost/syntax -- ast <files>       # the dump `wolang ast` writes
+
+The lexer (`lexer.wo`) is a port of `src/syntax/lexer.cc`. Its token kinds are generated
+from `token_kind.inc` (`tools/selfhost/gen_kinds.py`), and each token carries the payload
+the parser reads: the value of a number with its suffix and unit, the decoded parts of a
+string with the spans of its interpolations, the code point of a character. The parser
+(`parser.wo`) is a port of `src/syntax/parser.cc` for programs that are valid, the tree
+(`ast.wo`) has the shape of `src/syntax/ast.h`, and `printer.wo` prints it the way
+`ast_printer.cc` does.
+
+Both are checked against the C++ ones, not by eye:
+
+- `tools/selfhost/diff_tokens.py` runs `wolang tokens --stable` and the Wolang lexer over
+  every tracked `.wo` file and every `wolang` block in the guides. 200 files, 141,313
+  tokens, no difference, error flags included.
+- `tools/selfhost/diff_ast.py` does the same with `wolang ast`. 186 files compare
+  and all 186 are identical, `lib/`, `examples/`, `tools/` and the guides' snippets
+  among them. 22 are left out because the C++ parser itself rejects them: they are
+  fragments of a program (statements with no function around them), not programs.
+- `fixtures/expressions.wo` and `fixtures/declarations.wo` hold the constructs the corpus
+  uses least (every operator, ranges, closures, `?.` and `?`, struct patterns, or-patterns,
+  generics with `where`, machines, systems, units, `extern`), with the C++ dump beside
+  them; `@Test`s in the package compare them in both tiers.
+
+What the Wolang parser does not do, because it reads valid programs:
+
+1. **No recovery and no diagnostics.** A construct it does not expect stops the parse
+   with `(failed ...)` and the token where it stopped, where the C++ parser reports an
+   error with a code and carries on. Matching those is a stage 2 task of its own.
+2. **No depth limit** (`E0041`): a deeply nested expression runs until the stack ends.
+3. **Unicode letters are approximated** (D283): a short list of ranges that are not
+   letters decides an identifier outside ASCII, and NFC is not checked.
+4. **A float is printed by its own `%g`** (six digits from repeated scaling), not by
+   `printf`. It agrees on every literal in the corpus; a literal at a rounding edge of
+   six digits could differ in the last place.
+5. **Fuzz programs are not compared yet.** The plan asks for the same dump on every fuzz
+   program; the generator writes programs only inside the C++ tests, so the corpus here is
+   the repository and the guides. A `wolang fuzz --emit` that writes them to a directory
+   would let `diff_ast.py` take them.
+6. **Speed is unmeasured.** `wolang asm tools/selfhost/syntax` shows the dev tier takes
+   every function of the package, which is what lets the corpus run without the
+   interpreter's step limit; no benchmark of the parser itself has been made.
+
+## Stage 1 measurements
+
+`tools/selfhost/bench` (`wolang run tools/selfhost/bench`) times what a compiler
+leans on. Windows x86-64, dev tier, while seven other builds ran on the same
+machine, so read the figures as orders of magnitude; the first column is before
+D284 and D285, the second after.
+
+| What | Before | After |
+|---|---|---|
+| `Map<int, int>`, 300,000 puts and gets | 73 ms | 56-85 ms |
+| `Map<text, int>`, 100,000 distinct keys | 66 ms | 67-78 ms |
+| `Builder`, 2,000,000 small appends | 130 ms | 60-65 ms |
+| `fs.ReadText` of a 4.4 MB file | 95 ms | 6-7 ms |
+| `ArrayNew` and `Free`, 500,000 blocks of 512 bytes | 281 ms | 273-293 ms |
+| `Arena.Take` of the same blocks, reset every thousand | n/a | 8-10 ms |
+
+- The mask in `Map.Slot` did not show above the noise; the divide it removes is
+  a few nanoseconds per lookup. The text map is dominated by hashing a `text`,
+  which is a byte loop; a hash that reads a word at a time is the next thing.
+- `ReadText` was slow because `ReadAll` allocated and zeroed the whole `limit`
+  (128 MB in this run) every time, and then copied byte by byte. It sizes the
+  buffer to the file and views it now.
+- `ArrayNew` and `Free` cost about half a microsecond a pair, which the arena
+  takes to about twenty nanoseconds.
+
+## The first tool: fetch and lock
+
+`tools/selfhost/fetch` (package `wofetch`) is `wolang fetch` in Wolang (D286):
+
+    wolang run tools/selfhost/fetch -- fetch <package directory> [--cache <directory>]
+
+It reads the manifests with `std.toml`, walks the dependency graph the way the
+workspace loader does (path dependencies by their directory, git dependencies by
+a checkout named after the repository and the revision), clones with the `git`
+on the path, and writes `wolang.lock`. It needs no parser.
+
+`tools/selfhost/diff_fetch.py` is the check: it builds local git repositories (one
+depending on another), makes two copies of an application that reaches them through
+a path dependency and through git, runs the C++ tool in one and the Wolang tool in the
+other, and compares the two lock files byte for byte. It does, on four locked packages.
+
+What the tool leaves out: it does not check version requirements (the build does),
+and it does not report a manifest key it does not know.
+
+Writing it found a bug in the C++ tool: the clone was run through `std::system`
+with single quotes and `2>/dev/null`, which `cmd.exe` does not understand, so no
+fetch worked on Windows. The C++ tool quotes and discards errors per platform now,
+and `Workspace.FetchesAGitDependencyAndLocksIt` fetches from a local repository
+(and skips when `git` is missing). The Wolang tool never had the problem: `std.process.Start`
+runs the program directly, with no shell.
+
+## Gaps stage 1 found
+
+1. **The dev tier did not compare two enum values.** `a == Kind.File` was "compares
+   two aggregates", and a function the dev tier refuses takes every caller into
+   the interpreter, which has a step limit. Lowering compares the tags of an enum
+   that carries nothing now (D287), which is what `match` already read, so a parser
+   that tests `kind == Kind.X` in every function is compiled. An enum with data is
+   still compared whole, and the dev tier still refuses that.
+2. **No `u64` to float conversion in the dev tier.** The lexer converts through
+   two `u32` halves (`U64ToFloat`). The same refusal hides in any code that
+   turns a 64-bit count into a float.
+3. **`after`, `before` and `arena` are keywords everywhere**, so they cannot be
+   variable names; a lexer wants to call a variable `after`. A contextual
+   keyword would cost nothing here (they are only keywords in a system's
+   header and a block).
+4. **An array literal exists** (`[false, false]`), unlike what the throwaway
+   lexer's gap list said; what is missing is a `List` literal.
+5. **`Text` of a built string cannot be freed**, so a compiler's memory grows
+   with every text it makes; the arena holds bytes and does not fix that.
+6. **The reference interpreter trapped on `or` of two bools**, which an or-pattern
+   (`1 | 2 =>`, `Color.Red | Color.Green =>`) lowers to; the dev tier took it, so the
+   tiers disagreed on every match with alternatives. Fixed (D287) with a test in
+   `CodegenTest`. A parser matches on alternatives constantly, which is how it was found.
+7. **`Class()` with no arguments ignores the field initializers.** `class Counter {
+   var base: int = Seven() }` gives `Counter().base == 0`, and a class-typed field
+   (`var items: List<int> = ListNew<int>()`) is a null handle, so `Push` ends in an
+   access violation in both tiers, not a trap. The spec says "no arguments asks for the
+   default value", which reads as the type's zero; if that is the intent, a field
+   initializer that is never run should be refused, and a null handle should trap. Not
+   fixed; it wants a decision.
+8. **More words that cannot be names**: `type` at the start of a line is a type alias,
+   `package` and `where` are reserved, and `before` and `after` are keywords. A tree
+   with a `type` field and a `package` of dependencies runs into all of them, so the
+   Wolang tree calls them `ty` and `held`.
 
 ## Layout
 

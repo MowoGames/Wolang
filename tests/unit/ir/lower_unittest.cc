@@ -794,5 +794,227 @@ fun B() -> int! {
   WOLANG_EXPECT(f.Function("A").find(std::to_string(ErrorTag("Missing"))) == std::string::npos);
 }
 
+WOLANG_TEST(LowerTest, AnEnumThatCarriesNothingIsComparedByItsTag) {
+  Fixture f(R"(
+enum Color {
+  Red
+  Green
+}
+
+fun Same(a: Color, b: Color) -> bool {
+  return a == b
+}
+)");
+  const std::string ir = f.Function("Same");
+  WOLANG_EXPECT(ir.find("extract 0, %0") != std::string::npos);
+  WOLANG_EXPECT(ir.find("extract 0, %1") != std::string::npos);
+  WOLANG_EXPECT(ir.find("eq %0, %1") == std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AnEnumThatCarriesDataIsStillComparedWhole) {
+  Fixture f(R"(
+enum Shape {
+  Circle(radius: int)
+  Dot
+}
+
+fun Same(a: Shape, b: Shape) -> bool {
+  return a == b
+}
+)");
+  WOLANG_EXPECT(f.Function("Same").find("eq %0, %1") != std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AClassGivesBackItsTextFieldWhenItGoes) {
+  Fixture f(R"(
+class Holder {
+  var label: Text
+}
+
+fun Use(n: int) -> int {
+  const h = Holder("n={n}")
+  return h.label.len
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Function("Holder$drop").find("call @wolang_text_free") != std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AClassWithoutATextFieldFreesNoText) {
+  Fixture f(R"(
+class Holder {
+  var id: int
+}
+
+fun Use(n: int) -> int {
+  const h = Holder(n)
+  return h.id
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT(f.Function("Holder$drop").find("wolang_text_free") == std::string::npos);
+}
+
+static size_t FreesIn(const std::string& body) {
+  size_t count = 0;
+  const std::string needle = "call @wolang_text_free";
+  for (size_t at = body.find(needle); at != std::string::npos; at = body.find(needle, at + needle.size())) {
+    ++count;
+  }
+  return count;
+}
+
+WOLANG_TEST(LowerTest, ReplacingATextFieldGivesBackTheOldBytes) {
+  Fixture f(R"(
+class Holder {
+  var label: Text
+}
+
+fun Replace(n: int) -> int {
+  const h = Holder("a{n}")
+  h.label = "bb{n}"
+  return h.label.len
+}
+
+fun Keep(n: int) -> int {
+  const h = Holder("a{n}")
+  return h.label.len
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT_EQ(FreesIn(f.Function("Replace")), FreesIn(f.Function("Keep")) + 2);
+}
+
+WOLANG_TEST(LowerTest, ReplacingANumberFieldFreesNoText) {
+  Fixture f(R"(
+class Holder {
+  var id: int
+}
+
+fun Replace(n: int) -> int {
+  const h = Holder(n)
+  h.id = n + 1
+  return h.id
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  WOLANG_EXPECT_EQ(FreesIn(f.Function("Replace")), 0u);
+}
+
+static std::string SchemaOf(const ir::Module& module) {
+  for (const std::string& text : module.strings) {
+    if (text.rfind("WSCHEMA", 0) == 0) {
+      return text;
+    }
+  }
+
+  return std::string();
+}
+
+WOLANG_TEST(LowerTest, ShapeOfListsTheSavedFieldsAndAsksTheTierForTheirOffsets) {
+  Fixture f(R"(
+struct Shape<T> {
+  var schema: text
+  var offsets: u64
+}
+
+fun ShapeOf<T>() -> Shape<T>
+
+class Mover {
+  @Save
+  var steps: int = 0
+  @Save
+  var name: text = ""
+  @Save
+  var next: Mover? = null
+  var scratch: int = 0
+}
+
+fun Use() -> u64 {
+  const shape = ShapeOf<Mover>()
+  return shape.offsets
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string schema = SchemaOf(f.Lowered()->unoptimized);
+  WOLANG_EXPECT(schema.find("ROOT Mover") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD steps @") != std::string::npos);
+  WOLANG_EXPECT(schema.find(" i8 i8") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD name @") != std::string::npos);
+  WOLANG_EXPECT(schema.find(" s s") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD next @") != std::string::npos);
+  WOLANG_EXPECT(schema.find("o(r:Mover)") != std::string::npos);
+  WOLANG_EXPECT(schema.find("scratch") == std::string::npos);
+  WOLANG_EXPECT(f.Function("Use").find("type.size") != std::string::npos);
+  WOLANG_EXPECT(f.Function("Use").find("@size") != std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, ShapeOfRefusesWhatItCannotWrite) {
+  Fixture f(R"(
+struct Shape<T> {
+  var schema: text
+  var offsets: u64
+}
+
+fun ShapeOf<T>() -> Shape<T>
+
+class Actor {
+  virtual fun Tick() {}
+  @Save
+  var hp: int = 0
+}
+
+fun Use() -> u64 {
+  const shape = ShapeOf<Actor>()
+  return shape.offsets
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string schema = SchemaOf(f.Lowered()->unoptimized);
+  WOLANG_EXPECT(schema.find("WSCHEMA 0") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD") == std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, ShapeOfWritesAStructWholeUnlessItMarksItsOwnFields) {
+  Fixture f(R"(
+struct Shape<T> {
+  var schema: text
+  var offsets: u64
+}
+
+fun ShapeOf<T>() -> Shape<T>
+
+struct Spot {
+  var x: float
+  var y: float
+}
+
+struct Pair {
+  @Save
+  var a: int
+  var b: int
+}
+
+class Mover {
+  @Save
+  var spot: Spot = Spot(0.0, 0.0)
+  @Save
+  var pair: Pair = Pair(1, 2)
+}
+
+fun Use() -> u64 {
+  const shape = ShapeOf<Mover>()
+  return shape.offsets
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string schema = SchemaOf(f.Lowered()->unoptimized);
+  WOLANG_EXPECT(schema.find("TYPE S Spot") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD x @") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD y @") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD a @") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD b @") == std::string::npos);
+}
+
 }  // namespace
 }  // namespace wolang

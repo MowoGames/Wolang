@@ -88,7 +88,7 @@ class Fixture {
 
  private:
   std::string Render(const CheckedFile& checked,
-                     const FileResolution& resolution,
+                     const FileResolution&,
                      ExprId expr) {
     return db_.types().Describe(db_.interner(), checked.body.TypeOf(expr));
   }
@@ -2802,6 +2802,44 @@ fun Fill(xs: []mut int) {
   WOLANG_EXPECT_EQ(fine.Codes(), "");
 }
 
+WOLANG_TEST(TypeCheck, AConstArrayCannotBeHandedToAWritableSlice) {
+  Fixture held(R"(
+fun Fill(xs: []mut int) {
+  xs[0] = 1
+}
+
+fun Go() {
+  const a: [3]int = [1, 2, 3]
+  Fill(a)
+}
+)");
+  WOLANG_EXPECT(held.HasCode("E0105"));
+
+  Fixture mutable_array(R"(
+fun Fill(xs: []mut int) {
+  xs[0] = 1
+}
+
+fun Go() {
+  var a: [3]int = [1, 2, 3]
+  Fill(a)
+}
+)");
+  WOLANG_EXPECT(!mutable_array.HasCode("E0105"));
+
+  Fixture read_only(R"(
+fun Sum(xs: []int) -> int {
+  return xs[0]
+}
+
+fun Go() -> int {
+  const a: [3]int = [1, 2, 3]
+  return Sum(a)
+}
+)");
+  WOLANG_EXPECT(!read_only.HasCode("E0105"));
+}
+
 WOLANG_TEST(TypeCheck, WritingThroughAHandleInASliceIsNotAWriteToTheSlice) {
   Fixture f(R"(
 class Cell {
@@ -3290,6 +3328,117 @@ WOLANG_TEST(TypeCheck, MatchOnAResultMustCoverItsErrors) {
   WOLANG_EXPECT(!stated_covered.HasCode("E0201"));
 }
 
+WOLANG_TEST(TypeCheck, AnAnnotatedLocalKeepsItsAnnotatedType) {
+  Fixture ability(R"(
+ability Backend {
+  fun Id() -> int
+}
+
+class Null {
+  var n: int = 0
+}
+
+class Real {
+  var n: int = 1
+}
+
+extend Null as Backend {
+  fun Id() -> int => 0
+}
+
+extend Real as Backend {
+  fun Id() -> int => 1
+}
+
+fun NullNew() -> Null => Null(0)
+
+fun RealNew() -> Real => Real(1)
+
+fun Pick(real: bool) -> int {
+  var backend: Backend = NullNew()
+  if real {
+    backend = RealNew()
+  }
+  return backend.Id()
+}
+)");
+  WOLANG_EXPECT_EQ(ability.Codes(), "");
+
+  Fixture other(R"(
+ability Backend {
+  fun Id() -> int
+}
+
+class Null {
+  var n: int = 0
+}
+
+extend Null as Backend {
+  fun Id() -> int => 0
+}
+
+fun NullNew() -> Null => Null(0)
+
+fun Pick() -> int {
+  var backend: Backend = NullNew()
+  backend = 3
+  return backend.Id()
+}
+)");
+  WOLANG_EXPECT(other.HasCode("E0101"));
+}
+
+WOLANG_TEST(TypeCheck, AFunctionHeldInALocalCannotBeFollowedOntoAThread) {
+  Fixture held(
+      "@Thread\nfun Launch(body: fun()) {\n  body()\n}\n"
+      "fun Go(f: fun()) {\n  Launch(f)\n}\n");
+  WOLANG_EXPECT(held.HasCode("E0163"));
+
+  Fixture named(
+      "@Thread\nfun Launch(body: fun()) {\n  body()\n}\n"
+      "fun Work() {}\n"
+      "fun Go() {\n  Launch(Work)\n}\n");
+  WOLANG_EXPECT(!named.HasCode("E0163"));
+
+  Fixture forwarded(
+      "@Thread\nfun Launch(body: fun()) {\n  body()\n}\n"
+      "@Thread\nfun Again(body: fun()) {\n  Launch(body)\n}\n");
+  WOLANG_EXPECT(!forwarded.HasCode("E0163"));
+
+  Fixture trusted(
+      "@Thread\nfun Launch(body: fun()) {\n  body()\n}\n"
+      "fun Go(f: fun()) uses unsafe {\n  Launch(f)\n}\n");
+  WOLANG_EXPECT(!trusted.HasCode("E0163"));
+}
+
+WOLANG_TEST(TypeCheck, AnErrorNameInAMatchArmMustBeInScope) {
+  Fixture unknown(
+      "error Small\n"
+      "fun Root(x: int) -> int! {\n  return Small\n}\n"
+      "fun Use() -> int {\n"
+      "  return match Root(1) {\n    Ok(v) => v\n    Gone(x) => x\n    _ => 0\n  }\n"
+      "}\n");
+  WOLANG_EXPECT(unknown.HasCode("E0166"));
+  WOLANG_EXPECT(!unknown.HasCode("E0201"));
+
+  Fixture known(
+      "error Small(x: int)\n"
+      "fun Root(x: int) -> int!(Small) {\n  return Small(x)\n}\n"
+      "fun Use() -> int {\n"
+      "  return match Root(1) {\n    Ok(v) => v\n    Small(x) => x\n  }\n"
+      "}\n");
+  WOLANG_EXPECT(!known.HasCode("E0166"));
+  WOLANG_EXPECT_EQ(known.Codes(), "");
+
+  Fixture binding(
+      "error Small\n"
+      "fun Root(x: int) -> int! {\n  return Small\n}\n"
+      "fun Use() -> int {\n"
+      "  return match Root(1) {\n    Ok(v) => v\n    other => 0\n  }\n"
+      "}\n");
+  WOLANG_EXPECT(!binding.HasCode("E0166"));
+}
+
 WOLANG_TEST(TypeCheck, APayloadBindsInAMatchArm) {
   Fixture f(
       "error P(x: int, why: text)\n"
@@ -3305,6 +3454,267 @@ WOLANG_TEST(TypeCheck, UsesNamesAnEffect) {
   WOLANG_EXPECT(Fixture("fun F() uses Nope {}").HasCode("E0158"));
   WOLANG_EXPECT(!Fixture("fun F() uses io {}").HasCode("E0158"));
   WOLANG_EXPECT(!Fixture("effect Telemetry\nfun F() uses Telemetry {}").HasCode("E0158"));
+}
+
+WOLANG_TEST(TypeCheck, SaveMarksAStoredField) {
+  Fixture fine(R"(
+class Mover {
+  @Save
+  var steps: int = 0
+  var scratch: int = 0
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0175"));
+  WOLANG_EXPECT(!fine.HasCode("E0176"));
+
+  Fixture on_method(R"(
+class Mover {
+  @Save
+  fun Step() {}
+}
+)");
+  WOLANG_EXPECT(on_method.HasCode("E0175"));
+
+  Fixture on_weak(R"(
+class Node {
+  @Save
+  weak var parent: Node? = null
+}
+)");
+  WOLANG_EXPECT(on_weak.HasCode("E0175"));
+
+  Fixture on_function(R"(
+@Save
+fun F() {}
+)");
+  WOLANG_EXPECT(!on_function.HasCode("E0175"));
+}
+
+WOLANG_TEST(TypeCheck, SaveRefusesATypeItCannotWriteBack) {
+  Fixture array(R"(
+struct Grid {
+  @Save
+  var cells: [4]int
+}
+)");
+  WOLANG_EXPECT(array.HasCode("E0176"));
+
+  Fixture virtual_class(R"(
+class Actor {
+  virtual fun Tick() {}
+}
+
+class Holder {
+  @Save
+  var who: Actor? = null
+}
+)");
+  WOLANG_EXPECT(virtual_class.HasCode("E0176"));
+
+  Fixture plain_class(R"(
+class Actor {
+  var hp: int = 0
+}
+
+enum Mood {
+  Calm
+  Angry
+}
+
+struct Pair {
+  var a: int
+  var b: int
+}
+
+class Holder {
+  @Save
+  var who: Actor? = null
+  @Save
+  var mood: Mood = Mood.Calm
+  @Save
+  var pair: Pair = Pair(1, 2)
+  @Save
+  var label: text = "x"
+  @Save
+  var ratio: float = 0.5
+  @Save
+  var alive: bool = true
+}
+)");
+  WOLANG_EXPECT(!plain_class.HasCode("E0176"));
+  WOLANG_EXPECT(!plain_class.HasCode("E0175"));
+}
+
+WOLANG_TEST(TypeCheck, ReplicationNeedsAScriptClassMember) {
+  Fixture fine(R"(
+class Pawn {
+  @Replicated
+  var health: int = 100
+  @Replicated(owner)
+  var ammo: int = 30
+  @Server
+  fun Fire(power: int) {}
+  @Client(unreliable)
+  fun Flash(strength: float) {}
+  @Multicast
+  fun Boom() {}
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0178"));
+  WOLANG_EXPECT(!fine.HasCode("E0179"));
+
+  Fixture in_struct(R"(
+struct Pawn {
+  @Replicated
+  var health: int = 100
+}
+)");
+  WOLANG_EXPECT(in_struct.HasCode("E0178"));
+
+  Fixture on_function(R"(
+@Server
+fun Fire() {}
+)");
+  WOLANG_EXPECT(!on_function.HasCode("E0178"));
+
+  Fixture two(R"(
+class Pawn {
+  @Server
+  @Client
+  fun Fire() {}
+}
+)");
+  WOLANG_EXPECT(two.HasCode("E0178"));
+
+  Fixture unknown(R"(
+class Pawn {
+  @Replicated(loudly)
+  var health: int = 100
+}
+)");
+  WOLANG_EXPECT(unknown.HasCode("E0178"));
+
+  Fixture field_on_method(R"(
+class Pawn {
+  @Replicated
+  fun Fire() {}
+}
+)");
+  WOLANG_EXPECT(field_on_method.HasCode("E0178"));
+
+  Fixture rpc_on_field(R"(
+class Pawn {
+  @Server
+  var health: int = 100
+}
+)");
+  WOLANG_EXPECT(rpc_on_field.HasCode("E0178"));
+}
+
+WOLANG_TEST(TypeCheck, ReplicationSendsOnlyWhatAHostCanRead) {
+  Fixture returns(R"(
+class Pawn {
+  @Server
+  fun Fire() -> int => 1
+}
+)");
+  WOLANG_EXPECT(returns.HasCode("E0179"));
+
+  Fixture object_parameter(R"(
+class Target {
+  var hp: int = 0
+}
+
+class Pawn {
+  @Server
+  fun Aim(at: Target) {}
+}
+)");
+  WOLANG_EXPECT(object_parameter.HasCode("E0179"));
+
+  Fixture object_field(R"(
+class Target {
+  var hp: int = 0
+}
+
+class Pawn {
+  @Replicated
+  var aim: Target? = null
+}
+)");
+  WOLANG_EXPECT(object_field.HasCode("E0179"));
+
+  Fixture value_struct(R"(
+struct Spot {
+  var x: float
+  var y: float
+}
+
+class Pawn {
+  @Replicated
+  var at: Spot = Spot(0.0, 0.0)
+  @Server
+  fun Move(to: Spot) {}
+}
+)");
+  WOLANG_EXPECT(!value_struct.HasCode("E0179"));
+
+  Fixture struct_with_object(R"(
+class Target {
+  var hp: int = 0
+}
+
+struct Aim {
+  var at: Target? = null
+}
+
+class Pawn {
+  @Server
+  fun Shoot(how: Aim) {}
+}
+)");
+  WOLANG_EXPECT(struct_with_object.HasCode("E0179"));
+}
+
+WOLANG_TEST(TypeCheck, ASavedStructIsSavedWholeUnlessItMarksItsOwnFields) {
+  Fixture whole(R"(
+struct Spot {
+  var x: float
+  var y: float
+}
+
+class Mover {
+  @Save
+  var spot: Spot = Spot(0.0, 0.0)
+}
+)");
+  WOLANG_EXPECT(!whole.HasCode("E0176"));
+
+  Fixture hole(R"(
+struct Grid {
+  var cells: [4]int
+}
+
+class Mover {
+  @Save
+  var grid: Grid
+}
+)");
+  WOLANG_EXPECT(hole.HasCode("E0176"));
+
+  Fixture marked(R"(
+struct Grid {
+  @Save
+  var size: int
+  var cells: [4]int
+}
+
+class Mover {
+  @Save
+  var grid: Grid
+}
+)");
+  WOLANG_EXPECT(!marked.HasCode("E0176"));
 }
 
 }  // namespace

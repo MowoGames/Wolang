@@ -144,6 +144,17 @@ enum class OperatorKind : uint8_t {
 // One name declared inside a named type. Member tables are part of the file
 // resolution that produced them rather than of the type store, so that
 // changing a field's type invalidates everything that reads it.
+// What a host does with a field or a function once the program runs
+// somewhere other than where it started (D268). Wolang does no networking:
+// these are facts the checker validates and reflection reports.
+enum class Replication : uint8_t {
+  kNone,
+  kReplicated,
+  kServer,
+  kClient,
+  kMulticast,
+};
+
 struct Member {
   static constexpr uint32_t kNoSource = 0xFFFFFFFFu;
 
@@ -173,6 +184,14 @@ struct Member {
   bool is_weak = false;
   // Methods: `unsafe fun`, which charges its caller the `unsafe` effect (D236).
   bool is_unsafe = false;
+  // Fields: `@Save`, which `std.save` writes and reads back (D266).
+  bool is_save = false;
+  // Fields and methods: the replication attribute written on it (D268).
+  Replication replication = Replication::kNone;
+  // `@Replicated(owner)`: only the owning connection gets the field.
+  bool owner_only = false;
+  // `@Server(unreliable)` and its kin: the call may be dropped.
+  bool unreliable = false;
   // Methods: whether the declaration has a body. One without, on an `extern
   // class`, is the host's function, which a call from another file must
   // name by its symbol (D213).
@@ -194,6 +213,9 @@ struct Member {
            lhs.is_override == rhs.is_override &&
            lhs.is_weak == rhs.is_weak &&
            lhs.is_unsafe == rhs.is_unsafe && lhs.has_body == rhs.has_body &&
+           lhs.is_save == rhs.is_save && lhs.replication == rhs.replication &&
+           lhs.owner_only == rhs.owner_only &&
+           lhs.unreliable == rhs.unreliable &&
            lhs.operator_kind == rhs.operator_kind &&
            lhs.depends_on == rhs.depends_on;
   }

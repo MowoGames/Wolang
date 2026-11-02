@@ -168,7 +168,12 @@ class Formatter {
   void PushIndent() { indent_ += static_cast<int>(options_.indent_width); }
   void PopIndent() { indent_ -= static_cast<int>(options_.indent_width); }
 
+  // A line break inside `{}` of a string would end the string (D290), so the
+  // column limit does not apply there.
   bool Fits(const std::string& piece) const {
+    if (interpolation_depth_ > 0) {
+      return piece.find('\n') == std::string::npos;
+    }
     return piece.find('\n') == std::string::npos &&
            Column() + piece.size() <= options_.column_limit;
   }
@@ -921,6 +926,29 @@ class Formatter {
 
   // ----------------------------------------------------------- expressions --
 
+  // After `as float` a `<` opens generic arguments (D290), so an operand that
+  // ends in a cast cannot sit bare on the left of one.
+  bool EndsWithCast(ExprId id) const {
+    if (!ast_.Contains(id)) {
+      return false;
+    }
+    const Expr& expr = ast_.Get(id);
+    switch (expr.kind) {
+      case ExprKind::kCast:
+        return true;
+      case ExprKind::kBinary:
+      case ExprKind::kAssign:
+      case ExprKind::kRange:
+        return expr.rhs.is_valid() && EndsWithCast(expr.rhs);
+      case ExprKind::kUnary:
+      case ExprKind::kAwait:
+      case ExprKind::kSpawn:
+        return EndsWithCast(expr.lhs);
+      default:
+        return false;
+    }
+  }
+
   void EmitExpr(ExprId id, Precedence context = Precedence::kNone) {
     if (!ast_.Contains(id)) {
       Put("/* missing */");
@@ -951,7 +979,9 @@ class Formatter {
             PutEscaped(ast_.string(piece.aux));
           } else {
             Put("{");
+            ++interpolation_depth_;
             EmitExpr(part);
+            --interpolation_depth_;
             Put("}");
           }
         }
@@ -1042,8 +1072,14 @@ class Formatter {
           // and `Length^2` is how a dimension is written -- including by the
           // diagnostic renderer, which the formatter should agree with.
           const bool power = in_dimension_ && expr.op == TokenKind::kCaret;
-          EmitExpr(expr.lhs,
-                   right_associative ? Tighter(precedence) : precedence);
+          if (expr.op == TokenKind::kLess && EndsWithCast(expr.lhs)) {
+            Put("(");
+            EmitExpr(expr.lhs);
+            Put(")");
+          } else {
+            EmitExpr(expr.lhs,
+                     right_associative ? Tighter(precedence) : precedence);
+          }
           if (!power) {
             Put(" ");
           }
@@ -1618,6 +1654,7 @@ class Formatter {
 
   // Set while writing a dimension's product, where `^` is a power.
   bool in_dimension_ = false;
+  int interpolation_depth_ = 0;
 
   const SourceManager& sources_;
   const StringInterner& interner_;

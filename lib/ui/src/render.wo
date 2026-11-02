@@ -1,0 +1,175 @@
+need font.{BlendPixel, DrawText, SampleFont}
+need image.{Image, ImageNew}
+
+offer fun FillRect(target: Image, x: int, y: int, w: int, h: int, colour: u32) {
+  const alpha = (colour >> 24) as int
+  const red = ((colour >> 16) % 256) as int
+  const green = ((colour >> 8) % 256) as int
+  const blue = (colour % 256) as int
+  var row = y
+  while row < y + h {
+    var column = x
+    while column < x + w {
+      BlendPixel(target, column, row, red, green, blue, alpha)
+      column = column + 1
+    }
+    row = row + 1
+  }
+}
+
+offer fun Render(target: Image, ui: Ui) uses unsafe {
+  const font = ui.font
+  const commands = ui.commands
+  var i = 0
+  while i < commands.Len() {
+    const command = commands.At(i)
+    const labels = ui.LabelOf(command)
+    if command.kind == kDrawFill {
+      FillRect(
+          target,
+          command.x,
+          command.y,
+          command.width,
+          command.height,
+          command.colour)
+    } else if command.kind == kDrawText {
+      DrawText(
+          target,
+          font,
+          labels,
+          command.size,
+          command.x,
+          command.y,
+          command.colour)
+    }
+    i = i + 1
+  }
+}
+
+fun Rig() -> Ui? uses unsafe {
+  match SampleFont() {
+    Ok(font) => {
+      return UiNew(font, StyleDefault())
+    }
+    _ => {
+      return null
+    }
+  }
+}
+
+fun Canvas(width: int, height: int) -> Image? uses unsafe {
+  match ImageNew(width, height) {
+    Ok(image) => {
+      return image
+    }
+    _ => {
+      return null
+    }
+  }
+}
+
+fun Checksum(image: Image) -> int {
+  var sum = 0
+  var y = 0
+  while y < image.height {
+    var x = 0
+    while x < image.width {
+      sum = (sum * 31 + image.Get(x, y) as int) % 1000000007
+      x = x + 1
+    }
+    y = y + 1
+  }
+  return sum
+}
+
+@Test
+fun FillsARectangleAndClipsAtTheEdges() -> bool uses unsafe {
+  if const image = Canvas(40, 40) {
+    FillRect(image, 5, 5, 10, 10, 4294901760)
+    FillRect(image, 35, 35, 20, 20, 4278255360)
+    FillRect(image, -10, -10, 12, 12, 4278190335)
+    return image.Get(5, 5) == 4294901760 && image.Get(4, 5) == 0 && image.Get(
+        14,
+        14) == 4294901760 && image.Get(15, 15) == 0 && image.Get(39, 39) == 4278255360 && image.Get(
+        0,
+        0) == 4278190335 && image.Get(1, 1) == 4278190335 && image.Get(2, 2) == 0
+  }
+  return false
+}
+
+@Test
+fun BlendsAHalfOpaqueFillOverWhatIsThere() -> bool uses unsafe {
+  if const image = Canvas(4, 4) {
+    FillRect(image, 0, 0, 4, 4, 4294967295)
+    FillRect(image, 0, 0, 2, 2, 2147483648)
+    return image.Get(3, 3) == 4294967295 && image.Get(0, 0) != 4294967295 && image.Get(
+        0,
+        0) != 2147483648
+  }
+  return false
+}
+
+@Test
+fun RendersTheDrawListInOrder() -> bool uses unsafe {
+  if const ui = Rig() {
+    if const image = Canvas(120, 60) {
+      ui.Begin()
+      ui.Fill(0, 0, 120, 60, 4278190335)
+      ui.Fill(10, 10, 20, 20, 4294901760)
+      ui.Write(40, 10, "AB", 4294967295)
+      Render(image, ui)
+      var lit = 0
+      var x = 40
+      while x < 70 {
+        var y = 10
+        while y < 28 {
+          if image.Get(x, y) == 4294967295 {
+            lit = lit + 1
+          }
+          y = y + 1
+        }
+        x = x + 1
+      }
+      return image.Get(0, 0) == 4278190335 && image.Get(15, 15) == 4294901760 && image.Get(
+          35,
+          15) == 4278190335 && lit > 60
+    }
+  }
+  return false
+}
+
+@Test
+fun RendersAFrameToTheSamePicture() -> bool uses unsafe {
+  if const ui = Rig() {
+    if const image = Canvas(64, 48) {
+      ui.Begin()
+      ui.Panel(2, 2, 60, 44)
+      ui.Label("HI")
+      ui.Button("OK")
+      ui.Checkbox("A", true)
+      Render(image, ui)
+      const first = Checksum(image)
+      if const again = Canvas(64, 48) {
+        Render(again, ui)
+        return first == Checksum(again) && first != 0 && image.Get(3, 3) == ui.style.panel
+      }
+    }
+  }
+  return false
+}
+
+@Test
+fun AFrameMatchesTheStoredPicture() -> bool uses unsafe {
+  if const ui = Rig() {
+    if const image = Canvas(64, 48) {
+      ui.Begin()
+      ui.Panel(2, 2, 60, 44)
+      ui.Label("HI")
+      ui.Button("OK")
+      ui.Checkbox("A", true)
+      Render(image, ui)
+      return Checksum(image) == 111681090
+    }
+  }
+  return false
+}

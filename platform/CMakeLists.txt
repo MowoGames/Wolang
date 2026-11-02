@@ -7,7 +7,7 @@
 # One backend per system, chosen here rather than by `#ifdef` inside one
 # file: a file that is three systems at once is one nobody can read.
 
-set(WOLANG_PLATFORM_SOURCES common.cc)
+set(WOLANG_PLATFORM_SOURCES common.cc gpu.cc)
 set(WOLANG_PLATFORM_LIBS "")
 set(WOLANG_PLATFORM_BACKEND "none")
 

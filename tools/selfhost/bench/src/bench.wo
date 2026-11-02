@@ -1,0 +1,145 @@
+need std.arena.{ArenaNew}
+need std.fmt.{Int}
+need std.fs.{ReadText, WriteText}
+need std.io.{Print}
+need std.list.{List, ListNew}
+need std.map.{IntMapNew, TextMapNew}
+need std.mem.{ArrayNew, Free}
+need std.text.{BuilderNew}
+need std.time.{ElapsedMillis, Instant, Now}
+
+fun BuildKeys(count: int) -> List<text> uses unsafe {
+  var keys = ListNew<text>()
+  var i = 0
+  while i < count {
+    var builder = BuilderNew()
+    builder.Append("identifier_")
+    builder.Append(Int(i))
+    keys.Push(builder.Release())
+    i = i + 1
+  }
+  return keys
+}
+
+fun IntMapRun(count: int) -> int uses unsafe {
+  var map = IntMapNew<int>()
+  var i = 0
+  while i < count {
+    map.Put(i * 7, i)
+    i = i + 1
+  }
+
+  var sum = 0
+  i = 0
+  while i < count {
+    sum = sum + map.Get(i * 7, 0)
+    i = i + 1
+  }
+  return sum
+}
+
+fun TextMapRun(keys: List<text>) -> int uses unsafe {
+  var map = TextMapNew<int>()
+  var i = 0
+  while i < keys.Len() {
+    map.Put(keys.At(i), i)
+    i = i + 1
+  }
+
+  var sum = 0
+  i = 0
+  while i < keys.Len() {
+    sum = sum + map.Get(keys.At(i), 0)
+    i = i + 1
+  }
+  return sum
+}
+
+fun BuilderRun(count: int) -> int uses unsafe {
+  var builder = BuilderNew()
+  var i = 0
+  while i < count {
+    builder.Append("token ")
+    builder.AppendByte(10)
+    i = i + 1
+  }
+  return builder.Len()
+}
+
+fun ReadRun(path: text) -> int uses io, unsafe {
+  return ReadText(path, 134217728).length as int
+}
+
+fun AllocRun(count: int) -> int uses unsafe {
+  var total = 0
+  var i = 0
+  while i < count {
+    const block = ArrayNew<int>(64)
+    block[0] = i
+    total = total + block[0]
+    Free(block)
+    i = i + 1
+  }
+  return total
+}
+
+fun ArenaRun(count: int) -> int uses unsafe {
+  var pool = ArenaNew(1048576)
+  var total = 0
+  var i = 0
+  while i < count {
+    var block = pool.Take(512)
+    block[0] = 1
+    total = total + (block[0] as int)
+    if i % 1000 == 999 {
+      pool.Reset()
+    }
+    i = i + 1
+  }
+  return total
+}
+
+fun Lap(name: text, since: Instant, checksum: int) uses io, time, unsafe {
+  const millis = ElapsedMillis(since, Now()) as int
+  Print("{name}: {Int(millis)} ms (checksum {Int(checksum)})")
+}
+
+fun Run(scale: int) uses io, time, unsafe {
+  const keys = BuildKeys(100000 / scale)
+
+  var started = Now()
+  Lap("int map, put and get", started, IntMapRun(300000 / scale))
+
+  started = Now()
+  Lap("text map, put and get", started, TextMapRun(keys))
+
+  started = Now()
+  Lap("builder, small appends", started, BuilderRun(2000000 / scale))
+
+  var source = BuilderNew()
+  var line = 0
+  while line < 100000 / scale {
+    source.Append("the quick brown fox jumps over the lazy dog\n")
+    line = line + 1
+  }
+  const path = "build/scratch/bench_input.txt"
+  const _written = WriteText(path, source.Release())
+
+  started = Now()
+  Lap("read a file as text", started, ReadRun(path))
+
+  started = Now()
+  Lap("array allocate and free", started, AllocRun(500000 / scale))
+
+  started = Now()
+  Lap("arena take and reset", started, ArenaRun(500000 / scale))
+}
+
+fun main() uses io, time, unsafe {
+  Run(1)
+}
+
+@Test
+fun RunsEveryBenchmarkOnATinyInput() -> bool uses io, time, unsafe {
+  return IntMapRun(100) > 0 && TextMapRun(BuildKeys(100)) > 0 && BuilderRun(100) == 700 && AllocRun(100) == 4950
+}

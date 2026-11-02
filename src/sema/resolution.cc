@@ -145,6 +145,36 @@ static bool HasAttribute(const Ast& ast, const StringInterner& interner, const I
   return false;
 }
 
+static void ApplyReplication(const Ast& ast, const StringInterner& interner, const Item& item, Member* member) {
+  for (AttributeId attribute_id : ast.Get(item.attributes)) {
+    const Attribute& attribute = ast.Get(attribute_id);
+    const std::string_view name = interner.Text(attribute.name);
+    Replication kind = Replication::kNone;
+    if (name == "Replicated") {
+      kind = Replication::kReplicated;
+    } else if (name == "Server") {
+      kind = Replication::kServer;
+    } else if (name == "Client") {
+      kind = Replication::kClient;
+    } else if (name == "Multicast") {
+      kind = Replication::kMulticast;
+    }
+    if (kind == Replication::kNone) {
+      continue;
+    }
+
+    member->replication = kind;
+    for (ExprId argument : ast.Get(attribute.args)) {
+      if (!ast.Contains(argument)) {
+        continue;
+      }
+      const std::string_view written = interner.Text(ast.Get(argument).name);
+      member->owner_only = member->owner_only || written == "owner";
+      member->unreliable = member->unreliable || written == "unreliable";
+    }
+  }
+}
+
 Dimensions FileResolution::ProductOf(DimensionId dimension) const {
   for (const auto& [id, product] : dimension_products) {
     if (id == dimension) {
@@ -1620,6 +1650,12 @@ void ResolveSignatures(TypeStore* types,
       member.is_override = HasFlag(member_entry.flags, ItemFlags::kOverride);
       member.is_unsafe = HasFlag(member_entry.flags, ItemFlags::kUnsafe);
       member.has_body = HasFlag(member_entry.flags, ItemFlags::kHasBody);
+      const ItemId member_item = ResolveItem(ast, child);
+      if (ast.Contains(member_item)) {
+        const Item& written = ast.Get(member_item);
+        member.is_save = HasAttribute(ast, *interner, written, "Save");
+        ApplyReplication(ast, *interner, written, &member);
+      }
       switch (member_entry.kind) {
         case ItemKind::kFunction:
           member.kind = MemberKind::kMethod;

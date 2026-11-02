@@ -9,12 +9,14 @@
 #
 #   wl build   [preset]            configure if needed, then build
 #   wl test    [filter] [preset]   unit tests; a filter runs `--filter <text>`
-#   wl lib     [pkg...]            library @Tests (default: std http game core gfx image math)
+#   wl lib     [pkg...]            library @Tests (default: std http game core gfx image math font ui audio gpu app)
+
 #   wl fuzz    [count] [seed]      the three tiers against each other
 #   wl fmt                         `wolang fmt --check` over what CI checks
 #   wl docs                        the checks CI runs on includes and docs
 #   wl ci      [preset]            everything above, in CI's order
 #   wl wo      <args...>           the built driver, e.g. `wl wo run x.wo`
+#   wl bench   [preset]            the per-frame script benchmark, a table to paste into docs/benchmarks.md
 #   wl log     <command> [lines]   the tail of a saved log
 #
 # Set WL_PRESET to change the default preset (debug).
@@ -97,7 +99,8 @@ cmd_lib() {
   local w status=0 pkgs
   w="$(driver "$PRESET")"
   [ -x "$w" ] || cmd_build >/dev/null || { cmd_build; return 1; }
-  if [ $# -gt 0 ]; then pkgs=("$@"); else pkgs=(std http game core gfx image math); fi
+  if [ $# -gt 0 ]; then pkgs=("$@"); else pkgs=(std http game core gfx image math font ui audio gpu app); fi
+
   for p in "${pkgs[@]}"; do
     if run "lib-$p" "$w" test "lib/$p"; then
       echo "lib/$p ok: $(tail -1 "$LOGS/lib-$p.log")"
@@ -143,7 +146,7 @@ cmd_fmt() {
 
 cmd_docs() {
   local status=0
-  for check in check_includes check_docs check_version; do
+  for check in check_includes check_docs check_site_docs test_make_site_docs check_version; do
     if run "$check" py "tools/package/$check.py"; then
       echo "$check ok"
     else
@@ -167,6 +170,14 @@ cmd_ci() {
   return $status
 }
 
+cmd_bench() {
+  local preset="${1:-release}"
+  cmd_build "$preset" >/dev/null || { cmd_build "$preset"; return 1; }
+  local bin="build/$preset/wolang_actor_bench"
+  [ -x "$bin" ] || bin="$bin.exe"
+  "$bin" benchmarks/actors/actors.wo
+}
+
 cmd_log() {
   local name="${1:?usage: wl log <command> [lines]}"
   tail -n "${2:-80}" "$LOGS/$name.log"
@@ -181,6 +192,7 @@ case "$command" in
   fuzz) cmd_fuzz "$@" ;;
   fmt) cmd_fmt ;;
   docs) cmd_docs ;;
+  bench) cmd_bench "$@" ;;
   ci) cmd_ci "$@" ;;
   wo) exec "$(driver "$PRESET")" "$@" ;;
   log) cmd_log "$@" ;;

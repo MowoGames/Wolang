@@ -1734,7 +1734,7 @@ class Lowerer {
     return static_cast<uint32_t>(states.size());
   }
 
-  void CallMachineBlock(TypeId machine, Symbol state, bool is_enter) {
+  void CallMachineBlock(TypeId, Symbol state, bool is_enter) {
     for (const MachineBlock& block : machine_blocks_) {
       if (block.state != state || block.is_enter != is_enter) {
         continue;
@@ -2437,7 +2437,8 @@ class Lowerer {
     if (stmt.type.is_valid()) {
       const TypeId said = Apply(resolver_.Resolve(ast(), stmt.type));
       if (!type.is_valid() || types_->IsError(type) ||
-          types_->KindOf(said) == TypeKind::kString) {
+          types_->KindOf(said) == TypeKind::kString ||
+          (resolution().IsAbility(said) && !resolution().IsAbility(type))) {
         type = said;
       }
     }
@@ -2737,6 +2738,13 @@ class Lowerer {
 
     for (const StoredField& field : StoredFields(type)) {
       const TypeId erased = Erase(field.Type);
+      // A `Text` field owns its bytes: whoever built the object handed them
+      // over, so the last release gives them back (D289).
+      if (types_->KindOf(Apply(field.Type)) == TypeKind::kString) {
+        const InstId text_address = builder.FieldAddress(types_->Pointer(erased, /*is_mutable=*/true), self, field.Index);
+        FreeText(builder.Add(Opcode::kLoad, erased, {text_address}));
+        continue;
+      }
       if (!Counts(erased)) {
         continue;
       }
@@ -2797,6 +2805,8 @@ class Lowerer {
     uint32_t Index = 0;
     TypeId Type;
     bool Weak = false;
+    Symbol Name;
+    bool Save = false;
   };
 
   std::vector<StoredField> StoredFields(TypeId type) {
@@ -2838,11 +2848,264 @@ class Lowerer {
         field.Index = index;
         field.Type = substitution.empty() ? member.type : types_->Substitute(member.type, substitution);
         field.Weak = member.is_weak;
+        field.Name = member.name;
+        field.Save = member.is_save;
         fields.push_back(field);
         ++index;
       }
     }
     return fields;
+  }
+
+  // One number the schema leaves for the tier to fill in: where field
+  // |Field| of |Type| sits, or how big its object is (D266).
+  struct SaveWant {
+    TypeId Type;
+    uint32_t Field = 0;
+  };
+
+  // A name the schema can carry on one line, one per type.
+  std::string SaveNameOf(TypeId type, std::vector<std::pair<TypeId, std::string>>* names) {
+    for (const auto& [seen, name] : *names) {
+      if (seen == type) {
+        return name;
+      }
+    }
+
+    std::string spelled = types_->Describe(*interner_, type);
+    for (char& letter : spelled) {
+      if (letter == ' ' || letter == '\t' || letter == '\n') {
+        letter = '_';
+      }
+    }
+    for (const auto& [seen, name] : *names) {
+      if (name == spelled) {
+        spelled.append("#");
+        spelled.append(std::to_string(type.index));
+        break;
+      }
+    }
+    names->emplace_back(type, spelled);
+
+    return spelled;
+  }
+
+  std::string SaveWantToken(std::vector<SaveWant>* wants, TypeId type, uint32_t field) {
+    for (size_t i = 0; i < wants->size(); ++i) {
+      if ((*wants)[i].Type == type && (*wants)[i].Field == field) {
+        return "@" + std::to_string(i);
+      }
+    }
+
+    SaveWant want;
+    want.Type = type;
+    want.Field = field;
+    wants->push_back(want);
+
+    return "@" + std::to_string(wants->size() - 1);
+  }
+
+  bool HasVirtualMethods(TypeId type) {
+    const FileResolution* const where = ResolutionOf(type);
+    TypeId named = type;
+    if (types_->KindOf(named) == TypeKind::kInstance) {
+      named = types_->Get(type).base;
+    }
+    for (TypeId current = named; current.is_valid(); current = where->BaseOf(current)) {
+      for (const Member& member : where->MembersOf(current)) {
+        if (member.kind == MemberKind::kMethod && (member.is_virtual || member.is_override)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  // The shape and the wire code of a field type `std.save` can write, and
+  // false for one it cannot. Classes and structs it meets are queued so
+  // that their own fields get described too (D266).
+  bool SaveShapeOf(TypeId type, std::vector<SaveWant>* wants, std::vector<std::pair<TypeId, std::string>>* names, std::vector<TypeId>* queue, std::string* shape, std::string* wire, int depth) {
+    if (depth > 8) {
+      return false;
+    }
+
+    switch (types_->KindOf(type)) {
+      case TypeKind::kBool:
+        *shape = "b";
+        *wire = "b";
+        return true;
+      case TypeKind::kChar:
+        *shape = "c";
+        *wire = "c";
+        return true;
+      case TypeKind::kInt: {
+        const Type& info = types_->Get(type);
+        const uint32_t bytes = 1u << static_cast<uint32_t>(info.int_width);
+        *shape = std::string(info.is_signed ? "i" : "u") + std::to_string(bytes);
+        *wire = *shape;
+        return true;
+      }
+      case TypeKind::kFloat:
+        *shape = types_->Get(type).float_width == FloatWidth::k32 ? "f4" : "f8";
+        *wire = *shape;
+        return true;
+      case TypeKind::kStr:
+        *shape = "s";
+        *wire = "s";
+        return true;
+      case TypeKind::kOptional: {
+        std::string inner_shape;
+        std::string inner_wire;
+        if (!SaveShapeOf(types_->ElementOf(type), wants, names, queue, &inner_shape, &inner_wire, depth + 1)) {
+          return false;
+        }
+        *shape = "o " + SaveWantToken(wants, type, 2) + " " + inner_shape;
+        *wire = "o(" + inner_wire + ")";
+        return true;
+      }
+      case TypeKind::kNamed:
+      case TypeKind::kInstance: {
+        const FileResolution* const where = ResolutionOf(type);
+        if (where->IsAbility(type) || types_->IsForeignClass(type)) {
+          return false;
+        }
+
+        const std::string name = SaveNameOf(type, names);
+        if (types_->IsHandle(type)) {
+          if (HasVirtualMethods(type)) {
+            return false;
+          }
+          *shape = "r " + name;
+          *wire = "r:" + name;
+          queue->push_back(type);
+          return true;
+        }
+
+        bool variants = false;
+        for (const Member& member : MembersAnywhere(type)) {
+          if (member.kind == MemberKind::kVariant) {
+            if (types_->KindOf(member.type) == TypeKind::kFunction) {
+              return false;
+            }
+            variants = true;
+          }
+        }
+        if (variants) {
+          *shape = "e";
+          *wire = "e:" + name;
+          return true;
+        }
+
+        *shape = "v " + name;
+        *wire = "v:" + name;
+        queue->push_back(type);
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  // The text `wolang_save_encode` and `wolang_save_decode` read: every class
+  // and struct reachable from |root| through a field marked `@Save`, with
+  // the numbers only a tier knows left as `@k` places (D266). Empty when a
+  // marked field holds something that cannot be written.
+  std::string SaveSchemaFor(TypeId root, std::vector<SaveWant>* wants) {
+    std::vector<std::pair<TypeId, std::string>> names;
+    std::vector<TypeId> queue;
+    std::vector<TypeId> done;
+
+    if (!types_->IsHandle(root) || types_->IsForeignClass(root) || HasVirtualMethods(root)) {
+      return std::string();
+    }
+
+    const std::string root_name = SaveNameOf(root, &names);
+    std::string body;
+    queue.push_back(root);
+    for (size_t at = 0; at < queue.size(); ++at) {
+      const TypeId type = queue[at];
+      if (std::find(done.begin(), done.end(), type) != done.end()) {
+        continue;
+      }
+      done.push_back(type);
+
+      // A struct is a value, and half of one is not worth saving: unless it
+      // marks fields of its own, all of it is written (D266).
+      const bool is_class = types_->IsHandle(type);
+      const std::vector<StoredField> every = StoredFields(type);
+      bool marked = is_class;
+      for (const StoredField& field : every) {
+        marked = marked || field.Save;
+      }
+
+      std::vector<StoredField> saved;
+      for (const StoredField& field : every) {
+        if (!marked || field.Save) {
+          saved.push_back(field);
+        }
+      }
+
+      body.append("TYPE ");
+      body.append(is_class ? "C " : "S ");
+      body.append(SaveNameOf(type, &names));
+      body.append(" ");
+      body.append(is_class ? SaveWantToken(wants, type, ir::kObjectSizeField) : std::string("0"));
+      body.append(" ");
+      body.append(std::to_string(saved.size()));
+      body.append("\n");
+      for (const StoredField& field : saved) {
+        std::string shape;
+        std::string wire;
+        if (!SaveShapeOf(Erase(field.Type), wants, &names, &queue, &shape, &wire, 0)) {
+          return std::string();
+        }
+        body.append("FIELD ");
+        body.append(interner_->Text(field.Name));
+        body.append(" ");
+        body.append(SaveWantToken(wants, type, field.Index + 1));
+        body.append(" ");
+        body.append(wire);
+        body.append(" ");
+        body.append(shape);
+        body.append("\n");
+      }
+    }
+
+    return "WSCHEMA 1\nROOT " + root_name + "\n" + body;
+  }
+
+  // The schema as a string, and a heap table holding the numbers it asks
+  // each tier for, as the pair `Shape<T>` is (D266).
+  InstId LowerSaveShape(TypeId wrapper, TypeId root) {
+    std::vector<SaveWant> wants;
+    const std::string schema = SaveSchemaFor(root, &wants);
+    const TypeId word = types_->u64();
+    const TypeId number = types_->Int(IntWidth::k64, /*is_signed=*/true);
+
+    InstId table = builder_->ConstInt(word, 0);
+    if (!schema.empty() && !wants.empty()) {
+      const TypeId made = types_->Slice(number, /*is_soa=*/false, /*is_mutable=*/true);
+      const InstId count = builder_->ConstInt(word, wants.size());
+      const InstId storage = builder_->Add(Opcode::kSoaNew, made, {count});
+      const TypeId pointer = types_->Pointer(number, /*is_mutable=*/true);
+      const InstId first = builder_->Extract(pointer, storage, 0);
+      const InstId length = builder_->ConstInt(types_->default_int(), wants.size());
+      for (size_t i = 0; i < wants.size(); ++i) {
+        const InstId answer = builder_->Add(Opcode::kTypeSize, number);
+        builder_->Mutable(answer).payload.integer = wants[i].Type.index;
+        builder_->Mutable(answer).field = wants[i].Field;
+
+        const InstId at = builder_->Add(Opcode::kIndexAddress, pointer, {first, builder_->ConstInt(types_->default_int(), i), length});
+        builder_->Mutable(at).is_unchecked = true;
+        builder_->Add(Opcode::kStore, TypeId{}, {at, answer});
+      }
+      table = builder_->Add(Opcode::kCast, word, {first});
+    }
+
+    const InstId text = builder_->ConstString(types_->str(), schema.empty() ? std::string("WSCHEMA 0\n") : schema);
+
+    return builder_->Add(Opcode::kMakeStruct, wrapper, {text, table});
   }
 
   bool IsWeakField(TypeId owner, uint32_t index) {
@@ -3266,6 +3529,20 @@ class Lowerer {
     builder_ = outer;
     current_function_ = outer_function;
     return index;
+  }
+
+  // An enum with variants, none of which carries anything.
+  bool IsTagOnlyEnum(TypeId type) {
+    const std::vector<std::vector<TypeId>> variants = VariantPayloads(type);
+    if (variants.empty()) {
+      return false;
+    }
+    for (const std::vector<TypeId>& carried : variants) {
+      if (!carried.empty()) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // What each variant of an enum carries, in declaration order; empty for
@@ -3739,6 +4016,29 @@ class Lowerer {
     }
   }
 
+  // Whether |id| allocates an owned string that nobody holds yet: a call that
+  // returns one, a `+` that joined two, or an interpolation with something in
+  // it. `??` hands back a text it found and a constant literal is not
+  // allocated, so neither counts (D133).
+  bool BuildsOwnedText(ExprId id) {
+    if (!ast().Contains(id) || types_->KindOf(DeclaredTypeOf(id)) != TypeKind::kString) {
+      return false;
+    }
+    const Expr& built = ast().Get(id);
+    switch (built.kind) {
+      case ExprKind::kCall:
+        return true;
+      case ExprKind::kBinary:
+        return built.op == TokenKind::kPlus;
+      case ExprKind::kStringLiteral: {
+        const std::span<const ExprId> inner = ast().Get(built.args);
+        return !(inner.empty() || (inner.size() == 1 && ast().Contains(inner[0]) && ast().Get(inner[0]).kind == ExprKind::kStringText));
+      }
+      default:
+        return false;
+    }
+  }
+
   InstId LowerString(const Expr& expr, TypeId type) {
     const std::span<const ExprId> parts = ast().Get(expr.args);
     if (parts.size() == 1 && ast().Contains(parts[0]) &&
@@ -3780,6 +4080,13 @@ class Lowerer {
         // that was already one belongs to whoever made it.
         text_is_fresh = types_->KindOf(held) != TypeKind::kStr &&
                         types_->KindOf(held) != TypeKind::kString;
+        // An owned string a call, a nested interpolation or a `+` just
+        // built belongs to nobody yet, so the piece gives it back. `??`
+        // hands back the text it found, and a literal with nothing to
+        // interpolate is a constant, so neither is fresh (D133).
+        if (!text_is_fresh) {
+          text_is_fresh = BuildsOwnedText(part);
+        }
       }
       if (!text.is_valid()) {
         continue;
@@ -4066,7 +4373,7 @@ class Lowerer {
     return {};
   }
 
-  InstId LowerPath(ExprId id, const Expr& expr, TypeId type,
+  InstId LowerPath(ExprId id, const Expr&, TypeId type,
                    Symbol name) {
     const Local* local = Find(name);
     if (local == nullptr) {
@@ -4453,7 +4760,14 @@ class Lowerer {
     // call an interpolated string makes (D110).
     if (opcode == Opcode::kAdd && IsView(TypeOf(expr.lhs)) &&
         IsView(TypeOf(expr.rhs))) {
-      return ConcatText(left, right);
+      const InstId joined = ConcatText(left, right);
+      if (BuildsOwnedText(expr.lhs)) {
+        FreeText(left);
+      }
+      if (BuildsOwnedText(expr.rhs)) {
+        FreeText(right);
+      }
+      return joined;
     }
     // Two strings are equal when they hold the same bytes. A pair of
     // pointers is not an answer to that, so this is a call -- and
@@ -4524,6 +4838,16 @@ class Lowerer {
       // no meaning for (D173).
       const TypeId both = ValueType(left).is_valid() ? ValueType(left)
                                                      : ValueType(right);
+      // An enum that carries nothing is its tag, so `==` compares tags, as
+      // `match` reads them. The dev tier does not compare two aggregates, and
+      // one function it refuses takes every caller of it into the
+      // interpreter with it (D287).
+      if ((opcode == Opcode::kEq || opcode == Opcode::kNe) &&
+          both.is_valid() && IsTagOnlyEnum(Erase(both))) {
+        return builder_->Add(opcode, types_->bool_type(),
+                             {builder_->Extract(types_->u32(), AsType(left, both), 0),
+                              builder_->Extract(types_->u32(), AsType(right, both), 0)});
+      }
       return builder_->Add(opcode, types_->bool_type(),
                            {AsType(left, both), AsType(right, both)});
     }
@@ -5094,6 +5418,9 @@ class Lowerer {
     InstId index;
     InstId length;
     TypeId type;
+    // A `Text` field of a class: the step's type is erased, and the object
+    // is what owns the bytes (D289).
+    bool owned_text = false;
 
     bool index_is_element() const { return index.is_valid(); }
   };
@@ -5209,6 +5536,7 @@ class Lowerer {
           place.root_type = owner;
           place.path.push_back(Step{FieldIndex(owner, expr.name), InstId{},
                                     InstId{}, field_type});
+          place.path.back().owned_text = read != nullptr && types_->KindOf(Apply(read->type)) == TypeKind::kString;
           return place;
         }
         // A field through an address: a reference is a pointer here
@@ -5423,6 +5751,7 @@ class Lowerer {
     }
     place.path.push_back(Step{FieldIndex(self_type_, name), InstId{},
                               InstId{}, Erase(member->type)});
+    place.path.back().owned_text = types_->KindOf(Apply(member->type)) == TypeKind::kString;
     return place;
   }
 
@@ -5516,6 +5845,15 @@ class Lowerer {
     }
     const InstId address = AddressOfPlace(place);
     if (!Counts(stored)) {
+      // A class owns the bytes of its `Text` field, so what a new one
+      // replaces goes back (D289).
+      if (IsOwnedTextField(place)) {
+        const InstId replaced = builder_->Add(Opcode::kLoad, stored, {address});
+        builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+        InvalidateDerived(place);
+        FreeText(replaced);
+        return;
+      }
       builder_->Add(Opcode::kStore, TypeId{}, {address, value});
       InvalidateDerived(place);
       return;
@@ -5618,6 +5956,15 @@ class Lowerer {
       }
     }
     return false;
+  }
+
+  // Whether |place| is a `Text` field of a class: the object, not a binding,
+  // owns the bytes (D289).
+  bool IsOwnedTextField(const Place& place) {
+    if (place.path.empty() || place.path.back().index.is_valid() || place.soa_record.is_valid()) {
+      return false;
+    }
+    return place.path.back().owned_text && IsCountedHandle(OwnerOfLastStep(place));
   }
 
   bool IsWeakPlace(const Place& place) {
@@ -5776,6 +6123,9 @@ class Lowerer {
     if (opcode == Opcode::kAdd && IsView(TypeOf(expr.lhs)) &&
         IsView(TypeOf(expr.rhs))) {
       answer = ConcatText(old, right);
+      if (BuildsOwnedText(expr.rhs)) {
+        FreeText(right);
+      }
     } else if (opcode == Opcode::kRem &&
                types_->KindOf(held) == TypeKind::kFloat) {
       const TypeId wide = types_->Float(FloatWidth::k64);
@@ -5971,6 +6321,33 @@ class Lowerer {
           builder_->Mutable(size).payload.integer = measured.index;
           return size;
         }
+      }
+    }
+
+    // `ShapeOf<T>()` is the schema `std.save` reads an object by, and a
+    // table of the numbers only a tier knows. `HandleOf(object)` and
+    // `FromHandle<T>(word)` are the object as the word the runtime takes
+    // and the word it gives back (D266).
+    if (IntrinsicName(expr) == "ShapeOf" && arguments.empty()) {
+      const Binding* binding = IntrinsicBinding(expr);
+      const TypeId wrapper = Erase(Apply(type));
+      const std::vector<TypeId> named = types_->ArgumentsOf(wrapper);
+      if ((binding == nullptr || !binding->has_body) && !named.empty()) {
+        return LowerSaveShape(wrapper, Erase(Apply(named[0])));
+      }
+    }
+    if (IntrinsicName(expr) == "HandleOf" && arguments.size() == 1) {
+      const Binding* binding = IntrinsicBinding(expr);
+      if (binding == nullptr || !binding->has_body) {
+        return builder_->Add(Opcode::kCast, types_->u64(), {arguments[0]});
+      }
+    }
+    if (IntrinsicName(expr) == "FromHandle" && arguments.size() == 1) {
+      const Binding* binding = IntrinsicBinding(expr);
+      if (binding == nullptr || !binding->has_body) {
+        const InstId made = builder_->Add(Opcode::kCast, Erase(Apply(type)), {Widen(arguments[0], types_->u64())});
+        m_Fresh.emplace_back(current_function_, made);
+        return made;
       }
     }
 
@@ -6923,7 +7300,7 @@ class Lowerer {
     return CallAs(index, type, std::move(with_receiver));
   }
 
-  InstId LowerBlockValue(ExprId id, const Expr& expr, TypeId type) {
+  InstId LowerBlockValue(ExprId, const Expr& expr, TypeId type) {
     const size_t depth = locals_.size();
     ++scope_depth_;
     const std::span<const StmtId> stmts = ast().Get(expr.stmts);
@@ -7743,7 +8120,7 @@ class Lowerer {
   // Declared here, with the closure's own type as its signature, and the
   // body queued -- the value of the expression is the function's address,
   // which is what a `fun(...)` value is in every tier (D106).
-  InstId LowerClosure(ExprId id, const Expr& expr) {
+  InstId LowerClosure(ExprId id, const Expr&) {
     const TypeId signature = Erase(Apply(TypeOf(id)));
     if (types_->KindOf(signature) != TypeKind::kFunction) {
       return builder_->Undef(signature);

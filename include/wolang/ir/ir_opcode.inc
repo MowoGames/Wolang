@@ -144,7 +144,10 @@ WOLANG_IR_OP(CallIndirect, "call.indirect", "calls through a value")
 WOLANG_IR_OP(TypeSize, "type.size",
              "how many bytes a value of the type named by |integer| "
              "takes. A question only a tier can answer, the way `new`'s "
-             "size is -- and what making room for a component needs")
+             "size is -- and what making room for a component needs. With "
+             "a field it is where that field sits in the type, and with "
+             "the object-size field it is how big a class's object is "
+             "(D266)")
 // ------------------------------------------------------------ conversions ---
 
 WOLANG_IR_OP(Cast, "cast", "a numeric conversion written with `as`")

@@ -4,6 +4,100 @@ What changed in each release, newest first. The decision behind a change
 is cited as `(D<n>)` and written up in [docs/decisions.md](docs/decisions.md);
 how a release is made is in [docs/releasing.md](docs/releasing.md).
 
+## 1.3.0
+
+1.3.0 finishes what an engine needed from the language in 1.2.0, brings
+back the five libraries 1.2.0 cut, and starts writing the compiler in
+Wolang. Very little in it breaks a 1.2.0 program.
+
+### Added
+
+- `@Save` and `std.save` (D266). A field marked `@Save` is written by name and
+  read back, with shared references and cycles kept, tolerant of a field added
+  or removed since the save. C API calls save and load an object graph.
+- Tasks run on the caller's clock (D267). `Tick(dt)` advances every ready
+  `task fun`, `Wait(seconds)` finishes after that much ticked time, `Event` is a
+  flag a task looks at, and `wolang_vm_tick` and `wolang_vm_tasks_pending` do
+  the same for a VM. There is no `routine` keyword: `task fun` and `wait` were
+  already the spelling for code that suspends.
+- Replication attributes (D268): `@Replicated` on a field and `@Server`,
+  `@Client`, `@Multicast` on a method, checked (`E0175`, `E0176`, `E0178`,
+  `E0179`) and reported through the class reflection of the C API. Wolang sends
+  nothing itself.
+- Host controls (C API 1.4 and 1.5). `wolang_vm_set_budget` gives a call a tick
+  budget so a runaway script stops with an error (D265). `wolang_vm_expect_abi`
+  and `wolang_vm_expect_struct` make a binding state the layouts it was built
+  for, and a mismatch fails the load (D271). A mod is never granted `unsafe`
+  (D270). A trap carries its source place and the script's call stack to the
+  reporter (D269). `wolang_vm_set_remap` carries the objects a host holds
+  through a hot reload instead of refusing it.
+- Five libraries. `font` reads TrueType and lays text out (D276). `ui` is an
+  immediate-mode toolkit with a software renderer (D277). `audio` mixes and
+  reads and writes WAV, and reads the headers of Ogg files (D279). `gpu` is a
+  backend-neutral device with a null and an OpenGL 3.3 backend (D280). `app` is
+  a fixed-timestep shell around them that runs without a window (D281).
+- `std.arena`, a bump allocator held across calls (D285), and faster `std`
+  copies, file reads and map slots (D284).
+- `tools/selfhost`: a lexer and a parser for Wolang written in Wolang, checked
+  token for token and tree for tree against the C++ ones on the repository's own
+  files (D283, D288); a first tool, package fetch and lock, in Wolang (D286);
+  `wolang tokens --stable` for the comparison.
+- `wl bench`, and [docs/benchmarks.md](docs/benchmarks.md) with calls per
+  millisecond and objects per call for each tier (D273).
+- On Linux, `wolang build` can link with a bundled linker and a musl sysroot
+  when the machine has no C compiler, and the same source makes the same object
+  bytes (D272).
+- CI rows for macOS and Windows on ARM64, and `AotTest` runs under the `asan`
+  preset on Windows.
+
+### Changed
+
+- The binding generator registers each class with a liveness token and writes
+  the layouts a binding relies on (`--no-token` leaves the token out) (D271).
+- A reload that changes a class the host holds an object of now migrates the
+  object when the host registered a remap, and is refused with a note when it
+  did not.
+- The site documentation publishes every package and 18 guides, and CI checks
+  that each page converts before the publish job runs.
+
+### Fixed
+
+- A class with an owned `Text` field no longer corrupts the heap when its last
+  handle goes, and gives the bytes back when the field is replaced (D289).
+- The text an interpolation, a `+` or a `+=` builds is given back, with a
+  `wolang_texts_live` counter to test it (D275).
+- An annotated `T!` that holds an error with data releases its box, and an
+  annotated local of an ability type keeps the annotation (D275).
+- An unknown error name in a `match` arm on a `T!` is `E0166`, not the
+  misleading `E0201`. A function held in a local and handed to a `@Thread`
+  function is `E0163` unless the caller states `uses unsafe` (D275). A `const`
+  array handed to a `[]mut T` parameter is `E0105`.
+- An or-pattern trapped in the reference interpreter and not in the compiled
+  tiers; comparing two enum values sent the whole function to the interpreter
+  (D287). `wolang fetch` never worked on Windows (quoting for `cmd.exe`).
+- `AotTest` failed to link under `asan` on Windows.
+
+### Breaking
+
+Little, and none of it for a program that does not use these:
+
+- A function held in a local and passed to a `@Thread` function is `E0163`.
+- A `const` array passed to a `[]mut T` parameter is `E0105`.
+- A mod is never granted `unsafe`, even if the host lists it (D270).
+- A reload that would change a held object's class is refused unless the host
+  registered a remap.
+- The C API is at 1.5. A host built against an earlier minor keeps working.
+
+### Not done
+
+- Ogg Vorbis audio is not decoded; the headers are read (D279).
+- Nothing has run on Linux, macOS or Windows on ARM64. The bundled-linker link
+  and the OpenGL backend have not run at all, and the execution budget is
+  compiled for x64 only.
+- `Class()` with no arguments ignores field initializers and leaves class-typed
+  fields null.
+- Assigning to an owned `Text` variable does not give back the old value.
+
 ## 1.2.0
 
 The breaking language decisions land together, the gaps found since 1.1 are

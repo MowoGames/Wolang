@@ -1,0 +1,85 @@
+need std.io.{Print}
+need std.math.{Sin}
+need app.{AppNew, ConfigNew, Game}
+need audio.{Clip, ClipNew, Mixer}
+need gfx.{Event, kKeyEscape, kKeySpace, kPressed}
+need gpu.{Device}
+
+class Hello {
+  var device: Device
+  var mixer: Mixer
+  var beep: Clip
+  var width: int
+  var height: int
+  var time: float = 0.0
+}
+
+extend Hello as Game {
+  fun Update(dt: float) uses unsafe {
+    time = time + dt
+  }
+
+  fun Draw(_alpha: float) uses unsafe {
+    device.Begin(
+        null,
+        width,
+        height,
+        0.5 + 0.5 * Sin(time),
+        0.2,
+        0.4,
+        1.0,
+        false)
+    device.End()
+  }
+
+  fun OnEvent(event: Event) -> bool uses unsafe {
+    if event.kind == kPressed {
+      if event.key == kKeyEscape {
+        return false
+      }
+      if event.key == kKeySpace {
+        const _voice = mixer.Play(beep, 0.5, 0.0, false)
+      }
+    }
+
+    return true
+  }
+}
+
+fun Tone() -> Clip! uses unsafe {
+  var clip = ClipNew(24000, 1, 48000)?
+  var i = 0
+  while i < 24000 {
+    clip.Set(i, 0, 0.5 * Sin(6.2831853 * 440.0 * i as float / 48000.0))
+    i = i + 1
+  }
+
+  return clip
+}
+
+fun main() uses io, unsafe {
+  match AppNew(ConfigNew("Wolang app", 640, 480)) {
+    Ok(app) => {
+      if !app.HasWindow() {
+        Print("no window here; nothing to show")
+        return
+      }
+
+      match Tone() {
+        Ok(beep) => {
+          var game = Hello(app.device, app.output.mixer, beep, 640, 480, 0.0)
+          const frames = app.Run(game)
+          Print(
+              "{frames} frames, backend {app.device.Name()}, sound {app.HasSound()}")
+        }
+        _ => {
+          Print("could not make the tone")
+        }
+      }
+      app.Close()
+    }
+    _ => {
+      Print("could not start")
+    }
+  }
+}

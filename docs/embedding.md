@@ -84,9 +84,10 @@ and pointing `CMAKE_PREFIX_PATH` at it is enough.
 | **Configure** | `wolang_vm_get_global`/`_set_global` read and write the program's module-level `var`s. A script's `var gravity: f32 = -9.8` is a setting the host owns. |
 | **Extend** | `wolang_vm_bind` makes a host function reachable: the script declares `extern "C" fun host_log(message: *u8, length: u64)` and calls it. |
 | **Capture** | `wolang_vm_set_writer` sends the program's output to the host's console instead of standard output; `wolang_vm_set_reporter` does the same for diagnostics. `std.io.Print` and `Eprint` reach them too, in every tier (D259). |
-| **Contain** | `wolang_vm_set_step_limit` stops a call after so many instructions, for scripts the host did not write. It keeps calls on the interpreter, which is the trade. |
-| **Debug** | `wolang_vm_debug_listen` opens a port an editor attaches to with the Debug Adapter Protocol; breakpoints stop the host's call where it is. See [debugging](debugging.md). |
+| **Contain** | `wolang_vm_set_budget` stops a call after so many ticks in either tier, for scripts the host did not write (D265). `wolang_vm_set_step_limit` counts interpreter instructions and keeps calls on the interpreter. |
+| **Debug** | `wolang_vm_debug_listen` opens a port an editor attaches to with the Debug Adapter Protocol; breakpoints stop the host's call where it is. See [debugging](debugging.md). A trap that ends a call leaves `wolang_vm_errors` (and the reporter) the kind, the source line and the script's call stack, one `in Function (file:line:column)` per frame, innermost first; the compiled tier gives function names without lines (D269). |
 | **Reload** | `wolang_vm_reload` loads everything again and keeps the program's state; `wolang_vm_file_count`/`_name` say which files to watch. |
+| **Tick** | `wolang_vm_tick` gives the program's `task`s a step and `dt` seconds of the host's clock, so `wait Wait(2.0)` means two seconds of the game's time (D267). |
 
 ## What crosses the boundary
 
@@ -212,7 +213,15 @@ like any C function. The dev tier is what an editor runs, with hot
 reloading; a call through a `WolangFunction` handle goes straight into
 compiled code when every argument is a number, a `bool` or an object. The
 interpreter is what runs under a debugger. `wolang_actor_bench` is built
-with everything else, and prints the table (D219).
+with everything else, and prints the table (D219), and a second one with
+calls per millisecond and objects allocated per call. The measured numbers,
+on a named machine and an optimized build, are in
+[benchmarks.md](benchmarks.md) (D273).
+
+A game that ships a library built ahead of time does not need a C compiler on
+the machine that builds it: on Linux `wolang build` links with a bundled
+`ld.lld` and a musl sysroot when there is no `c++` on `PATH`, and the object it
+writes is the same every time (D272, [building.md](building.md)).
 
 ## Bindings from an engine's reflection
 
@@ -246,10 +255,30 @@ wolang bind --reflection --effect World     Intermediate/Build/Generated/Debug/M
   is reached by its offset, asked for once from the engine's own
   reflection through `MowoWolangPropertyOffset(class, key)`.
 
-The engine supplies four functions the glue declares: that offset, and
-`MowoWolangRetain`/`Release`/`Alive` for its objects' lifetimes. With
+The engine supplies five functions the glue declares: that offset, and
+`MowoWolangRetain`/`Release`/`Alive`/`Token` for its objects' lifetimes.
+`MowoWolangToken(object, user)` answers a number that tells two objects
+apart that lived at the same address one after the other, such as an index
+and a serial; the glue registers each class with it, so a `weak var` does
+not mistake a new object for the one that died (D254). A host with no serial
+to give passes `--no-token`, and the glue registers without one, as before. With
 `--effect World` every engine call carries `uses World`, so a mod has to
 be granted `World` to touch the world at all.
+
+**Which compiler the bindings fit (D271).** The first thing `MowoWolang_Bind_*`
+does is call `wolang_vm_expect_abi(vm, WOLANG_ABI_VERSION)` with the header the
+glue was compiled against, and then `wolang_vm_expect_struct` once for each
+struct it passes by pointer, with that struct's size, alignment and field
+offsets from `sizeof`, `alignof` and `offsetof`. The rule is the one the ABI
+already has: the major version must be equal and the bindings' minor must not
+be greater than the library's. A struct is checked when the program loads
+(or at once, if it is loaded already): the compiler's own layout of the
+struct of that name must be the same numbers. If either fails, the load fails
+and `wolang_vm_errors` says what each side expected, for example `the bindings
+expect `Vec3` to be size 16, align 8, offsets 0, 8, 12, but this compiler lays
+it out as size 12, align 4, offsets 0, 4, 8`. A change to how the compiler lays
+a struct out is therefore an ABI change: it bumps the major version, and
+bindings made before it say so instead of reading the wrong bytes.
 
 What is left out is printed, one line each: components (which belong on
 the ECS side), properties and functions of types with no binding, structs
@@ -292,6 +321,17 @@ and `wolang_vm_class_attribute_count`/`_name` list the program's classes, the
 stored fields of each and the attributes written on it (`Replicated` for
 `@Replicated`), so a host need not scan the source.
 
+What the program says should be replicated is reported the same way (D268).
+`wolang_vm_class_field_replication(vm, "Pawn", i, &flags)` answers
+`kWolangReplicated` for a field marked `@Replicated`, with
+`WOLANG_REPLICATION_OWNER` in `flags` for `@Replicated(owner)`; the methods are
+listed by `wolang_vm_class_method_count`/`_name`, and
+`wolang_vm_class_method_replication` answers `kWolangServer`, `kWolangClient` or
+`kWolangMulticast` for an RPC, with `WOLANG_REPLICATION_UNRELIABLE` for
+`(unreliable)`. `wolang_vm_class_method_param_count`/`_param_kind` give the
+parameters, which are always kinds a host can read. Wolang sends nothing: the
+host maps these to its own replication and RPC policy.
+
 Each vm has its own bindings, host classes and writers (D257). Two vms in one
 process may bind the same symbol to different functions and print to different
 places; a lookup asks the vm whose call it is, then the process.
@@ -308,16 +348,65 @@ wolang_vm_load_mod(vm, "mods/better_turrets", "World, Audio");
 ```
 
 The mod is granted those capabilities and nothing else, whatever its own
-manifest says. It may not use `unsafe` or declare `extern` (`E0705`), so
+manifest says. `unsafe` is never grantable: writing it in the list is
+ignored (D270), and since the standard library's network and process calls
+are `unsafe` too, a mod granted `io` and `net` still cannot open a socket or
+start a program. It may not use `unsafe` or declare `extern` (`E0705`), so
 the only doors out are the ones the trusted packages offer — and each of
 those states the capability it needs, down to the standard library's
 `std.fs.Open`, which is `io`. A mod that reaches past its grant does not
 load: `E0703` names the function and the capability (D217).
 
-The grant bounds *reach*. `wolang_vm_set_step_limit` bounds *time*, for a
-mod that loops forever; together they are what a mod sandbox is. Memory a
+The grant bounds *reach*. `wolang_vm_set_budget` bounds *time*, for a mod
+that loops forever (D265): a call that spends its ticks stops with
+`kWolangTrap` and the message `step limit`, and the next call starts afresh.
+A tick is one entry into a script function or one jump back to an earlier
+block; it is counted in the interpreter and in the compiled tier alike, so a
+budget does not cost the speed of compiled code, only a subtract and a branch
+at those points. It is a guard against a script that never ends, not a meter:
+the two tiers draw the line between "back" and "forward" a block or so apart.
+Together they are what a mod sandbox is. Memory a
 mod allocates is not bounded, and a host that runs mods from strangers
 should still give them a vm of their own.
+
+## Tasks on the host's clock
+
+A script writes code that waits as a `task`, and the host decides what time is:
+
+```wolang
+task fun Wait(seconds: f64)
+
+class Door {
+  var open: bool = false
+}
+
+var door: Door = Door()
+
+task fun OpenLater(target: Door) {
+  wait Wait(2.0)
+  target.open = true
+}
+
+offer fun Start() {
+  const _handle = spawn OpenLater(door)
+}
+```
+
+```c
+wolang_vm_call(vm, "Start", NULL, 0, &ignored);   // starts the task
+for (;;) {
+  wolang_vm_tick(vm, frame_seconds, &steps);      // one step each, clock moved on
+}
+```
+
+`wolang_vm_tick` (ABI 1.5, D267) moves the vm's clock by `dt` and gives every
+task that was ready one step. A task that is not finished comes back on the next
+tick, and one that was started during a tick starts on the next. Not calling it
+is a pause and a smaller `dt` is slow motion, so the engine needs no hook for its
+clock. `wolang_vm_tasks_pending` says how many are still going. Each vm has its
+own tasks and its own clock. A host starts a task by calling a script function
+that `spawn`s one, and the tasks of a vm must all be declared in one of the
+host's files.
 
 ## Threads
 
@@ -362,9 +451,35 @@ A reload that cannot work changes nothing (D255). The new program is
 loaded beside the old one first, without starting anything. If it does not
 compile, `wolang_vm_reload` answers an error, `wolang_vm_errors` says why, and
 the program that was running keeps running. The same goes for a program that
-would change the class of an object the host holds: the host's objects are not
-rebuilt, so the reload is refused with a line naming the class, and goes
-through once the host has let go of the object.
+would change the class of an object the host holds, unless the host said where
+to hear about it:
+
+```c
+static void Moved(WolangVm* vm, WolangValue was, WolangValue now, void* user) {
+  Swap(user, was.handle, now);       // from here on, use `now`
+}
+
+wolang_vm_set_remap(vm, Moved, engine);
+wolang_vm_reload(vm);                // a class gained `speed`; the mover is carried over
+```
+
+With a function registered through `wolang_vm_set_remap` (ABI 1.4, D266) the
+objects the host holds are carried to the new layout: each one, and every object
+it reaches through the fields it stores, is written down under the old layout
+and read back under the new one. A field that is still there keeps its value, a
+new field is zero, a removed one is dropped, and a field whose type changed starts
+from zero. The function is called once per object the host held, with the old
+object and the new one; the vm has moved the host's references over, so each
+`wolang_vm_object_release` of the old object is now one of the new. A
+module-level `var` that pointed at the object points at the new one, so the host
+and the program still share one object. The old object stays with the retired
+program and is not to be used again.
+
+A class the new program no longer has, or a field a reload cannot carry (an array,
+a closure, a weak reference, a host object, an enum that carries values), still
+refuses the reload with a line naming it; so does a changed class when no function
+is registered. Nothing changes until the host has let go of the object or fixed
+the field.
 
 Function handles from `wolang_vm_function` survive a reload and call the
 new code. The program as it was is kept until the vm is destroyed —

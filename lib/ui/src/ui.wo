@@ -1,0 +1,326 @@
+need gfx.{Event, kMouseDown, kMouseLeft, kMouseMoved, kMouseUp, kPressed, kScrolled, kText}
+need std.list.{List, ListNew}
+need std.text.{BuilderNew, Equals}
+need std.utf8.{AppendTo, Walk}
+
+offer struct Rect {
+  var x: int
+  var y: int
+  var width: int
+  var height: int
+
+  fun Contains(px: int, py: int) -> bool {
+    return px >= x && py >= y && px < x + width && py < y + height
+  }
+
+  fun Right() -> int {
+    return x + width
+  }
+
+  fun Bottom() -> int {
+    return y + height
+  }
+}
+
+offer struct Style {
+  var background: u32
+  var panel: u32
+  var text: u32
+  var button: u32
+  var hover: u32
+  var active: u32
+  var accent: u32
+  var track: u32
+  var size: float
+  var padding: int
+  var spacing: int
+}
+
+offer fun StyleDefault() -> Style {
+  return Style(
+      4280295456,
+      4281348144,
+      4293848814,
+      4282006074,
+      4283058762,
+      4284111450,
+      4283403519,
+      4279900698,
+      16.0,
+      4,
+      4)
+}
+
+offer class Input {
+  var mouse_x: int = 0
+  var mouse_y: int = 0
+  var down: bool = false
+  var pressed: bool = false
+  var released: bool = false
+  var scroll: float = 0.0
+  var typed: List<int>
+  var keys: List<int>
+
+  fun Feed(event: Event) uses unsafe {
+    if event.kind == kMouseMoved {
+      mouse_x = event.x as int
+      mouse_y = event.y as int
+    } else if event.kind == kMouseDown {
+      mouse_x = event.x as int
+      mouse_y = event.y as int
+      if event.key == kMouseLeft {
+        down = true
+        pressed = true
+      }
+    } else if event.kind == kMouseUp {
+      mouse_x = event.x as int
+      mouse_y = event.y as int
+      if event.key == kMouseLeft {
+        down = false
+        released = true
+      }
+    } else if event.kind == kScrolled {
+      scroll = scroll + event.scroll_y as float
+    } else if event.kind == kText {
+      typed.Push(event.code_point as int)
+    } else if event.kind == kPressed {
+      keys.Push(event.key as int)
+    }
+  }
+
+  fun MoveTo(x: int, y: int) {
+    mouse_x = x
+    mouse_y = y
+  }
+
+  fun Press() {
+    down = true
+    pressed = true
+  }
+
+  fun Release() {
+    down = false
+    released = true
+  }
+
+  fun Type(code: int) uses unsafe {
+    typed.Push(code)
+  }
+
+  fun Key(key: int) uses unsafe {
+    keys.Push(key)
+  }
+
+  fun KeyPressed(key: int) -> bool {
+    var i = 0
+    while i < keys.Len() {
+      if keys.At(i) == key {
+        return true
+      }
+      i = i + 1
+    }
+    return false
+  }
+
+  fun EndFrame() {
+    pressed = false
+    released = false
+    scroll = 0.0
+    typed.Clear()
+    keys.Clear()
+  }
+}
+
+offer fun InputNew() -> Input uses unsafe {
+  return Input(0, 0, false, false, false, 0.0, ListNew<int>(), ListNew<int>())
+}
+
+offer class TextEdit {
+  var codes: List<int>
+  var cursor: int = 0
+
+  fun Len() -> int {
+    return codes.Len()
+  }
+
+  fun Insert(code: int) uses unsafe {
+    if code < 32 || code == 127 {
+      return
+    }
+    var tail = ListNew<int>()
+    var i = cursor
+    while i < codes.Len() {
+      tail.Push(codes.At(i))
+      i = i + 1
+    }
+    while codes.Len() > cursor {
+      codes.Pop()
+    }
+    codes.Push(code)
+    i = 0
+    while i < tail.Len() {
+      codes.Push(tail.At(i))
+      i = i + 1
+    }
+    cursor = cursor + 1
+  }
+
+  fun Backspace() uses unsafe {
+    if cursor <= 0 {
+      return
+    }
+    Remove(cursor - 1)
+    cursor = cursor - 1
+  }
+
+  fun Delete() uses unsafe {
+    if cursor >= codes.Len() {
+      return
+    }
+    Remove(cursor)
+  }
+
+  fun Remove(at: int) uses unsafe {
+    var rest = ListNew<int>()
+    var i = 0
+    while i < codes.Len() {
+      if i != at {
+        rest.Push(codes.At(i))
+      }
+      i = i + 1
+    }
+    codes.Clear()
+    i = 0
+    while i < rest.Len() {
+      codes.Push(rest.At(i))
+      i = i + 1
+    }
+  }
+
+  fun Left() {
+    if cursor > 0 {
+      cursor = cursor - 1
+    }
+  }
+
+  fun Right() {
+    if cursor < codes.Len() {
+      cursor = cursor + 1
+    }
+  }
+
+  fun Value() -> Text uses unsafe {
+    var builder = BuilderNew()
+    var i = 0
+    while i < codes.Len() {
+      AppendTo(&mut builder, codes.At(i))
+      i = i + 1
+    }
+    return "{builder.Text()}"
+  }
+
+  fun Before() -> Text uses unsafe {
+    var builder = BuilderNew()
+    var i = 0
+    while i < cursor {
+      AppendTo(&mut builder, codes.At(i))
+      i = i + 1
+    }
+    return "{builder.Text()}"
+  }
+}
+
+offer fun TextEditNew(initial: text) -> TextEdit uses unsafe {
+  var edit = TextEdit(ListNew<int>(), 0)
+  for code in Walk(initial) {
+    edit.Insert(code)
+  }
+  return edit
+}
+
+fun Click(kind: s32, key: s32, x: s32, y: s32) -> Event {
+  return Event(kind, key, x, y, 0.0, 0.0, 0, 0, 0, 0, 0)
+}
+
+@Test
+fun ARectangleContainsItsInsideAndNotItsFarEdge() -> bool {
+  const rect = Rect(10, 10, 20, 5)
+  return rect.Contains(10, 10) && rect.Contains(29, 14) && !rect.Contains(
+      30,
+      10) && !rect.Contains(29, 15) && !rect.Contains(9, 10) && rect.Right() == 30 && rect.Bottom(
+      ) == 15
+}
+
+@Test
+fun TheDefaultStyleIsOpaqueAndSized() -> bool {
+  const style = StyleDefault()
+  return style.size == 16.0 && style.padding == 4 && style.spacing == 4 && style.text >> 24 == 255 && style.button >> 24 == 255 && style.button != style.hover && style.hover != style.active
+}
+
+@Test
+fun InputFollowsTheMouseAndTheLeftButton() -> bool uses unsafe {
+  var input = InputNew()
+  input.Feed(Click(kMouseMoved, 0, 12, 34))
+  const moved = input.mouse_x == 12 && input.mouse_y == 34 && !input.down
+  input.Feed(Click(kMouseDown, kMouseLeft, 5, 6))
+  const pressed = input.down && input.pressed && input.mouse_x == 5
+  input.EndFrame()
+  const held = input.down && !input.pressed
+  input.Feed(Click(kMouseUp, kMouseLeft, 7, 8))
+  const released = !input.down && input.released && input.mouse_y == 8
+  input.EndFrame()
+  return moved && pressed && held && released && !input.released
+}
+
+@Test
+fun InputIgnoresOtherMouseButtons() -> bool uses unsafe {
+  var input = InputNew()
+  input.Feed(Click(kMouseDown, 2, 5, 6))
+  return !input.down && !input.pressed
+}
+
+@Test
+fun InputCollectsTypingKeysAndScrolling() -> bool uses unsafe {
+  var input = InputNew()
+  input.Feed(Event(kText, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 104, 0))
+  input.Feed(Event(kText, 0, 0, 0, 0.0, 0.0, 0, 0, 0, 105, 0))
+  input.Feed(Click(kPressed, 41, 0, 0))
+  input.Feed(Event(kScrolled, 0, 0, 0, 0.0, 2.0, 0, 0, 0, 0, 0))
+  const collected = input.typed.Len() == 2 && input.typed.At(0) == 104 && input.KeyPressed(
+      41) && !input.KeyPressed(42) && input.scroll == 2.0
+  input.EndFrame()
+  return collected && input.typed.Len() == 0 && !input.KeyPressed(41) && input.scroll == 0.0
+}
+
+@Test
+fun ATextEditInsertsAtTheCursorAndRemoves() -> bool uses unsafe {
+  var edit = TextEditNew("ab")
+  const start = edit.Len() == 2 && edit.cursor == 2
+  edit.Left()
+  edit.Insert(120)
+  const middle = edit.Len() == 3 && edit.cursor == 2 && Equals(
+      edit.Value(),
+      "axb") && Equals(edit.Before(), "ax")
+  edit.Backspace()
+  edit.Delete()
+  const removed = edit.Len() == 1 && Equals(edit.Value(), "a")
+  edit.Right()
+  edit.Right()
+  edit.Backspace()
+  edit.Backspace()
+  edit.Backspace()
+  return start && middle && removed && edit.Len() == 0 && edit.cursor == 0
+}
+
+@Test
+fun ATextEditRefusesControlCharactersAndEdges() -> bool uses unsafe {
+  var edit = TextEditNew("")
+  edit.Insert(10)
+  edit.Insert(127)
+  edit.Backspace()
+  edit.Delete()
+  edit.Left()
+  const empty = edit.Len() == 0 && edit.cursor == 0
+  edit.Insert(233)
+  return empty && edit.Len() == 1 && Equals(edit.Value(), "é")
+}
