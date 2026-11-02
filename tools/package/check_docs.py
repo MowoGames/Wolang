@@ -33,6 +33,10 @@ image = {{ path = "{root}/lib/image" }}
 math = {{ path = "{root}/lib/math" }}
 font = {{ path = "{root}/lib/font" }}
 ui = {{ path = "{root}/lib/ui" }}
+
+audio = {{ path = "{root}/lib/audio" }}
+gpu = {{ path = "{root}/lib/gpu" }}
+app = {{ path = "{root}/lib/app" }}
 game = {{ path = "{root}/lib/game" }}
 """
 

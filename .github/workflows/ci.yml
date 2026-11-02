@@ -147,6 +147,10 @@ jobs:
           $W test lib/font
           $W test lib/ui
 
+          $W test lib/audio
+          $W test lib/gpu
+          $W test lib/app
+
       # The differential fuzzer: the same program through every tier, and
       # any disagreement is a miscompilation. The one test that has found
       # more bugs than the rest of the suite put together.
@@ -168,7 +172,8 @@ jobs:
         run: |
           W=build/${{ matrix.preset }}/tools/wolang/wolang
           $W check examples/server examples/systems examples/package
-          $W check examples/embed/script examples/window examples/text
+          $W check examples/embed/script examples/window examples/text examples/app
+
           $W run examples/hello.wo
 
       # `errors.wo` and `recovery.wo` do not parse, on purpose.
@@ -263,6 +268,10 @@ jobs:
           $W test lib/math
           $W test lib/font
           $W test lib/ui
+
+          $W test lib/audio
+          $W test lib/gpu
+          $W test lib/app
       - name: Fuzz the tiers against each other
         shell: bash
         run: |
@@ -280,7 +289,8 @@ jobs:
           W=build/windows/tools/wolang/wolang.exe
           $W run examples/hello.wo
           $W check examples/server examples/systems examples/package
-          $W check examples/embed/script examples/window examples/text
+          $W check examples/embed/script examples/window examples/text examples/app
+
       - name: Formatting, includes and documentation
         shell: bash
         run: |

@@ -970,6 +970,70 @@ fun main() uses io, unsafe {
       Print("{layout.lines}")
     },
     _ => Print("no font"),
+
+## The `audio` package
+
+Sound in memory, mixed in Wolang, played through `gfx` when there is a device
+(D279). A `Clip` is interleaved `f32` samples with a rate and a channel count.
+`WavDecode` reads 8, 16, 24 and 32-bit PCM and 32-bit float, mono or any
+channel count up to eight, and `WavEncode` writes 8, 16 or 24-bit PCM. A file
+whose data chunk is cut short keeps the frames that are there; a length that
+runs past the end, an unknown format or a size over `kMaxSamples` is an error,
+never a trap. `Resample` converts a clip to another rate by linear
+interpolation and `Remix` turns it into mono or stereo.
+
+A `Mixer` has a rate, one or two output channels, voices and buses. `Play`
+starts a clip with a volume, a pan from -1 (left) to 1 (right) and a loop flag
+and answers an id; `SetVolume`, `SetPan`, `SetPitch`, `SetBus` and `Stop` take
+that id and ignore one that is gone. A mono clip is panned with equal power, a
+stereo clip by balance. A bus is a gain shared by the voices on it, and bus 0
+exists from the start; the master gain applies to everything. `Render` fills
+a buffer with the sum of all voices, clamped to -1 to 1, and drops the voices
+that ended. It touches no device, so a test compares its output buffer.
+
+`OutputOpen` pairs a mixer with the default device. `Pump` renders as many
+frames as the device has room for and queues them; call it once per frame.
+With no device `IsOpen` is false and `Pump` does nothing, so one program runs
+on a server and on a desktop. `DeviceAvailable` says which it is.
+
+`OggVorbisInfo` reads an Ogg Vorbis file's headers: channels, sample rate,
+nominal bitrate, length in frames and the comments (`Comment("title")` ignores
+case). It checks every page's checksum. It does not decode the audio:
+a decoder needs a reference stream to be trusted, and none could be checked
+here, so decoding Vorbis waits for one (D279).
+
+```wolang
+need audio.{ClipNew, MixerNew, WavDecode, WavEncode}
+need std.io.{Print}
+need std.mem.{ArrayNew}
+
+fun Demo() -> int! uses io, unsafe {
+  var tone = ClipNew(100, 1, 100)?
+  var i = 0
+  while i < 100 {
+    tone.Set(i, 0, 0.5)
+    i = i + 1
+  }
+
+  var mixer = MixerNew(100, 2)?
+  const voice = mixer.Play(tone, 1.0, -1.0, false)
+  var out = ArrayNew<f32>(4)
+  mixer.Render(out)
+  Print("{out[0]} {out[1]} {mixer.IsPlaying(voice)}")
+
+  const wav = WavEncode(tone, 16)?
+  const back = WavDecode(wav)?
+  Print("{back.Frames()} frames at {back.rate} Hz")
+
+  return 0
+}
+
+fun main() uses io, unsafe {
+  match Demo() {
+    Ok(_) => {},
+    _ => {
+      Print("failed")
+    },
   }
 }
 ```
@@ -1034,6 +1098,68 @@ fun main() uses io, unsafe {
     },
     _ => Print("no font"),
   }
+
+| `ClipNew(frames, channels, rate)` | a silent clip; `Get(frame, channel)`, `Set(...)`, `Frames()`, `Seconds()` |
+| `WavDecode(bytes)`, `WavEncode(clip, bits)` | `Malformed`, `Unsupported`, `TooLarge` |
+| `Resample(clip, rate)`, `Remix(clip, channels)` | a new clip |
+| `MixerNew(rate, channels)` | `Play`, `Stop`, `StopAll`, `IsPlaying`, `SetVolume`, `SetPan`, `SetPitch`, `SetBus`, `BusNew`, `SetBusGain`, `BusGain`, `SetMaster`, `Voices`, `Render` |
+| `OutputOpen(rate, channels)`, `DeviceAvailable()` | `IsOpen`, `Pump`, `Close` |
+| `OggVorbisInfo(bytes)` | `channels`, `rate`, `bitrate`, `frames`, `vendor`, `Comment(key)`, `Seconds()` |
+
+## The `gpu` package
+
+A thin, typed layer over the GPU, with the backend left open (D280). Buffers,
+vertex layouts, programs, textures, render targets, state and draw calls are
+methods of a `Device`, which holds a `Backend`. There are two backends in the
+box: `OpenGlStart(window)` is OpenGL 3.3 core over the context a `gfx` window
+opened with `kGl` (or null, when there is none), and `NullNew()` runs
+everywhere. The null backend draws nothing; it records every call as a line of
+text, hands out ids, counts misuse (a draw with no program, a deleted buffer
+used again, a texture with no size) and compiles a shader as far as checking
+it has a `main`. That is what the tests of this package and of programs
+written on it run against, on a machine with no display. A second backend,
+Metal or Vulkan, is another `extend T as Backend`; callers do not change.
+
+Handles are small structs (`Buffer`, `Layout`, `Program`, `Texture`, `Target`),
+and nothing frees itself: delete what you made. Vertex data is `f32`, indices
+are `u32`, and a layout is built from attributes of floats (`stride` and
+`offset` count floats, not bytes). `ProgramNew` returns `Program!(CompileFailed)`
+and the error carries the compiler's log (D235). A source with no `#version`
+line gets `#version 330 core` put in front; `kSpriteVertex`, `kSpriteFragment`
+and `kSolidFragment` are ready-made 2D shaders (position, uv, colour, one
+`u_view` matrix and one `u_texture`). Set uniforms after `ProgramUse`.
+
+```wolang
+need gpu.{CompileFailed, DeviceNew, NullNew, kSolidFragment, kSpriteVertex, kTriangles}
+need std.io.{Print}
+need std.mem.{ArrayNew, Free}
+
+fun main() uses io, unsafe {
+  var backend = NullNew()
+  var device = DeviceNew(backend)
+  var corners = ArrayNew<f32>(6)
+  corners[0] = 0.0
+  corners[1] = 0.0
+  corners[2] = 1.0
+  corners[3] = 0.0
+  corners[4] = 0.0
+  corners[5] = 1.0
+
+  const buffer = device.VertexBuffer(corners, false)
+  const layout = device.LayoutNew()
+  device.LayoutAttribute(layout, buffer, 0, 2, 2, 0)
+  match device.ProgramNew(kSpriteVertex, kSolidFragment) {
+    Ok(program) => {
+      device.ProgramUse(program)
+      device.Draw(layout, kTriangles, 0, 3)
+      Print("{backend.log.Len()} calls, {device.Error()} errors")
+    },
+    CompileFailed(log) => {
+      Print(log)
+    },
+    _ => {},
+  }
+  Free(corners)
 }
 ```
 
@@ -1053,6 +1179,87 @@ fun main() uses io, unsafe {
 Text is measured and drawn with a `font` (D276). The labels of a frame are kept
 in one builder that the context owns, and each command points into it, so a
 label can be built on the spot (`"score {n}"`).
+
+| `DeviceNew(backend)` | `Name`, `Error` |
+| `VertexBuffer(data, dynamic)`, `IndexBuffer(data, dynamic)`, `BufferDelete(b)` | `Buffer` |
+| `LayoutNew()`, `LayoutAttribute(layout, buffer, index, count, stride, offset)`, `LayoutIndices(layout, buffer)`, `LayoutDelete(l)` | what feeds a draw |
+| `ProgramNew(vertex, fragment)`, `ProgramUse(p)`, `Uniform(p, name)`, `ProgramDelete(p)` | `CompileFailed(log)` on failure; `Uniform` is -1 for a name the shader lacks |
+| `SetFloat`, `SetVec2`, `SetVec3`, `SetVec4`, `SetInt`, `SetMatrix(location, 16 floats)` | uniforms of the program in use |
+| `TextureNew(width, height, rgba, linear, repeat)`, `TextureUpdate(...)`, `TextureBind(unit, t)`, `TextureDelete(t)` | RGBA8 |
+| `TargetNew(texture)`, `Begin(target, width, height, r, g, b, a, clear_depth)`, `End()`, `TargetDelete(t)` | `null` for the window; `Begin` sets the viewport and clears |
+| `Blend`, `Depth`, `Cull`, `Scissor` | state |
+| `Draw(layout, mode, first, count)`, `DrawIndexed(layout, mode, count, first)`, `Read(x, y, w, h)` | `kTriangles`, `kLines`, `kPoints`, `kTriangleStrip`, `kTriangleFan`, `kLineStrip` |
+
+The OpenGL backend is checked by tests only as far as "answers null with no
+window": the project's CI has no GL context on every platform, so a drawing
+program is run by hand with `examples/` before release.
+
+## The `app` package
+
+The loop that ties a window, a GPU device, sound and a clock together (D281).
+`ConfigNew(title, width, height)` makes a `Config`; `ConfigParse(text, base)`
+overlays an ini file on it (`[window]` title, width, height, resizable,
+vsync, gl; `[loop]` step, max_frame; `[audio]` rate, enabled), clamping what
+is absurd and keeping the default for what is missing or unreadable.
+`ConfigDirectory(name)` and `ConfigPath(name)` give the per-user place a
+program keeps its settings: `%APPDATA%` on Windows, `Library/Application
+Support` on macOS and `$XDG_CONFIG_HOME` or `~/.config` elsewhere.
+
+A game says what it does by having the `Game` ability: `Update(dt)` runs at a
+fixed step, `Draw(alpha)` once per frame with the fraction of a step left
+over, and `OnEvent(event)` answers whether to go on. The `Clock` turns frame
+times into steps: it clamps a long frame to `max_frame`, never owes more than
+eight steps in one frame (a stall does not turn into a spiral) and, with a
+step of zero, runs one variable step per frame. `AppNew(config)` opens the
+window (with a GL context when asked), picks the OpenGL backend when it is
+there and the null one when it is not, opens sound with a mixer that works
+whether or not a device does, and returns the `App`. `Run(game)` is the
+interactive loop; `RunFrames(game, count, frame_time)` runs the same
+update/draw/sound sequence with a time you give it and no window, which is
+how a server, a replay or a test runs a game.
+
+```wolang
+need app.{AppNew, ConfigNew, Game}
+need gfx.{Event}
+need std.io.{Print}
+
+class Spinner {
+  var turns: int = 0
+  var drawn: int = 0
+}
+
+extend Spinner as Game {
+  fun Update(dt: float) uses unsafe {
+    turns = turns + 1
+  }
+
+  fun Draw(alpha: float) uses unsafe {
+    drawn = drawn + 1
+  }
+
+  fun OnEvent(event: Event) -> bool uses unsafe {
+    return true
+  }
+}
+
+fun main() uses io, unsafe {
+  var config = ConfigNew("demo", 320, 200)
+  config.gl = false
+  config.sound = false
+  config.hidden = true
+  match AppNew(config) {
+    Ok(app) => {
+      var spinner = Spinner()
+      const frames = app.RunFrames(spinner, 60, 0.016666667)
+      Print("{frames} frames, {spinner.drawn} drawn")
+      app.Close()
+    },
+    _ => {
+      Print("no app")
+    },
+  }
+}
+```
 
 ## How this compares
 
