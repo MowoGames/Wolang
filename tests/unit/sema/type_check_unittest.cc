@@ -3307,5 +3307,225 @@ WOLANG_TEST(TypeCheck, UsesNamesAnEffect) {
   WOLANG_EXPECT(!Fixture("effect Telemetry\nfun F() uses Telemetry {}").HasCode("E0158"));
 }
 
+WOLANG_TEST(TypeCheck, SaveMarksAStoredField) {
+  Fixture fine(R"(
+class Mover {
+  @Save
+  var steps: int = 0
+  var scratch: int = 0
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0175"));
+  WOLANG_EXPECT(!fine.HasCode("E0176"));
+
+  Fixture on_method(R"(
+class Mover {
+  @Save
+  fun Step() {}
+}
+)");
+  WOLANG_EXPECT(on_method.HasCode("E0175"));
+
+  Fixture on_weak(R"(
+class Node {
+  @Save
+  weak var parent: Node? = null
+}
+)");
+  WOLANG_EXPECT(on_weak.HasCode("E0175"));
+
+  Fixture on_function(R"(
+@Save
+fun F() {}
+)");
+  WOLANG_EXPECT(!on_function.HasCode("E0175"));
+}
+
+WOLANG_TEST(TypeCheck, SaveRefusesATypeItCannotWriteBack) {
+  Fixture array(R"(
+struct Grid {
+  @Save
+  var cells: [4]int
+}
+)");
+  WOLANG_EXPECT(array.HasCode("E0176"));
+
+  Fixture virtual_class(R"(
+class Actor {
+  virtual fun Tick() {}
+}
+
+class Holder {
+  @Save
+  var who: Actor? = null
+}
+)");
+  WOLANG_EXPECT(virtual_class.HasCode("E0176"));
+
+  Fixture plain_class(R"(
+class Actor {
+  var hp: int = 0
+}
+
+enum Mood {
+  Calm
+  Angry
+}
+
+struct Pair {
+  var a: int
+  var b: int
+}
+
+class Holder {
+  @Save
+  var who: Actor? = null
+  @Save
+  var mood: Mood = Mood.Calm
+  @Save
+  var pair: Pair = Pair(1, 2)
+  @Save
+  var label: text = "x"
+  @Save
+  var ratio: float = 0.5
+  @Save
+  var alive: bool = true
+}
+)");
+  WOLANG_EXPECT(!plain_class.HasCode("E0176"));
+  WOLANG_EXPECT(!plain_class.HasCode("E0175"));
+}
+
+WOLANG_TEST(TypeCheck, ReplicationNeedsAScriptClassMember) {
+  Fixture fine(R"(
+class Pawn {
+  @Replicated
+  var health: int = 100
+  @Replicated(owner)
+  var ammo: int = 30
+  @Server
+  fun Fire(power: int) {}
+  @Client(unreliable)
+  fun Flash(strength: float) {}
+  @Multicast
+  fun Boom() {}
+}
+)");
+  WOLANG_EXPECT(!fine.HasCode("E0178"));
+  WOLANG_EXPECT(!fine.HasCode("E0179"));
+
+  Fixture in_struct(R"(
+struct Pawn {
+  @Replicated
+  var health: int = 100
+}
+)");
+  WOLANG_EXPECT(in_struct.HasCode("E0178"));
+
+  Fixture on_function(R"(
+@Server
+fun Fire() {}
+)");
+  WOLANG_EXPECT(!on_function.HasCode("E0178"));
+
+  Fixture two(R"(
+class Pawn {
+  @Server
+  @Client
+  fun Fire() {}
+}
+)");
+  WOLANG_EXPECT(two.HasCode("E0178"));
+
+  Fixture unknown(R"(
+class Pawn {
+  @Replicated(loudly)
+  var health: int = 100
+}
+)");
+  WOLANG_EXPECT(unknown.HasCode("E0178"));
+
+  Fixture field_on_method(R"(
+class Pawn {
+  @Replicated
+  fun Fire() {}
+}
+)");
+  WOLANG_EXPECT(field_on_method.HasCode("E0178"));
+
+  Fixture rpc_on_field(R"(
+class Pawn {
+  @Server
+  var health: int = 100
+}
+)");
+  WOLANG_EXPECT(rpc_on_field.HasCode("E0178"));
+}
+
+WOLANG_TEST(TypeCheck, ReplicationSendsOnlyWhatAHostCanRead) {
+  Fixture returns(R"(
+class Pawn {
+  @Server
+  fun Fire() -> int => 1
+}
+)");
+  WOLANG_EXPECT(returns.HasCode("E0179"));
+
+  Fixture object_parameter(R"(
+class Target {
+  var hp: int = 0
+}
+
+class Pawn {
+  @Server
+  fun Aim(at: Target) {}
+}
+)");
+  WOLANG_EXPECT(object_parameter.HasCode("E0179"));
+
+  Fixture object_field(R"(
+class Target {
+  var hp: int = 0
+}
+
+class Pawn {
+  @Replicated
+  var aim: Target? = null
+}
+)");
+  WOLANG_EXPECT(object_field.HasCode("E0179"));
+
+  Fixture value_struct(R"(
+struct Spot {
+  var x: float
+  var y: float
+}
+
+class Pawn {
+  @Replicated
+  var at: Spot = Spot(0.0, 0.0)
+  @Server
+  fun Move(to: Spot) {}
+}
+)");
+  WOLANG_EXPECT(!value_struct.HasCode("E0179"));
+
+  Fixture struct_with_object(R"(
+class Target {
+  var hp: int = 0
+}
+
+struct Aim {
+  var at: Target? = null
+}
+
+class Pawn {
+  @Server
+  fun Shoot(how: Aim) {}
+}
+)");
+  WOLANG_EXPECT(struct_with_object.HasCode("E0179"));
+}
+
 }  // namespace
 }  // namespace wolang
