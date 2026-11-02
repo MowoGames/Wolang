@@ -1,0 +1,394 @@
+// `wolang fetch` in Wolang (D286): get what the manifests ask for from git,
+// and write down what was got in `wolang.lock`.
+//
+// It does what src/compiler/workspace.cc does for `wolang fetch`, and its lock
+// file is compared with that one byte for byte by tools/selfhost/diff_fetch.py.
+// Not here: reading the version requirements (the build checks them), and
+// reporting a manifest key it does not know.
+
+need std.doc.{AsText, Len, Member, NameAt, Value, ValueAt}
+need std.env.{System}
+need std.fs.{Absolute, IsFile, MakeDirectory, ReadText, RemoveTree, WriteText}
+need std.io.{WriteError}
+need std.list.{List, ListNew}
+need std.path.{Join}
+need std.process.{Start}
+need std.text.{Bytes, BuilderNew, EndsWith, Substring}
+need std.toml
+
+offer struct Dependency {
+  var name: text
+  var path: text
+  var git: text
+  var revision: text
+  var subdirectory: text
+}
+
+offer class Package {
+  var name: text
+  var version: text
+  var directory: text
+  var dependencies: List<Dependency>
+}
+
+offer fun IsRemote(dependency: Dependency) -> bool {
+  return dependency.git != ""
+}
+
+fun ReplaceByte(value: text, from: u8, to: u8) -> text uses unsafe {
+  const bytes = Bytes(value)
+  var out = BuilderNew()
+  var i = 0
+  while i < bytes.len {
+    if bytes[i] == from {
+      out.AppendByte(to)
+    } else {
+      out.AppendByte(bytes[i])
+    }
+    i = i + 1
+  }
+  return out.Release()
+}
+
+// The repository's last part without `.git`, then `@` and the revision with
+// the characters a path cannot hold turned into `-`.
+offer fun CheckoutName(dependency: Dependency) -> text uses unsafe {
+  const spelled = Bytes(dependency.git)
+  var end = spelled.len
+  while end > 0 && (spelled[end - 1] == 47 || spelled[end - 1] == 10) {
+    end = end - 1
+  }
+
+  var begin = 0
+  var i = 0
+  while i < end {
+    if spelled[i] == 47 {
+      begin = i + 1
+    }
+    i = i + 1
+  }
+
+  var name = Substring(dependency.git, begin, end)
+  if end - begin > 4 && EndsWith(name, ".git") {
+    name = Substring(dependency.git, begin, end - 4)
+  }
+
+  var revision = ReplaceByte(dependency.revision, 47, 45)
+  revision = ReplaceByte(revision, 92, 45)
+  revision = ReplaceByte(revision, 58, 45)
+  return name + "@" + revision
+}
+
+offer fun CheckoutTop(cache: text, dependency: Dependency) -> text uses unsafe {
+  return Join(cache, CheckoutName(dependency))
+}
+
+offer fun CheckoutPath(cache: text, dependency: Dependency) -> text uses unsafe {
+  const top = CheckoutTop(cache, dependency)
+  if dependency.subdirectory != "" {
+    return Join(top, dependency.subdirectory)
+  }
+  return top
+}
+
+// Paths in the lock are the platform's own, as `std::filesystem` writes them.
+fun Native(path: text) -> text uses io, unsafe {
+  if System() == "windows" {
+    return ReplaceByte(path, 47, 92)
+  }
+  return path
+}
+
+offer fun ReadDependencies(document: Value) -> List<Dependency> uses unsafe {
+  var found = ListNew<Dependency>()
+  if const table = Member(document, "dependencies") {
+    var i = 0
+    while i < Len(table) {
+      const entry = ValueAt(table, i)
+      var dependency = Dependency(NameAt(table, i), "", "", "", "")
+      var k = 0
+      while k < Len(entry) {
+        const key = NameAt(entry, k)
+        const spelled = AsText(ValueAt(entry, k), "")
+        if key == "path" {
+          dependency.path = spelled
+        } else if key == "git" {
+          dependency.git = spelled
+        } else if key == "rev" || key == "tag" || key == "branch" {
+          dependency.revision = spelled
+        } else if key == "dir" {
+          dependency.subdirectory = spelled
+        }
+        k = k + 1
+      }
+
+      if dependency.path != "" || dependency.git != "" {
+        if dependency.git == "" || dependency.revision != "" {
+          found.Push(dependency)
+        }
+      }
+      i = i + 1
+    }
+  }
+  return found
+}
+
+offer fun ReadPackage(directory: text) -> Package? uses io, unsafe {
+  const file = Join(directory, "wolang.toml")
+  if !IsFile(file) {
+    return null
+  }
+
+  match toml.Parse(ReadText(file, 1048576)) {
+    Ok(document) => {
+      var name = AsText(Get(document, "package.name"), "")
+      return Package(name, AsText(Get(document, "package.version"), ""), directory, ReadDependencies(document))
+    }
+    toml.Malformed => {
+      return null
+    }
+  }
+}
+
+fun Get(document: Value, path: text) -> Value uses unsafe {
+  var current = document
+  var begin = 0
+  const bytes = Bytes(path)
+  var i = 0
+  while i <= bytes.len {
+    if i == bytes.len || bytes[i] == 46 {
+      if const next = Member(current, Substring(path, begin, i)) {
+        current = next
+      } else {
+        return Value.Null
+      }
+      begin = i + 1
+    }
+    i = i + 1
+  }
+  return current
+}
+
+offer class Fetcher {
+  var cache: text
+  var packages: List<Package>
+  var loaded: List<text>
+  var stack: List<text>
+  var complete: bool
+
+  fun Complain(message: text) uses io, unsafe {
+    WriteError("wolang: " + message + "\n")
+  }
+
+  fun Has(list: List<text>, key: text) -> bool uses unsafe {
+    var i = 0
+    while i < list.Len() {
+      if list.At(i) == key {
+        return true
+      }
+      i = i + 1
+    }
+    return false
+  }
+
+  // Through the `git` on the path, as the C++ does (D141); not through a shell.
+  fun Fetch(dependency: Dependency) -> bool uses io, unsafe {
+    const top = CheckoutTop(cache, dependency)
+    const _made = MakeDirectory(top, true)
+
+    var said = Start("git clone --quiet --depth 1 --branch \"" + dependency.revision + "\" \"" + dependency.git + "\" \"" + top + "\"")
+    if said.code != 0 {
+      const _gone = RemoveTree(top)
+      const _again = MakeDirectory(top, true)
+      said = Start("git clone --quiet \"" + dependency.git + "\" \"" + top + "\"")
+      if said.code == 0 {
+        said = Start("git -C \"" + top + "\" checkout --quiet \"" + dependency.revision + "\"")
+      }
+    }
+
+    if said.code != 0 {
+      Complain("cannot fetch `" + dependency.name + "` from " + dependency.git)
+      const _removed = RemoveTree(top)
+      return false
+    }
+    return true
+  }
+
+  fun Commit(checkout: text, dependency: Dependency) -> text uses io, unsafe {
+    const said = Start("git -C \"" + checkout + "\" rev-parse HEAD")
+    if said.code != 0 {
+      return dependency.revision
+    }
+
+    const bytes = Bytes(said.out)
+    var end = bytes.len
+    while end > 0 && (bytes[end - 1] == 10 || bytes[end - 1] == 13) {
+      end = end - 1
+    }
+    if end == 0 {
+      return dependency.revision
+    }
+    return Substring(said.out, 0, end)
+  }
+
+  fun VersionAt(directory: text) -> text uses io, unsafe {
+    const key = Absolute(directory)
+    var i = 0
+    while i < packages.Len() {
+      if packages.At(i).directory == key {
+        return packages.At(i).version
+      }
+      i = i + 1
+    }
+    return ""
+  }
+
+  fun Load(directory: text) -> bool uses io, unsafe {
+    const key = Absolute(directory)
+    if Has(loaded, key) {
+      return true
+    }
+    if Has(stack, key) {
+      Complain("package dependencies form a cycle through `" + key + "`")
+      return false
+    }
+
+    const read = ReadPackage(key)
+    if read == null {
+      Complain("no `wolang.toml` in `" + key + "`")
+      return false
+    }
+    const held = read ?? Package("", "", key, ListNew<Dependency>())
+
+    stack.Push(key)
+    packages.Push(held)
+    var i = 0
+    while i < held.dependencies.Len() {
+      const dependency = held.dependencies.At(i)
+      if IsRemote(dependency) {
+        const checkout = CheckoutPath(cache, dependency)
+        if !IsFile(Join(checkout, "wolang.toml")) {
+          const _got = Fetch(dependency)
+        }
+        if IsFile(Join(checkout, "wolang.toml")) {
+          const _loaded = Load(checkout)
+        } else {
+          Complain("dependency `" + dependency.name + "` is not fetched yet")
+        }
+      } else {
+        const _near = Load(Join(key, dependency.path))
+      }
+      i = i + 1
+    }
+
+    stack.Pop()
+    loaded.Push(key)
+    return true
+  }
+
+  // One entry for every remote dependency of every package, in load order:
+  // what makes a second machine get the same code.
+  fun LockText() -> text uses io, unsafe {
+    var out = BuilderNew()
+    out.Append("# Written by `wolang fetch`. Commit this: it is what makes a\n# second machine build the same code.\n")
+    var p = 0
+    while p < packages.Len() {
+      const held = packages.At(p)
+      var d = 0
+      while d < held.dependencies.Len() {
+        const dependency = held.dependencies.At(d)
+        if IsRemote(dependency) {
+          const checkout = CheckoutPath(cache, dependency)
+          const there = IsFile(Join(checkout, "wolang.toml"))
+          if !there {
+            complete = false
+          }
+          out.Append("\n[[package]]\nname = \"")
+          out.Append(dependency.name)
+          out.Append("\"\ngit = \"")
+          out.Append(dependency.git)
+          out.Append("\"\nrequested = \"")
+          out.Append(dependency.revision)
+          out.Append("\"\ncommit = \"")
+          if there {
+            out.Append(Commit(checkout, dependency))
+          }
+          out.Append("\"\nversion = \"")
+          if there {
+            out.Append(VersionAt(checkout))
+          }
+          out.Append("\"\npath = \"")
+          out.Append(Native(checkout))
+          out.Append("\"\n")
+        }
+        d = d + 1
+      }
+      p = p + 1
+    }
+    return out.Release()
+  }
+
+  fun RemoteCount() -> int {
+    var count = 0
+    var p = 0
+    while p < packages.Len() {
+      var d = 0
+      while d < packages.At(p).dependencies.Len() {
+        if IsRemote(packages.At(p).dependencies.At(d)) {
+          count = count + 1
+        }
+        d = d + 1
+      }
+      p = p + 1
+    }
+    return count
+  }
+}
+
+offer fun FetcherNew(cache: text) -> Fetcher uses unsafe {
+  return Fetcher(cache, ListNew<Package>(), ListNew<text>(), ListNew<text>(), true)
+}
+
+// Fetches into `cache` (the package's own `.wolang/deps` when it is empty) and
+// writes the lock beside the manifest; answers the text of the lock.
+offer fun FetchPackage(directory: text, cache: text) -> Fetcher uses io, unsafe {
+  const root = Absolute(directory)
+  var place = cache
+  if place == "" {
+    place = Join(root, ".wolang/deps")
+  }
+
+  var fetcher = FetcherNew(place)
+  if !fetcher.Load(root) {
+    fetcher.complete = false
+    return fetcher
+  }
+
+  const _written = WriteText(Join(root, "wolang.lock"), fetcher.LockText())
+  return fetcher
+}
+
+@Test
+fun NamesACheckoutAfterTheRepositoryAndTheRevision() -> bool uses unsafe {
+  const plain = Dependency("math", "", "https://example.com/team/math.git", "v1.2", "")
+  const slashes = Dependency("math", "", "https://example.com/team/math/", "feature/x:y", "")
+  const local = Dependency("m", "", "C:/work/repo", "abc", "pkg")
+  return CheckoutName(plain) == "math@v1.2" && CheckoutName(slashes) == "math@feature-x-y" && CheckoutName(local) == "repo@abc" && CheckoutPath("cache", local) == "cache/repo@abc/pkg"
+}
+
+@Test
+fun ReadsPathAndGitDependenciesAndSkipsTheIncomplete() -> bool uses unsafe {
+  const source = "[package]\nname = \"app\"\nversion = \"0.3.1\"\n\n[dependencies]\ncore = \{ path = \"../core\" \}\nmath = \{ git = \"https://x/math.git\", tag = \"v2\", dir = \"lib\" \}\nloose = \{ git = \"https://x/loose.git\" \}\nnone = \{ \}\nbare = \"1.2\"\n"
+  match toml.Parse(source) {
+    Ok(document) => {
+      const found = ReadDependencies(document)
+      if found.Len() != 2 {
+        return false
+      }
+      return found.At(0).name == "core" && found.At(0).path == "../core" && !IsRemote(found.At(0)) && found.At(1).name == "math" && found.At(1).revision == "v2" && found.At(1).subdirectory == "lib" && IsRemote(found.At(1)) && AsText(Get(document, "package.version"), "") == "0.3.1"
+    }
+    toml.Malformed => {
+      return false
+    }
+  }
+}

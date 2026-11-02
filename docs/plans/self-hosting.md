@@ -129,6 +129,32 @@ D284 and D285, the second after.
 - `ArrayNew` and `Free` cost about half a microsecond a pair, which the arena
   takes to about twenty nanoseconds.
 
+## The first tool: fetch and lock
+
+`tools/selfhost/fetch` (package `wofetch`) is `wolang fetch` in Wolang (D286):
+
+    wolang run tools/selfhost/fetch -- fetch <package directory> [--cache <directory>]
+
+It reads the manifests with `std.toml`, walks the dependency graph the way the
+workspace loader does (path dependencies by their directory, git dependencies by
+a checkout named after the repository and the revision), clones with the `git`
+on the path, and writes `wolang.lock`. It needs no parser.
+
+`tools/selfhost/diff_fetch.py` is the check: it builds local git repositories (one
+depending on another), makes two copies of an application that reaches them through
+a path dependency and through git, runs the C++ tool in one and the Wolang tool in the
+other, and compares the two lock files byte for byte. It does, on four locked packages.
+
+What the tool leaves out: it does not check version requirements (the build does),
+and it does not report a manifest key it does not know.
+
+Writing it found a bug in the C++ tool: the clone was run through `std::system`
+with single quotes and `2>/dev/null`, which `cmd.exe` does not understand, so no
+fetch worked on Windows. The C++ tool quotes and discards errors per platform now,
+and `Workspace.FetchesAGitDependencyAndLocksIt` fetches from a local repository
+(and skips when `git` is missing). The Wolang tool never had the problem: `std.process.Start`
+runs the program directly, with no shell.
+
 ## Gaps stage 1 found
 
 1. **The dev tier does not compare two enum values.** `a == Kind.File` is "compares

@@ -1,0 +1,35 @@
+need std.env.{ArgAt, ArgCount}
+need std.fs.{Absolute}
+need std.fmt.{Int}
+need std.io.{Print, WriteError}
+need std.path.{Join}
+
+fun main() uses io, unsafe {
+  var seen = false
+  var directory = ""
+  var cache = ""
+  var k = 0
+  while k < ArgCount() {
+    const argument = ArgAt(k)
+    if !seen {
+      seen = argument == "fetch"
+    } else if argument == "--cache" && k + 1 < ArgCount() {
+      cache = ArgAt(k + 1)
+      k = k + 1
+    } else if directory == "" {
+      directory = argument
+    }
+    k = k + 1
+  }
+
+  if directory == "" {
+    WriteError("usage: wofetch fetch <package directory> [--cache <directory>]\n")
+    return
+  }
+
+  const fetcher = FetchPackage(directory, cache)
+  Print("{Int(fetcher.RemoteCount())} fetched, written to {Native(Join(Absolute(directory), "wolang.lock"))}")
+  if !fetcher.complete {
+    WriteError("wolang: some dependencies could not be fetched\n")
+  }
+}
