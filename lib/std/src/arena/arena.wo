@@ -1,0 +1,130 @@
+// A bump allocator a program can hold across calls (D285).
+//
+// The language's `arena { }` block frees what was taken inside it when the
+// block ends. A compiler wants the other shape: the syntax tree, the type
+// store and the IR each live for as long as their phase, are built over
+// thousands of calls, and are given back as one. This is that: runs of bytes
+// handed out in order from big chunks, and one `Reset` or one drop for all
+// of them.
+
+need std.list.{List, ListNew}
+need std.mem.{ArrayNew, Free}
+
+/// Chunks of storage and a cursor into them.
+///
+/// `Take` never moves what it already gave out: a run stays where it is
+/// until `Reset` or the arena's own drop, so a view of one is safe to keep
+/// for that long. `deinit` gives every chunk back.
+offer class Arena {
+  var chunks: List<[]mut u8>
+  var chunk_size: int
+  var current: int
+  var used: int
+
+  deinit {
+    var k = 0
+    while k < chunks.Len() {
+      Free(chunks.At(k))
+      k = k + 1
+    }
+  }
+
+  /// A run of `count` bytes, a multiple of eight apart from the last one.
+  ///
+  /// What comes back is whatever the chunk held: fresh chunks are zero, but
+  /// a run handed out again after `Reset` still has its old bytes.
+  fun Take(count: int) -> []mut u8 uses unsafe {
+    var want = (count + 7) / 8 * 8
+    if want < 8 {
+      want = 8
+    }
+
+    loop {
+      if current < chunks.Len() {
+        const chunk = chunks.At(current)
+        if used + want <= chunk.len {
+          const start = used
+          used = used + want
+          return chunk[start..start + count]
+        }
+        current = current + 1
+        used = 0
+        continue
+      }
+
+      var size = chunk_size
+      if size < want {
+        size = want
+      }
+      chunks.Push(ArrayNew<u8>(size))
+    }
+  }
+
+  /// Hands the whole arena out again from the start, keeping its chunks.
+  ///
+  /// Every view taken before is dead: the next `Take` writes over it.
+  fun Reset() {
+    current = 0
+    used = 0
+  }
+
+  /// How many bytes the arena holds, used or not.
+  fun Capacity() -> int {
+    var total = 0
+    var k = 0
+    while k < chunks.Len() {
+      total = total + chunks.At(k).len
+      k = k + 1
+    }
+    return total
+  }
+}
+
+/// An arena that asks for storage `chunk_size` bytes at a time.
+///
+/// A run bigger than a chunk gets a chunk of its own.
+offer fun ArenaNew(chunk_size: int) -> Arena uses unsafe {
+  return Arena(ListNew<[]mut u8>(), chunk_size, 0, 0)
+}
+
+@Test
+fun HandsOutRunsThatDoNotOverlap() -> bool uses unsafe {
+  var pool = ArenaNew(64)
+  var first = pool.Take(10)
+  var second = pool.Take(10)
+  first[0] = 1
+  second[0] = 2
+  first[9] = 3
+  return first.len == 10 && second.len == 10 && first[0] == 1 && second[0] == 2 && first[9] == 3
+}
+
+@Test
+fun MovesOnToANewChunkWhenOneIsFull() -> bool uses unsafe {
+  var pool = ArenaNew(32)
+  var k = 0
+  while k < 10 {
+    var run = pool.Take(24)
+    run[0] = k as u8
+    k = k + 1
+  }
+  return pool.Capacity() >= 240
+}
+
+@Test
+fun GivesARunBiggerThanAChunkAChunkOfItsOwn() -> bool uses unsafe {
+  var pool = ArenaNew(16)
+  var big = pool.Take(1000)
+  big[999] = 7
+  return big.len == 1000 && big[999] == 7 && pool.Capacity() >= 1000
+}
+
+@Test
+fun ResetHandsTheSameStorageOutAgain() -> bool uses unsafe {
+  var pool = ArenaNew(64)
+  var early = pool.Take(8)
+  early[0] = 9
+  const held = pool.Capacity()
+  pool.Reset()
+  var later = pool.Take(8)
+  return later[0] == 9 && pool.Capacity() == held
+}

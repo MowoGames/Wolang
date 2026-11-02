@@ -41,6 +41,7 @@ promise from the caller.
 | [`std.log`](#stdlog) | Levelled logging |
 | [`std.thread`](#stdthread), [`std.tasks`](#stdtasks) | Threads, locks, and a frame's worth of parallel work |
 | [`std.mem`](#stdmem), [`std.own`](#stdown) | Storage, views and ownership |
+| [`std.arena`](#stdarena) | A bump allocator freed as one |
 | [`std.ops`](#stdops) | Operators as abilities: `Add`, `Eq`, `Ord` and the rest |
 | [`std.iter`](#stditer) | What being walked means: `Iterator` and `Iterable` |
 
@@ -701,10 +702,43 @@ tasks.
 ## std.mem
 
 `ArrayNew`, `Free`, `Prefix`, `PrefixMut`, `Suffix`, `BytesFromRaw`,
-`ViewFromRaw`, `SizeOf`, `SoaNew`. Storage and views; the language's arrays
-and lists are built on these. What allocates or views raw storage answers
-`[]mut T`; `Prefix` and `Suffix` take and answer a read-only `[]T`, and
-`PrefixMut` the writable one (D251).
+`ViewFromRaw`, `SizeOf`, `SoaNew`, `Copy`. Storage and views; the language's
+arrays and lists are built on these. What allocates or views raw storage
+answers `[]mut T`; `Prefix` and `Suffix` take and answer a read-only `[]T`,
+and `PrefixMut` the writable one (D251). `Copy(to, at, from, count)` is one
+call that moves `count` bytes into `to` from offset `at`, where a loop would
+make one call per byte (D284); `Builder` appends with it.
+
+## std.arena
+
+`Arena` and `ArenaNew(chunk_size)`: runs of bytes handed out in order from
+big chunks, freed together (D285). The language's `arena { }` block does that
+for one block; this is for a phase that spans many calls, such as the syntax
+tree of a compiler.
+
+- `pool.Take(count)` answers a `[]mut u8` of `count` bytes, aligned to eight
+  from the last run. A run bigger than a chunk gets a chunk of its own.
+- `pool.Reset()` hands the same storage out again from the start. Every view
+  taken before is dead, and the bytes are not cleared.
+- `pool.Capacity()` is how many bytes the arena holds, used or not.
+
+A run never moves, so a view of it stays valid until `Reset` or until the
+arena itself goes. Dropping the arena gives every chunk back.
+
+```wolang
+need std.arena.{ArenaNew}
+need std.io.{Print}
+
+fun main() uses io, unsafe {
+  var pool = ArenaNew(4096)
+  var name = pool.Take(16)
+  name[0] = 87
+  var scratch = pool.Take(64)
+  scratch[0] = 1
+  Print("{pool.Capacity()} bytes held")
+  pool.Reset()
+}
+```
 
 ## std.own
 
