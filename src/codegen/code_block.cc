@@ -79,6 +79,9 @@ size_t RoundUpToPage(size_t bytes) {
 void SynchronizeCaches(void* base, size_t size) {
 #if defined(__APPLE__)
   ::sys_icache_invalidate(base, size);
+#elif defined(_WIN32)
+  // The MSVC link has no compiler-rt, so `__clear_cache` is undefined (D159).
+  ::FlushInstructionCache(::GetCurrentProcess(), base, size);
 #elif defined(__aarch64__)
   __builtin___clear_cache(static_cast<char*>(base),
                           static_cast<char*>(base) + size);
