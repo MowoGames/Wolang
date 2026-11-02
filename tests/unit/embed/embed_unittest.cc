@@ -1242,6 +1242,75 @@ WOLANG_TEST(EmbedTest, AnOptionalHostObjectIsPresentOrAbsent) {
   CheckAnOptionalHostParameter(false);
 }
 
+static void CheckAnOptionalHostField(bool compiled) {
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_compiled(vm, compiled ? 1 : 0);
+  int32_t calls = 0;
+  WOLANG_EXPECT_EQ(wolang_vm_register_class(vm, "Actor", &FakeRetain, &FakeRelease, &FakeAlive, &calls), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_bind(vm, "Actor_Health", reinterpret_cast<void*>(&Actor_Health)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "optional_field.wo", R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+class Slot {
+  var held: Actor? = null
+}
+
+var slot: Slot = Slot(null)
+
+offer fun Keep(pawn: Actor) {
+  slot.held = pawn
+}
+
+offer fun Clear() {
+  slot.held = null
+}
+
+offer fun Found() -> int uses unsafe {
+  if const pawn = slot.held {
+    return pawn.Health() as int
+  }
+  return -1
+}
+
+offer fun Chained() -> int uses unsafe {
+  const health = slot.held?.Health()
+  if const value = health {
+    return value as int
+  }
+  return -2
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  FakeActor actor;
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Found", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, -1);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Chained", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, -2);
+
+  WolangValue argument = wolang_handle(&actor);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Keep", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(actor.References, 1);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Found", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 100);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Chained", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 100);
+
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Clear", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Found", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, -1);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, AnOptionalHostFieldIsPresentOrAbsent) {
+  CheckAnOptionalHostField(true);
+  CheckAnOptionalHostField(false);
+}
+
 WOLANG_TEST(EmbedTest, ObjectParametersHaveAKind) {
   WolangVm* vm = wolang_vm_create();
   WOLANG_EXPECT_EQ(wolang_vm_register_class(vm, "Actor", &FakeRetain, &FakeRelease, &FakeAlive, nullptr), 0);
