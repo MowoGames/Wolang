@@ -4,6 +4,193 @@ One section per release, newest first. The full list, with the decision
 behind each change, is in the [changelog](../CHANGELOG.md); how to move a
 program from one release to the next is the last table of each section.
 
+## 1.3.0
+
+1.3.0 finishes what an engine asked of the language in 1.2.0 and brings back
+the libraries that 1.2.0 cut. A program can save and restore its objects, wait
+on a clock it owns, and be reloaded without losing the objects a host holds.
+A host can bound a script's time, deny a mod the file system and the network,
+and refuse a binding that was built for a different layout. Five libraries
+are new: `font`, `ui`, `audio`, `gpu` and `app`. Very little in this release
+breaks a 1.2.0 program; the last table lists what does.
+
+### Save a game
+
+Mark a field `@Save` and `std.save` writes it, and every object it reaches,
+by field name. A program that gained or lost a field since the save still
+reads it. A shared reference stays shared and a cycle comes back as a cycle
+(D266).
+
+```wolang
+need std.io.{Print}
+need std.mem.{Free}
+need std.save.{Corrupt, Load, Save}
+
+class Hero {
+  @Save
+  var level: int = 1
+  @Save
+  var name: text = ""
+  var scratch: int = 0
+}
+
+fun main() uses io, unsafe {
+  const hero = Hero()
+  hero.level = 7
+  hero.name = "Ada"
+  hero.scratch = 99
+  const bytes = Save(hero)
+  const back = match Load<Hero>(bytes) {
+    Ok(found) => found,
+    Corrupt => Hero(),
+  }
+  Free(bytes)
+  Print("{back.name} {back.level} {back.scratch}")
+}
+```
+
+It prints `Ada 7 0`: `scratch` was not marked. The same facility is how a hot
+reload keeps an object a host holds when its class changes (below).
+
+### Wait on the caller's clock
+
+A `task fun` can `wait`. The caller advances time with `Tick(dt)`, so pausing is
+not ticking and slow motion is a smaller `dt`; the game needs no hook for its own
+time (D267). There is no `routine` keyword: `task fun` and `wait` were already
+the spelling for code that suspends, and they compile to the same state
+machines in every tier.
+
+```wolang
+need std.io.{Print}
+need std.tasks.{Done, Now, Tick, Wait}
+
+class Door {
+  var open: bool = false
+}
+
+task fun OpenLater(door: Door) {
+  wait Wait(2.0)
+  door.open = true
+}
+
+fun main() uses io, unsafe {
+  const door = Door()
+  const handle = spawn OpenLater(door)
+  var frames = 0
+  while !Done(handle) {
+    const _steps = Tick(1.0)
+    frames = frames + 1
+  }
+  Print("open after {frames} frames, {Now()} seconds: {door.open}")
+}
+```
+
+A host ticks a VM with `wolang_vm_tick`.
+
+### Replication is metadata
+
+`@Replicated` on a field, and `@Server`, `@Client` and `@Multicast` on a method,
+say what a host should send where. Wolang sends nothing itself: the attributes
+are checked (`E0175`, `E0176`, `E0178`, `E0179`) and reported through the class
+reflection of the C API, so a host can route RPCs and replicate fields without
+scanning the source (D268).
+
+### What a host can ask for
+
+The C API is at version 1.5 and still additive. A host built against 1.0 keeps
+working.
+
+| Version | What a host gets |
+|---|---|
+| 1.4 | `wolang_vm_set_budget`: a tick budget for one call, so a runaway script stops with an error instead of hanging the game thread (D265). `wolang_vm_expect_abi` and `wolang_vm_expect_struct`: the generated bindings state the layouts they were built for, and a mismatch fails the load and says which side expected what (D271). `wolang_vm_set_remap`: a reload carries the objects the host holds into the new layout instead of refusing (D266). |
+| 1.5 | `wolang_vm_tick` and `wolang_vm_tasks_pending` for tasks on the host's clock (D267), and reflection of the replication attributes (D268). |
+
+A mod is never granted `unsafe`, whatever the host's list says (D270): a
+mod granted `io` and `net` still cannot reach the calls std marks `unsafe`. A
+trap now carries its source place and the script's call stack to the host's
+reporter (D269). The execution budget runs in the interpreter and the x64
+compiled tier; on arm64 a budgeted VM runs the interpreter.
+
+### Five libraries
+
+Each library splits into a part that is plain computation, tested with no
+window and no device, and a part that talks to a device and answers "no"
+cleanly when there is none.
+
+- **`font`** reads TrueType fonts, rasterises glyphs with exact coverage, lays
+  text out with kerning and wrapping, and packs an atlas (D276).
+
+```wolang
+need font.{LayoutText, Measure, SampleFont}
+need std.io.{Print}
+
+fun main() uses io, unsafe {
+  match SampleFont() {
+    Ok(font) => {
+      const width = Measure(font, "HELLO", 16.0)
+      Print("{width}")
+      const layout = LayoutText(font, "HELLO WORLD", 16.0, 60.0)
+      Print("{layout.lines}")
+    },
+    _ => Print("no font"),
+  }
+}
+```
+
+- **`ui`** is an immediate-mode toolkit: label, button, checkbox, slider, text
+  field, list box and panel. A frame makes a draw list of plain data, and a
+  software renderer draws it into an image for tests (D277).
+- **`audio`** mixes voices on buses with pan and clamping, converts sample rates,
+  and reads and writes WAV. Ogg files have their headers read; the audio
+  inside is not decoded yet (D279).
+- **`gpu`** is a backend-neutral device with buffers, textures, programs and
+  passes. It has a recording null backend that tests use, and an OpenGL 3.3
+  backend over `gfx` (D280).
+- **`app`** is the shell around them: a fixed-timestep clock, window, `gpu` and
+  sound wired together, config and per-user paths, and a `RunFrames` that runs
+  without a window (D281).
+
+The sections of [the standard library guide](stdlib.md) for each package have
+a runnable example.
+
+### Tools
+
+- `wolang bind --reflection` registers each class with a liveness token and
+  writes the layouts a binding relies on, so a host that loads a binding built for
+  another layout is told (D271, D262). `--no-token` leaves the token out.
+- `wl bench` prints calls per millisecond and objects per call for each tier;
+  [the measured table](benchmarks.md) has the numbers (D273).
+- On Linux, `wolang build` can link with a bundled linker and a musl sysroot
+  when the machine has no C compiler (D272). It has been written and its
+  command checked, but not yet run on Linux.
+- A lexer and a parser for Wolang, written in Wolang, live in `tools/selfhost`.
+  They match the C++ ones token for token and tree for tree on the repository's
+  own files, and a first tool, `fetch`, is written with them. `std.arena` is the
+  bump allocator a compiler wants (D283, D285).
+
+### Also fixed
+
+- A class with an owned `Text` field no longer corrupts the heap when its last
+  handle goes, and gives the bytes back when the field is replaced (D289).
+- The text an interpolation, a `+` or a `+=` builds is given back (D275).
+- An annotated local of an ability type keeps the annotation:
+  `var backend: Backend = NullNew()` can take any implementer (D275).
+- An unknown error name in a `match` arm on a `T!` is `E0166`, not `E0201`. A
+  function held in a local and handed to a `@Thread` function is `E0163`
+  unless the caller states `uses unsafe` (D275).
+- An or-pattern traps in no tier, and comparing two enum values no longer sends
+  the whole function to the interpreter.
+
+### Moving a program to 1.3.0
+
+| If your code | Do this |
+|---|---|
+| Runs on 1.2.0 and matches no row below | Nothing: it keeps working |
+| Names a mod's capabilities with `unsafe` | Remove it; it is never granted (D270) |
+| Builds a class with `Class()` and no arguments, and reads a class-typed field | Give the field a value first: such a field is still null, and reading it fails. This is an open gap |
+| Hands a held function to a `@Thread` function | State `uses unsafe` or make the caller `@Thread` (`E0163`) |
+| Is a host that reloads | Register a remap with `wolang_vm_set_remap`, or a reload that changes a held object's class is refused with a note |
+
 ## 1.2.0
 
 1.2.0 makes the breaking language decisions together, so that programs move
