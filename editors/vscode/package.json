@@ -2,7 +2,7 @@
   "name": "wolang",
   "displayName": "Wolang",
   "description": "Wolang language support: highlighting, diagnostics, hover, go to definition, symbols, formatting and completion.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "mowogroup",
   "license": "Apache-2.0",
   "repository": {
