@@ -1091,6 +1091,23 @@ fun main() uses io, unsafe {
       Print("{layout.lines}")
     },
     _ => Print("no font"),
+  }
+}
+```
+
+| Function | What |
+|---|---|
+| `FontLoad(bytes)`, `FontLoadFile(path)`, `SampleFont()` | a `Font`, or `Malformed`, `TooLarge`, `Unsupported` (and `Missing` for a path) |
+| `UnitsPerEm()`, `Ascent()`, `Descent()`, `LineGap()`, `GlyphCount()` | on `Font`, in font units |
+| `GlyphIndex(code)` | the glyph for a code point; 0 (the missing glyph) when there is none |
+| `Advance(glyph)`, `LeftBearing(glyph)`, `Kerning(left, right)` | in font units; `Scale(size)` is pixels per unit |
+| `GlyphOutline(glyph)` | the contours as points, composites resolved |
+| `Rasterize(font, glyph, size)` | a `Glyph`: `coverage` bytes, `width`, `height`, `left`, `top`, `advance` |
+| `Glyph.At(x, y)`, `Glyph.Total()`, `Glyph.ToImage(r, g, b)` | one coverage byte; the sum; an `image.Image` with the coverage as alpha |
+| `LayoutText(font, text, size, wrap)` | a `Layout` of `Placement`s; `wrap` of 0 or less does not wrap |
+| `Measure(font, text, size)`, `LineHeight(font, size)` | the width of the widest line; the distance between baselines |
+| `DrawText(image, font, text, size, x, y, colour)`, `DrawGlyph` | blend text into an `image.Image` in software |
+| `AtlasNew(width, height)`, `Atlas.Get(font, glyph, size)` | a shelf-packed coverage bitmap; a `Slot` per glyph and size, `null` when full |
 
 ## The `audio` package
 
@@ -1161,17 +1178,12 @@ fun main() uses io, unsafe {
 
 | Function | What |
 |---|---|
-| `FontLoad(bytes)`, `FontLoadFile(path)`, `SampleFont()` | a `Font`, or `Malformed`, `TooLarge`, `Unsupported` (and `Missing` for a path) |
-| `UnitsPerEm()`, `Ascent()`, `Descent()`, `LineGap()`, `GlyphCount()` | on `Font`, in font units |
-| `GlyphIndex(code)` | the glyph for a code point; 0 (the missing glyph) when there is none |
-| `Advance(glyph)`, `LeftBearing(glyph)`, `Kerning(left, right)` | in font units; `Scale(size)` is pixels per unit |
-| `GlyphOutline(glyph)` | the contours as points, composites resolved |
-| `Rasterize(font, glyph, size)` | a `Glyph`: `coverage` bytes, `width`, `height`, `left`, `top`, `advance` |
-| `Glyph.At(x, y)`, `Glyph.Total()`, `Glyph.ToImage(r, g, b)` | one coverage byte; the sum; an `image.Image` with the coverage as alpha |
-| `LayoutText(font, text, size, wrap)` | a `Layout` of `Placement`s; `wrap` of 0 or less does not wrap |
-| `Measure(font, text, size)`, `LineHeight(font, size)` | the width of the widest line; the distance between baselines |
-| `DrawText(image, font, text, size, x, y, colour)`, `DrawGlyph` | blend text into an `image.Image` in software |
-| `AtlasNew(width, height)`, `Atlas.Get(font, glyph, size)` | a shelf-packed coverage bitmap; a `Slot` per glyph and size, `null` when full |
+| `ClipNew(frames, channels, rate)` | a silent clip; `Get(frame, channel)`, `Set(...)`, `Frames()`, `Seconds()` |
+| `WavDecode(bytes)`, `WavEncode(clip, bits)` | `Malformed`, `Unsupported`, `TooLarge` |
+| `Resample(clip, rate)`, `Remix(clip, channels)` | a new clip |
+| `MixerNew(rate, channels)` | `Play`, `Stop`, `StopAll`, `IsPlaying`, `SetVolume`, `SetPan`, `SetPitch`, `SetBus`, `BusNew`, `SetBusGain`, `BusGain`, `SetMaster`, `Voices`, `Render` |
+| `OutputOpen(rate, channels)`, `DeviceAvailable()` | `IsOpen`, `Pump`, `Close` |
+| `OggVorbisInfo(bytes)` | `channels`, `rate`, `bitrate`, `frames`, `vendor`, `Comment(key)`, `Seconds()` |
 
 ## The `ui` package
 
@@ -1219,13 +1231,25 @@ fun main() uses io, unsafe {
     },
     _ => Print("no font"),
   }
+}
+```
 
-| `ClipNew(frames, channels, rate)` | a silent clip; `Get(frame, channel)`, `Set(...)`, `Frames()`, `Seconds()` |
-| `WavDecode(bytes)`, `WavEncode(clip, bits)` | `Malformed`, `Unsupported`, `TooLarge` |
-| `Resample(clip, rate)`, `Remix(clip, channels)` | a new clip |
-| `MixerNew(rate, channels)` | `Play`, `Stop`, `StopAll`, `IsPlaying`, `SetVolume`, `SetPan`, `SetPitch`, `SetBus`, `BusNew`, `SetBusGain`, `BusGain`, `SetMaster`, `Voices`, `Render` |
-| `OutputOpen(rate, channels)`, `DeviceAvailable()` | `IsOpen`, `Pump`, `Close` |
-| `OggVorbisInfo(bytes)` | `channels`, `rate`, `bitrate`, `frames`, `vendor`, `Comment(key)`, `Seconds()` |
+| Function | What |
+|---|---|
+| `UiNew(font, style)`, `StyleDefault()` | a context, and the default colours, sizes and spacing |
+| `Begin()`, `End()` | start a frame (clears the draw list), and finish it (clears the one-frame input) |
+| `Place(x, y, width)`, `Panel(x, y, w, h)`, `Spacer(pixels)` | where the next row goes; a background plus a `Place` inside it |
+| `Label(text)` | a line of text |
+| `Button(text)` | `true` on the frame the mouse is released over a button it was pressed on |
+| `Checkbox(text, value)` | the value after this frame: it flips when clicked |
+| `Slider(value, low, high)` | the value after this frame: it follows the mouse while held, clamped to the range |
+| `TextField(edit)` | `true` when the text changed; `TextEdit` keeps the text and the cursor (`TextEditNew`, `Value`, `Insert`, `Backspace`, `Delete`, `Left`, `Right`) |
+| `ListBox(items, selected)` | the selected row after this frame |
+| `Render(image, ui)`, `FillRect(...)` | draw the list into an image, blending colours with alpha |
+
+Text is measured and drawn with a `font` (D276). The labels of a frame are kept
+in one builder that the context owns, and each command points into it, so a
+label can be built on the spot (`"score {n}"`).
 
 ## The `gpu` package
 
@@ -1286,21 +1310,6 @@ fun main() uses io, unsafe {
 
 | Function | What |
 |---|---|
-| `UiNew(font, style)`, `StyleDefault()` | a context, and the default colours, sizes and spacing |
-| `Begin()`, `End()` | start a frame (clears the draw list), and finish it (clears the one-frame input) |
-| `Place(x, y, width)`, `Panel(x, y, w, h)`, `Spacer(pixels)` | where the next row goes; a background plus a `Place` inside it |
-| `Label(text)` | a line of text |
-| `Button(text)` | `true` on the frame the mouse is released over a button it was pressed on |
-| `Checkbox(text, value)` | the value after this frame: it flips when clicked |
-| `Slider(value, low, high)` | the value after this frame: it follows the mouse while held, clamped to the range |
-| `TextField(edit)` | `true` when the text changed; `TextEdit` keeps the text and the cursor (`TextEditNew`, `Value`, `Insert`, `Backspace`, `Delete`, `Left`, `Right`) |
-| `ListBox(items, selected)` | the selected row after this frame |
-| `Render(image, ui)`, `FillRect(...)` | draw the list into an image, blending colours with alpha |
-
-Text is measured and drawn with a `font` (D276). The labels of a frame are kept
-in one builder that the context owns, and each command points into it, so a
-label can be built on the spot (`"score {n}"`).
-
 | `DeviceNew(backend)` | `Name`, `Error` |
 | `VertexBuffer(data, dynamic)`, `IndexBuffer(data, dynamic)`, `BufferDelete(b)` | `Buffer` |
 | `LayoutNew()`, `LayoutAttribute(layout, buffer, index, count, stride, offset)`, `LayoutIndices(layout, buffer)`, `LayoutDelete(l)` | what feeds a draw |
