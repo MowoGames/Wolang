@@ -1,0 +1,10 @@
+[package]
+name = "hello_app"
+source = "src"
+
+[dependencies]
+std = { path = "../../lib/std" }
+gfx = { path = "../../lib/gfx" }
+audio = { path = "../../lib/audio" }
+gpu = { path = "../../lib/gpu" }
+app = { path = "../../lib/app" }

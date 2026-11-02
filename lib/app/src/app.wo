@@ -1,0 +1,495 @@
+need std.doc.{AsText, Get, Value}
+need std.env.{Lookup, System}
+need std.fs.{Home}
+need std.ini.{Parse}
+need std.path.{Join}
+need std.text.{Contains, ParseFloat, ParseInt}
+need gfx.{Event, Open, Sleep, Time, Window, kClosed, kNone}
+need audio.{Malformed, Output, OutputOpen}
+need gpu.{Backend, Device, DeviceNew, NullNew, OpenGlStart}
+
+offer const kStepsPerFrameLimit: int = 8
+
+offer struct Config {
+  var title: text
+  var width: int
+  var height: int
+  var resizable: bool
+  var vsync: bool
+  var gl: bool
+  var step: float
+  var max_frame: float
+  var sample_rate: int
+  var sound: bool
+  var hidden: bool
+}
+
+offer fun ConfigNew(title: text, width: int, height: int) -> Config {
+  return Config(title, width, height, true, true, true, 0.016666667, 0.25, 48000, true, false)
+}
+
+fun Clamped(value: int, low: int, high: int) -> int {
+  if value < low {
+    return low
+  }
+  if value > high {
+    return high
+  }
+
+  return value
+}
+
+fun TextAt(doc: Value, path: text, fallback: text) -> text uses unsafe {
+  if const value = Get(doc, path) {
+    return AsText(value, fallback)
+  }
+
+  return fallback
+}
+
+fun IntAt(doc: Value, path: text, fallback: int) -> int uses unsafe {
+  return ParseInt(TextAt(doc, path, "")) ?? fallback
+}
+
+fun FloatAt(doc: Value, path: text, fallback: float) -> float uses unsafe {
+  return ParseFloat(TextAt(doc, path, "")) ?? fallback
+}
+
+fun BoolAt(doc: Value, path: text, fallback: bool) -> bool uses unsafe {
+  const value = TextAt(doc, path, "")
+  if value == "true" {
+    return true
+  }
+  if value == "false" {
+    return false
+  }
+
+  return fallback
+}
+
+offer fun ConfigParse(input: text, base: Config) -> Config uses unsafe {
+  match Parse(input) {
+    Ok(doc) => {
+      return Config(TextAt(doc, "window.title", base.title), Clamped(IntAt(doc, "window.width", base.width), 64, 16384), Clamped(IntAt(doc, "window.height", base.height), 64, 16384), BoolAt(doc, "window.resizable", base.resizable), BoolAt(doc, "window.vsync", base.vsync), BoolAt(doc, "window.gl", base.gl), FloatAt(doc, "loop.step", base.step), FloatAt(doc, "loop.max_frame", base.max_frame), Clamped(IntAt(doc, "audio.rate", base.sample_rate), 8000, 192000), BoolAt(doc, "audio.enabled", base.sound), base.hidden)
+    },
+    _ => {
+      return base
+    },
+  }
+}
+
+offer fun ConfigText(config: Config) -> text {
+  return "[window]\ntitle={config.title}\nwidth={config.width}\nheight={config.height}\nresizable={config.resizable}\nvsync={config.vsync}\ngl={config.gl}\n[loop]\nstep={config.step}\nmax_frame={config.max_frame}\n[audio]\nrate={config.sample_rate}\nenabled={config.sound}\n"
+}
+
+offer fun ConfigDirectory(name: text) -> text uses io, unsafe {
+  const system = System()
+  if system == "windows" {
+    return Join((Lookup("APPDATA") ?? Join(Home(), "AppData/Roaming")), name)
+  }
+  if system == "macos" {
+    return Join(Join(Home(), "Library/Application Support"), name)
+  }
+
+  return Join((Lookup("XDG_CONFIG_HOME") ?? Join(Home(), ".config")), name)
+}
+
+offer fun ConfigPath(name: text) -> text uses io, unsafe {
+  return Join(ConfigDirectory(name), "config.ini")
+}
+
+offer class Clock {
+  var step: float
+  var max_frame: float
+  var accumulator: float = 0.0
+  var last: float = 0.0
+  var frames: int = 0
+  var steps: int = 0
+
+  fun Advance(frame: float) -> int {
+    var elapsed = frame
+    if elapsed < 0.0 {
+      elapsed = 0.0
+    }
+    if elapsed > max_frame {
+      elapsed = max_frame
+    }
+
+    last = elapsed
+    frames = frames + 1
+    if step <= 0.0 {
+      steps = steps + 1
+
+      return 1
+    }
+
+    accumulator = accumulator + elapsed
+    var count = 0
+    while accumulator >= step && count < kStepsPerFrameLimit {
+      accumulator = accumulator - step
+      count = count + 1
+    }
+    if count == kStepsPerFrameLimit && accumulator >= step {
+      accumulator = 0.0
+    }
+    steps = steps + count
+
+    return count
+  }
+
+  fun Delta() -> float {
+    if step <= 0.0 {
+      return last
+    }
+
+    return step
+  }
+
+  fun Alpha() -> float {
+    if step <= 0.0 {
+      return 1.0
+    }
+
+    return accumulator / step
+  }
+}
+
+offer fun ClockNew(step: float, max_frame: float) -> Clock {
+  return Clock(step, max_frame, 0.0, 0.0, 0, 0)
+}
+
+offer ability Game {
+  fun Update(dt: float) uses unsafe
+  fun Draw(alpha: float) uses unsafe
+  fun OnEvent(event: Event) -> bool uses unsafe
+}
+
+offer class App {
+  var config: Config
+  var window: Window
+  var output: Output
+  var device: Device
+  var clock: Clock
+  var running: bool = true
+
+  fun HasWindow() -> bool {
+    return window.IsOpen()
+  }
+
+  fun HasSound() -> bool {
+    return output.IsOpen()
+  }
+
+  fun Quit() {
+    running = false
+  }
+
+  fun Frame(game: Game, frame: float) uses unsafe {
+    const count = clock.Advance(frame)
+    var i = 0
+    while i < count {
+      game.Update(clock.Delta())
+      i = i + 1
+    }
+    game.Draw(clock.Alpha())
+    const _queued = output.Pump()
+  }
+
+  fun RunFrames(game: Game, frames: int, frame: float) -> int uses unsafe {
+    var done = 0
+    while done < frames && running {
+      Frame(game, frame)
+      done = done + 1
+    }
+
+    return done
+  }
+
+  fun Run(game: Game) -> int uses unsafe {
+    if !window.IsOpen() {
+      return 0
+    }
+
+    var previous = Time()
+    var done = 0
+    while running && window.IsOpen() {
+      var event = window.Poll()
+      while event.kind != kNone {
+        if event.kind == kClosed {
+          running = false
+        } else if !game.OnEvent(event) {
+          running = false
+        }
+        event = window.Poll()
+      }
+
+      const now = Time()
+      Frame(game, (now - previous) as float)
+      previous = now
+      done = done + 1
+      if config.gl {
+        window.Swap(config.vsync)
+      }
+      if !config.vsync {
+        Sleep(0.001)
+      }
+    }
+
+    return done
+  }
+
+  fun Close() uses unsafe {
+    output.Close()
+    window.Close()
+  }
+}
+
+fun PickBackend(window: Window, wanted: bool) -> Backend uses unsafe {
+  if wanted {
+    if const real = OpenGlStart(window) {
+      return real
+    }
+  }
+
+  return NullNew()
+}
+
+offer fun AppNew(config: Config) -> App!(Malformed) uses unsafe {
+  var flags = 0 as u32
+  if config.resizable {
+    flags = flags + 1
+  }
+  if config.gl {
+    flags = flags + 2
+  }
+  if config.hidden {
+    flags = flags + 4
+  }
+
+  var window = Open(config.title, config.width, config.height, flags)
+
+  var rate = config.sample_rate
+  if !config.sound {
+    rate = 8000
+  }
+
+  var output = OutputOpen(rate, 2)?
+  if !config.sound {
+    output.Close()
+  }
+
+  return App(config, window, output, DeviceNew(PickBackend(window, config.gl)), ClockNew(config.step, config.max_frame), true)
+}
+
+class Counter {
+  var updates: int = 0
+  var draws: int = 0
+  var events: int = 0
+  var last_alpha: float = 0.0
+  var total: float = 0.0
+}
+
+extend Counter as Game {
+  fun Update(dt: float) uses unsafe {
+    updates = updates + 1
+    total = total + dt
+  }
+
+  fun Draw(alpha: float) uses unsafe {
+    draws = draws + 1
+    last_alpha = alpha
+  }
+
+  fun OnEvent(_event: Event) -> bool uses unsafe {
+    events = events + 1
+
+    return true
+  }
+}
+
+fun HeadlessConfig() -> Config {
+  var config = ConfigNew("test", 320, 200)
+  config.gl = false
+  config.sound = false
+  config.hidden = true
+
+  return config
+}
+
+@Test
+fun RunsFixedStepsFromAFrameTime() -> bool {
+  var clock = ClockNew(0.01, 0.25)
+  if clock.Advance(0.035) != 3 {
+    return false
+  }
+  if clock.Alpha() < 0.49 || clock.Alpha() > 0.51 {
+    return false
+  }
+
+  return clock.Advance(0.006) == 1 && clock.Delta() == 0.01 && clock.frames == 2 && clock.steps == 4
+}
+
+@Test
+fun RunsNoStepForAShortFrame() -> bool {
+  var clock = ClockNew(0.02, 0.25)
+
+  return clock.Advance(0.005) == 0 && clock.Advance(0.005) == 0 && clock.Advance(0.011) == 1
+}
+
+@Test
+fun ClampsAHugeFrameInsteadOfSpinning() -> bool {
+  var clock = ClockNew(0.01, 0.1)
+  const steps = clock.Advance(30.0)
+
+  return steps == 8 && clock.Alpha() < 1.0
+}
+
+@Test
+fun TreatsNegativeTimeAsNone() -> bool {
+  var clock = ClockNew(0.01, 0.25)
+
+  return clock.Advance(-1.0) == 0 && clock.Alpha() == 0.0
+}
+
+@Test
+fun StepsOncePerFrameWhenVariable() -> bool {
+  var clock = ClockNew(0.0, 0.25)
+  if clock.Advance(0.033) != 1 || clock.Delta() != 0.033 || clock.Alpha() != 1.0 {
+    return false
+  }
+
+  return clock.Advance(5.0) == 1 && clock.Delta() == 0.25
+}
+
+@Test
+fun ReadsAConfigFile() -> bool uses unsafe {
+  const base = ConfigNew("Game", 1280, 720)
+  const text = "[window]\ntitle=Wolf\nwidth=800\nheight=600\nresizable=false\nvsync=false\n[audio]\nrate=44100\nenabled=false\n[loop]\nstep=0.02\n"
+  const config = ConfigParse(text, base)
+
+  return config.title == "Wolf" && config.width == 800 && config.height == 600 && !config.resizable && !config.vsync && config.gl && config.sample_rate == 44100 && !config.sound && config.step > 0.019 && config.step < 0.021 && config.max_frame == base.max_frame
+}
+
+@Test
+fun KeepsTheDefaultsForWhatTheFileLeavesOut() -> bool uses unsafe {
+  const base = ConfigNew("Game", 1280, 720)
+  const config = ConfigParse("[window]\nwidth=900\n", base)
+
+  return config.title == "Game" && config.width == 900 && config.height == 720 && config.vsync && config.sound
+}
+
+@Test
+fun ClampsAbsurdConfigValues() -> bool uses unsafe {
+  const base = ConfigNew("Game", 1280, 720)
+  const config = ConfigParse("[window]\nwidth=999999\nheight=1\n[audio]\nrate=5\n", base)
+
+  return config.width == 16384 && config.height == 64 && config.sample_rate == 8000
+}
+
+@Test
+fun IgnoresAConfigThatIsNotADocument() -> bool uses unsafe {
+  const base = ConfigNew("Game", 1280, 720)
+  const config = ConfigParse("[window\nwidth", base)
+
+  return config.width == 1280 && config.title == "Game"
+}
+
+@Test
+fun WritesAConfigItCanReadBack() -> bool uses unsafe {
+  var config = ConfigNew("Round Trip", 1024, 768)
+  config.vsync = false
+  config.sample_rate = 44100
+  const back = ConfigParse(ConfigText(config), ConfigNew("x", 1, 1))
+
+  return back.title == "Round Trip" && back.width == 1024 && back.height == 768 && !back.vsync && back.sample_rate == 44100 && back.sound
+}
+
+@Test
+fun PutsConfigUnderTheAppsOwnDirectory() -> bool uses io, unsafe {
+  const directory = ConfigDirectory("wolang-test-app")
+  const path = ConfigPath("wolang-test-app")
+
+  return Contains(directory, "wolang-test-app") && Contains(path, "config.ini") && Contains(path, "wolang-test-app")
+}
+
+@Test
+fun RunsAFixedNumberOfFramesWithNoWindow() -> bool uses unsafe {
+  match AppNew(HeadlessConfig()) {
+    Ok(app) => {
+      var counter = Counter()
+      const done = app.RunFrames(counter, 10, 0.016666667)
+
+      return done == 10 && counter.draws == 10 && counter.updates >= 9 && counter.updates <= 11 && app.device.Name() == "null" && !app.HasSound()
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun StopsWhenAskedTo() -> bool uses unsafe {
+  match AppNew(HeadlessConfig()) {
+    Ok(app) => {
+      var counter = Counter()
+      app.Quit()
+      const done = app.RunFrames(counter, 10, 0.016666667)
+
+      return done == 0 && counter.draws == 0
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun RunDoesNothingWithoutAWindow() -> bool uses unsafe {
+  match AppNew(HeadlessConfig()) {
+    Ok(app) => {
+      var counter = Counter()
+      if app.HasWindow() {
+        app.Close()
+
+        return true
+      }
+
+      return app.Run(counter) == 0 && counter.draws == 0
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun MixesWhileRunningWithoutADevice() -> bool uses unsafe {
+  match AppNew(HeadlessConfig()) {
+    Ok(app) => {
+      var counter = Counter()
+      const done = app.RunFrames(counter, 3, 0.01)
+
+      return done == 3 && app.output.mixer.channels == 2
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun DrawsWithTheLeftoverFractionOfAStep() -> bool uses unsafe {
+  var config = HeadlessConfig()
+  config.step = 0.01
+  match AppNew(config) {
+    Ok(app) => {
+      var counter = Counter()
+      const _done = app.RunFrames(counter, 1, 0.015)
+
+      return counter.updates == 1 && counter.last_alpha > 0.49 && counter.last_alpha < 0.51
+    },
+    _ => {
+      return false
+    },
+  }
+}

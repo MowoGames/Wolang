@@ -1,0 +1,14 @@
+[package]
+name = "app"
+version = "0.1.0"
+source = "src"
+
+[dependencies]
+std = { path = "../std" }
+gfx = { path = "../gfx" }
+audio = { path = "../audio" }
+gpu = { path = "../gpu" }
+
+[link]
+libraries = "wolang_platform"
+paths = "../../build/debug/platform, ../../build/release/platform, ../../build/x64/platform, ../../build/asan/platform, ../../build/ubsan/platform, ../../build/windows/platform, /usr/local/lib, /usr/lib, /opt/homebrew/lib"
