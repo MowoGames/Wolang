@@ -1,0 +1,1145 @@
+need std.list.{List, ListNew}
+need std.mem.{ArrayNew, Free}
+need std.text.{Bytes, Contains, TextFromRaw}
+need gfx.{Open, Window}
+
+extern "C" fun wolang_gpu_ready() -> s32
+extern "C" fun wolang_gpu_version() -> *u8
+extern "C" fun wolang_gpu_error() -> s32
+extern "C" fun wolang_gpu_clear(red: f32, green: f32, blue: f32, alpha: f32, depth: f32, mask: s32)
+extern "C" fun wolang_gpu_viewport(x: s32, y: s32, width: s32, height: s32)
+extern "C" fun wolang_gpu_blend(enabled: s32, source: s32, destination: s32)
+extern "C" fun wolang_gpu_depth(test: s32, write: s32, compare: s32)
+extern "C" fun wolang_gpu_cull(mode: s32)
+extern "C" fun wolang_gpu_scissor(enabled: s32, x: s32, y: s32, width: s32, height: s32)
+extern "C" fun wolang_gpu_buffer_new() -> u32
+extern "C" fun wolang_gpu_vertex_data(buffer: u32, data: *f32, count: s64, dynamic: s32)
+extern "C" fun wolang_gpu_index_data(buffer: u32, data: *u32, count: s64, dynamic: s32)
+extern "C" fun wolang_gpu_buffer_delete(buffer: u32)
+extern "C" fun wolang_gpu_layout_new() -> u32
+extern "C" fun wolang_gpu_layout_attribute(layout: u32, buffer: u32, index: s32, count: s32, stride: s32, offset: s32)
+extern "C" fun wolang_gpu_layout_indices(layout: u32, buffer: u32)
+extern "C" fun wolang_gpu_layout_delete(layout: u32)
+extern "C" fun wolang_gpu_program_new(vertex: *u8, fragment: *u8) -> u32
+extern "C" fun wolang_gpu_program_log() -> *u8
+extern "C" fun wolang_gpu_program_use(program: u32)
+extern "C" fun wolang_gpu_program_delete(program: u32)
+extern "C" fun wolang_gpu_uniform(program: u32, name: *u8) -> s32
+extern "C" fun wolang_gpu_uniform_float(location: s32, count: s32, a: f32, b: f32, c: f32, d: f32)
+extern "C" fun wolang_gpu_uniform_int(location: s32, value: s32)
+extern "C" fun wolang_gpu_uniform_matrix(location: s32, matrix: *f32)
+extern "C" fun wolang_gpu_texture_new(width: s32, height: s32, rgba: *u8, filter: s32, wrap: s32) -> u32
+extern "C" fun wolang_gpu_texture_update(texture: u32, x: s32, y: s32, width: s32, height: s32, rgba: *u8)
+extern "C" fun wolang_gpu_texture_bind(unit: s32, texture: u32)
+extern "C" fun wolang_gpu_texture_delete(texture: u32)
+extern "C" fun wolang_gpu_target_new(texture: u32) -> u32
+extern "C" fun wolang_gpu_target_bind(target: u32)
+extern "C" fun wolang_gpu_target_delete(target: u32)
+extern "C" fun wolang_gpu_draw(layout: u32, mode: s32, first: s32, count: s32)
+extern "C" fun wolang_gpu_draw_indexed(layout: u32, mode: s32, count: s32, first: s32)
+extern "C" fun wolang_gpu_read(x: s32, y: s32, width: s32, height: s32, rgba: *mut u8) -> s32
+
+offer error CompileFailed(log: text)
+
+offer const kClearColour: int = 1
+offer const kClearDepth: int = 2
+
+offer const kTriangles: int = 0
+offer const kLines: int = 1
+offer const kPoints: int = 2
+offer const kTriangleStrip: int = 3
+offer const kTriangleFan: int = 4
+offer const kLineStrip: int = 5
+
+offer const kZero: int = 0
+offer const kOne: int = 1
+offer const kSourceAlpha: int = 2
+offer const kOneMinusSourceAlpha: int = 3
+offer const kDestinationAlpha: int = 4
+offer const kOneMinusDestinationAlpha: int = 5
+
+offer const kNever: int = 0
+offer const kLess: int = 1
+offer const kEqual: int = 2
+offer const kLessOrEqual: int = 3
+offer const kGreater: int = 4
+offer const kNotEqual: int = 5
+offer const kGreaterOrEqual: int = 6
+offer const kAlways: int = 7
+
+offer const kCullNone: int = 0
+offer const kCullBack: int = 1
+offer const kCullFront: int = 2
+
+offer const kSpriteVertex: text = r"#version 330 core
+layout(location = 0) in vec2 a_position;
+layout(location = 1) in vec2 a_uv;
+layout(location = 2) in vec4 a_colour;
+uniform mat4 u_view;
+out vec2 v_uv;
+out vec4 v_colour;
+void main() {
+  v_uv = a_uv;
+  v_colour = a_colour;
+  gl_Position = u_view * vec4(a_position, 0.0, 1.0);
+}
+"
+
+offer const kSpriteFragment: text = r"#version 330 core
+in vec2 v_uv;
+in vec4 v_colour;
+uniform sampler2D u_texture;
+out vec4 o_colour;
+void main() {
+  o_colour = texture(u_texture, v_uv) * v_colour;
+}
+"
+
+offer const kSolidFragment: text = r"#version 330 core
+in vec2 v_uv;
+in vec4 v_colour;
+out vec4 o_colour;
+void main() {
+  o_colour = v_colour;
+}
+"
+
+offer fun WithHeader(source: text) -> text uses unsafe {
+  if Contains(source, "#version") {
+    return source
+  }
+
+  return "#version 330 core\n" + source
+}
+
+offer struct Buffer {
+  var id: int
+  var count: int
+}
+
+offer struct Layout {
+  var id: int
+}
+
+offer struct Program {
+  var id: int
+}
+
+offer struct Texture {
+  var id: int
+  var width: int
+  var height: int
+}
+
+offer struct Target {
+  var id: int
+  var texture: Texture
+}
+
+offer ability Backend {
+  fun Name() -> text
+  fun Clear(red: float, green: float, blue: float, alpha: float, depth: float, mask: int) uses unsafe
+  fun Viewport(x: int, y: int, width: int, height: int) uses unsafe
+  fun Blend(enabled: bool, source: int, destination: int) uses unsafe
+  fun Depth(test: bool, write: bool, compare: int) uses unsafe
+  fun Cull(mode: int) uses unsafe
+  fun Scissor(enabled: bool, x: int, y: int, width: int, height: int) uses unsafe
+  fun BufferNew() -> int uses unsafe
+  fun VertexData(buffer: int, data: []f32, dynamic: bool) uses unsafe
+  fun IndexData(buffer: int, data: []u32, dynamic: bool) uses unsafe
+  fun BufferDelete(buffer: int) uses unsafe
+  fun LayoutNew() -> int uses unsafe
+  fun LayoutAttribute(layout: int, buffer: int, index: int, count: int, stride: int, offset: int) uses unsafe
+  fun LayoutIndices(layout: int, buffer: int) uses unsafe
+  fun LayoutDelete(layout: int) uses unsafe
+  fun ProgramNew(vertex: text, fragment: text) -> int uses unsafe
+  fun ProgramLog() -> text uses unsafe
+  fun ProgramUse(program: int) uses unsafe
+  fun ProgramDelete(program: int) uses unsafe
+  fun Uniform(program: int, name: text) -> int uses unsafe
+  fun UniformFloat(location: int, count: int, a: float, b: float, c: float, d: float) uses unsafe
+  fun UniformInt(location: int, value: int) uses unsafe
+  fun UniformMatrix(location: int, values: []f32) uses unsafe
+  fun TextureNew(width: int, height: int, rgba: []u8, linear: bool, repeat: bool) -> int uses unsafe
+  fun TextureUpdate(texture: int, x: int, y: int, width: int, height: int, rgba: []u8) uses unsafe
+  fun TextureBind(unit: int, texture: int) uses unsafe
+  fun TextureDelete(texture: int) uses unsafe
+  fun TargetNew(texture: int) -> int uses unsafe
+  fun TargetBind(target: int) uses unsafe
+  fun TargetDelete(target: int) uses unsafe
+  fun Draw(layout: int, mode: int, first: int, count: int) uses unsafe
+  fun DrawIndexed(layout: int, mode: int, count: int, first: int) uses unsafe
+  fun Read(x: int, y: int, width: int, height: int, out: []mut u8) -> bool uses unsafe
+  fun Error() -> int uses unsafe
+}
+
+fun Flag(enabled: bool) -> s32 {
+  if enabled {
+    return 1
+  }
+
+  return 0
+}
+
+fun TextFromC(from: *u8) -> text uses unsafe {
+  if from == 0 as *u8 {
+    return ""
+  }
+
+  var length = 0
+  while *(from + length) != 0 {
+    length = length + 1
+  }
+  if length == 0 {
+    return ""
+  }
+
+  return TextFromRaw(from, length) + ""
+}
+
+fun CString(value: text) -> []u8 uses unsafe {
+  return Bytes(value + "\0")
+}
+
+offer class OpenGl {
+  var version: text = ""
+}
+
+extend OpenGl as Backend {
+  fun Name() -> text => "opengl"
+
+  fun Clear(red: float, green: float, blue: float, alpha: float, depth: float, mask: int) uses unsafe {
+    wolang_gpu_clear(red, green, blue, alpha, depth, mask as s32)
+  }
+
+  fun Viewport(x: int, y: int, width: int, height: int) uses unsafe {
+    wolang_gpu_viewport(x as s32, y as s32, width as s32, height as s32)
+  }
+
+  fun Blend(enabled: bool, source: int, destination: int) uses unsafe {
+    wolang_gpu_blend(Flag(enabled), source as s32, destination as s32)
+  }
+
+  fun Depth(test: bool, write: bool, compare: int) uses unsafe {
+    wolang_gpu_depth(Flag(test), Flag(write), compare as s32)
+  }
+
+  fun Cull(mode: int) uses unsafe {
+    wolang_gpu_cull(mode as s32)
+  }
+
+  fun Scissor(enabled: bool, x: int, y: int, width: int, height: int) uses unsafe {
+    wolang_gpu_scissor(Flag(enabled), x as s32, y as s32, width as s32, height as s32)
+  }
+
+  fun BufferNew() -> int uses unsafe {
+    return wolang_gpu_buffer_new() as int
+  }
+
+  fun VertexData(buffer: int, data: []f32, dynamic: bool) uses unsafe {
+    if data.len == 0 {
+      return
+    }
+    wolang_gpu_vertex_data(buffer as u32, &data[0], data.len as s64, Flag(dynamic))
+  }
+
+  fun IndexData(buffer: int, data: []u32, dynamic: bool) uses unsafe {
+    if data.len == 0 {
+      return
+    }
+    wolang_gpu_index_data(buffer as u32, &data[0], data.len as s64, Flag(dynamic))
+  }
+
+  fun BufferDelete(buffer: int) uses unsafe {
+    wolang_gpu_buffer_delete(buffer as u32)
+  }
+
+  fun LayoutNew() -> int uses unsafe {
+    return wolang_gpu_layout_new() as int
+  }
+
+  fun LayoutAttribute(layout: int, buffer: int, index: int, count: int, stride: int, offset: int) uses unsafe {
+    wolang_gpu_layout_attribute(layout as u32, buffer as u32, index as s32, count as s32, stride as s32, offset as s32)
+  }
+
+  fun LayoutIndices(layout: int, buffer: int) uses unsafe {
+    wolang_gpu_layout_indices(layout as u32, buffer as u32)
+  }
+
+  fun LayoutDelete(layout: int) uses unsafe {
+    wolang_gpu_layout_delete(layout as u32)
+  }
+
+  fun ProgramNew(vertex: text, fragment: text) -> int uses unsafe {
+    const v = CString(vertex)
+    const f = CString(fragment)
+    const program = wolang_gpu_program_new(&v[0], &f[0]) as int
+
+    return program
+  }
+
+  fun ProgramLog() -> text uses unsafe {
+    return TextFromC(wolang_gpu_program_log())
+  }
+
+  fun ProgramUse(program: int) uses unsafe {
+    wolang_gpu_program_use(program as u32)
+  }
+
+  fun ProgramDelete(program: int) uses unsafe {
+    wolang_gpu_program_delete(program as u32)
+  }
+
+  fun Uniform(program: int, name: text) -> int uses unsafe {
+    const n = CString(name)
+    const location = wolang_gpu_uniform(program as u32, &n[0]) as int
+
+    return location
+  }
+
+  fun UniformFloat(location: int, count: int, a: float, b: float, c: float, d: float) uses unsafe {
+    wolang_gpu_uniform_float(location as s32, count as s32, a, b, c, d)
+  }
+
+  fun UniformInt(location: int, value: int) uses unsafe {
+    wolang_gpu_uniform_int(location as s32, value as s32)
+  }
+
+  fun UniformMatrix(location: int, values: []f32) uses unsafe {
+    if values.len < 16 {
+      return
+    }
+    wolang_gpu_uniform_matrix(location as s32, &values[0])
+  }
+
+  fun TextureNew(width: int, height: int, rgba: []u8, linear: bool, repeat: bool) -> int uses unsafe {
+    if rgba.len < width * height * 4 {
+      return wolang_gpu_texture_new(width as s32, height as s32, 0 as *u8, Flag(linear), Flag(repeat)) as int
+    }
+
+    return wolang_gpu_texture_new(width as s32, height as s32, &rgba[0], Flag(linear), Flag(repeat)) as int
+  }
+
+  fun TextureUpdate(texture: int, x: int, y: int, width: int, height: int, rgba: []u8) uses unsafe {
+    if rgba.len < width * height * 4 {
+      return
+    }
+    wolang_gpu_texture_update(texture as u32, x as s32, y as s32, width as s32, height as s32, &rgba[0])
+  }
+
+  fun TextureBind(unit: int, texture: int) uses unsafe {
+    wolang_gpu_texture_bind(unit as s32, texture as u32)
+  }
+
+  fun TextureDelete(texture: int) uses unsafe {
+    wolang_gpu_texture_delete(texture as u32)
+  }
+
+  fun TargetNew(texture: int) -> int uses unsafe {
+    return wolang_gpu_target_new(texture as u32) as int
+  }
+
+  fun TargetBind(target: int) uses unsafe {
+    wolang_gpu_target_bind(target as u32)
+  }
+
+  fun TargetDelete(target: int) uses unsafe {
+    wolang_gpu_target_delete(target as u32)
+  }
+
+  fun Draw(layout: int, mode: int, first: int, count: int) uses unsafe {
+    wolang_gpu_draw(layout as u32, mode as s32, first as s32, count as s32)
+  }
+
+  fun DrawIndexed(layout: int, mode: int, count: int, first: int) uses unsafe {
+    wolang_gpu_draw_indexed(layout as u32, mode as s32, count as s32, first as s32)
+  }
+
+  fun Read(x: int, y: int, width: int, height: int, out: []mut u8) -> bool uses unsafe {
+    if out.len < width * height * 4 {
+      return false
+    }
+
+    return wolang_gpu_read(x as s32, y as s32, width as s32, height as s32, &out[0]) != 0
+  }
+
+  fun Error() -> int uses unsafe {
+    return wolang_gpu_error() as int
+  }
+}
+
+offer fun OpenGlStart(window: Window) -> Backend? uses unsafe {
+  if !window.IsOpen() || !window.StartGl() {
+    return null
+  }
+  if wolang_gpu_ready() == 0 {
+    return null
+  }
+
+  return OpenGl(TextFromC(wolang_gpu_version()))
+}
+
+offer class Null {
+  var next: int = 1
+  var buffers: List<int>
+  var layouts: List<int>
+  var programs: List<int>
+  var textures: List<int>
+  var targets: List<int>
+  var log: List<text>
+  var errors: int = 0
+  var failure: text = ""
+  var program_sources: List<text>
+  var bound_target: int = 0
+  var bound_program: int = 0
+  var clear_red: float = 0.0
+  var clear_green: float = 0.0
+  var clear_blue: float = 0.0
+  var clear_alpha: float = 0.0
+  var uniforms_set: int = 0
+
+  fun Record(line: text) uses unsafe {
+    log.Push(line)
+  }
+
+  fun Take(list: List<int>) -> int uses unsafe {
+    const id = next
+    next = next + 1
+    list.Push(id)
+
+    return id
+  }
+
+  fun Live(list: List<int>, id: int) -> bool {
+    var i = 0
+    while i < list.Len() {
+      if list.At(i) == id {
+        return true
+      }
+      i = i + 1
+    }
+
+    return false
+  }
+
+  fun Release(list: List<int>, id: int, what: text) uses unsafe {
+    var i = 0
+    while i < list.Len() {
+      if list.At(i) == id {
+        list.Set(i, list.At(list.Len() - 1))
+        const _gone = list.Pop()
+        Record("delete {what} {id}")
+        return
+      }
+      i = i + 1
+    }
+    errors = errors + 1
+    Record("error delete {what} {id}")
+  }
+
+  fun Need(list: List<int>, id: int, what: text) uses unsafe {
+    if !Live(list, id) {
+      errors = errors + 1
+      Record("error use {what} {id}")
+    }
+  }
+
+  fun Count(list: List<int>) -> int {
+    return list.Len()
+  }
+}
+
+offer fun NullNew() -> Null uses unsafe {
+  return Null(1, ListNew<int>(), ListNew<int>(), ListNew<int>(), ListNew<int>(), ListNew<int>(), ListNew<text>(), 0, "", ListNew<text>(), 0, 0, 0.0, 0.0, 0.0, 0.0, 0)
+}
+
+extend Null as Backend {
+  fun Name() -> text => "null"
+
+  fun Clear(red: float, green: float, blue: float, alpha: float, _depth: float, mask: int) uses unsafe {
+    clear_red = red
+    clear_green = green
+    clear_blue = blue
+    clear_alpha = alpha
+    Record("clear mask={mask}")
+  }
+
+  fun Viewport(x: int, y: int, width: int, height: int) uses unsafe {
+    Record("viewport {x} {y} {width} {height}")
+  }
+
+  fun Blend(enabled: bool, source: int, destination: int) uses unsafe {
+    Record("blend {enabled} {source} {destination}")
+  }
+
+  fun Depth(test: bool, write: bool, compare: int) uses unsafe {
+    Record("depth {test} {write} {compare}")
+  }
+
+  fun Cull(mode: int) uses unsafe {
+    Record("cull {mode}")
+  }
+
+  fun Scissor(enabled: bool, x: int, y: int, width: int, height: int) uses unsafe {
+    Record("scissor {enabled} {x} {y} {width} {height}")
+  }
+
+  fun BufferNew() -> int uses unsafe {
+    const id = Take(buffers)
+    Record("buffer {id}")
+
+    return id
+  }
+
+  fun VertexData(buffer: int, data: []f32, _dynamic: bool) uses unsafe {
+    Need(buffers, buffer, "buffer")
+    Record("vertices {buffer} {data.len}")
+  }
+
+  fun IndexData(buffer: int, data: []u32, _dynamic: bool) uses unsafe {
+    Need(buffers, buffer, "buffer")
+    Record("indices {buffer} {data.len}")
+  }
+
+  fun BufferDelete(buffer: int) uses unsafe {
+    Release(buffers, buffer, "buffer")
+  }
+
+  fun LayoutNew() -> int uses unsafe {
+    const id = Take(layouts)
+    Record("layout {id}")
+
+    return id
+  }
+
+  fun LayoutAttribute(layout: int, buffer: int, index: int, count: int, stride: int, offset: int) uses unsafe {
+    Need(layouts, layout, "layout")
+    Need(buffers, buffer, "buffer")
+    Record("attribute {layout} {buffer} {index} {count} {stride} {offset}")
+  }
+
+  fun LayoutIndices(layout: int, buffer: int) uses unsafe {
+    Need(layouts, layout, "layout")
+    Need(buffers, buffer, "buffer")
+    Record("layout-indices {layout} {buffer}")
+  }
+
+  fun LayoutDelete(layout: int) uses unsafe {
+    Release(layouts, layout, "layout")
+  }
+
+  fun ProgramNew(vertex: text, fragment: text) -> int uses unsafe {
+    if !Contains(vertex, "void main") {
+      failure = "vertex: no main"
+      Record("program failed")
+
+      return 0
+    }
+    if !Contains(fragment, "void main") {
+      failure = "fragment: no main"
+      Record("program failed")
+
+      return 0
+    }
+
+    failure = ""
+    const id = Take(programs)
+    program_sources.Push(vertex + "\n" + fragment)
+    Record("program {id}")
+
+    return id
+  }
+
+  fun ProgramLog() -> text {
+    return failure
+  }
+
+  fun ProgramUse(program: int) uses unsafe {
+    if program != 0 {
+      Need(programs, program, "program")
+    }
+    bound_program = program
+    Record("use {program}")
+  }
+
+  fun ProgramDelete(program: int) uses unsafe {
+    Release(programs, program, "program")
+  }
+
+  fun Uniform(program: int, name: text) -> int uses unsafe {
+    var i = 0
+    while i < programs.Len() {
+      if programs.At(i) == program {
+        if Contains(program_sources.At(i), name) {
+          return 100 + program
+        }
+
+        return -1
+      }
+      i = i + 1
+    }
+
+    return -1
+  }
+
+  fun UniformFloat(location: int, count: int, _a: float, _b: float, _c: float, _d: float) uses unsafe {
+    if bound_program == 0 {
+      errors = errors + 1
+      Record("error uniform without program")
+    }
+    uniforms_set = uniforms_set + 1
+    Record("uniform-float {location} {count}")
+  }
+
+  fun UniformInt(location: int, value: int) uses unsafe {
+    if bound_program == 0 {
+      errors = errors + 1
+      Record("error uniform without program")
+    }
+    uniforms_set = uniforms_set + 1
+    Record("uniform-int {location} {value}")
+  }
+
+  fun UniformMatrix(location: int, values: []f32) uses unsafe {
+    if bound_program == 0 || values.len < 16 {
+      errors = errors + 1
+      Record("error uniform matrix")
+    }
+    uniforms_set = uniforms_set + 1
+    Record("uniform-matrix {location}")
+  }
+
+  fun TextureNew(width: int, height: int, _rgba: []u8, _linear: bool, _repeat: bool) -> int uses unsafe {
+    if width < 1 || height < 1 {
+      errors = errors + 1
+      Record("error texture size")
+
+      return 0
+    }
+
+    const id = Take(textures)
+    Record("texture {id} {width} {height}")
+
+    return id
+  }
+
+  fun TextureUpdate(texture: int, x: int, y: int, width: int, height: int, rgba: []u8) uses unsafe {
+    Need(textures, texture, "texture")
+    if rgba.len < width * height * 4 {
+      errors = errors + 1
+      Record("error texture data")
+    }
+    Record("texture-update {texture} {x} {y} {width} {height}")
+  }
+
+  fun TextureBind(unit: int, texture: int) uses unsafe {
+    if texture != 0 {
+      Need(textures, texture, "texture")
+    }
+    Record("bind-texture {unit} {texture}")
+  }
+
+  fun TextureDelete(texture: int) uses unsafe {
+    Release(textures, texture, "texture")
+  }
+
+  fun TargetNew(texture: int) -> int uses unsafe {
+    Need(textures, texture, "texture")
+    const id = Take(targets)
+    Record("target {id} {texture}")
+
+    return id
+  }
+
+  fun TargetBind(target: int) uses unsafe {
+    if target != 0 {
+      Need(targets, target, "target")
+    }
+    bound_target = target
+    Record("bind-target {target}")
+  }
+
+  fun TargetDelete(target: int) uses unsafe {
+    Release(targets, target, "target")
+  }
+
+  fun Draw(layout: int, mode: int, first: int, count: int) uses unsafe {
+    Need(layouts, layout, "layout")
+    if bound_program == 0 {
+      errors = errors + 1
+      Record("error draw without program")
+    }
+    Record("draw {layout} {mode} {first} {count}")
+  }
+
+  fun DrawIndexed(layout: int, mode: int, count: int, first: int) uses unsafe {
+    Need(layouts, layout, "layout")
+    if bound_program == 0 {
+      errors = errors + 1
+      Record("error draw without program")
+    }
+    Record("draw-indexed {layout} {mode} {count} {first}")
+  }
+
+  fun Read(_x: int, _y: int, width: int, height: int, out: []mut u8) -> bool uses unsafe {
+    if out.len < width * height * 4 {
+      return false
+    }
+
+    var i = 0
+    while i < width * height {
+      out[i * 4] = (clear_red * 255.0) as u8
+      out[i * 4 + 1] = (clear_green * 255.0) as u8
+      out[i * 4 + 2] = (clear_blue * 255.0) as u8
+      out[i * 4 + 3] = (clear_alpha * 255.0) as u8
+      i = i + 1
+    }
+
+    return true
+  }
+
+  fun Error() -> int {
+    return errors
+  }
+}
+
+offer class Device {
+  var backend: Backend
+
+  fun Name() -> text {
+    return backend.Name()
+  }
+
+  fun VertexBuffer(data: []f32, dynamic: bool) -> Buffer uses unsafe {
+    const id = backend.BufferNew()
+    backend.VertexData(id, data, dynamic)
+
+    return Buffer(id, data.len)
+  }
+
+  fun IndexBuffer(data: []u32, dynamic: bool) -> Buffer uses unsafe {
+    const id = backend.BufferNew()
+    backend.IndexData(id, data, dynamic)
+
+    return Buffer(id, data.len)
+  }
+
+  fun BufferDelete(buffer: Buffer) uses unsafe {
+    backend.BufferDelete(buffer.id)
+  }
+
+  fun LayoutNew() -> Layout uses unsafe {
+    return Layout(backend.LayoutNew())
+  }
+
+  fun LayoutAttribute(layout: Layout, buffer: Buffer, index: int, count: int, stride: int, offset: int) uses unsafe {
+    backend.LayoutAttribute(layout.id, buffer.id, index, count, stride * 4, offset * 4)
+  }
+
+  fun LayoutIndices(layout: Layout, buffer: Buffer) uses unsafe {
+    backend.LayoutIndices(layout.id, buffer.id)
+  }
+
+  fun LayoutDelete(layout: Layout) uses unsafe {
+    backend.LayoutDelete(layout.id)
+  }
+
+  fun ProgramNew(vertex: text, fragment: text) -> Program!(CompileFailed) uses unsafe {
+    const id = backend.ProgramNew(WithHeader(vertex), WithHeader(fragment))
+    if id == 0 {
+      return CompileFailed(backend.ProgramLog())
+    }
+
+    return Program(id)
+  }
+
+  fun ProgramUse(program: Program) uses unsafe {
+    backend.ProgramUse(program.id)
+  }
+
+  fun ProgramDelete(program: Program) uses unsafe {
+    backend.ProgramDelete(program.id)
+  }
+
+  fun Uniform(program: Program, name: text) -> int uses unsafe {
+    return backend.Uniform(program.id, name)
+  }
+
+  fun SetFloat(location: int, a: float) uses unsafe {
+    backend.UniformFloat(location, 1, a, 0.0, 0.0, 0.0)
+  }
+
+  fun SetVec2(location: int, a: float, b: float) uses unsafe {
+    backend.UniformFloat(location, 2, a, b, 0.0, 0.0)
+  }
+
+  fun SetVec3(location: int, a: float, b: float, c: float) uses unsafe {
+    backend.UniformFloat(location, 3, a, b, c, 0.0)
+  }
+
+  fun SetVec4(location: int, a: float, b: float, c: float, d: float) uses unsafe {
+    backend.UniformFloat(location, 4, a, b, c, d)
+  }
+
+  fun SetInt(location: int, value: int) uses unsafe {
+    backend.UniformInt(location, value)
+  }
+
+  fun SetMatrix(location: int, values: []f32) uses unsafe {
+    backend.UniformMatrix(location, values)
+  }
+
+  fun TextureNew(width: int, height: int, rgba: []u8, linear: bool, repeat: bool) -> Texture uses unsafe {
+    return Texture(backend.TextureNew(width, height, rgba, linear, repeat), width, height)
+  }
+
+  fun TextureUpdate(texture: Texture, x: int, y: int, width: int, height: int, rgba: []u8) uses unsafe {
+    backend.TextureUpdate(texture.id, x, y, width, height, rgba)
+  }
+
+  fun TextureBind(unit: int, texture: Texture) uses unsafe {
+    backend.TextureBind(unit, texture.id)
+  }
+
+  fun TextureDelete(texture: Texture) uses unsafe {
+    backend.TextureDelete(texture.id)
+  }
+
+  fun TargetNew(texture: Texture) -> Target? uses unsafe {
+    const id = backend.TargetNew(texture.id)
+    if id == 0 {
+      return null
+    }
+
+    return Target(id, texture)
+  }
+
+  fun TargetDelete(target: Target) uses unsafe {
+    backend.TargetDelete(target.id)
+  }
+
+  fun Begin(target: Target?, width: int, height: int, red: float, green: float, blue: float, alpha: float, clear_depth: bool) uses unsafe {
+    var id = 0
+    var w = width
+    var h = height
+    if const t = target {
+      id = t.id
+      w = t.texture.width
+      h = t.texture.height
+    }
+    backend.TargetBind(id)
+    backend.Viewport(0, 0, w, h)
+    var mask = kClearColour
+    if clear_depth {
+      mask = mask + kClearDepth
+    }
+    backend.Clear(red, green, blue, alpha, 1.0, mask)
+  }
+
+  fun End() uses unsafe {
+    backend.TargetBind(0)
+  }
+
+  fun Blend(enabled: bool, source: int, destination: int) uses unsafe {
+    backend.Blend(enabled, source, destination)
+  }
+
+  fun Depth(test: bool, write: bool, compare: int) uses unsafe {
+    backend.Depth(test, write, compare)
+  }
+
+  fun Cull(mode: int) uses unsafe {
+    backend.Cull(mode)
+  }
+
+  fun Scissor(enabled: bool, x: int, y: int, width: int, height: int) uses unsafe {
+    backend.Scissor(enabled, x, y, width, height)
+  }
+
+  fun Draw(layout: Layout, mode: int, first: int, count: int) uses unsafe {
+    backend.Draw(layout.id, mode, first, count)
+  }
+
+  fun DrawIndexed(layout: Layout, mode: int, count: int, first: int) uses unsafe {
+    backend.DrawIndexed(layout.id, mode, count, first)
+  }
+
+  fun Read(x: int, y: int, width: int, height: int) -> []mut u8 uses unsafe {
+    var out = ArrayNew<u8>(width * height * 4)
+    if !backend.Read(x, y, width, height, out) {
+      Free(out)
+
+      return ArrayNew<u8>(0)
+    }
+
+    return out
+  }
+
+  fun Error() -> int uses unsafe {
+    return backend.Error()
+  }
+}
+
+offer fun DeviceNew(backend: Backend) -> Device {
+  return Device(backend)
+}
+
+fun Quad() -> []mut f32 uses unsafe {
+  var data = ArrayNew<f32>(12)
+  data[0] = 0.0
+  data[1] = 0.0
+  data[2] = 1.0
+  data[3] = 0.0
+  data[4] = 1.0
+  data[5] = 1.0
+  data[6] = 0.0
+  data[7] = 0.0
+  data[8] = 1.0
+  data[9] = 1.0
+  data[10] = 0.0
+  data[11] = 1.0
+
+  return data
+}
+
+@Test
+fun WrapsAShaderWithItsHeaderOnlyOnce() -> bool uses unsafe {
+  const bare = WithHeader("void main() \{\}")
+  if !Contains(bare, "#version 330 core") || !Contains(bare, "void main") {
+    return false
+  }
+
+  return WithHeader(kSpriteVertex) == kSpriteVertex
+}
+
+@Test
+fun KnowsTheBuiltInShaders() -> bool uses unsafe {
+  return Contains(kSpriteVertex, "u_view") && Contains(kSpriteFragment, "u_texture") && Contains(kSolidFragment, "o_colour") && Contains(kSpriteVertex, "void main")
+}
+
+@Test
+fun BuildsAMeshAndDrawsIt() -> bool uses unsafe {
+  var null_backend = NullNew()
+  var device = DeviceNew(null_backend)
+  const vertices = Quad()
+  const buffer = device.VertexBuffer(vertices, false)
+  const layout = device.LayoutNew()
+  device.LayoutAttribute(layout, buffer, 0, 2, 2, 0)
+  match device.ProgramNew(kSpriteVertex, kSolidFragment) {
+    Ok(program) => {
+      device.ProgramUse(program)
+      device.Draw(layout, kTriangles, 0, 6)
+      device.ProgramDelete(program)
+    },
+    _ => {
+      return false
+    },
+  }
+  device.LayoutDelete(layout)
+  device.BufferDelete(buffer)
+  Free(vertices)
+
+  return device.Error() == 0 && null_backend.Count(null_backend.buffers) == 0 && null_backend.Count(null_backend.layouts) == 0 && null_backend.Count(null_backend.programs) == 0 && device.Name() == "null"
+}
+
+@Test
+fun RecordsEveryCallInOrder() -> bool uses unsafe {
+  var null_backend = NullNew()
+  var device = DeviceNew(null_backend)
+  device.Begin(null, 640, 480, 0.1, 0.2, 0.3, 1.0, true)
+  device.Blend(true, kSourceAlpha, kOneMinusSourceAlpha)
+  device.End()
+  if null_backend.log.Len() != 5 {
+    return false
+  }
+
+  return null_backend.log.At(0) == "bind-target 0" && null_backend.log.At(1) == "viewport 0 0 640 480" && null_backend.log.At(2) == "clear mask=3" && null_backend.log.At(3) == "blend true 2 3" && null_backend.log.At(4) == "bind-target 0"
+}
+
+@Test
+fun RefusesAShaderWithNoMainAndSaysWhy() -> bool uses unsafe {
+  var device = DeviceNew(NullNew())
+  match device.ProgramNew("nothing here", kSolidFragment) {
+    Ok(_) => {
+      return false
+    },
+    CompileFailed(log) => {
+      return log == "vertex: no main"
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun RefusesAFragmentShaderWithNoMain() -> bool uses unsafe {
+  var device = DeviceNew(NullNew())
+  match device.ProgramNew(kSpriteVertex, "nothing") {
+    Ok(_) => {
+      return false
+    },
+    CompileFailed(log) => {
+      return log == "fragment: no main"
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun FindsOnlyTheUniformsAShaderDeclares() -> bool uses unsafe {
+  var device = DeviceNew(NullNew())
+  match device.ProgramNew(kSpriteVertex, kSpriteFragment) {
+    Ok(program) => {
+      return device.Uniform(program, "u_view") >= 0 && device.Uniform(program, "u_texture") >= 0 && device.Uniform(program, "u_nope") == -1
+    },
+    _ => {
+      return false
+    },
+  }
+}
+
+@Test
+fun CountsAMisuseTheSameWayEveryTime() -> bool uses unsafe {
+  var null_backend = NullNew()
+  var device = DeviceNew(null_backend)
+  const layout = device.LayoutNew()
+  device.Draw(layout, kTriangles, 0, 3)
+  if device.Error() != 1 {
+    return false
+  }
+
+  device.LayoutDelete(layout)
+  device.LayoutDelete(layout)
+  if device.Error() != 2 {
+    return false
+  }
+
+  device.SetFloat(3, 1.0)
+
+  return device.Error() == 3
+}
+
+@Test
+fun AcceptsUniformsOnceAProgramIsInUse() -> bool uses unsafe {
+  var null_backend = NullNew()
+  var device = DeviceNew(null_backend)
+  const values = Quad()
+  match device.ProgramNew(kSpriteVertex, kSolidFragment) {
+    Ok(program) => {
+      device.ProgramUse(program)
+      device.SetFloat(1, 1.0)
+      device.SetVec2(1, 1.0, 2.0)
+      device.SetVec3(1, 1.0, 2.0, 3.0)
+      device.SetVec4(1, 1.0, 2.0, 3.0, 4.0)
+      device.SetInt(1, 7)
+      device.SetMatrix(1, values)
+    },
+    _ => {
+      return false
+    },
+  }
+  Free(values)
+
+  return device.Error() == 1 && null_backend.uniforms_set == 6
+}
+
+@Test
+fun HoldsTexturesAndTargets() -> bool uses unsafe {
+  var null_backend = NullNew()
+  var device = DeviceNew(null_backend)
+  const pixels = ArrayNew<u8>(16)
+  const texture = device.TextureNew(2, 2, pixels, true, false)
+  device.TextureUpdate(texture, 0, 0, 2, 2, pixels)
+  device.TextureBind(0, texture)
+  if const target = device.TargetNew(texture) {
+    device.Begin(target, 640, 480, 0.0, 0.0, 0.0, 0.0, false)
+    device.End()
+    device.TargetDelete(target)
+  } else {
+    return false
+  }
+  device.TextureDelete(texture)
+  Free(pixels)
+
+  return device.Error() == 0 && null_backend.Count(null_backend.textures) == 0 && null_backend.Count(null_backend.targets) == 0 && null_backend.log.At(5) == "viewport 0 0 2 2"
+}
+
+@Test
+fun RefusesATextureWithNoSize() -> bool uses unsafe {
+  var device = DeviceNew(NullNew())
+  const pixels = ArrayNew<u8>(0)
+  const texture = device.TextureNew(0, 4, pixels, false, false)
+  Free(pixels)
+
+  return texture.id == 0 && device.Error() == 1
+}
+
+@Test
+fun ReadsBackTheClearColour() -> bool uses unsafe {
+  var device = DeviceNew(NullNew())
+  device.Begin(null, 4, 4, 1.0, 0.0, 0.0, 1.0, false)
+  const pixels = device.Read(0, 0, 2, 2)
+  const ok = pixels.len == 16 && pixels[0] == 255 && pixels[1] == 0 && pixels[3] == 255
+  Free(pixels)
+
+  return ok
+}
+
+@Test
+fun DrawsIndexed() -> bool uses unsafe {
+  var null_backend = NullNew()
+  var device = DeviceNew(null_backend)
+  const vertices = Quad()
+  const vb = device.VertexBuffer(vertices, true)
+  var order = ArrayNew<u32>(6)
+  const ib = device.IndexBuffer(order, false)
+  const layout = device.LayoutNew()
+  device.LayoutAttribute(layout, vb, 0, 2, 2, 0)
+  device.LayoutIndices(layout, ib)
+  match device.ProgramNew(kSpriteVertex, kSolidFragment) {
+    Ok(program) => {
+      device.ProgramUse(program)
+      device.DrawIndexed(layout, kTriangles, 6, 0)
+    },
+    _ => {
+      return false
+    },
+  }
+  Free(vertices)
+  Free(order)
+
+  return device.Error() == 0 && vb.count == 12 && ib.count == 6
+}
+
+@Test
+fun SetsStateWithoutAContext() -> bool uses unsafe {
+  var null_backend = NullNew()
+  var device = DeviceNew(null_backend)
+  device.Cull(kCullBack)
+  device.Depth(true, true, kLessOrEqual)
+  device.Scissor(true, 1, 2, 3, 4)
+
+  return null_backend.log.Len() == 3 && null_backend.log.At(0) == "cull 1" && null_backend.log.At(2) == "scissor true 1 2 3 4"
+}
+
+@Test
+fun SaysNoWhenThereIsNoWindow() -> bool uses unsafe {
+  var window = Open("gpu", 64, 64, 6)
+  if window.IsOpen() {
+    window.Close()
+
+    return true
+  }
+
+  match OpenGlStart(window) {
+    null => {
+      return true
+    },
+    _ => {
+      return false
+    },
+  }
+}
