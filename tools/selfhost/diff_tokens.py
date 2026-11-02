@@ -61,6 +61,8 @@ def split(text):
 
 def run(driver, args):
     done = subprocess.run([driver] + args, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if done.stderr.strip() and "run" in args:
+        print("stderr:", done.stderr.strip().splitlines()[-1][:200])
     return split(done.stdout)
 
 

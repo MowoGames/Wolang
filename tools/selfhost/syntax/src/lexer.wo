@@ -1,13 +1,40 @@
 need std.fmt.{Int}
 need std.list.{List, ListNew}
 need std.map.{Map}
-need std.text.{Bytes, BuilderNew, Substring}
+need std.text.{Builder, BuilderNew, Bytes, Substring}
 
 offer struct Token {
   var kind: Kind
   var offset: int
   var length: int
   var flags: int
+  var aux: int
+}
+
+offer struct Number {
+  var is_float: bool
+  var integer: u64
+  var value: f64
+  var suffix: text
+  var unit: text
+}
+
+offer struct StringPart {
+  var interpolated: bool
+  var text: text
+  var begin: int
+  var end: int
+}
+
+offer struct StringLit {
+  var is_raw: bool
+  var parts: List<StringPart>
+}
+
+offer class Lexed {
+  var tokens: List<Token>
+  var numbers: List<Number>
+  var strings: List<StringLit>
 }
 
 struct Decoded {
@@ -103,6 +130,12 @@ fun LooksLikeNumericSuffix(word: []u8) -> bool {
   return true
 }
 
+fun U64ToFloat(value: u64) -> f64 {
+  const high = (value >> 32) as u32
+  const low = (value & 4294967295) as u32
+  return (high as f64) * 4294967296.0 + (low as f64)
+}
+
 class Lexer {
   var bytes: []u8
   var source: text
@@ -112,17 +145,23 @@ class Lexer {
   var tokens: List<Token>
   var keywords: Map<text, Kind>
   var reserved: Map<text, bool>
+  var limit: int
+  var aux: int
+  var acc: u64
+  var overflowed: bool
+  var numbers: List<Number>
+  var strings: List<StringLit>
 
   fun Peek(ahead: int) -> u8 {
     const index = pos + ahead
-    if index < bytes.len {
+    if index < limit {
       return bytes[index]
     }
     return 0
   }
 
   fun AtEnd() -> bool {
-    return pos >= bytes.len
+    return pos >= limit
   }
 
   fun Push(kind: Kind, begin: int) uses unsafe {
@@ -130,9 +169,10 @@ class Lexer {
     if failed {
       flags = flags | 4
     }
-    tokens.Push(Token(kind, begin, pos - begin, flags))
+    tokens.Push(Token(kind, begin, pos - begin, flags, aux))
     pending = 0
     failed = false
+    aux = 0
   }
 
   fun Operator(kind: Kind, length: int) uses unsafe {
@@ -166,7 +206,7 @@ class Lexer {
       return Decoded(0, 0)
     }
 
-    if at + extra >= bytes.len {
+    if at + extra >= limit {
       return Decoded(0, 0)
     }
 
@@ -188,7 +228,7 @@ class Lexer {
 
   fun SkipTrivia() {
     var newlines = 0
-    while pos < bytes.len {
+    while pos < limit {
       const c = bytes[pos]
       if c == 10 {
         pos = pos + 1
@@ -203,7 +243,7 @@ class Lexer {
         if AtDocComment() {
           break
         }
-        while pos < bytes.len && bytes[pos] != 10 {
+        while pos < limit && bytes[pos] != 10 {
           pos = pos + 1
         }
         continue
@@ -232,7 +272,7 @@ class Lexer {
   fun SkipBlockComment() -> bool {
     pos = pos + 2
     var depth = 1
-    while pos < bytes.len {
+    while pos < limit {
       if Peek(0) == 47 && Peek(1) == 42 {
         depth = depth + 1
         pos = pos + 2
@@ -256,7 +296,7 @@ class Lexer {
     const c = Peek(0)
     if c == 47 && AtDocComment() {
       const begin = pos
-      while pos < bytes.len && bytes[pos] != 10 {
+      while pos < limit && bytes[pos] != 10 {
         pos = pos + 1
       }
       Push(Kind.DocComment, begin)
@@ -301,7 +341,7 @@ class Lexer {
     }
 
     const begin = pos
-    while pos < bytes.len && !CanStartToken(bytes[pos]) {
+    while pos < limit && !CanStartToken(bytes[pos]) {
       pos = pos + 1
     }
     failed = true
@@ -310,7 +350,7 @@ class Lexer {
 
   fun LexInvalidByte() uses unsafe {
     const begin = pos
-    while pos < bytes.len && bytes[pos] >= 128 && Decode(pos).length == 0 {
+    while pos < limit && bytes[pos] >= 128 && Decode(pos).length == 0 {
       pos = pos + 1
     }
     failed = true
@@ -319,7 +359,7 @@ class Lexer {
 
   fun LexIdentifier() uses unsafe {
     const begin = pos
-    while pos < bytes.len {
+    while pos < limit {
       const c = bytes[pos]
       if IsIdentPart(c) {
         pos = pos + 1
@@ -351,6 +391,33 @@ class Lexer {
     Push(Kind.Identifier, begin)
   }
 
+  fun AppendPoint(out: Builder, point: int) uses unsafe {
+    if point <= 127 {
+      out.AppendByte(point as u8)
+    } else if point <= 2047 {
+      out.AppendByte((192 | (point >> 6)) as u8)
+      out.AppendByte((128 | (point & 63)) as u8)
+    } else if point <= 65535 {
+      out.AppendByte((224 | (point >> 12)) as u8)
+      out.AppendByte((128 | ((point >> 6) & 63)) as u8)
+      out.AppendByte((128 | (point & 63)) as u8)
+    } else {
+      out.AppendByte((240 | (point >> 18)) as u8)
+      out.AppendByte((128 | ((point >> 12) & 63)) as u8)
+      out.AppendByte((128 | ((point >> 6) & 63)) as u8)
+      out.AppendByte((128 | (point & 63)) as u8)
+    }
+  }
+
+  fun Accumulate(digit: int, radix: int) {
+    const most: u64 = 0xFFFFFFFFFFFFFFFFu64
+    if acc > (most - (digit as u64)) / (radix as u64) {
+      overflowed = true
+      return
+    }
+    acc = acc * (radix as u64) + (digit as u64)
+  }
+
   fun Digits(radix: int) -> int {
     var count = 0
     loop {
@@ -368,16 +435,80 @@ class Lexer {
       if !valid {
         break
       }
+      Accumulate(HexValue(c), radix)
       count = count + 1
       pos = pos + 1
     }
     return count
   }
 
+  fun FloatFrom(begin: int, end: int) -> f64 {
+    var mantissa: u64 = 0
+    var digits = 0
+    var scale = 0
+    var exponent = 0
+    var seen_dot = false
+    var k = begin
+    while k < end {
+      const c = bytes[k]
+      if c == 95 {
+        k = k + 1
+        continue
+      }
+      if c == 46 {
+        seen_dot = true
+        k = k + 1
+        continue
+      }
+      if c == 101 || c == 69 {
+        k = k + 1
+        var negative = false
+        if k < end && (bytes[k] == 43 || bytes[k] == 45) {
+          negative = bytes[k] == 45
+          k = k + 1
+        }
+        while k < end {
+          if IsDigit(bytes[k]) {
+            exponent = exponent * 10 + ((bytes[k] as int) - 48)
+          }
+          k = k + 1
+        }
+        if negative {
+          exponent = 0 - exponent
+        }
+        break
+      }
+      if digits < 19 {
+        mantissa = mantissa * 10 + (((c as int) - 48) as u64)
+        digits = digits + 1
+        if seen_dot {
+          scale = scale - 1
+        }
+      } else if !seen_dot {
+        scale = scale + 1
+      }
+      k = k + 1
+    }
+
+    var value = U64ToFloat(mantissa)
+    var power = scale + exponent
+    while power > 0 {
+      value = value * 10.0
+      power = power - 1
+    }
+    while power < 0 {
+      value = value / 10.0
+      power = power + 1
+    }
+    return value
+  }
+
   fun LexNumber() uses unsafe {
     const begin = pos
     var is_float = false
     var based = false
+    acc = 0
+    overflowed = false
     const marker = Peek(1)
     if Peek(0) == 48 && (marker == 120 || marker == 88 || marker == 98 || marker == 66 || marker == 111 || marker == 79) {
       based = true
@@ -393,13 +524,22 @@ class Lexer {
       if count == 0 {
         failed = true
       } else if IsDigit(Peek(0)) || Peek(0) == 46 {
-        while pos < bytes.len && (IsDigit(bytes[pos]) || bytes[pos] == 46 || bytes[pos] == 95) {
+        while pos < limit && (IsDigit(bytes[pos]) || bytes[pos] == 46 || bytes[pos] == 95) {
           pos = pos + 1
         }
         failed = true
       }
     } else {
-      while IsDigit(Peek(0)) || Peek(0) == 95 {
+      loop {
+        const c = Peek(0)
+        if c == 95 {
+          pos = pos + 1
+          continue
+        }
+        if !IsDigit(c) {
+          break
+        }
+        Accumulate((c as int) - 48, 10)
         pos = pos + 1
       }
 
@@ -430,6 +570,9 @@ class Lexer {
       }
     }
 
+    const digits_end = pos
+    var suffix_name = ""
+    var unit_name = ""
     if IsIdentStart(Peek(0)) {
       const suffix_begin = pos
       while IsIdentPart(Peek(0)) {
@@ -448,16 +591,31 @@ class Lexer {
       if matched {
         if is_float && !suffix_is_float {
           failed = true
-        } else if suffix_is_float {
-          is_float = true
+        } else {
+          suffix_name = suffix
+          if suffix_is_float {
+            is_float = true
+          }
         }
       } else if LooksLikeNumericSuffix(Bytes(suffix)) {
         failed = true
       } else if based {
         failed = true
+      } else {
+        unit_name = suffix
       }
     }
 
+    if overflowed {
+      failed = true
+    }
+
+    var value = U64ToFloat(acc)
+    if is_float {
+      value = FloatFrom(begin, digits_end)
+    }
+    numbers.Push(Number(is_float, acc, value, suffix_name, unit_name))
+    aux = numbers.Len() - 1
     if is_float {
       Push(Kind.FloatLiteral, begin)
     } else {
@@ -465,29 +623,41 @@ class Lexer {
     }
   }
 
-  fun LexEscape() {
+  fun LexEscape(out: Builder) -> int uses unsafe {
     pos = pos + 1
-    if pos >= bytes.len {
+    if pos >= limit {
       failed = true
-      return
+      return 0 - 1
     }
 
     const escape = bytes[pos]
     pos = pos + 1
-    if escape == 110 || escape == 114 || escape == 116 || escape == 48 || escape == 92 || escape == 34 || escape == 39 || escape == 123 || escape == 125 {
-      return
+    var point = 0 - 1
+    if escape == 110 {
+      point = 10
+    } else if escape == 114 {
+      point = 13
+    } else if escape == 116 {
+      point = 9
+    } else if escape == 48 {
+      point = 0
+    } else if escape == 92 || escape == 34 || escape == 39 || escape == 123 || escape == 125 {
+      point = escape as int
+    } else if escape == 117 {
+      return LexUnicodeEscape(out)
+    } else {
+      failed = true
+      out.AppendByte(escape)
+      return escape as int
     }
-    if escape == 117 {
-      LexUnicodeEscape()
-      return
-    }
-    failed = true
+    AppendPoint(out, point)
+    return point
   }
 
-  fun LexUnicodeEscape() {
+  fun LexUnicodeEscape(out: Builder) -> int uses unsafe {
     if Peek(0) != 123 {
       failed = true
-      return
+      return 0 - 1
     }
     pos = pos + 1
 
@@ -501,39 +671,42 @@ class Lexer {
 
     if digits == 0 {
       failed = true
-      return
+      return 0 - 1
     }
     if Peek(0) != 125 {
       failed = true
-      return
+      return 0 - 1
     }
     pos = pos + 1
 
     if value > 1114111 || (value >= 55296 && value <= 57343) {
       failed = true
+      return 0 - 1
     }
+    AppendPoint(out, value)
+    return value
   }
 
   fun SkipNestedQuoted(quote: u8) {
     pos = pos + 1
-    while pos < bytes.len && bytes[pos] != quote && bytes[pos] != 10 {
-      if bytes[pos] == 92 && pos + 1 < bytes.len {
+    while pos < limit && bytes[pos] != quote && bytes[pos] != 10 {
+      if bytes[pos] == 92 && pos + 1 < limit {
         pos = pos + 2
         continue
       }
       pos = pos + 1
     }
-    if pos < bytes.len && bytes[pos] == quote {
+    if pos < limit && bytes[pos] == quote {
       pos = pos + 1
     }
   }
 
-  fun LexInterpolation() {
+  fun LexInterpolation(parts: List<StringPart>) uses unsafe {
     pos = pos + 1
     const expression_begin = pos
 
     var depth = 1
-    while pos < bytes.len {
+    while pos < limit {
       const c = bytes[pos]
       if c == 10 {
         break
@@ -558,11 +731,26 @@ class Lexer {
       pos = pos + 1
     }
 
+    var expression_end = pos
+    if depth == 0 {
+      expression_end = pos - 1
+    }
     if depth != 0 {
       failed = true
-    } else if pos - 1 == expression_begin {
+    } else if expression_end == expression_begin {
       failed = true
     }
+    parts.Push(StringPart(true, "", expression_begin, expression_end))
+  }
+
+  fun FlushText(parts: List<StringPart>, text: Builder, begin: int, end: int) uses unsafe {
+    if text.Len() == 0 && parts.Len() > 0 {
+      return
+    }
+    if text.Len() == 0 && parts.Len() == 0 && end == begin {
+      return
+    }
+    parts.Push(StringPart(false, text.Release(), begin, end))
   }
 
   fun LexString(is_raw: bool) uses unsafe {
@@ -573,10 +761,14 @@ class Lexer {
       pos = pos + 1
     }
 
+    var parts = ListNew<StringPart>()
+    var text = BuilderNew()
+    var text_begin = pos
     var terminated = false
-    while pos < bytes.len {
+    while pos < limit {
       const c = bytes[pos]
       if c == 34 {
+        FlushText(parts, text, text_begin, pos)
         pos = pos + 1
         terminated = true
         break
@@ -585,11 +777,13 @@ class Lexer {
         break
       }
       if !is_raw && c == 92 {
-        LexEscape()
+        const _point = LexEscape(text)
         continue
       }
       if !is_raw && c == 123 {
-        LexInterpolation()
+        FlushText(parts, text, text_begin, pos)
+        LexInterpolation(parts)
+        text_begin = pos
         continue
       }
       if c >= 128 {
@@ -597,17 +791,26 @@ class Lexer {
         if decoded.length == 0 {
           failed = true
           pos = pos + 1
-        } else {
-          pos = pos + decoded.length
+          continue
         }
+        var k = 0
+        while k < decoded.length {
+          text.AppendByte(bytes[pos + k])
+          k = k + 1
+        }
+        pos = pos + decoded.length
         continue
       }
+      text.AppendByte(c)
       pos = pos + 1
     }
 
     if !terminated {
+      FlushText(parts, text, text_begin, pos)
       failed = true
     }
+    strings.Push(StringLit(is_raw, parts))
+    aux = strings.Len() - 1
     Push(Kind.StringLiteral, begin)
   }
 
@@ -615,8 +818,9 @@ class Lexer {
     const begin = pos
     pos = pos + 1
 
-    if pos >= bytes.len || bytes[pos] == 10 {
+    if pos >= limit || bytes[pos] == 10 {
       failed = true
+      aux = 0
       Push(Kind.CharLiteral, begin)
       return
     }
@@ -624,29 +828,37 @@ class Lexer {
     if bytes[pos] == 39 {
       pos = pos + 1
       failed = true
+      aux = 0
       Push(Kind.CharLiteral, begin)
       return
     }
 
+    var value = 0
     if bytes[pos] == 92 {
-      LexEscape()
+      value = LexEscape(BuilderNew())
+      if value < 0 {
+        value = 0
+      }
     } else if bytes[pos] >= 128 {
       const decoded = Decode(pos)
       if decoded.length == 0 {
         failed = true
         pos = pos + 1
       } else {
+        value = decoded.point
         pos = pos + decoded.length
       }
     } else {
+      value = bytes[pos] as int
       pos = pos + 1
     }
 
-    if pos >= bytes.len || bytes[pos] != 39 {
+    if pos >= limit || bytes[pos] != 39 {
       failed = true
     } else {
       pos = pos + 1
     }
+    aux = value
     Push(Kind.CharLiteral, begin)
   }
 
@@ -788,13 +1000,15 @@ class Lexer {
     return true
   }
 
-  fun Run() -> List<Token> uses unsafe {
-    if bytes.len >= 3 && bytes[0] == 239 && bytes[1] == 187 && bytes[2] == 191 {
-      pos = 3
-    }
-    if Peek(0) == 35 && Peek(1) == 33 {
-      while pos < bytes.len && bytes[pos] != 10 {
-        pos = pos + 1
+  fun Run() -> Lexed uses unsafe {
+    if pos == 0 {
+      if limit >= 3 && bytes[0] == 239 && bytes[1] == 187 && bytes[2] == 191 {
+        pos = 3
+      }
+      if Peek(0) == 35 && Peek(1) == 33 {
+        while pos < limit && bytes[pos] != 10 {
+          pos = pos + 1
+        }
       }
     }
 
@@ -811,19 +1025,23 @@ class Lexer {
       }
     }
 
-    tokens.Push(Token(Kind.EndOfFile, bytes.len, 0, pending | 1))
-    return tokens
+    tokens.Push(Token(Kind.EndOfFile, limit, 0, pending | 1, 0))
+    return Lexed(tokens, numbers, strings)
   }
 }
 
-offer fun Lex(source: text) -> List<Token> uses unsafe {
+offer fun LexRange(source: text, begin: int, end: int) -> Lexed uses unsafe {
   const bytes = Bytes(source)
-  var lexer = Lexer(bytes, source, 0, 1, false, ListNew<Token>(), KeywordKinds(), ReservedWords())
+  var lexer = Lexer(bytes, source, begin, 1, false, ListNew<Token>(), KeywordKinds(), ReservedWords(), end, 0, 0, false, ListNew<Number>(), ListNew<StringLit>())
   return lexer.Run()
 }
 
+offer fun Lex(source: text) -> Lexed uses unsafe {
+  return LexRange(source, 0, Bytes(source).len)
+}
+
 offer fun DumpTokens(source: text) -> text uses unsafe {
-  const tokens = Lex(source)
+  const tokens = Lex(source).tokens
   var out = BuilderNew()
   var k = 0
   while k < tokens.Len() {
@@ -842,7 +1060,7 @@ offer fun DumpTokens(source: text) -> text uses unsafe {
 }
 
 fun Names(source: text) -> text uses unsafe {
-  const tokens = Lex(source)
+  const tokens = Lex(source).tokens
   var out = BuilderNew()
   var k = 0
   while k < tokens.Len() {
@@ -854,7 +1072,7 @@ fun Names(source: text) -> text uses unsafe {
 }
 
 fun FlagsOf(source: text) -> text uses unsafe {
-  const tokens = Lex(source)
+  const tokens = Lex(source).tokens
   var out = BuilderNew()
   var k = 0
   while k < tokens.Len() {
