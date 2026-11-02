@@ -38,6 +38,13 @@ class ValidatorTest(unittest.TestCase):
     def test_a_brace_in_a_fence_or_a_span_does_not_fire(self):
         self.assertEqual(validate({"wolang/a.mdx": "```wolang\nfun f() {}\n```\n\nand `{x}` here\n"}), [])
 
+    def test_a_code_span_wrapped_onto_a_line_starting_with_a_brace_fires(self):
+        problems = validate({"wolang/a.mdx": "is the modifier; `unsafe\n{` is still the block.\n"})
+        self.assertTrue(any("wraps onto a line" in problem for problem in problems))
+
+    def test_a_code_span_wrapped_before_ordinary_text_does_not_fire(self):
+        self.assertEqual(validate({"wolang/a.mdx": "the call `Make\n(x)` returns.\n"}), [])
+
     def test_an_unescaped_angle_bracket_fires(self):
         problems = validate({"wolang/a.mdx": "A <b> tag.\n"})
         self.assertTrue(any("'<'" in problem for problem in problems))
@@ -86,9 +93,14 @@ class ValidatorTest(unittest.TestCase):
 
 
 class ConversionTest(unittest.TestCase):
-    def test_a_code_span_may_wrap_across_lines(self):
+    def test_a_wrapped_span_does_not_leave_a_brace_at_the_start_of_a_line(self):
+        converted = site.convert_text("is the modifier; `unsafe\n{` is still the block.", "docs/x.md")
+        self.assertNotIn("\n{", converted)
+        self.assertIn("`unsafe {`", converted)
+
+    def test_a_code_span_that_wraps_is_joined_onto_one_line(self):
         converted = site.convert_text("a `fun F()\n-> {int}` b {c}", "docs/x.md")
-        self.assertIn("`fun F()\n-> {int}`", converted)
+        self.assertIn("`fun F() -> {int}`", converted)
         self.assertIn("\\{c\\}", converted)
 
     def test_a_double_backtick_span_is_kept_whole(self):
