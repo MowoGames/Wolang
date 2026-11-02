@@ -844,7 +844,7 @@ class FunctionEmitter {
     return info.allocation.in_register() ? PoolRegister(info.allocation.reg)
                                          : Scratch(scratch);
   }
-  XmmRegister DestFloat(ir::InstId id, unsigned scratch) {
+  XmmRegister DestFloat(ir::InstId, unsigned scratch) {
     return FloatScratch(scratch);
   }
 

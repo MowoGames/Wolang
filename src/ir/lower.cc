@@ -1734,7 +1734,7 @@ class Lowerer {
     return static_cast<uint32_t>(states.size());
   }
 
-  void CallMachineBlock(TypeId machine, Symbol state, bool is_enter) {
+  void CallMachineBlock(TypeId, Symbol state, bool is_enter) {
     for (const MachineBlock& block : machine_blocks_) {
       if (block.state != state || block.is_enter != is_enter) {
         continue;
@@ -4373,7 +4373,7 @@ class Lowerer {
     return {};
   }
 
-  InstId LowerPath(ExprId id, const Expr& expr, TypeId type,
+  InstId LowerPath(ExprId id, const Expr&, TypeId type,
                    Symbol name) {
     const Local* local = Find(name);
     if (local == nullptr) {
@@ -7300,7 +7300,7 @@ class Lowerer {
     return CallAs(index, type, std::move(with_receiver));
   }
 
-  InstId LowerBlockValue(ExprId id, const Expr& expr, TypeId type) {
+  InstId LowerBlockValue(ExprId, const Expr& expr, TypeId type) {
     const size_t depth = locals_.size();
     ++scope_depth_;
     const std::span<const StmtId> stmts = ast().Get(expr.stmts);
@@ -8120,7 +8120,7 @@ class Lowerer {
   // Declared here, with the closure's own type as its signature, and the
   // body queued -- the value of the expression is the function's address,
   // which is what a `fun(...)` value is in every tier (D106).
-  InstId LowerClosure(ExprId id, const Expr& expr) {
+  InstId LowerClosure(ExprId id, const Expr&) {
     const TypeId signature = Erase(Apply(TypeOf(id)));
     if (types_->KindOf(signature) != TypeKind::kFunction) {
       return builder_->Undef(signature);

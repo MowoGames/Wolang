@@ -88,7 +88,7 @@ class Fixture {
 
  private:
   std::string Render(const CheckedFile& checked,
-                     const FileResolution& resolution,
+                     const FileResolution&,
                      ExprId expr) {
     return db_.types().Describe(db_.interner(), checked.body.TypeOf(expr));
   }

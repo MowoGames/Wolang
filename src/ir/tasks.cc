@@ -647,7 +647,7 @@ class Splitter {
   // The address of one field of the frame.
   InstId FieldAddress(Function* target,
                       BlockId block,
-                      const Frame& frame,
+                      const Frame&,
                       InstId frame_pointer,
                       uint32_t field,
                       TypeId field_type) {

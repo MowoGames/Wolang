@@ -129,11 +129,11 @@ static void FakeRelease(void* object, void* user) {
   *static_cast<int32_t*>(user) += 1;
 }
 
-static int32_t FakeAlive(void* object, void* user) {
+static int32_t FakeAlive(void* object, void*) {
   return static_cast<FakeActor*>(object)->Alive ? 1 : 0;
 }
 
-static uint64_t FakeToken(void* object, void* user) {
+static uint64_t FakeToken(void* object, void*) {
   return static_cast<FakeActor*>(object)->Serial;
 }
 
