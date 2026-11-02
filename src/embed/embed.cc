@@ -829,7 +829,7 @@ WolangStatus wolang_vm_load_mod(WolangVm* vm, const char* path, const char* capa
     std::string name = list.substr(start, comma - start);
     name.erase(0, name.find_first_not_of(" \t"));
     name.erase(name.find_last_not_of(" \t") + 1);
-    if (!name.empty()) {
+    if (!name.empty() && name != "unsafe") {
       granted.push_back(name);
     }
     start = comma + 1;

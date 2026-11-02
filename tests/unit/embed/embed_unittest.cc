@@ -919,6 +919,55 @@ offer fun Grab() -> int {
   std::filesystem::remove_all(prim);
 }
 
+WOLANG_TEST(EmbedTest, AModNeverReachesTheNetworkOrAProcessWhateverTheHostGrants) {
+  const std::string std_path = std::string(WOLANG_PROJECT_DIR) + "/lib/std";
+  const std::string dependency = "\n[dependencies]\nstd = { path = \"" + std_path + "\" }\n";
+
+  const std::filesystem::path dialing = WritePackage("moddial", dependency.c_str(), R"(
+need std.net
+
+offer fun Dial() -> int uses net, unsafe {
+  const socket = net.Connect("127.0.0.1", 9)
+  return 0
+}
+)");
+  const std::filesystem::path spawning = WritePackage("modspawn", dependency.c_str(), R"(
+need std.process
+
+offer fun Launch() -> int uses io, unsafe {
+  return process.Run("echo hello")
+}
+)");
+
+  const char* const grants[] = {"io", "io, net", "io, net, unsafe", "unsafe"};
+  std::string observed;
+  for (const char* grant : grants) {
+    for (const std::filesystem::path& root : {dialing, spawning}) {
+      WolangVm* vm = wolang_vm_create();
+      const bool refused = wolang_vm_load_mod(vm, root.string().c_str(), grant) != 0;
+      const bool says_unsafe = std::string(wolang_vm_errors(vm)).find("unsafe") != std::string::npos;
+      observed += std::string(grant) + " " + root.filename().string() + (refused ? " refused" : " LOADED") + (says_unsafe ? " (unsafe)" : "") + "\n";
+      wolang_vm_destroy(vm);
+    }
+  }
+  WOLANG_EXPECT_EQ(observed, std::string("io wolang_moddial refused (unsafe)\nio wolang_modspawn refused (unsafe)\nio, net wolang_moddial refused (unsafe)\nio, net wolang_modspawn refused (unsafe)\nio, net, unsafe wolang_moddial refused (unsafe)\nio, net, unsafe wolang_modspawn refused (unsafe)\nunsafe wolang_moddial refused (unsafe)\nunsafe wolang_modspawn refused (unsafe)\n"));
+
+  const std::filesystem::path plain = WritePackage("modplain", dependency.c_str(), R"(
+need std.fs
+
+offer fun Peek() -> int uses io {
+  return fs.SizeOf("wolang.toml") as int
+}
+)");
+  WolangVm* fine = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_mod(fine, plain.string().c_str(), "io"), 0);
+  wolang_vm_destroy(fine);
+
+  for (const std::filesystem::path& root : {dialing, spawning, plain}) {
+    std::filesystem::remove_all(root);
+  }
+}
+
 WOLANG_TEST(EmbedTest, ASandboxedModCannotHideAnExternInsideAType) {
   // The door check walked only top-level items, so an `extern` in a struct
   // body or an `extend` got through (D217).

@@ -3501,3 +3501,22 @@ budget. arm64 code does not count yet; a vm with a budget runs the interpreter
 there. The older `wolang_vm_set_step_limit` counts interpreter instructions,
 keeps calls off the compiled tier and is left as it is. A call that traps does
 not run the destructors of what it owned, as with any trap.
+
+**D270. A mod is sandboxed by what it is granted, and is never granted
+`unsafe`.** The mechanism is the one D217 built: `wolang_vm_load_mod` takes the
+capabilities the host grants, spelled as a `uses` clause, and a package that
+reaches a function needing anything else does not load (`E0703`); it may not
+declare `extern` (`E0705`). Nothing is checked while the mod runs, because the
+checking is static and total over the effects. The grant is an allow-list, so
+what the host names is all the mod gets; a deny-list would mean a new effect
+added later is granted by default. `net` and `io` are separate effects, so a
+mod granted `io` to read a file cannot open a socket. A process cannot be
+started with `io` alone either: `std.process.Run`, like every function that
+reaches the network, is `uses ..., unsafe`, and `unsafe` is what a mod never
+gets. The answer to the question D270 left open is that `unsafe` is never
+allowed to a mod: `unsafe` can reach any memory, so no list of capabilities can
+contain it. A host that writes `unsafe` in the grant is not obeyed; the name is
+dropped and the mod is held to the rest. What is not split is `io`: reading a
+file, writing one and printing are all `io`, and finer grants would need the
+effect split in `std`, which is not decided. Time is bounded by D265 and memory
+is not bounded at all.

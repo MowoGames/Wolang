@@ -336,7 +336,10 @@ wolang_vm_load_mod(vm, "mods/better_turrets", "World, Audio");
 ```
 
 The mod is granted those capabilities and nothing else, whatever its own
-manifest says. It may not use `unsafe` or declare `extern` (`E0705`), so
+manifest says. `unsafe` is never grantable: writing it in the list is
+ignored (D270), and since the standard library's network and process calls
+are `unsafe` too, a mod granted `io` and `net` still cannot open a socket or
+start a program. It may not use `unsafe` or declare `extern` (`E0705`), so
 the only doors out are the ones the trusted packages offer — and each of
 those states the capability it needs, down to the standard library's
 `std.fs.Open`, which is `io`. A mod that reaches past its grant does not
