@@ -254,8 +254,13 @@ wolang bind --reflection --effect World     Intermediate/Build/Generated/Debug/M
   is reached by its offset, asked for once from the engine's own
   reflection through `MowoWolangPropertyOffset(class, key)`.
 
-The engine supplies four functions the glue declares: that offset, and
-`MowoWolangRetain`/`Release`/`Alive` for its objects' lifetimes. With
+The engine supplies five functions the glue declares: that offset, and
+`MowoWolangRetain`/`Release`/`Alive`/`Token` for its objects' lifetimes.
+`MowoWolangToken(object, user)` answers a number that tells two objects
+apart that lived at the same address one after the other, such as an index
+and a serial; the glue registers each class with it, so a `weak var` does
+not mistake a new object for the one that died (D254). A host with no serial
+to give passes `--no-token`, and the glue registers without one, as before. With
 `--effect World` every engine call carries `uses World`, so a mod has to
 be granted `World` to touch the world at all.
 

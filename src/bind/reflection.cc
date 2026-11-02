@@ -202,7 +202,22 @@ class Generator {
     glue += "extern \"C\" uint32_t MowoWolangPropertyOffset(const char* className, const char* key);\n";
     glue += "extern \"C\" void MowoWolangRetain(void* object, void* user);\n";
     glue += "extern \"C\" void MowoWolangRelease(void* object, void* user);\n";
-    glue += "extern \"C\" int32_t MowoWolangAlive(void* object, void* user);\n\n";
+    glue += "extern \"C\" int32_t MowoWolangAlive(void* object, void* user);\n";
+    if (m_Options.use_tokens) {
+      glue += "extern \"C\" uint64_t MowoWolangToken(void* object, void* user);\n\n";
+      glue += "static void MowoWolangRegister(WolangVm* vm, const char* name) {\n";
+      glue += "\tWolangHostClass host;\n";
+      glue += "\thost.size = sizeof(host);\n";
+      glue += "\thost.name = name;\n";
+      glue += "\thost.retain = &MowoWolangRetain;\n";
+      glue += "\thost.release = &MowoWolangRelease;\n";
+      glue += "\thost.alive = &MowoWolangAlive;\n";
+      glue += "\thost.token = &MowoWolangToken;\n";
+      glue += "\thost.user = nullptr;\n";
+      glue += "\twolang_vm_register_class_ex(vm, &host);\n";
+      glue += "}\n";
+    }
+    glue += "\n";
     glue += "namespace Mowo {\n\n" + m_Glue + "}\n\n";
     glue += "extern \"C\" void MowoWolang_Bind_" + m_Options.module + "(WolangVm* vm) {\n" + m_Registrations + "}\n";
   }
@@ -465,7 +480,12 @@ class Generator {
     const bool derived = m_Known.count(info.base) != 0;
     m_Declarations += "offer extern class " + info.name + (derived ? ": " + info.base : "") + " {\n";
     std::string extension;
-    m_Registrations += "\twolang_vm_register_class(vm, \"" + info.name + "\", &MowoWolangRetain, &MowoWolangRelease, &MowoWolangAlive, nullptr);\n";
+    if (m_Options.use_tokens) {
+      m_Registrations += "\tMowoWolangRegister(vm, \"" + info.name + "\");\n";
+    }
+    else {
+      m_Registrations += "\twolang_vm_register_class(vm, \"" + info.name + "\", &MowoWolangRetain, &MowoWolangRelease, &MowoWolangAlive, nullptr);\n";
+    }
 
     std::set<std::string> names;
     const Json& functions = (*info.type)["functions"];

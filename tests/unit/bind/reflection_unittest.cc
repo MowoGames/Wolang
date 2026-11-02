@@ -174,7 +174,22 @@ WOLANG_TEST(ReflectionBindTest, DeclaresTheEngineClassesAScriptCanCall) {
   WOLANG_EXPECT(Holds(glue, "static_cast<Mowo::ETeam>(typeValue)"));
   WOLANG_EXPECT(Holds(glue, "MowoWolangPropertyOffset(\"AActor\", \"tickInterval\")"));
   WOLANG_EXPECT(Holds(glue, "extern \"C\" void MowoWolang_Bind_mowo(WolangVm* vm) {"));
-  WOLANG_EXPECT(Holds(glue, "wolang_vm_register_class(vm, \"APawn\""));
+  WOLANG_EXPECT(Holds(glue, "MowoWolangRegister(vm, \"APawn\");"));
+}
+
+WOLANG_TEST(ReflectionBindTest, TheGlueRegistersEachClassWithAToken) {
+  wolang::bind::ReflectionOptions options;
+  const wolang::bind::ReflectionResult tokened = wolang::bind::GenerateFromReflection({kReflection}, options);
+  WOLANG_EXPECT(Holds(tokened.glue, "extern \"C\" uint64_t MowoWolangToken(void* object, void* user);"));
+  WOLANG_EXPECT(Holds(tokened.glue, "host.token = &MowoWolangToken;"));
+  WOLANG_EXPECT(Holds(tokened.glue, "wolang_vm_register_class_ex(vm, &host);"));
+  WOLANG_EXPECT(!Holds(tokened.glue, "wolang_vm_register_class(vm,"));
+
+  options.use_tokens = false;
+  const wolang::bind::ReflectionResult plain = wolang::bind::GenerateFromReflection({kReflection}, options);
+  WOLANG_EXPECT(Holds(plain.glue, "wolang_vm_register_class(vm, \"APawn\", &MowoWolangRetain, &MowoWolangRelease, &MowoWolangAlive, nullptr);"));
+  WOLANG_EXPECT(!Holds(plain.glue, "MowoWolangToken"));
+  WOLANG_EXPECT(!Holds(plain.glue, "wolang_vm_register_class_ex"));
 }
 
 WOLANG_TEST(ReflectionBindTest, WhatItWritesIsWolangThatChecks) {

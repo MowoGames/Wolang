@@ -25,6 +25,11 @@ struct ReflectionOptions {
   // calls into it (D262). Off only for a host whose objects never die
   // under a script.
   bool check_alive = true;
+  // Whether the glue registers each class with a token, so that a weak
+  // reference tells an object from the one that lived at the same address
+  // before it (D254). The host then provides `MowoWolangToken`. Off for a host
+  // that has no serial to give.
+  bool use_tokens = true;
 };
 
 struct ReflectionResult {
