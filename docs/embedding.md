@@ -332,6 +332,27 @@ listed by `wolang_vm_class_method_count`/`_name`, and
 parameters, which are always kinds a host can read. Wolang sends nothing: the
 host maps these to its own replication and RPC policy.
 
+Saving a held object (ABI 1.6, D292) is two calls. The bytes are the ones
+`std.save` writes, so a save written by a script loads here and the other way
+round:
+
+```c
+const uint8_t* bytes = NULL;
+uint64_t length = 0;
+if (wolang_vm_save(vm, mover, &bytes, &length) == kWolangOk) {
+  WriteFile("slot1.sav", bytes, length);   // valid until the next save or reload
+}
+
+WolangValue back = wolang_void();
+wolang_vm_load_save(vm, "Mover", data, size, &back);   // you own one reference
+```
+
+The fields marked `@Save` of the object and of every object they reach are
+written; a shared reference stays shared and a cycle comes back a cycle. Bytes
+that are not a save of the class give `kWolangError` and allocate nothing. A
+class with a virtual method cannot be saved or loaded, and the reason is in
+`wolang_vm_errors`.
+
 Each vm has its own bindings, host classes and writers (D257). Two vms in one
 process may bind the same symbol to different functions and print to different
 places; a lookup asks the vm whose call it is, then the process.

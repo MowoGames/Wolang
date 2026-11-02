@@ -41,6 +41,7 @@
 #include "wolang/debug/dap.h"
 #include "wolang/interp/interpreter.h"
 #include "wolang/ir/ir.h"
+#include "wolang/ir/save_schema.h"
 #include "wolang/syntax/ast.h"
 #include "wolang/interp/marshal.h"
 #include "wolang/runtime/builtins.h"
@@ -235,6 +236,17 @@ struct WolangVm {
     uint32_t Index = 0;
   };
   std::map<void*, Held> held;
+  // The save schema of each class by type id, for the program of
+  // |save_generation|, and the bytes of the last save the host asked for. A
+  // reload builds the vm again, so both start empty with the new program
+  // (D292).
+  struct SaveSchema {
+    std::string Text;
+    std::vector<uint64_t> Offsets;
+  };
+  std::map<uint32_t, SaveSchema> save_schemas;
+  uint64_t save_generation = 0;
+  std::vector<uint8_t> saved;
 };
 
 namespace {
@@ -1687,6 +1699,169 @@ WolangStatus wolang_vm_object_set(WolangVm* vm, WolangValue object, const char* 
   }
   vm->errors = std::string("wolang: no field called `") + field + "`\n";
   return kWolangError;
+}
+
+static const CheckedFile* CheckedOfType(WolangVm* vm, TypeId type) {
+  const wolang::TypeStore& types = vm->database.types();
+  TypeId named = type;
+  if (types.KindOf(named) == TypeKind::kInstance) {
+    named = types.Get(named).base;
+  }
+  if (types.KindOf(named) != TypeKind::kNamed) {
+    return nullptr;
+  }
+  const uint32_t file = types.Get(named).declaring_file;
+
+  return file == 0xFFFFFFFFu ? nullptr : vm->database.Checked(FileId{file});
+}
+
+// The schema `std.save` gets from the compiler for |type|, with the places
+// it leaves for the tier to fill in answered from this program's layout, so
+// the text, and so the bytes, are the ones a script writes and bytes written
+// here load from a script and the other way round (D292). The text is empty
+// when the class cannot be saved.
+static const WolangVm::SaveSchema& SaveSchemaOf(WolangVm* vm, TypeId type) {
+  if (vm->save_generation != vm->generation) {
+    vm->save_schemas.clear();
+    vm->save_generation = vm->generation;
+  }
+  const auto found = vm->save_schemas.find(type.index);
+  if (found != vm->save_schemas.end()) {
+    return found->second;
+  }
+
+  WolangVm::SaveSchema made;
+  const CheckedFile* home = CheckedOfType(vm, type);
+  if (home != nullptr) {
+    std::vector<std::pair<TypeId, uint32_t>> wants;
+    wolang::ir::SaveSchemaHost host;
+    host.types = &vm->database.types();
+    host.interner = &vm->database.interner();
+    host.resolution = [vm, home](TypeId of) {
+      const CheckedFile* checked = CheckedOfType(vm, of);
+
+      return &(checked != nullptr ? checked : home)->resolution;
+    };
+    host.erase = [vm](TypeId of) {
+      wolang::TypeStore& types = vm->database.types();
+      while (types.KindOf(of) == TypeKind::kQuantity) {
+        of = types.ElementOf(of);
+      }
+
+      return types.KindOf(of) == TypeKind::kString ? types.str() : of;
+    };
+    host.offset = [&wants](TypeId of, uint32_t field) {
+      for (size_t i = 0; i < wants.size(); ++i) {
+        if (wants[i].first == of && wants[i].second == field) {
+          return "@" + std::to_string(i);
+        }
+      }
+      wants.emplace_back(of, field);
+
+      return "@" + std::to_string(wants.size() - 1);
+    };
+    made.Text = wolang::ir::BuildSaveSchema(host, type);
+
+    const wolang::TypeStore& types = vm->database.types();
+    for (const auto& [of, field] : wants) {
+      const CheckedFile* checked = CheckedOfType(vm, of);
+      wolang::abi::LayoutStore layouts(vm->database.types(), (checked != nullptr ? checked : home)->resolution);
+      vm->database.ShareMembers(&layouts);
+      if (field == wolang::ir::kObjectSizeField) {
+        made.Offsets.push_back(layouts.ObjectOf(of).size);
+        continue;
+      }
+
+      const wolang::abi::Layout& layout = types.IsHandle(of) ? layouts.ObjectOf(of) : layouts.Of(of);
+      if (field == 0 || field > layout.offsets.size()) {
+        made.Text.clear();
+        break;
+      }
+      made.Offsets.push_back(layout.offsets[field - 1]);
+    }
+  }
+
+  return vm->save_schemas.emplace(type.index, std::move(made)).first->second;
+}
+
+static std::string SaveRootName(const std::string& schema) {
+  const size_t at = schema.find("ROOT ");
+  const size_t end = schema.find('\n', at);
+
+  return at == std::string::npos || end == std::string::npos ? std::string() : schema.substr(at + 5, end - at - 5);
+}
+
+WolangStatus wolang_vm_save(WolangVm* vm, WolangValue object, const uint8_t** bytes, uint64_t* length) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || !vm->ok || object.kind != kWolangObject || object.handle == nullptr || bytes == nullptr || length == nullptr) {
+    return kWolangError;
+  }
+
+  const std::string name(object.text != nullptr ? object.text : "", static_cast<size_t>(object.length));
+  TypeId type = FindClassNamed(vm, name);
+  if (!type.is_valid()) {
+    type = TypeId{object.reserved};
+  }
+
+  const WolangVm::SaveSchema& schema = SaveSchemaOf(vm, type);
+  if (schema.Text.empty()) {
+    vm->errors = "wolang: `" + name + "` cannot be saved: it has a virtual method, or a field marked `@Save` holds something a save cannot write\n";
+
+    return kWolangError;
+  }
+
+  const std::string root_name = SaveRootName(schema.Text);
+  wolang::runtime::SaveRoot root;
+  root.Object = object.handle;
+  root.Class = root_name;
+
+  vm->saved.clear();
+  if (wolang::runtime::SaveEncode(schema.Text, schema.Offsets.data(), std::span<const wolang::runtime::SaveRoot>(&root, 1), &vm->saved) != wolang::runtime::SaveStatus::kOk) {
+    vm->saved.clear();
+    vm->errors = "wolang: the object of `" + name + "` could not be written down\n";
+
+    return kWolangError;
+  }
+
+  *bytes = vm->saved.data();
+  *length = vm->saved.size();
+
+  return kWolangOk;
+}
+
+WolangStatus wolang_vm_load_save(WolangVm* vm, const char* class_name, const uint8_t* bytes, uint64_t length, WolangValue* out) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || !vm->ok || class_name == nullptr || out == nullptr || (bytes == nullptr && length != 0)) {
+    return kWolangError;
+  }
+
+  std::string ambiguous;
+  const TypeId type = FindClassNamed(vm, class_name, &ambiguous);
+  if (!type.is_valid()) {
+    vm->errors = ambiguous.empty() ? std::string("wolang: no class called `") + class_name + "`\n" : ambiguous;
+
+    return kWolangError;
+  }
+
+  const WolangVm::SaveSchema& schema = SaveSchemaOf(vm, type);
+  if (schema.Text.empty()) {
+    vm->errors = std::string("wolang: `") + class_name + "` cannot be loaded from a save: it has a virtual method, or a field marked `@Save` holds something a save cannot write\n";
+
+    return kWolangError;
+  }
+
+  std::vector<void*> roots;
+  const wolang::runtime::SaveStatus status = wolang::runtime::SaveDecode(schema.Text, schema.Offsets.data(), std::span<const uint8_t>(bytes, static_cast<size_t>(length)), &roots);
+  if (status != wolang::runtime::SaveStatus::kOk || roots.size() != 1 || roots[0] == nullptr) {
+    vm->errors = std::string("wolang: the bytes are not a save of `") + class_name + "`\n";
+
+    return kWolangError;
+  }
+
+  *out = ObjectOf(vm, reinterpret_cast<uint64_t>(roots[0]), type);
+  Handed(vm, *out);
+
+  return kWolangOk;
 }
 
 int32_t wolang_vm_class_count(const WolangVm* vm) {

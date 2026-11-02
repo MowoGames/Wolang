@@ -6,6 +6,7 @@
 
 #include "wolang/embed/wolang.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -20,6 +21,7 @@
 #include "harness/test.h"
 #include "wolang/codegen/aot.h"
 #include "wolang/lsp/json.h"
+#include "wolang/runtime/scheduler.h"
 #include "wolang/runtime/sockets.h"
 
 namespace {
@@ -1467,19 +1469,21 @@ offer fun Hello() uses io {
 )";
 
 WOLANG_TEST(EmbedTest, ABindingsStructIsTheHostsNotADependencysPrivateOne) {
-  const std::string dependency = "\n[dependencies]\nstd = { path = \"" + std::string(WOLANG_PROJECT_DIR) + "/lib/std\" }\n";
-  const std::filesystem::path package = WritePackage("vec2host", dependency.c_str(), kHostVec2Source);
+  const std::string standard = std::string(WOLANG_PROJECT_DIR) + "/lib/std";
+  const char* source = "offer struct Vec2 {\n  var x: f64\n  var y: f64\n}\n";
   const uint32_t right[] = {16, 8, 0, 8};
   WolangVm* vm = wolang_vm_create();
   WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec2", right, 4), kWolangOk);
-  WOLANG_EXPECT_EQ(wolang_vm_load(vm, package.string().c_str()), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, standard.c_str()), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "host_vec2.wo", source), 0);
   WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
   wolang_vm_destroy(vm);
 
   const uint32_t private_one[] = {8, 4, 0, 4};
   vm = wolang_vm_create();
   WOLANG_EXPECT_EQ(wolang_vm_expect_struct(vm, "Vec2", private_one, 4), kWolangOk);
-  WOLANG_EXPECT(wolang_vm_load(vm, package.string().c_str()) != 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, standard.c_str()), 0);
+  WOLANG_EXPECT(wolang_vm_load_source(vm, "host_vec2_bad.wo", source) != 0);
   WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("expect `Vec2` to be size 8, align 4") != std::string::npos);
   wolang_vm_destroy(vm);
 }
@@ -2325,4 +2329,171 @@ class Pawn {
   WOLANG_EXPECT_EQ(wolang_vm_class_method_param_kind(vm, "Pawn", 0, 5), kWolangVoid);
   WOLANG_EXPECT_EQ(wolang_vm_class_method_count(vm, "Missing"), 0);
   wolang_vm_destroy(vm);
+}
+
+static const char* kSaveSource = R"(
+need std.mem.{BytesFromRaw, Free}
+need std.save.{Save, Load}
+
+class Mover {
+  @Save
+  var steps: int = 0
+  @Save
+  var name: text = ""
+  @Save
+  var next: Mover? = null
+  @Save
+  var friend: Mover? = null
+  var scratch: int = 0
+}
+
+class Talker {
+  @Save
+  var word: int = 0
+  virtual fun Say() -> int {
+    return 1
+  }
+}
+
+offer fun Build() -> Mover uses unsafe {
+  const first = Mover()
+  const second = Mover()
+  first.steps = 1
+  first.name = "first"
+  first.scratch = 77
+  second.steps = 2
+  second.name = "second"
+  first.next = second
+  first.friend = second
+  second.next = first
+  return first
+}
+
+offer fun MakeTalker() -> Talker uses unsafe {
+  return Talker()
+}
+
+offer fun Check(mover: Mover) -> bool uses unsafe {
+  if mover.steps != 1 || mover.name != "first" || mover.scratch != 0 {
+    return false
+  }
+  const next = mover.next ?? mover
+  const friend = mover.friend ?? mover
+  if next.steps != 2 || next.name != "second" {
+    return false
+  }
+  next.steps = 9
+  const shared = friend.steps == 9
+  next.steps = 2
+  const back = next.next ?? next
+  back.steps = 5
+  const cycle = mover.steps == 5
+  back.steps = 1
+  return shared && cycle
+}
+
+offer fun SaveTo(mover: Mover, address: int, room: int) -> int uses unsafe {
+  const bytes = Save(mover)
+  const target = BytesFromRaw(address as *u8, room)
+  var at = 0
+  while at < bytes.len && at < room {
+    target[at] = bytes[at]
+    at = at + 1
+  }
+  const written = bytes.len
+  Free(bytes)
+  return written
+}
+
+offer fun LoadFrom(address: int, length: int) -> bool uses unsafe {
+  const bytes = BytesFromRaw(address as *u8, length)
+  const back = match Load<Mover>(bytes) {
+    Ok(found) => found
+    Corrupt => Mover()
+  }
+  return Check(back)
+}
+)";
+
+static std::filesystem::path WriteSavePackage() {
+  const std::string dependency = "\n[dependencies]\nstd = { path = \"" + std::string(WOLANG_PROJECT_DIR) + "/lib/std\" }\n";
+
+  return WritePackage("savehost", dependency.c_str(), kSaveSource);
+}
+
+static void CheckSavesAndLoadsAGraphThroughTheCApi(bool compiled) {
+  const std::filesystem::path package = WriteSavePackage();
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_compiled(vm, compiled ? 1 : 0);
+  WOLANG_ASSERT_EQ(wolang_vm_load(vm, package.string().c_str()), 0);
+
+  WolangValue built = wolang_void();
+  WOLANG_ASSERT_EQ(wolang_vm_call(vm, "Build", nullptr, 0, &built), 0);
+
+  const uint8_t* bytes = nullptr;
+  uint64_t length = 0;
+  WOLANG_ASSERT_EQ(wolang_vm_save(vm, built, &bytes, &length), 0);
+  WOLANG_ASSERT(length > 0);
+  const std::vector<uint8_t> saved(bytes, bytes + length);
+
+  WolangValue back = wolang_void();
+  WOLANG_ASSERT_EQ(wolang_vm_load_save(vm, "Mover", saved.data(), saved.size(), &back), 0);
+  WOLANG_EXPECT(back.handle != built.handle);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Check", &back, 1, &answer), 0);
+  WOLANG_EXPECT(answer.boolean != 0);
+
+  std::vector<uint8_t> room(saved.size() + 64);
+  WolangValue arguments[3] = {built, wolang_int(static_cast<int64_t>(reinterpret_cast<intptr_t>(room.data()))), wolang_int(static_cast<int64_t>(room.size()))};
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "SaveTo", arguments, 3, &answer), 0);
+  WOLANG_ASSERT_EQ(static_cast<uint64_t>(answer.integer), length);
+  WOLANG_EXPECT(std::equal(saved.begin(), saved.end(), room.begin()));
+
+  WolangValue loader[2] = {wolang_int(static_cast<int64_t>(reinterpret_cast<intptr_t>(saved.data()))), wolang_int(static_cast<int64_t>(saved.size()))};
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "LoadFrom", loader, 2, &answer), 0);
+  WOLANG_EXPECT(answer.boolean != 0);
+
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, back), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, built), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove_all(package);
+}
+
+WOLANG_TEST(EmbedTest, SavesAndLoadsAGraphThroughTheCApi) {
+  CheckSavesAndLoadsAGraphThroughTheCApi(false);
+  CheckSavesAndLoadsAGraphThroughTheCApi(true);
+}
+
+WOLANG_TEST(EmbedTest, ASaveRefusesAClassWithAVirtualMethodAndJunkBytesAllocateNothing) {
+  const std::filesystem::path package = WriteSavePackage();
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_ASSERT_EQ(wolang_vm_load(vm, package.string().c_str()), 0);
+
+  WolangValue talker = wolang_void();
+  WOLANG_ASSERT_EQ(wolang_vm_call(vm, "MakeTalker", nullptr, 0, &talker), 0);
+  const uint8_t* bytes = nullptr;
+  uint64_t length = 0;
+  WOLANG_EXPECT(wolang_vm_save(vm, talker, &bytes, &length) != 0);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("cannot be saved") != std::string::npos);
+  WolangValue made = wolang_void();
+  WOLANG_EXPECT(wolang_vm_load_save(vm, "Talker", bytes, 0, &made) != 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, talker), 0);
+
+  WolangValue built = wolang_void();
+  WOLANG_ASSERT_EQ(wolang_vm_call(vm, "Build", nullptr, 0, &built), 0);
+  WOLANG_ASSERT_EQ(wolang_vm_save(vm, built, &bytes, &length), 0);
+  std::vector<uint8_t> saved(bytes, bytes + length);
+
+  const uint8_t junk[] = {1, 2, 3, 4, 5};
+  const int64_t before = wolang::runtime::wolang_objects_allocated();
+  WOLANG_EXPECT(wolang_vm_load_save(vm, "Mover", junk, sizeof(junk), &made) != 0);
+  WOLANG_EXPECT(wolang_vm_load_save(vm, "Mover", saved.data(), saved.size() - 3, &made) != 0);
+  saved[0] ^= 0xFF;
+  WOLANG_EXPECT(wolang_vm_load_save(vm, "Mover", saved.data(), saved.size(), &made) != 0);
+  WOLANG_EXPECT(wolang_vm_load_save(vm, "Nothing", junk, sizeof(junk), &made) != 0);
+  WOLANG_EXPECT_EQ(wolang::runtime::wolang_objects_allocated(), before);
+
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, built), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove_all(package);
 }

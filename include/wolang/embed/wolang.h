@@ -30,7 +30,7 @@ extern "C" {
 // the low. A host compares it with `wolang_abi_version()` at load, since
 // the library it links may not be the one it compiled against (D241). A
 // different major is a different ABI; a larger minor only adds.
-#define WOLANG_ABI_VERSION ((1u << 16) | 5u)
+#define WOLANG_ABI_VERSION ((1u << 16) | 6u)
 
 uint32_t wolang_abi_version(void);
 
@@ -445,6 +445,24 @@ const char* wolang_vm_notes(const WolangVm* vm);
 // null |remap| to go back to refusing. Added in ABI 1.4.
 typedef void (*WolangRemap)(WolangVm* vm, WolangValue old_object, WolangValue new_object, void* user);
 void wolang_vm_set_remap(WolangVm* vm, WolangRemap remap, void* user);
+
+// Saves and loads an object graph from the host (D292), the same bytes
+// `std.save` writes from a script (D266). The fields marked `@Save` of
+// |object|, and of every object they reach, are written by name; an object
+// reached twice is written once, so sharing and cycles survive. |bytes| and
+// |length| get the save, which the vm owns: it stays valid until the next
+// save, a reload or `wolang_vm_destroy`. A class with a virtual method, or
+// with a marked field only a script can describe, is refused and the line is
+// in `wolang_vm_errors`. Added in ABI 1.6.
+WolangStatus wolang_vm_save(WolangVm* vm, WolangValue object, const uint8_t** bytes, uint64_t* length);
+
+// Rebuilds the graph |bytes| holds as objects of the class |class_name|
+// (qualify it, `module.Class`, when two classes share a name). |out| is the
+// root, with one reference the host lets go of with `wolang_vm_object_release`.
+// Bytes that are not a save of the class give `kWolangError`, and then nothing
+// was allocated. A field the bytes have and the class lacks is dropped, and one
+// the class has and the bytes lack is zero. Added in ABI 1.6.
+WolangStatus wolang_vm_load_save(WolangVm* vm, const char* class_name, const uint8_t* bytes, uint64_t length, WolangValue* out);
 
 // ----------------------------------------------------------------- tasks ---
 

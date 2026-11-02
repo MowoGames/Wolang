@@ -15,6 +15,7 @@
 #include "wolang/base/diagnostic.h"
 #include "wolang/compiler/item_tree.h"
 #include "wolang/ir/builder.h"
+#include "wolang/ir/save_schema.h"
 
 namespace wolang {
 namespace ir {
@@ -2864,32 +2865,6 @@ class Lowerer {
     uint32_t Field = 0;
   };
 
-  // A name the schema can carry on one line, one per type.
-  std::string SaveNameOf(TypeId type, std::vector<std::pair<TypeId, std::string>>* names) {
-    for (const auto& [seen, name] : *names) {
-      if (seen == type) {
-        return name;
-      }
-    }
-
-    std::string spelled = types_->Describe(*interner_, type);
-    for (char& letter : spelled) {
-      if (letter == ' ' || letter == '\t' || letter == '\n') {
-        letter = '_';
-      }
-    }
-    for (const auto& [seen, name] : *names) {
-      if (name == spelled) {
-        spelled.append("#");
-        spelled.append(std::to_string(type.index));
-        break;
-      }
-    }
-    names->emplace_back(type, spelled);
-
-    return spelled;
-  }
-
   std::string SaveWantToken(std::vector<SaveWant>* wants, TypeId type, uint32_t field) {
     for (size_t i = 0; i < wants->size(); ++i) {
       if ((*wants)[i].Type == type && (*wants)[i].Field == field) {
@@ -2905,174 +2880,18 @@ class Lowerer {
     return "@" + std::to_string(wants->size() - 1);
   }
 
-  bool HasVirtualMethods(TypeId type) {
-    const FileResolution* const where = ResolutionOf(type);
-    TypeId named = type;
-    if (types_->KindOf(named) == TypeKind::kInstance) {
-      named = types_->Get(type).base;
-    }
-    for (TypeId current = named; current.is_valid(); current = where->BaseOf(current)) {
-      for (const Member& member : where->MembersOf(current)) {
-        if (member.kind == MemberKind::kMethod && (member.is_virtual || member.is_override)) {
-          return true;
-        }
-      }
-    }
-
-    return false;
-  }
-
-  // The shape and the wire code of a field type `std.save` can write, and
-  // false for one it cannot. Classes and structs it meets are queued so
-  // that their own fields get described too (D266).
-  bool SaveShapeOf(TypeId type, std::vector<SaveWant>* wants, std::vector<std::pair<TypeId, std::string>>* names, std::vector<TypeId>* queue, std::string* shape, std::string* wire, int depth) {
-    if (depth > 8) {
-      return false;
-    }
-
-    switch (types_->KindOf(type)) {
-      case TypeKind::kBool:
-        *shape = "b";
-        *wire = "b";
-        return true;
-      case TypeKind::kChar:
-        *shape = "c";
-        *wire = "c";
-        return true;
-      case TypeKind::kInt: {
-        const Type& info = types_->Get(type);
-        const uint32_t bytes = 1u << static_cast<uint32_t>(info.int_width);
-        *shape = std::string(info.is_signed ? "i" : "u") + std::to_string(bytes);
-        *wire = *shape;
-        return true;
-      }
-      case TypeKind::kFloat:
-        *shape = types_->Get(type).float_width == FloatWidth::k32 ? "f4" : "f8";
-        *wire = *shape;
-        return true;
-      case TypeKind::kStr:
-        *shape = "s";
-        *wire = "s";
-        return true;
-      case TypeKind::kOptional: {
-        std::string inner_shape;
-        std::string inner_wire;
-        if (!SaveShapeOf(types_->ElementOf(type), wants, names, queue, &inner_shape, &inner_wire, depth + 1)) {
-          return false;
-        }
-        *shape = "o " + SaveWantToken(wants, type, 2) + " " + inner_shape;
-        *wire = "o(" + inner_wire + ")";
-        return true;
-      }
-      case TypeKind::kNamed:
-      case TypeKind::kInstance: {
-        const FileResolution* const where = ResolutionOf(type);
-        if (where->IsAbility(type) || types_->IsForeignClass(type)) {
-          return false;
-        }
-
-        const std::string name = SaveNameOf(type, names);
-        if (types_->IsHandle(type)) {
-          if (HasVirtualMethods(type)) {
-            return false;
-          }
-          *shape = "r " + name;
-          *wire = "r:" + name;
-          queue->push_back(type);
-          return true;
-        }
-
-        bool variants = false;
-        for (const Member& member : MembersAnywhere(type)) {
-          if (member.kind == MemberKind::kVariant) {
-            if (types_->KindOf(member.type) == TypeKind::kFunction) {
-              return false;
-            }
-            variants = true;
-          }
-        }
-        if (variants) {
-          *shape = "e";
-          *wire = "e:" + name;
-          return true;
-        }
-
-        *shape = "v " + name;
-        *wire = "v:" + name;
-        queue->push_back(type);
-        return true;
-      }
-      default:
-        return false;
-    }
-  }
-
-  // The text `wolang_save_encode` and `wolang_save_decode` read: every class
-  // and struct reachable from |root| through a field marked `@Save`, with
-  // the numbers only a tier knows left as `@k` places (D266). Empty when a
-  // marked field holds something that cannot be written.
+  // The text `wolang_save_encode` and `wolang_save_decode` read, with the
+  // numbers only a tier knows left as `@k` places (D266). The embedding API
+  // writes the same text with the numbers filled in (D292).
   std::string SaveSchemaFor(TypeId root, std::vector<SaveWant>* wants) {
-    std::vector<std::pair<TypeId, std::string>> names;
-    std::vector<TypeId> queue;
-    std::vector<TypeId> done;
+    SaveSchemaHost host;
+    host.types = types_;
+    host.interner = interner_;
+    host.resolution = [this](TypeId type) { return ResolutionOf(type); };
+    host.erase = [this](TypeId type) { return Erase(type); };
+    host.offset = [wants, this](TypeId type, uint32_t field) { return SaveWantToken(wants, type, field); };
 
-    if (!types_->IsHandle(root) || types_->IsForeignClass(root) || HasVirtualMethods(root)) {
-      return std::string();
-    }
-
-    const std::string root_name = SaveNameOf(root, &names);
-    std::string body;
-    queue.push_back(root);
-    for (size_t at = 0; at < queue.size(); ++at) {
-      const TypeId type = queue[at];
-      if (std::find(done.begin(), done.end(), type) != done.end()) {
-        continue;
-      }
-      done.push_back(type);
-
-      // A struct is a value, and half of one is not worth saving: unless it
-      // marks fields of its own, all of it is written (D266).
-      const bool is_class = types_->IsHandle(type);
-      const std::vector<StoredField> every = StoredFields(type);
-      bool marked = is_class;
-      for (const StoredField& field : every) {
-        marked = marked || field.Save;
-      }
-
-      std::vector<StoredField> saved;
-      for (const StoredField& field : every) {
-        if (!marked || field.Save) {
-          saved.push_back(field);
-        }
-      }
-
-      body.append("TYPE ");
-      body.append(is_class ? "C " : "S ");
-      body.append(SaveNameOf(type, &names));
-      body.append(" ");
-      body.append(is_class ? SaveWantToken(wants, type, ir::kObjectSizeField) : std::string("0"));
-      body.append(" ");
-      body.append(std::to_string(saved.size()));
-      body.append("\n");
-      for (const StoredField& field : saved) {
-        std::string shape;
-        std::string wire;
-        if (!SaveShapeOf(Erase(field.Type), wants, &names, &queue, &shape, &wire, 0)) {
-          return std::string();
-        }
-        body.append("FIELD ");
-        body.append(interner_->Text(field.Name));
-        body.append(" ");
-        body.append(SaveWantToken(wants, type, field.Index + 1));
-        body.append(" ");
-        body.append(wire);
-        body.append(" ");
-        body.append(shape);
-        body.append("\n");
-      }
-    }
-
-    return "WSCHEMA 1\nROOT " + root_name + "\n" + body;
+    return BuildSaveSchema(host, root);
   }
 
   // The schema as a string, and a heap table holding the numbers it asks

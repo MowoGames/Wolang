@@ -14,7 +14,7 @@ Wolang. Very little in it breaks a 1.2.0 program.
 
 - `@Save` and `std.save` (D266). A field marked `@Save` is written by name and
   read back, with shared references and cycles kept, tolerant of a field added
-  or removed since the save. C API calls save and load an object graph.
+  or removed since the save. (The C API calls for it came in 1.4.0, D292.)
 - Tasks run on the caller's clock (D267). `Tick(dt)` advances every ready
   `task fun`, `Wait(seconds)` finishes after that much ticked time, `Event` is a
   flag a task looks at, and `wolang_vm_tick` and `wolang_vm_tasks_pending` do
