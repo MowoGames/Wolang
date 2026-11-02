@@ -49,6 +49,17 @@ class Fixture {
     return Describe(reference);
   }
 
+  // The same, with a host's budget of |ticks| (D265).
+  std::string RunWithTicks(std::string_view name, uint64_t ticks, std::vector<interp::Value> args = {}) {
+    const LoweredFile* lowered = db_.Lowered(file_);
+    if (lowered == nullptr) {
+      return "<not lowered>";
+    }
+    interp::Limits limits;
+    limits.ticks = ticks;
+    return Describe(interp::RunNamed(db_.interner(), db_.types(), lowered->module, db_.interner().Intern(name), args, limits));
+  }
+
   static std::string Describe(const interp::Outcome& outcome) {
     if (outcome.ok()) {
       return outcome.value.Describe();
@@ -333,6 +344,37 @@ fun Spin() -> int {
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Spin"), "trap: step limit");
+}
+
+WOLANG_TEST(InterpreterTest, ATickBudgetStopsARunawayLoopAndSparesAShortOne) {
+  Fixture f(R"(
+fun Spin() -> int {
+  var i = 0
+  loop {
+    i = i + 1
+  }
+}
+
+fun Count(n: int) -> int {
+  var i = 0
+  while i < n {
+    i = i + 1
+  }
+  return i
+}
+
+fun Fall(n: int) -> int {
+  if n == 0 {
+    return 0
+  }
+  return Fall(n - 1) + 1
+}
+)");
+  WOLANG_EXPECT_EQ(f.RunWithTicks("Spin", 1000), "trap: step limit");
+  WOLANG_EXPECT_EQ(f.RunWithTicks("Count", 1000, {Fixture::Int(10)}), "10");
+  WOLANG_EXPECT_EQ(f.RunWithTicks("Count", 1000, {Fixture::Int(100000)}), "trap: step limit");
+  WOLANG_EXPECT_EQ(f.RunWithTicks("Fall", 100, {Fixture::Int(10)}), "10");
+  WOLANG_EXPECT_EQ(f.RunWithTicks("Fall", 100, {Fixture::Int(500)}), "trap: step limit");
 }
 
 WOLANG_TEST(InterpreterTest, RunsOptionals) {

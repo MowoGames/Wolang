@@ -954,6 +954,9 @@ class Interpreter {
   Value Execute(Frame* frame, Outcome* outcome) {
     const ir::Function& function = *frame->function;
     ir::BlockId block = function.entry();
+    if (++ticks_ > limits_.ticks) {
+      return Trap(outcome, TrapKind::kStepLimit, "@" + std::string(interner_.Text(function.name)), "budget used up");
+    }
 
     while (function.Contains(block)) {
       const ir::Block& body = function.Get(block);
@@ -985,6 +988,9 @@ class Interpreter {
         }
         if (!next.is_valid()) {
           return returned;
+        }
+        if (next.index <= block.index && ++ticks_ > limits_.ticks) {
+          return Trap(outcome, TrapKind::kStepLimit, At(function, id), "budget used up", function.SpanOf(id));
         }
         block = next;
         break;
@@ -2463,6 +2469,7 @@ class Interpreter {
   // Function values handed to the runtime, by the token it holds instead.
   mutable std::vector<Value> tokens_;
   uint64_t steps_ = 0;
+  uint64_t ticks_ = 0;
   uint32_t depth_ = 0;
   // The activations, outermost first, for a debugger to look at.
   std::vector<Frame*> stack_;

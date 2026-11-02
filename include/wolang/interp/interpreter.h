@@ -46,6 +46,10 @@ struct Outcome {
 // compiler, so it needs a bound; a program run wants a large one.
 struct Limits {
   uint64_t steps = 10'000'000;
+  // A host's budget (D265): one tick for each entry into a function and each
+  // jump back to an earlier block, which is where a runaway program spends
+  // its time. The compiled tier counts the same two things.
+  uint64_t ticks = UINT64_MAX;
   uint32_t depth = 1024;
   // Whether to leave the module-level `var`s as they are.
   //
