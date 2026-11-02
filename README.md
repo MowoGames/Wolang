@@ -219,6 +219,7 @@ docs/             specification, architecture, decisions, diagnostics, style
 - [docs/style.md](docs/style.md) — code and commit conventions
 - [docs/embedding.md](docs/embedding.md) — Wolang inside another program
 - [docs/debugging.md](docs/debugging.md) — debuggers, profiles, replays
+- [docs/benchmarks.md](docs/benchmarks.md) — what a script call costs, in each tier
 - [editors/README.md](editors/README.md) — editor support, all over `wolang lsp`
 - [assets/](assets/) — the logo, the wordmark and the mascot, and the script that draws them
 

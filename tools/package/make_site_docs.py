@@ -37,6 +37,7 @@ GUIDES = [
     ("docs/packages.md", "packages", "Packages"),
     ("docs/embedding.md", "embedding", "Embedding"),
     ("docs/debugging.md", "debugging", "Debugging"),
+    ("docs/benchmarks.md", "benchmarks", "Benchmarks"),
     ("editors/README.md", "editors", "Editors"),
     ("docs/diagnostics.md", "diagnostics", "Diagnostics"),
     ("docs/style.md", "style", "Style"),
