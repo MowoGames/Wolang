@@ -1,0 +1,25 @@
+need std.env.{ArgAt, ArgCount}
+need std.fs.{ReadText}
+need std.io.{Write}
+
+fun main() uses io, unsafe {
+  var mode = ""
+  var k = 0
+  while k < ArgCount() {
+    const argument = ArgAt(k)
+    if mode == "" {
+      if argument == "tokens" {
+        mode = argument
+      }
+    } else {
+      Write("# ")
+      Write(argument)
+      Write("\n")
+      const source = ReadText(argument, 16777216)
+      if mode == "tokens" {
+        Write(DumpTokens(source))
+      }
+    }
+    k = k + 1
+  }
+}
