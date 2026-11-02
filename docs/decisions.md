@@ -3520,3 +3520,22 @@ dropped and the mod is held to the rest. What is not split is `io`: reading a
 file, writing one and printing are all `io`, and finer grants would need the
 effect split in `std`, which is not decided. Time is bounded by D265 and memory
 is not bounded at all.
+
+**D269. A runtime error says where it happened and how the script got there;
+the engine's debugger speaks DAP.** A trap that reaches a host through
+`wolang_vm_call` now leaves in `wolang_vm_errors` the first line it always had,
+`wolang: division by zero at @Down:%12`, then the place in the source, `-->
+file:line:column`, and one `in Function (file:line:column)` line for each
+activation of the script's call stack, innermost first, up to 64. The
+interpreter knows the line each frame was at, because it records the call it
+made; the compiled tier gives the trapping function and the functions that
+called it, with no line. The same text goes to the reporter the host installed
+with `wolang_vm_set_reporter`, so an engine that shows scripts' errors in its
+message log gets them without asking for them. No syntax and no new call.
+
+Breakpoints, stepping, locals and the call stack are what DAP already carries
+(D216): `wolang_vm_debug_listen` opens it over TCP and the editor, or the
+engine's own debugger front end speaking DAP, drives the vm. A set of callbacks
+that would let the host drive the vm without a socket is not built; the socket
+is local, and an engine that wants the callbacks can put a DAP client in
+process.

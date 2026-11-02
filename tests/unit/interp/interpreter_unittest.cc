@@ -60,6 +60,22 @@ class Fixture {
     return Describe(interp::RunNamed(db_.interner(), db_.types(), lowered->module, db_.interner().Intern(name), args, limits));
   }
 
+  // The call stack where |name| trapped on the IR as lowered, before the
+  // passes could fold calls into one another: the functions innermost first,
+  // each with the line of source it was at (D269).
+  std::string StackOf(std::string_view name, std::vector<interp::Value> args = {}) {
+    const LoweredFile* lowered = db_.Lowered(file_);
+    if (lowered == nullptr) {
+      return "<not lowered>";
+    }
+    const interp::Outcome outcome = interp::RunNamed(db_.interner(), db_.types(), lowered->unoptimized, db_.interner().Intern(name), args);
+    std::string stack;
+    for (const interp::TraceFrame& frame : outcome.stack) {
+      stack += frame.function + ":" + std::to_string(db_.sources().Position(frame.span).line) + " ";
+    }
+    return stack;
+  }
+
   static std::string Describe(const interp::Outcome& outcome) {
     if (outcome.ok()) {
       return outcome.value.Describe();
@@ -375,6 +391,23 @@ fun Fall(n: int) -> int {
   WOLANG_EXPECT_EQ(f.RunWithTicks("Count", 1000, {Fixture::Int(100000)}), "trap: step limit");
   WOLANG_EXPECT_EQ(f.RunWithTicks("Fall", 100, {Fixture::Int(10)}), "10");
   WOLANG_EXPECT_EQ(f.RunWithTicks("Fall", 100, {Fixture::Int(500)}), "trap: step limit");
+}
+
+WOLANG_TEST(InterpreterTest, ATrapKeepsTheCallStackWithEachFramesLine) {
+  Fixture f(R"(
+fun Down(n: int, zero: int) -> int {
+  if n == 0 {
+    return 10 / zero
+  }
+  return Down(n - 1, zero) + 1
+}
+
+fun Entry(zero: int) -> int {
+  return Down(2, zero)
+}
+)");
+  WOLANG_EXPECT_EQ(f.StackOf("Entry", {Fixture::Int(0)}), "Down:4 Down:6 Down:6 Entry:10 ");
+  WOLANG_EXPECT_EQ(f.StackOf("Entry", {Fixture::Int(1)}), "");
 }
 
 WOLANG_TEST(InterpreterTest, RunsOptionals) {

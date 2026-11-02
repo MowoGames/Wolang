@@ -1133,8 +1133,49 @@ static wolang::interp::Outcome Debugged(WolangVm* vm, const Callable* entry, con
   return outcome;
 }
 
+// What a trap says, for `wolang_vm_errors` and for the host's reporter: the
+// kind and the instruction, the line of source it came from when there is one,
+// and the script's call stack, innermost first (D269). The interpreter knows
+// the place of each frame; the compiled tier gives the function and the offset
+// into its code.
+static void TellTheHostOfTrap(WolangVm* vm, const wolang::interp::Outcome& outcome, const std::vector<std::string>& machine_trace) {
+  const wolang::SourceManager& sources = vm->database.sources();
+  const auto place = [&sources](const wolang::SourceSpan& span) {
+    if (span.file.index == FileId::kInvalidIndex) {
+      return std::string();
+    }
+    const wolang::LineColumn at = sources.Position(span);
+    return std::string(sources.Path(span.file)) + ":" + std::to_string(at.line) + ":" + std::to_string(at.column);
+  };
+
+  std::string text = std::string("wolang: ") + std::string(wolang::interp::TrapKindName(outcome.trap)) + " at " + outcome.where + "\n";
+  if (const std::string where = place(outcome.span); !where.empty()) {
+    text += "  --> " + where + "\n";
+  }
+  for (const wolang::interp::TraceFrame& frame : outcome.stack) {
+    text += "  in " + frame.function;
+    if (const std::string where = place(frame.span); !where.empty()) {
+      text += " (" + where + ")";
+    }
+    text += "\n";
+  }
+  if (outcome.stack.empty()) {
+    if (outcome.where.size() > 1 && outcome.where[0] == '@') {
+      text += "  in " + outcome.where.substr(1, outcome.where.find(':') - 1) + "\n";
+    }
+    for (const std::string& frame : machine_trace) {
+      text += "  in " + frame + "\n";
+    }
+  }
+  vm->errors = text;
+  if (vm->reporter != nullptr) {
+    vm->reporter(vm->reporter_user, text.data(), text.size());
+  }
+}
+
 static WolangStatus Invoke(WolangVm* vm, const Callable* entry, const std::vector<wolang::interp::Value>& boxed, WolangValue* out) {
   wolang::interp::Outcome outcome;
+  std::vector<std::string> machine_trace;
   const std::shared_ptr<wolang::debug::DapSession> debugging = Attached(vm);
   // The compiled form where there is one, the interpreter otherwise:
   // the same choice `wolang run` makes, and the reason a host gets
@@ -1145,14 +1186,14 @@ static WolangStatus Invoke(WolangVm* vm, const Callable* entry, const std::vecto
     outcome = Debugged(vm, entry, boxed, debugging.get());
   }
   else if (vm->allow_compiled && vm->steps == 0 && vm->compiled != nullptr && entry->is_member && vm->compiled->Contains(entry->symbol)) {
-    outcome = vm->compiled->Run(entry->symbol, boxed, nullptr, /*keep_globals=*/true);
+    outcome = vm->compiled->Run(entry->symbol, boxed, &machine_trace, /*keep_globals=*/true);
   }
   else if (vm->allow_compiled && vm->steps == 0 && vm->compiled != nullptr &&
       vm->compiled->ContainsSource(entry->function->source_file,
                                    entry->function->source_item)) {
     outcome = vm->compiled->RunSource(entry->function->source_file,
                                       entry->function->source_item, boxed,
-                                      nullptr, /*keep_globals=*/true);
+                                      &machine_trace, /*keep_globals=*/true);
   }
   else {
     static const wolang::FileResolution kNothing;
@@ -1181,9 +1222,7 @@ static WolangStatus Invoke(WolangVm* vm, const Callable* entry, const std::vecto
   }
 
   if (!outcome.ok()) {
-    vm->errors = std::string("wolang: ") +
-                 std::string(wolang::interp::TrapKindName(outcome.trap)) +
-                 " at " + outcome.where + "\n";
+    TellTheHostOfTrap(vm, outcome, machine_trace);
     return kWolangTrap;
   }
   if (out != nullptr) {
@@ -1833,7 +1872,7 @@ WolangStatus wolang_call(WolangFunction* function,
 
       wolang::interp::Outcome trapped;
       if (!vm->compiled->CallPrepared(handle->prepared, slots, result, &trapped)) {
-        vm->errors = std::string("wolang: ") + std::string(wolang::interp::TrapKindName(trapped.trap)) + " at " + trapped.where + "\n";
+        TellTheHostOfTrap(vm, trapped, {});
         return kWolangTrap;
       }
       if (out != nullptr) {

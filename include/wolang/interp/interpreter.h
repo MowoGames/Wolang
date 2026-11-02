@@ -28,6 +28,14 @@ namespace interp {
 using TrapKind = ir::TrapKind;
 using ir::TrapKindName;
 
+// One activation in the script's call stack at a trap: the function and the
+// place in the source it was at (D269). Only the interpreter knows the place;
+// the compiled tier gives the function alone.
+struct TraceFrame {
+  std::string function;
+  SourceSpan span;
+};
+
 struct Outcome {
   TrapKind trap = TrapKind::kNone;
   // What the function returned, when it returned.
@@ -38,6 +46,8 @@ struct Outcome {
   // The source the instruction came from, when the IR carried one: what
   // turns "at @main:%27" into a file and a line (D118).
   SourceSpan span;
+  // The call stack where it stopped, innermost first (D269).
+  std::vector<TraceFrame> stack;
 
   bool ok() const { return trap == TrapKind::kNone; }
 };

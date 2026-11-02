@@ -151,6 +151,17 @@ class Interpreter {
       outcome->where = std::move(where);
       outcome->message = std::move(message);
       outcome->span = span;
+      for (auto it = stack_.rbegin(); it != stack_.rend() && outcome->stack.size() < 64; ++it) {
+        TraceFrame frame;
+        frame.function = std::string(interner_.Text((*it)->function->name));
+        if (it == stack_.rbegin() && span.file.index != FileId::kInvalidIndex) {
+          frame.span = span;
+        }
+        else if ((*it)->at.is_valid()) {
+          frame.span = (*it)->function->SpanOf((*it)->at);
+        }
+        outcome->stack.push_back(std::move(frame));
+      }
     }
     return Value();
   }
@@ -972,6 +983,9 @@ class Interpreter {
           return Value();
         }
         const ir::Inst& inst = function.Get(id);
+        if (inst.opcode == ir::Opcode::kCall || inst.opcode == ir::Opcode::kCallIndirect || inst.opcode == ir::Opcode::kVirtualCall) {
+          frame->at = id;
+        }
         if (!ir::IsTerminator(inst.opcode)) {
           frame->values[id.index] = Evaluate(frame, id, inst, outcome);
           if (!outcome->ok()) {

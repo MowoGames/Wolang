@@ -1291,6 +1291,49 @@ WOLANG_TEST(EmbedTest, AnOptionalHostObjectIsPresentOrAbsent) {
   CheckAnOptionalHostParameter(false);
 }
 
+static void CollectReport(void* user, const char* bytes, uint64_t length) {
+  static_cast<std::string*>(user)->append(bytes, static_cast<size_t>(length));
+}
+
+static void CheckATrapCarriesItsPlaceAndStack(bool compiled) {
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_compiled(vm, compiled ? 1 : 0);
+  std::string reported;
+  wolang_vm_set_reporter(vm, &CollectReport, &reported);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "trap.wo", R"(
+fun Down(n: int, zero: int) -> int {
+  if n == 0 {
+    return 10 / zero
+  }
+  return Down(n - 1, zero) + 1
+}
+
+offer fun Entry(depth: int, zero: int) -> int {
+  return Down(depth, zero)
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  WolangValue arguments[2] = {wolang_int(6), wolang_int(0)};
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Entry", arguments, 2, &answer), kWolangTrap);
+  const std::string errors = wolang_vm_errors(vm);
+  WOLANG_EXPECT(errors.find("division by zero") != std::string::npos);
+  WOLANG_EXPECT_EQ(reported, errors);
+  WOLANG_EXPECT(errors.find("  in Entry") != std::string::npos);
+  WOLANG_EXPECT(errors.find("Entry") != std::string::npos);
+  if (!compiled) {
+    WOLANG_EXPECT(errors.find("--> trap.wo:4:") != std::string::npos);
+    WOLANG_EXPECT(errors.find("  in Entry (trap.wo:4:") != std::string::npos);
+  }
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ATrapCarriesItsSourcePlaceAndTheScriptsCallStack) {
+  CheckATrapCarriesItsPlaceAndStack(false);
+  CheckATrapCarriesItsPlaceAndStack(true);
+}
+
 static void CheckABudget(bool compiled, bool before_load) {
   WolangVm* vm = wolang_vm_create();
   wolang_vm_set_compiled(vm, compiled ? 1 : 0);

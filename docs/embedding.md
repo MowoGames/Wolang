@@ -85,7 +85,7 @@ and pointing `CMAKE_PREFIX_PATH` at it is enough.
 | **Extend** | `wolang_vm_bind` makes a host function reachable: the script declares `extern "C" fun host_log(message: *u8, length: u64)` and calls it. |
 | **Capture** | `wolang_vm_set_writer` sends the program's output to the host's console instead of standard output; `wolang_vm_set_reporter` does the same for diagnostics. `std.io.Print` and `Eprint` reach them too, in every tier (D259). |
 | **Contain** | `wolang_vm_set_budget` stops a call after so many ticks in either tier, for scripts the host did not write (D265). `wolang_vm_set_step_limit` counts interpreter instructions and keeps calls on the interpreter. |
-| **Debug** | `wolang_vm_debug_listen` opens a port an editor attaches to with the Debug Adapter Protocol; breakpoints stop the host's call where it is. See [debugging](debugging.md). |
+| **Debug** | `wolang_vm_debug_listen` opens a port an editor attaches to with the Debug Adapter Protocol; breakpoints stop the host's call where it is. See [debugging](debugging.md). A trap that ends a call leaves `wolang_vm_errors` (and the reporter) the kind, the source line and the script's call stack, one `in Function (file:line:column)` per frame, innermost first; the compiled tier gives function names without lines (D269). |
 | **Reload** | `wolang_vm_reload` loads everything again and keeps the program's state; `wolang_vm_file_count`/`_name` say which files to watch. |
 
 ## What crosses the boundary
