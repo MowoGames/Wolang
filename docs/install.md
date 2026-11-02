@@ -26,7 +26,7 @@ installs under Program Files, puts `wolang` on the PATH, and appears in
 Add/Remove Programs like anything else. Silently, for a fleet:
 
 ```powershell
-msiexec /i wolang-1.1.0-x86_64.msi /qn
+msiexec /i wolang-1.2.0-x86_64.msi /qn
 ```
 
 Or, without the installer:
@@ -46,14 +46,14 @@ Then:
 wolang new hello && cd hello && wolang run .
 ```
 
-## Installing 1.1.0
+## Installing 1.2.0
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/MowoGames/Wolang/alpha/install.sh | sh -s -- --version 1.1.0
+curl -fsSL https://raw.githubusercontent.com/MowoGames/Wolang/alpha/install.sh | sh -s -- --version 1.2.0
 wolang --version
 ```
 
-That prints `wolang 1.1.0`. The scripts check the download against the
+That prints `wolang 1.2.0`. The scripts check the download against the
 release's `SHA256SUMS` and stop if the checksum is wrong or missing. To
 check an archive yourself, see "By hand" below. To find the newest release
 without naming it, leave `--version` out.
@@ -73,7 +73,7 @@ sh install.sh
 
 | | |
 |---|---|
-| `--version 1.1.0` | A particular release rather than the newest (`v1.1.0` works too) |
+| `--version 1.2.0` | A particular release rather than the newest (`v1.2.0` works too) |
 | `--no-verify` | Skip the checksum check. Without this, a release with no checksum for your archive is refused | |
 | `--prefix /opt/wolang` | Somewhere else |
 | `--from-source` | Clone and build instead of downloading |
@@ -81,13 +81,13 @@ sh install.sh
 | `--uninstall` | Take it away |
 
 ```sh
-sh install.sh --version 1.1.0 --prefix /opt/wolang
+sh install.sh --version 1.2.0 --prefix /opt/wolang
 ```
 
 PowerShell takes the same as named parameters:
 
 ```powershell
-.\install.ps1 -Version 1.1.0 -Prefix C:\tools\wolang -NoModifyPath
+.\install.ps1 -Version 1.2.0 -Prefix C:\tools\wolang -NoModifyPath
 ```
 
 ## Building the installer yourself
@@ -108,7 +108,7 @@ Every release has an archive per platform and a `SHA256SUMS` beside
 them:
 
 ```sh
-v=1.1.0
+v=1.2.0
 curl -fLO "https://github.com/MowoGames/Wolang/releases/download/v$v/wolang-linux-x86_64.tar.gz"
 curl -fLO "https://github.com/MowoGames/Wolang/releases/download/v$v/SHA256SUMS"
 sha256sum -c SHA256SUMS --ignore-missing
@@ -141,7 +141,7 @@ The full guide, including what each system needs and why it is clang, is
 ## The editor
 
 ```sh
-code --install-extension wolang-1.1.0.vsix     # from the release
+code --install-extension wolang-1.2.0.vsix     # from the release
 ```
 
 Or build it yourself — no npm needed:
