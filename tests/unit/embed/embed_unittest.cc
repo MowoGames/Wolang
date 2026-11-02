@@ -612,6 +612,83 @@ offer fun Level() -> text {
   std::filesystem::remove(path);
 }
 
+WOLANG_TEST(EmbedTest, AReloadCarriesAWeakFieldWithoutReleasingItStrongly) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_weak_carry_test.wo";
+  WriteFile(path, R"(
+var drops: int = 0
+
+class Node {
+  var n: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+class Tracker {
+  weak var seen: Node? = null
+}
+
+var root: Node = Node(7)
+var tracker: Tracker = Tracker(root)
+
+offer fun Drops() -> int {
+  return drops
+}
+
+offer fun Seen() -> int {
+  if const node = tracker.seen {
+    return node.n
+  }
+  return -1
+}
+)");
+
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Seen", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 7);
+
+  WriteFile(path, R"(
+var drops: int = 0
+
+class Node {
+  var n: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+class Tracker {
+  weak var seen: Node? = null
+  var extra: int
+}
+
+var root: Node = Node(7)
+var tracker: Tracker = Tracker(root, 3)
+
+offer fun Drops() -> int {
+  return drops
+}
+
+offer fun Seen() -> int {
+  if const node = tracker.seen {
+    return node.n
+  }
+  return -1
+}
+)");
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Seen", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 7);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Drops", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 1);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
 WOLANG_TEST(EmbedTest, EachVmHasItsOwnGlobals) {
   WolangVm* first = wolang_vm_create();
   WolangVm* second = wolang_vm_create();

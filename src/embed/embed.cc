@@ -2238,7 +2238,7 @@ static void CarryFields(WolangVm* vm, Database& before, const GlobalSlot& old, c
       continue;
     }
     auto* into = static_cast<uint8_t*>(new_object) + new_layout.offsets[new_index];
-    LetGo(vm, new_fields[i]->type, into);
+    LetGo(vm, new_fields[i]->type, into, new_fields[i]->is_weak);
     std::memcpy(into, static_cast<uint8_t*>(old_object) + old_layout.offsets[old_index], std::max(new_layouts.SizeOf(new_fields[i]->type), 1u));
   }
 }
