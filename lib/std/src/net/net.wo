@@ -309,7 +309,7 @@ offer class UdpSocket {
   /// Takes one datagram into `buffer`, never writing past its length. Null
   /// when a non-blocking socket has nothing yet, or on an error; a
   /// datagram longer than the buffer comes with `truncated` set.
-  fun ReceiveFrom(buffer: []u8) -> Datagram? uses net, unsafe {
+  fun ReceiveFrom(buffer: []mut u8) -> Datagram? uses net, unsafe {
     if fd < 0 || buffer.len == 0 {
       return null
     }

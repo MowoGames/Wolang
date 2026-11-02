@@ -77,6 +77,10 @@ that module offers, with or without a name list: after `need std.json`,
 modules that both offer `Parse`. A local or declaration of the same name
 takes precedence; a name the module does not offer is `E0144`, and a bare
 name that two needed modules both offer is `E0143` where it is used (D246).
+The qualified spelling works wherever the name does: as the target of an
+assignment (`counter.Total = 0` for an offered `var`), as the callee of a
+compiler-known function such as `mem.SizeOf(x)`, and as an error in a
+`match` arm (`json.Corrupt =>`).
 
 **Contextual keywords** are lexed as identifiers and only recognized by the
 parser where they introduce a declaration:
@@ -230,6 +234,9 @@ right associative.
 | 12 | `*` `/` `%` |
 | 13 | `as` |
 
+`+ - * / == != < <= > >=` and unary `-` on a type of your own are calls to an
+`@Operator` ability (section 3, D239); the precedence is the same.
+
 Prefix operators (`-`, `!`, `~`, `*`, `&`, `&mut`, `wait`, `spawn`) bind
 tighter than any binary operator. Postfix forms — call, index, `.name`,
 `?.name`, `?`, and an initializer block — bind tightest of all.
@@ -359,7 +366,24 @@ SomeType`; an implementation that does not is `E0402`. Inside the ability the
 bare name is the implementation's choice. Generic code names it through a type
 parameter, `C.Item`, and `C.Walker.Item` follows one associated type into the
 next; once `C` is known it is whatever that implementation said. The target comes first either way, so the declaration reads as a
-sentence. (`impl` is reserved, so the Rust spelling produces a message rather
+sentence.
+
+`Self` inside an ability is the type that implements it, and inside `extend T`
+or a type's own body it is `T`; anywhere else it is `E0156`. An ability that
+takes or returns `Self` cannot be the type of a value (`E0157`), because a pair
+of data and table cannot say what `other` is; it can still be a bound.
+
+An ability marked `@Operator` lends its one method to an operator (D239):
+`Plus` is `+`, `Minus` `-`, `Times` `*`, `Divide` `/`, `Negate` unary `-`,
+`Equals` `==` and `!=`, and `Compare` `<` `<=` `>` `>=`. A malformed one is
+`E0160`. `a + b` on a type that has the ability is the call `a.Plus(b)`, and
+`a += b` is `a = a.Plus(b)`; `a != b` is `Equals` and then a not, and `a < b`
+compares what `Compare` answers (negative, zero, positive) with zero. The
+ability is required, not just a method of the same name. Numbers meet every
+operator ability, `bool` and `char` meet `Equals` and `Compare`, and `text`
+meets `Equals`, so `T: Add` takes `int`, and a number's operator stays the
+machine instruction. `std.ops` has `Add`, `Sub`, `Mul`, `Div`, `Neg`, `Eq`,
+`Ord` and `Hash`. (`impl` is reserved, so the Rust spelling produces a message rather
 than a confusing parse failure.)
 
 `const` binds a name that never changes and `var` one that does. Two words
@@ -369,41 +393,46 @@ immutable form. Visibility is module-private by default,
 `offer` across modules, `priv` within one file. Methods are statically dispatched
 unless declared `virtual`, and overriding requires `override`.
 
-`match` must be exhaustive. Error handling is `Result<T, E>` with the `?`
-operator; there are no exceptions. Invariant violations are faults: they stop
+`match` must be exhaustive. Error handling is `T!` with the `?`
+operator (§4.3); there are no exceptions. Invariant violations are faults: they stop
 the coroutine or actor rather than unwinding.
 
 ## 4. Types — normative
 
 | Category | Types |
 |---|---|
-| Integers | `int` (= `s32`), `s8 s16 s32 s64`, `u8 u16 u32 u64` |
+| Integers | `int` (= `s64`), `s8 s16 s32 s64`, `u8 u16 u32 u64` |
 | Floats | `float` (= `f32`), `f64` |
 | Other scalars | `bool`, `char` |
 | Strings | `Text` owning, `text` borrowed |
 | Fixed arrays | `[N]T`, a language construct: no allocation |
-| Slices | `[]T`, a borrowed view: no allocation. An array converts to one |
+| Slices | `[]T`, a borrowed read-only view, and `[]mut T`, one whose elements may be written: no allocation. An array converts to either, and `[]mut T` converts to `[]T` |
 | Collections | `List<T>`, `Map<K, V>`, `Set<T>` — library types in `std.list`, `std.map`, `std.set` |
 | Optionals | `T?`; there is no `Option<T>` type. References are non-nullable by default |
-| Fallible | `T!`, a value or one of an inferred set of errors |
+| Fallible | `T!`, a value or any error; `T!A` and `T!(A, B)`, a value or one of the errors named |
 | Ownership | `Owned<T>`, `Shared<T>` (library classes in `std.own`); a weak reference is `weak var` (D207) |
 | Functions | `fun(int) -> bool`, closures |
 
 `[N]T` and `[]T` are part of the language because `core` needs them and
 because they allocate nothing, which is what makes them usable on WASM and on
-embedded targets. A growable `List<T>` needs an allocator, so it is a library
+embedded targets. Writing an element of a `[]T`, or taking `&mut` of one, is
+`E0165`: the slice says whether its elements may change, the way `*T` and
+`*mut T` do, and `[]mut T` fits where `[]T` is wanted and not the other way
+round. A write through a handle that the slice holds, such as `cells[0].n = 1`
+for a `class`, changes the object and not the slice, so it is allowed (D251). A growable `List<T>` needs an allocator, so it is a library
 type from wave 13 onwards.
 
 ### 4.1 Integer literals
 
 An integer literal has arbitrary precision until it is used, and then takes
-the type the context expects, defaulting to `int`:
+the type the context expects, defaulting to `int` (`s64`, so a literal with
+no type fits up to 2^63 - 1; from 2^63 it is `E0109`):
 
 ```wolang
 const a = 1                 // int
 const b: u8 = 200           // the literal takes u8
-const big: s64 = 0xFFFFFFFFFFFF // fits, with no suffix
-const bad = 0xFFFFFFFFFFFF  // E0109: defaults to int, which it does not fit
+const big: u64 = 0x8000000000000000 // fits u64, with no suffix
+const bad = 0x8000000000000000 // E0109: defaults to int, which it does not fit
 comptime const c = 1 << 100 // exact, no overflow
 TakeU8(300)                 // E0101: does not fit in u8
 ```
@@ -422,6 +451,7 @@ absence, `??` for a default.
 ```wolang
 if const t = target { t.TakeDamage(10) }
 const name = target?.display_name ?? "none"
+const health = target?.Health()
 
 match count {
   n? => n
@@ -429,22 +459,28 @@ match count {
 }
 ```
 
+`target?.Health()` calls the method when `target` holds a value and is absent
+otherwise, so its type is the method's result made optional; a method that
+answers nothing is a statement that runs only when there is something to run it on.
+The arguments are evaluated either way.
+
 ### 4.3 Errors
 
-`T!` means "a `T`, or one of the errors this function can produce". The error
-set is inferred from the body, so `?` never needs a conversion between error
-types. Both markers are postfix, so a type reads left to right and they
+`T!` means "a `T`, or any error". `T!A` and `T!(A, B)` state which errors: a
+stated set. `?` never needs a conversion between error types, because a set that
+is stated must contain what the body passes on, and the compiler checks that
+(`E0151`). Both markers are postfix, so a type reads left to right and they
 combine:
 
 ```wolang
 error NotFound, Corrupt
+error Malformed(line: int, column: int)
 
-fun Find(id: int) -> Pawn?             // may be absent
-fun Load(path: text) -> Level! uses io // may fail
-fun Lookup(key: text) -> Pawn?!        // either
+fun Find(id: int) -> Pawn?                // may be absent
+fun Lookup(key: text) -> Pawn?!(NotFound) // either
 
-fun Load(path: text) -> Level! uses io {
-  const bytes = ReadFile(path)?        // errors join the set
+fun Load(path: text) -> Level!(NotFound, Corrupt) uses io {
+  const bytes = ReadFile(path)?           // its errors must be in the set
   if bytes.len == 0 { return Corrupt }
   return Parse(bytes)
 }
@@ -456,8 +492,17 @@ match Load(p) {
 }
 ```
 
-An error is a tag without data. When an error has to carry a payload, write
-`Result<T, E>` explicitly.
+A `match` over a stated set must name every error in it, or have a `_` arm
+(`E0201`). A `match` over a bare `T!` must have a `_` arm, because the errors it
+may hold are not written anywhere. An offered function states its set
+(`E0150`): a caller in another module cannot read the body.
+
+An error may carry data: `error Malformed(line: int, column: int)`. It is built
+with its arguments, `return Malformed(3, 14)`, and a `match` arm binds them,
+`Malformed(line, column) => ..`; a bare `Malformed =>` ignores them. An error
+with data goes into a `T!` whose set names it (`E0152` for a bare `T!`), because
+the data is kept beside the tag. An error is told apart from another of the same
+name by its module: `json.Malformed` and `yaml.Malformed` are different errors.
 
 ### 4.3a Numeric conversions
 
@@ -607,11 +652,11 @@ row** is the set of effects it may produce.
 ```wolang
 effect Telemetry
 
-offer fun LoadLevel(path: text) -> Level! uses io, alloc
+offer fun LoadLevel(path: text) -> Level! uses io
 offer fun Report(event: text) uses Telemetry
 ```
 
-Built-in effects: `alloc`, `io`, `rand`, `time`, `net`, `gpu`, `unsafe`,
+Built-in effects: `io`, `rand`, `time`, `net`, `gpu`, `unsafe`,
 `panic`. An `unsafe { }` block *is* the `unsafe` effect, so a caller that
 forbids it does not have to look inside. `effect Name` declares one more, and
 a declared effect is interned by its declaration — so a project's own
@@ -647,7 +692,7 @@ A context outranks a signature: declaring an effect does not make it allowed.
 |---|---|
 | `comptime` | everything but `panic` — it runs inside the compiler |
 | `@Deterministic` | `rand`, `time`, `net` |
-| `@Hot` | `alloc` |
+| `@Hot` | `async` |
 
 ```wolang
 @Deterministic
@@ -656,8 +701,22 @@ fun Simulate() uses rand {        // E0702: not allowed here
 }
 ```
 
-This is one mechanism rather than three attribute checks, which is the whole
-reason effects exist as a language feature rather than a lint.
+`@Hot` also forbids allocation, but not through the row: stating `alloc` on
+every function that formats a message would cost everyone for one attribute's
+benefit (D237). The compiler works out what allocates instead. A body
+allocates when it constructs a class, interpolates or joins owned text, takes
+storage with `ArrayNew` or `SoaNew`, or builds an error that carries data. A
+call, or naming a function as a value, passes that on, across modules and
+through methods. A `@Hot` function that reaches an allocation is `E0155`, and
+the message lists the calls from the function to the site. Not followed: calls
+into `extern` code, calls through a function value that was not named in the
+hot body, virtual dispatch past the base method, and calls bound through an
+ability inside a generic body. `uses` takes only effects the language or the
+file declares; any other name is `E0158`, and `alloc` is no longer one.
+
+Apart from `@Hot` this is one mechanism rather than three attribute checks,
+which is the whole reason effects exist as a language feature rather than a
+lint.
 
 ### 5.3 Capabilities
 
@@ -665,7 +724,7 @@ A package may be granted a capability set and nothing more:
 
 ```toml
 [build]
-capabilities = "io, alloc"
+capabilities = "io"
 ```
 
 Anything outside the grant is `E0703` — not a mistake in the code, but a
@@ -679,8 +738,14 @@ sandboxed package may not declare `extern` (`E0705`), and an `extern`
 declaration states the capability its primitive needs — `uses io`, `uses
 net` — which, unlike `unsafe`, a wrapper that declares it does not absorb.
 
-A wrapper with a body that declares `uses unsafe` absorbs it, but a primitive
-with no body (or an `extern`) re-exports `unsafe` to every caller (D221).
+A wrapper with a body that declares `uses unsafe` absorbs it: the author
+vouches for it. An `unsafe fun` does the opposite. Its body may do unsafe things
+without stating it, and every call or naming of it charges `unsafe` to the
+caller, as an `extern` does, because its safety depends on what the caller
+passes. A primitive with no body is written `unsafe fun`; `uses unsafe` on one
+is `E0153`. An `unsafe fun` cannot override or implement a method that is not
+one (`E0154`) (D236). `unsafe` before `fun`, `task`, `virtual`, `override` or
+`extern` is the modifier; `unsafe {` is still the block.
 Naming a function as a value, not only calling it, charges its whole row to
 the enclosing function, comptime included (D222).
 
@@ -811,8 +876,16 @@ machine Door {
 ```
 
 Checked for unreachable states and for transitions that can never fire.
-`on Event after 3s -> State` is reserved for a machine that is given time by
-a generated `Tick(dt)`; it is `E0159` until then (D243).
+`on Event after 2.0 -> State` fires once the machine has been in its state for
+that many seconds. A machine with an `after` gets a generated
+`Tick(dt: float) -> bool`: it adds `dt` to the time spent in the current state
+and takes the first transition of that state whose delay has run out, through
+the same exit, state and enter steps an event takes, and says whether one
+fired. Every change of state starts the count again. The clock is the caller's:
+not calling `Tick` is a pause, and a smaller `dt` is slow motion, so no host
+hook is needed. The delay is a number of seconds (a quantity is read as its
+number); anything else is `E0101`. A machine that already has an event called
+`Tick` keeps it, and gets no clock (D260).
 
 ## 10. Reactive values — draft
 
@@ -971,16 +1044,54 @@ fun Loud(words: []text, limit: int) -> int uses unsafe {
 }
 ```
 
-The copies live in the frame of the call that made the closure, which is
-why a closure that captures may be passed *down* but not handed upwards:
-returning one, assigning one to a module-level `var` or putting one in a
-field is an error (`E0136`). A closure that captures nothing is an
-ordinary function value and may go anywhere.
+A function value is *borrowed* where it is a parameter's type, and *kept*
+everywhere else: a field, a global, a result, a local annotation. A borrowed
+value may point into the caller's frame, so a function may call it and pass it
+down, and nothing more: storing it, returning it or giving it to a `keep`
+parameter is `E0161`. `keep fun(...)` on a parameter says the function may keep
+the value. A closure that captures nothing, and a named function, are kept
+wherever they go.
 
-State that outlives a call is what a type with a method is for. That is
-not a workaround: an environment with a lifetime of its own is an
-allocation someone has to own, and a class is where this language says
-who.
+```wolang
+class Counter {
+  var n: int = 0
+
+  fun Bump() -> int {
+    n = n + 1
+    return n
+  }
+}
+
+class Button {
+  var id: int
+  var handler: fun() -> int
+}
+
+fun NewButton(id: int, handler: keep fun() -> int) -> Button {
+  return Button(id, handler)
+}
+
+fun main() {
+  const counter = Counter(0)
+  const button = NewButton(1, || counter.Bump())
+  const _a = button.handler()
+  const _b = button.handler()
+}
+```
+
+A closure that captures, and lands in a kept place, owns what it took. Its
+environment is a counted object on the heap, and the last holder to let go of
+the function value lets go of each capture. Plain values are copied, counted
+values (a class, a function) are retained, an owned `text` is copied again, and
+a value with a `deinit` is moved in: the name around it is then `E0122`, and the
+`deinit` runs when the closure goes. A reference, a pointer, a slice or a
+borrowed function cannot go along (`E0162`), because what they point at is
+gone. A closure that does not land in a kept place is what it always was: its
+copies live in the frame, with no header and no count (D240).
+
+A closure shares nothing with the function that made it, since it took copies;
+state both must see is what a class with a method is for, as `Counter` is
+above.
 
 A function value is two words: where the code is, and what it closed
 over. A plain function closed over nothing, and a call through a value

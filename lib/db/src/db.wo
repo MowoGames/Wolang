@@ -375,7 +375,7 @@ fun Written(key: text, value: text, gone: bool) -> text uses unsafe {
 }
 
 /// Opens the store at `path`, making it when it is not there.
-offer fun Open(path: text) -> Store! uses io, unsafe {
+offer fun Open(path: text) -> Store!Unreadable uses io, unsafe {
   const bytes = Bytes(path)
   if bytes.len == 0 {
     return Unreadable

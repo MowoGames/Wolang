@@ -4,6 +4,9 @@
 # reconfigure.
 file(GLOB_RECURSE WOLANG_CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cc")
+# The ahead-of-time backend is the driver's, not the core's: the core is
+# what an embedding package exports, and it must not name LLVM (D261).
+list(FILTER WOLANG_CORE_SOURCES EXCLUDE REGEX "/codegen/aot/")
 file(GLOB_RECURSE WOLANG_CORE_HEADERS CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/include/wolang/*.h"
     "${PROJECT_SOURCE_DIR}/include/wolang/*.inc")
@@ -53,18 +56,42 @@ if(WIN32)
 
 endif()
 
+target_compile_definitions(wolang_core PRIVATE
+    # The compiler's version has one home, project(VERSION) (D248).
+    WOLANG_VERSION_STRING="${PROJECT_VERSION}"
+    # Where the standard library is in this tree, so that `wolang new`
+    # can point a package at it. An installed compiler finds it next to
+    # itself instead (D132).
+    WOLANG_LIBRARY_DIRECTORY="${PROJECT_SOURCE_DIR}/lib")
+add_dependencies(wolang_core wolang_runtime)
+
+wolang_configure_target(wolang_core)
+
+add_library(wolang::core ALIAS wolang_core)
+
 # The ahead-of-time backend, when LLVM is available. Through the C API
 # rather than the C++ one: this project builds without RTTI and LLVM's
-# C++ headers want it (D98).
+# C++ headers want it (D98). A target of its own, linked by the driver and
+# the tests and never installed or exported, so that an embedding package
+# carries no LLVM (D261).
+add_library(wolang_aot STATIC ${CMAKE_CURRENT_SOURCE_DIR}/codegen/aot/aot.cc)
+target_link_libraries(wolang_aot PUBLIC wolang_core)
+add_dependencies(wolang_aot wolang_runtime)
+# Where the runtime archive ends up, so that `wolang build` can hand it
+# to the linker without being told, and the C runtime it was built
+# against, which a binary linked with it on Windows has to use as well.
+target_compile_definitions(wolang_aot PRIVATE
+    WOLANG_RUNTIME_ARCHIVE="$<TARGET_FILE:wolang_runtime>"
+    WOLANG_RUNTIME_CRT="$<IF:$<CONFIG:Debug>,/MDd,/MD>")
 if(WOLANG_WITH_LLVM)
-    target_compile_definitions(wolang_core PUBLIC WOLANG_WITH_LLVM=1)
-    target_include_directories(wolang_core SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+    target_compile_definitions(wolang_aot PRIVATE WOLANG_WITH_LLVM=1)
+    target_include_directories(wolang_aot SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 endif()
 if(WOLANG_LLVM_C)
     # One library that is all of LLVM, every target included.
-    target_include_directories(wolang_core SYSTEM PRIVATE "${WOLANG_LLVM_C_ROOT}/include")
-    target_link_libraries(wolang_core PUBLIC "${WOLANG_LLVM_C_ROOT}/lib/LLVM-C.lib")
-    target_compile_definitions(wolang_core PUBLIC WOLANG_ALL_TARGETS=1)
+    target_include_directories(wolang_aot SYSTEM PRIVATE "${WOLANG_LLVM_C_ROOT}/include")
+    target_link_libraries(wolang_aot PRIVATE "${WOLANG_LLVM_C_ROOT}/lib/LLVM-C.lib")
+    target_compile_definitions(wolang_aot PRIVATE WOLANG_ALL_TARGETS=1)
 elseif(WOLANG_WITH_LLVM)
     # Every target this LLVM has, not just this machine's: a compiler
     # that can only emit code for the machine it runs on is one that
@@ -78,33 +105,14 @@ elseif(WOLANG_WITH_LLVM)
         llvm_map_components_to_libnames(WOLANG_LLVM_LIBS
             core analysis passes bitwriter
             ${LLVM_TARGETS_TO_BUILD})
-        target_compile_definitions(wolang_core PUBLIC
-            WOLANG_ALL_TARGETS=1)
+        target_compile_definitions(wolang_aot PRIVATE WOLANG_ALL_TARGETS=1)
     else()
         llvm_map_components_to_libnames(WOLANG_LLVM_LIBS
             core target native analysis passes bitwriter)
     endif()
-    target_link_libraries(wolang_core PUBLIC ${WOLANG_LLVM_LIBS})
+    target_link_libraries(wolang_aot PRIVATE ${WOLANG_LLVM_LIBS})
 endif()
-
-# Where the runtime archive ends up, so that `wolang build` can hand it
-# to the linker without being told.
-target_compile_definitions(wolang_core PRIVATE
-    # The compiler's version has one home, project(VERSION) (D248).
-    WOLANG_VERSION_STRING="${PROJECT_VERSION}"
-    WOLANG_RUNTIME_ARCHIVE="$<TARGET_FILE:wolang_runtime>"
-    # The C runtime the archive was built against, which a binary linked
-    # with it on Windows has to use as well.
-    WOLANG_RUNTIME_CRT="$<IF:$<CONFIG:Debug>,/MDd,/MD>"
-    # Where the standard library is in this tree, so that `wolang new`
-    # can point a package at it. An installed compiler finds it next to
-    # itself instead (D132).
-    WOLANG_LIBRARY_DIRECTORY="${PROJECT_SOURCE_DIR}/lib")
-add_dependencies(wolang_core wolang_runtime)
-
-wolang_configure_target(wolang_core)
-
-add_library(wolang::core ALIAS wolang_core)
+wolang_configure_target(wolang_aot)
 
 # Wolang as something to embed: one C header, one library to link.
 #

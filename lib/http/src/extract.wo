@@ -99,7 +99,7 @@ offer fun IsJson(request: &Request) -> bool uses unsafe {
 /// A handler that wants to answer `400` rather than `500` for a bad
 /// document matches on this: the body came from outside, so "this is not
 /// JSON" is an answer and not a fault.
-offer fun JsonBody(request: &Request) -> Value! uses unsafe {
+offer fun JsonBody(request: &Request) -> Value!json.Malformed uses unsafe {
   return Parse(request.body)
 }
 

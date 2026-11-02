@@ -130,6 +130,35 @@ bool IsPure(Opcode opcode) {
   }
 }
 
+// Whether a `cast` can trap: `as` between integers traps when the value does
+// not fit, and from a float when it is not finite or does not fit (D33). Only
+// a widening that keeps every value is safe to drop or to move; a cast to a
+// pointer or float never traps. Anything not provably widening is assumed to
+// trap, which costs a missed removal and nothing else.
+bool CastCanTrap(const TypeStore& types,
+                 const Function& function,
+                 const Inst& inst) {
+  if (types.KindOf(inst.type) != TypeKind::kInt) {
+    return false;
+  }
+  const std::span<const InstId> operands = function.OperandsOf(inst);
+  if (operands.empty() || !function.Contains(operands[0])) {
+    return true;
+  }
+  const Type& to = types.Get(inst.type);
+  const TypeId from_id = function.Get(operands[0]).type;
+  if (types.KindOf(from_id) != TypeKind::kInt) {
+    return true;
+  }
+  const Type& from = types.Get(from_id);
+  const uint32_t to_bits = WidthInBits(to.int_width);
+  const uint32_t from_bits = WidthInBits(from.int_width);
+  if (from.is_signed == to.is_signed) {
+    return to_bits < from_bits;
+  }
+  return !(!from.is_signed && to.is_signed && to_bits > from_bits);
+}
+
 // Whether two of these with the same operands must give the same answer.
 //
 // Wider than `IsPure`, and deliberately: arithmetic that can trap is not
@@ -425,7 +454,6 @@ bool FoldConstants(TypeStore* types, Function* function) {
 bool EliminateDeadCode(TypeStore* types,
                        const Module& module,
                        Function* function) {
-  static_cast<void>(types);
   std::vector<bool> used(function->instructions.size(), false);
 
   // A terminator's operands and anything an impure instruction reads are
@@ -435,6 +463,8 @@ bool EliminateDeadCode(TypeStore* types,
     const Inst& inst = function->Get(InstId{i});
     const bool keep =
         IsTerminator(inst.opcode) || !IsPure(inst.opcode) ||
+        (inst.opcode == Opcode::kCast &&
+         CastCanTrap(*types, *function, inst)) ||
         // A call with effects has to stay even if its result is unused; one
         // without is exactly what the effect row licenses removing.
         (inst.opcode == Opcode::kCall &&
@@ -507,6 +537,8 @@ bool EliminateDeadCode(TypeStore* types,
     const InstId id{i};
     Inst& inst = function->Get(id);
     if (used[i] || IsTerminator(inst.opcode) || !IsPure(inst.opcode) ||
+        (inst.opcode == Opcode::kCast &&
+         CastCanTrap(*types, *function, inst)) ||
         inst.opcode == Opcode::kUndef || inst.opcode == Opcode::kParam) {
       continue;
     }
@@ -1520,20 +1552,45 @@ bool HoistLoopInvariants(TypeStore* types, Function* function) {
         continue;
       }
 
+      // Casts already moved out: the same cast again cannot trap anew.
+      std::vector<std::pair<InstId, TypeId>> moved_casts;
+      for (InstId earlier : function->blocks[preheader.index].instructions) {
+        const Inst& seen = function->Get(earlier);
+        if (seen.opcode == Opcode::kCast &&
+            !function->OperandsOf(seen).empty()) {
+          moved_casts.emplace_back(function->OperandsOf(seen)[0], seen.type);
+        }
+      }
       for (BlockId block : order.blocks) {
         if (!inside[block.index]) {
           continue;
         }
         Block& body = function->blocks[block.index];
         const std::vector<InstId> instructions = body.instructions;
+        // A cast that can trap moves only if it runs on every way into the
+        // loop anyway: in the header, with nothing before it that does
+        // something. Anywhere else it would trap on a path that did not (D33).
+        bool nothing_before = block == header;
         for (size_t at = body.param_count; at < instructions.size(); ++at) {
           const InstId id = instructions[at];
           if (!function->Contains(id)) {
             continue;
           }
           const Inst& inst = function->Get(id);
+          const bool trapping_cast = inst.opcode == Opcode::kCast &&
+                                     CastCanTrap(*types, *function, inst);
+          bool first_to_run = nothing_before;
+          if (trapping_cast) {
+            const InstId operand = function->OperandsOf(inst)[0];
+            for (const auto& [source, type] : moved_casts) {
+              first_to_run |= source == operand && type == inst.type;
+            }
+          }
+          nothing_before = nothing_before && IsPure(inst.opcode) &&
+                           !trapping_cast;
           if (IsTerminator(inst.opcode) || !IsRepeatable(inst.opcode) ||
-              !(inst.is_unchecked || IsPure(inst.opcode))) {
+              !(inst.is_unchecked ||
+                (IsPure(inst.opcode) && (!trapping_cast || first_to_run)))) {
             continue;
           }
           bool invariant = true;
@@ -1556,6 +1613,9 @@ bool HoistLoopInvariants(TypeStore* types, Function* function) {
           Block& landing = function->blocks[preheader.index];
           if (landing.instructions.empty()) {
             continue;
+          }
+          if (trapping_cast) {
+            moved_casts.emplace_back(function->OperandsOf(inst)[0], inst.type);
           }
           EraseFromBlock(function, id);
           landing.instructions.insert(landing.instructions.end() - 1, id);

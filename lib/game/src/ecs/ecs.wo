@@ -18,9 +18,9 @@ need std.mem.{ArrayNew, SoaNew}
 /// shifting the rest. That is what keeps the pass sequential, and it is
 /// why nothing may hold a row index across a removal.
 offer class Store<T> {
-  var rows: soa []T
-  var owners: []int
-  var slots: []int
+  var rows: soa []mut T
+  var owners: []mut int
+  var slots: []mut int
   var count: int = 0
 
   /// The row entity `e` occupies, or -1 when it has no component here.
@@ -125,9 +125,9 @@ offer fun EntitiesNew(limit: int) -> Entities {
 /// the layout being a property of the storage (D73) -- the rows are the
 /// only difference between the two, and a system reads them the same way.
 offer class PackedStore<T> {
-  var rows: []T
-  var owners: []int
-  var slots: []int
+  var rows: []mut T
+  var owners: []mut int
+  var slots: []mut int
   var count: int = 0
 
   fun Row(e: int) -> int {

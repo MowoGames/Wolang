@@ -30,7 +30,7 @@ extern "C" {
 // the low. A host compares it with `wolang_abi_version()` at load, since
 // the library it links may not be the one it compiled against (D241). A
 // different major is a different ABI; a larger minor only adds.
-#define WOLANG_ABI_VERSION ((1u << 16) | 0u)
+#define WOLANG_ABI_VERSION ((1u << 16) | 3u)
 
 uint32_t wolang_abi_version(void);
 
@@ -166,6 +166,12 @@ int32_t wolang_vm_has(const WolangVm* vm, const char* name);
 int32_t wolang_vm_function_count(const WolangVm* vm);
 const char* wolang_vm_function_name(const WolangVm* vm, int32_t index);
 
+// The module that offers function |index|, such as `sample.mover`. A name
+// can be given to `wolang_vm_call` and `wolang_vm_has` bare (`Tick`) or with
+// its module (`sample.mover.Tick`); a bare name two of the host's modules
+// both offer is refused (D259). Added in ABI 1.1.
+const char* wolang_vm_function_module(const WolangVm* vm, int32_t index);
+
 // -------------------------------------------------------------- bindings ---
 
 // Makes |function| available to the program under |symbol|.
@@ -203,6 +209,27 @@ WolangStatus wolang_vm_object_get(WolangVm* vm,
                           const char* field,
                           WolangValue* out);
 
+// Makes an object of the program's class |class_name| with every field zero,
+// and sets one of its numeric or flag fields. The host owns the reference it
+// is given and lets go of it with `wolang_vm_object_release`. A class with
+// virtual methods, or with a field only a script can fill (text, a class, an
+// array), is refused: make it in a script function and call that instead
+// (D258). Added in ABI 1.2.
+WolangStatus wolang_vm_object_new(WolangVm* vm, const char* class_name, WolangValue* out);
+WolangStatus wolang_vm_object_set(WolangVm* vm, WolangValue object, const char* field, WolangValue value);
+
+// The classes the host's own files declare, their stored fields in
+// declaration order with the kind of each, and the attributes written on a
+// class (`Replicated` for `@Replicated`). The names stay valid for as long as
+// the vm does. Added in ABI 1.2.
+int32_t wolang_vm_class_count(const WolangVm* vm);
+const char* wolang_vm_class_name(const WolangVm* vm, int32_t index);
+int32_t wolang_vm_class_field_count(const WolangVm* vm, const char* class_name);
+const char* wolang_vm_class_field_name(const WolangVm* vm, const char* class_name, int32_t index);
+WolangKind wolang_vm_class_field_kind(const WolangVm* vm, const char* class_name, int32_t index);
+int32_t wolang_vm_class_attribute_count(const WolangVm* vm, const char* class_name);
+const char* wolang_vm_class_attribute_name(const WolangVm* vm, const char* class_name, int32_t index);
+
 typedef void (*WolangHostRetain)(void* object, void* user);
 typedef void (*WolangHostRelease)(void* object, void* user);
 typedef int32_t (*WolangHostAlive)(void* object, void* user);
@@ -212,6 +239,27 @@ WolangStatus wolang_vm_register_class(WolangVm* vm,
                                  WolangHostRelease release,
                                  WolangHostAlive alive,
                                  void* user);
+
+// A host class with a token, for a weak reference that survives the address
+// being reused (D254). |size| is `sizeof(WolangHostClass)`, so a struct that
+// grows later is still read correctly. |token| may be null, and then a weak
+// reference behaves as `wolang_vm_register_class` makes it.
+//
+// |token| answers a number that tells two objects apart that lived at the
+// same address one after the other: an index and a serial, say. It is asked
+// only of an object |alive| says is there. Register the class before the
+// program is loaded: what a weak slot holds depends on it. Added in ABI 1.3.
+typedef uint64_t (*WolangHostToken)(void* object, void* user);
+typedef struct WolangHostClass {
+  uint32_t size;
+  const char* name;
+  WolangHostRetain retain;
+  WolangHostRelease release;
+  WolangHostAlive alive;
+  WolangHostToken token;
+  void* user;
+} WolangHostClass;
+WolangStatus wolang_vm_register_class_ex(WolangVm* vm, const WolangHostClass* host_class);
 
 // The arguments the program sees in `std.env.Args`.
 void wolang_vm_set_args(WolangVm* vm, int32_t count, const char* const* args);

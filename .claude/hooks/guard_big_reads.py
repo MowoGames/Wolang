@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env py
 """PreToolUse guard: no whole-file reads of the repository's giant files.
 
 A handful of files would each cost 30k-75k tokens to read in one go:

@@ -272,6 +272,22 @@ fun main() uses io, unsafe {
 }
 ```
 
+## Report where a parse failed
+
+An error can carry data, and the parsers use that to say where.
+
+```wolang
+need std.io.{Print}
+need std.json.{Malformed, Parse}
+
+fun main() uses io, unsafe {
+  match Parse("[1,\n 2,\n @]") {
+    Ok(_value) => { Print("fine") },
+    Malformed(line, column) => { Print("line {line}, column {column}") },
+  }
+}
+```
+
 ## Keep state on disk
 
 ```wolang
@@ -355,6 +371,36 @@ fun main() uses io, unsafe {
 `Open(..., kGl)` gives a GL context instead: `StartGl`, draw with
 OpenGL, `Swap`.
 
+## Give your own type `+`, `==` and `<`
+
+An operator is an ability from `std.ops`: say a type has it and the operator
+works. `Eq` gives `==` and `!=`, and `Ord` gives `< <= > >=` from one
+`Compare` that answers negative, zero or positive.
+
+```wolang
+need std.io.{Print}
+need std.ops.{Add, Max, Ord}
+
+struct Money {
+  var cents: int
+}
+
+extend Money as Add {
+  fun Plus(other: Self) -> Self => Money(cents + other.cents)
+}
+
+extend Money as Ord {
+  fun Compare(other: &Self) -> int => cents - other.cents
+}
+
+fun main() uses io {
+  var wallet = Money(250) + Money(175)
+  wallet += Money(5)
+  const bigger = Max(wallet, Money(1000))
+  Print("{wallet.cents} {bigger.cents} {wallet < bigger}")
+}
+```
+
 ## Parse command-line arguments
 
 ```wolang
@@ -423,6 +469,39 @@ fun main() uses io, unsafe {
   out.Push(line)
   const _wrote = WriteText("report.csv", Write(&out, 44))
   Print("{rows.Len()} rows, total {total}")
+}
+```
+
+## Keep a callback
+
+A function parameter may be called and passed down. To store it, say `keep`.
+The closure then owns what it captured, and it is released with the object.
+
+```wolang
+need std.io.{Print}
+
+class Counter {
+  var n: int = 0
+
+  fun Bump() -> int {
+    n = n + 1
+    return n
+  }
+}
+
+class Button {
+  var id: int
+  var handler: fun() -> int
+}
+
+fun NewButton(id: int, handler: keep fun() -> int) -> Button {
+  return Button(id, handler)
+}
+
+fun main() uses io {
+  const counter = Counter(0)
+  const button = NewButton(1, || counter.Bump())
+  Print("{button.handler()} {button.handler()}")
 }
 ```
 

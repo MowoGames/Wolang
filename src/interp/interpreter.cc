@@ -889,6 +889,14 @@ class Interpreter {
       }
     }
 
+    if (foreign_ == nullptr && raw.size() == 1 && symbol == "wolang_object_retain") {
+      runtime::wolang_object_retain(reinterpret_cast<void*>(raw[0].bits));
+      return Value();
+    }
+    if (foreign_ == nullptr && raw.size() == 1 && symbol == "wolang_object_release") {
+      return Value::Int(runtime::wolang_object_release(reinterpret_cast<void*>(raw[0].bits)), IntWidth::k32, /*is_signed=*/true);
+    }
+
     if (foreign_ == nullptr) {
       // The runtime's own functions were handled above; anything else
       // needs a way out of the language, and this run has none.
@@ -930,6 +938,11 @@ class Interpreter {
         return Value::Int(result, described.int_width, described.is_signed);
       case TypeKind::kPointer:
         return Value::Int(result, IntWidth::k64, /*is_signed=*/false);
+      case TypeKind::kOptional:
+        if (types_.KindOf(types_.ElementOf(returned)) != TypeKind::kPointer && !types_.IsHandle(types_.ElementOf(returned))) {
+          return Trap(outcome, TrapKind::kUndefinedValue, "@" + symbol, "returns something with no representation in C");
+        }
+        return result == 0 ? Value::Absent() : Value::Present(Value::Int(result, IntWidth::k64, /*is_signed=*/false));
       default:
         return Trap(outcome, TrapKind::kUndefinedValue, "@" + symbol,
                     "returns something with no representation in C");

@@ -191,6 +191,11 @@ WOLANG_TEST(Manifest, RefusesARepositoryWithNoRevision) {
                     .find("E0052") != std::string::npos);
 }
 
+WOLANG_TEST(Manifest, AllocIsNotACapability) {
+  WOLANG_EXPECT_EQ(Fixture("[package]\nname = \"p\"\n[build]\ncapabilities = \"io, alloc\"\n").Codes(), "E0053");
+  WOLANG_EXPECT_EQ(Fixture("[package]\nname = \"p\"\n[build]\ncapabilities = \"io\"\n").Codes(), "");
+}
+
 WOLANG_TEST(Manifest, ReadsAVersionRequirementWithCommasInQuotes) {
   // The inline table is split on commas, but not the ones in quotes (D242).
   Fixture fixture("[package]\nname = \"p\"\n[dependencies]\n"

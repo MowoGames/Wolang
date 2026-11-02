@@ -165,6 +165,8 @@ WOLANG_CONTEXTUAL(Dimension, "dimension")
 WOLANG_CONTEXTUAL(Effect, "effect")
 WOLANG_CONTEXTUAL(Enter, "enter")
 WOLANG_CONTEXTUAL(Exit, "exit")
+// A function-typed parameter the callee may store: `f: keep fun(int)` (D240).
+WOLANG_CONTEXTUAL(Keep, "keep")
 WOLANG_CONTEXTUAL(Machine, "machine")
 // Storage layout: `soa [Particle]` keeps one array per field.
 WOLANG_CONTEXTUAL(Aos, "aos")

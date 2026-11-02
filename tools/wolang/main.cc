@@ -116,6 +116,7 @@ struct Options {
   std::string bind_glue;
   std::string bind_module = "mowo";
   std::string bind_effect;
+  bool bind_unchecked = false;
   std::vector<std::string> bind_includes;
   // `new` only: a library has no `main` and no `run`.
   bool new_library = false;
@@ -150,6 +151,7 @@ struct Options {
   // `ir` only: print the IR as lowering left it rather than after the
   // passes.
   bool unoptimized = false;
+  bool typed = false;
   // Smaller programs are the ones a disagreement can be read in.
   int fuzz_depth = 3;
   int fuzz_statements = 5;
@@ -231,6 +233,7 @@ void PrintUsage() {
       "  --aot           `fuzz`: build and run each program as a binary "
       "too\n"
       "  --unoptimized   `ir`: print what lowering produced, before passes\n"
+      "  --typed         `ir`: print the form the IR reader takes back (D264)\n"
       "  -o <path>       `build`: where the binary goes\n"
       "  --emit-object   `build`: stop at the object file\n"
       "  --no-debug      `build`: leave out the line information\n"
@@ -472,12 +475,8 @@ int RunSyntaxCommand(const Options& options) {
         // `--unoptimized` prints the IR as lowering left it, which is what
         // a verifier complaint prefixed "lowering:" is about -- the
         // optimized dump may have inlined the instruction away.
-        std::fputs(ir::PrintModule(database.interner(), database.types(),
-                                   options.unoptimized
-                                       ? lowered->unoptimized
-                                       : lowered->module)
-                       .c_str(),
-                   stdout);
+        const ir::Module& dumped = options.unoptimized ? lowered->unoptimized : lowered->module;
+        std::fputs((options.typed ? ir::PrintModuleTyped(database.interner(), database.types(), dumped) : ir::PrintModule(database.interner(), database.types(), dumped)).c_str(), stdout);
         // A verifier complaint is a compiler bug, so it goes to stderr with
         // the IR still on stdout -- the dump is what the bug report needs.
         for (const std::string& problem : lowered->problems) {
@@ -1062,7 +1061,8 @@ int RunRepl(const Options& options) {
                                     "ability ",  "component ", "tag ",
                                     "type ",     "extern ",    "offer ",
                                     "machine ",  "system ",    "effect ",
-                                    "@",         "extend ",    "need "};
+                                    "@",         "extend ",    "need ",
+                                    "unsafe fun "};
     for (const char* start : kStarts) {
       if (line.rfind(start, 0) == 0) {
         return true;
@@ -2488,6 +2488,7 @@ int RunBindReflection(const Options& options) {
   bind::ReflectionOptions settings;
   settings.module = options.bind_module;
   settings.effect = options.bind_effect;
+  settings.check_alive = !options.bind_unchecked;
   const bind::ReflectionResult result = bind::GenerateFromReflection(documents, settings);
   if (options.output.empty()) {
     WriteAll(result.source, stdout);
@@ -3093,6 +3094,8 @@ int Run(int argc, char** argv) {
       options.bind_module = argv[++i];
     } else if (argument == "--effect" && i + 1 < argc) {
       options.bind_effect = argv[++i];
+    } else if (argument == "--no-alive-check") {
+      options.bind_unchecked = true;
     } else if (argument == "-I" && i + 1 < argc) {
       options.bind_includes.push_back(argv[++i]);
     } else if (argument.rfind("-I", 0) == 0 && argument.size() > 2) {
@@ -3101,6 +3104,8 @@ int Run(int argc, char** argv) {
       options.from_stdin = true;
     } else if (argument == "--unoptimized") {
       options.unoptimized = true;
+    } else if (argument == "--typed") {
+      options.typed = true;
     } else if (argument == "--source") {
       options.show_source = true;
     } else if (argument == "--filter" && i + 1 < argc) {

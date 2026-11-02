@@ -251,7 +251,7 @@ offer fun SameDigest(left: []u8, right: []u8) -> bool {
 ///
 /// Not `std.random`: that is a sequence, and a token made from a
 /// sequence is a token someone can continue (D170).
-offer fun RandomBytes(count: int) -> []u8 uses rand, unsafe {
+offer fun RandomBytes(count: int) -> []mut u8 uses rand, unsafe {
   var bytes = ArrayNew<u8>(count)
   if count <= 0 {
     return bytes

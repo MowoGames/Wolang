@@ -37,13 +37,16 @@ InstId Builder::Append(Inst inst, BlockId block) {
   return id;
 }
 
-InstId Builder::AddToEntry(Opcode opcode, TypeId type) {
+InstId Builder::AddToEntry(Opcode opcode, TypeId type, std::vector<InstId> operands) {
   if (function().blocks.empty()) {
     return InstId{};
   }
   Inst inst;
   inst.opcode = opcode;
   inst.type = type;
+  inst.operands_begin = static_cast<uint32_t>(function().operands.size());
+  inst.operands_count = static_cast<uint32_t>(operands.size());
+  function().operands.insert(function().operands.end(), operands.begin(), operands.end());
   const InstId id{static_cast<uint32_t>(function().instructions.size())};
   const BlockId entry{0};
   function().instructions.push_back(std::move(inst));
@@ -58,6 +61,7 @@ InstId Builder::AddToEntry(Opcode opcode, TypeId type) {
          function().Get(held[at]).opcode == Opcode::kParam) {
     ++at;
   }
+  at += entry_added_++;
   held.insert(held.begin() + static_cast<long>(at), id);
   return id;
 }

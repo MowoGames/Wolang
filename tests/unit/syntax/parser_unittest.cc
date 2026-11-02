@@ -636,6 +636,37 @@ WOLANG_TEST(Parser, FallibleAndOptionalTypesArePostfix) {
                 std::string::npos);
 }
 
+WOLANG_TEST(Parser, StatedErrorSets) {
+  Fixture fixture(
+      "fun A() -> int!Small\n"
+      "fun B() -> int!(Small, json.Malformed)\n"
+      "fun C() -> int?!(Small)\n");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.TreeContains("(type Small)"));
+  WOLANG_EXPECT(fixture.TreeContains("(type json.Malformed)"));
+}
+
+WOLANG_TEST(Parser, ABangAtTheEndOfALineStatesNoErrors) {
+  Fixture fixture(
+      "fun A() -> int!\n"
+      "Small\n");
+  WOLANG_EXPECT(!fixture.TreeContains("(type Small)\n        (type int)"));
+  WOLANG_EXPECT(fixture.TreeContains("(fallible\n"));
+}
+
+WOLANG_TEST(Parser, ErrorsCarryData) {
+  Fixture fixture("error Plain, Bad(line: int, why: text)\n");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.TreeContains("(names Plain Bad)"));
+  WOLANG_EXPECT(fixture.TreeContains("line"));
+  WOLANG_EXPECT(fixture.TreeContains("why"));
+}
+
+WOLANG_TEST(Parser, AnEmptyStatedSetIsAnError) {
+  Fixture fixture("fun A() -> int!()\n");
+  WOLANG_EXPECT(!fixture.Codes().empty());
+}
+
 WOLANG_TEST(Parser, SliceAndArrayTypes) {
   Fixture fixture(
       "fun Sum(xs: []float) -> float\n"
@@ -830,6 +861,51 @@ WOLANG_TEST(Parser, ExternFunctions) {
   WOLANG_EXPECT(tree.find("(fun FastNoise extern") != std::string::npos);
   WOLANG_EXPECT(tree.find("(symbol wolang_noise)") != std::string::npos);
   WOLANG_EXPECT(tree.find("(abi C)") != std::string::npos);
+}
+
+WOLANG_TEST(Parser, UnsafeFunIsAModifier) {
+  Fixture fixture(
+      "offer unsafe fun Poke(p: *mut u8) {}\n"
+      "class A { virtual unsafe fun F() {} }\n"
+      "class B : A { override unsafe fun F() {} }\n"
+      "fun g() {\n  unsafe fun Local() {}\n}");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.TreeContains("(fun Poke offer unsafe"));
+  WOLANG_EXPECT(fixture.TreeContains("(fun F virtual unsafe"));
+  WOLANG_EXPECT(fixture.TreeContains("(fun F override unsafe"));
+  WOLANG_EXPECT(fixture.TreeContains("(fun Local unsafe"));
+}
+
+WOLANG_TEST(Parser, KeepMarksAParameterFunctionType) {
+  Fixture fixture("fun Store(f: keep fun(int) -> int, g: fun(int)) {}\nfun Opt(f: keep fun()?) {}");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.TreeContains("keep"));
+}
+
+WOLANG_TEST(Parser, KeepOutsideAParameterIsE0046) {
+  Fixture fixture("class C {\n  var f: keep fun()\n}");
+  WOLANG_EXPECT(fixture.HasCode("E0046"));
+}
+
+WOLANG_TEST(Parser, MutMarksAWritableSlice) {
+  Fixture fixture("fun Fill(xs: []mut int, ys: []int) {}\nfun Soa(zs: soa []mut int) {}");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(fixture.TreeContains("mut"));
+  Fixture plain("fun Read(ys: []int) {}");
+  WOLANG_EXPECT(plain.Codes().empty());
+  WOLANG_EXPECT(!plain.TreeContains("mut"));
+}
+
+WOLANG_TEST(Parser, KeepIsStillAName) {
+  Fixture fixture("fun F(keep: int) -> int {\n  return keep\n}");
+  WOLANG_EXPECT(fixture.Codes().empty());
+}
+
+WOLANG_TEST(Parser, UnsafeBlockIsStillABlock) {
+  Fixture fixture("fun g() {\n  unsafe {\n    const a = 1\n  }\n}");
+  WOLANG_EXPECT(fixture.Codes().empty());
+  WOLANG_EXPECT(!fixture.TreeContains("unsafe fun"));
+  WOLANG_EXPECT(!fixture.TreeContains(" unsafe"));
 }
 
 WOLANG_TEST(Parser, ComptimeDeclarations) {

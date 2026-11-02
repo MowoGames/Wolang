@@ -60,6 +60,7 @@ class SignatureWriter {
         {ItemFlags::kOverride, "override"}, {ItemFlags::kComptime, "comptime"},
         {ItemFlags::kDerived, "derived"}, {ItemFlags::kMutable, "mut"},
         {ItemFlags::kWeak, "weak"},
+        {ItemFlags::kUnsafe, "unsafe"},
         {ItemFlags::kExtern, "extern"},   {ItemFlags::kAbilityImpl, "for"},
     };
     for (const auto& entry : kItemNames) {
@@ -118,9 +119,24 @@ class SignatureWriter {
       case TypeRefKind::kFallible:
         PutType(type.element);
         out_.push_back('!');
+        if (!type.args.empty()) {
+          out_.push_back('(');
+          bool first_error = true;
+          for (TypeRefId error : ast_.Get(type.args)) {
+            if (!first_error) {
+              out_.push_back(',');
+            }
+            first_error = false;
+            PutType(error);
+          }
+          out_.push_back(')');
+        }
         return;
       case TypeRefKind::kSlice:
         out_.push_back('[');
+        if (HasFlag(type.flags, TypeRefFlags::kMutable)) {
+          Put("mut ");
+        }
         PutType(type.element);
         out_.push_back(']');
         return;
@@ -132,6 +148,9 @@ class SignatureWriter {
         out_.push_back(']');
         return;
       case TypeRefKind::kFunction: {
+        if (HasFlag(type.flags, TypeRefFlags::kKeep)) {
+          Put("keep ");
+        }
         Put("fun(");
         bool first = true;
         for (TypeRefId arg : ast_.Get(type.args)) {
@@ -237,6 +256,10 @@ class SignatureWriter {
       const Param& param = ast_.Get(id);
       if (param.is_mutable) {
         Put("mut ");
+      }
+      if (param.error.is_valid()) {
+        out_.push_back('@');
+        PutName(param.error);
       }
       PutName(param.name);
       out_.push_back(':');

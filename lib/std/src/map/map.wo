@@ -8,6 +8,7 @@
 
 need std.mem.{ArrayNew, Free}
 need std.iter.{Iterable, Iterator}
+need std.hash.{TextEquals, TextHash}
 
 /// A map from `K` to `V`.
 ///
@@ -16,9 +17,9 @@ need std.iter.{Iterable, Iterator}
 /// lookup a couple of cache lines instead of a pointer chase. `deinit`
 /// gives the three arrays back.
 offer class Map<K, V> {
-  var keys: []K
-  var values: []V
-  var filled: []bool
+  var keys: []mut K
+  var values: []mut V
+  var filled: []mut bool
   var count: int = 0
   var hash: fun(K) -> int
   var equals: fun(K, K) -> bool
@@ -220,7 +221,7 @@ fun Between(wanted: int, hole: int, at: int, _size: int) -> bool {
   return wanted <= hole || hole < at
 }
 
-offer fun MapNew<K, V>(hash: fun(K) -> int, equals: fun(K, K) -> bool) -> Map<K, V> uses unsafe {
+offer fun MapNew<K, V>(hash: keep fun(K) -> int, equals: keep fun(K, K) -> bool) -> Map<K, V> uses unsafe {
   return Map<K, V>(
       ArrayNew<K>(0),
       ArrayNew<V>(0),
@@ -232,20 +233,36 @@ offer fun MapNew<K, V>(hash: fun(K) -> int, equals: fun(K, K) -> bool) -> Map<K,
 
 /// Hashing and comparing for `int` keys, which is most of them.
 offer fun IntHash(key: int) -> int {
-  // A multiplicative hash, done wide and masked back.
+  // A multiplicative hash, masked back.
   //
-  // Arithmetic traps on overflow in this language, so a hash cannot be
-  // written as a 32-bit multiply that throws the high bits away -- the
-  // throwing away is the trap. Sixty-four bits of room is enough for the
-  // product, and the mask keeps the result positive: a map takes it
-  // modulo the table size, and a negative remainder would index
-  // backwards.
-  const wide = key as s64 * 2654435761
-  return (wide & 2147483647) as int
+  // Arithmetic traps on overflow in this language, and `int` is 64 bits
+  // (D238), so a plain multiply of a key above 3.4e9 would trap. The result
+  // only keeps 31 bits, and those depend on the low 31 bits of the key, so
+  // the key is cut to them first: the value is the old one for every key
+  // that fit 32 bits. A key outside that range folds its higher bits in so
+  // that keys 2^31 apart do not all collide. The mask keeps the result
+  // positive: a map takes it modulo the table size, and a negative
+  // remainder would index backwards.
+  var low = key & 2147483647
+  const high = key >> 31
+  if high != 0 && high != -1 {
+    low = low ^ high & 2147483647
+  }
+  return low * 2654435761 & 2147483647
 }
 
 offer fun IntEquals(left: int, right: int) -> bool {
   return left == right
+}
+
+/// A map keyed by `int`, with the hashing already chosen.
+offer fun IntMapNew<V>() -> Map<int, V> uses unsafe {
+  return MapNew<int, V>(IntHash, IntEquals)
+}
+
+/// A map keyed by `text`: what a symbol table is (D250).
+offer fun TextMapNew<V>() -> Map<text, V> uses unsafe {
+  return MapNew<text, V>(TextHash, TextEquals)
 }
 
 extend<K, V> MapWalk<K, V> as Iterator {
@@ -257,6 +274,17 @@ extend<K, V> Map<K, V> as Iterable {
 }
 
 // ------------------------------------------------------------- tests ---
+
+@Test
+fun HashesAKeyPastThirtyTwoBitsWithoutTrapping() -> bool {
+  const big = 1099511627776
+  return IntHash(big) >= 0 && IntHash(big + 1) != IntHash(big) && IntHash(-big) >= 0
+}
+
+@Test
+fun KeepsTheHashOfASmallKey() -> bool {
+  return IntHash(1) == 506952113 && IntHash(-1) == 1640531535
+}
 
 @Test
 fun PutsAndGets() -> bool uses unsafe {
@@ -322,6 +350,18 @@ fun WalksEveryKey() -> bool uses unsafe {
   }
   // Every key once, and the values that go with them: 2 * (0 + ... + 19).
   return keys == 20 && sum == 380
+}
+
+@Test
+fun BuildsMapsWithTheHashingChosen() -> bool uses unsafe {
+  var words = TextMapNew<int>()
+  words.Put("let", 1)
+  words.Put("fun", 2)
+  words.Put("let", 3)
+  var numbers = IntMapNew<text>()
+  numbers.Put(7, "seven")
+  return words.Len() == 2 && words.Get("let", -1) == 3 && words.Get("fun", -1) == 2 && !words.Has(
+      "var") && numbers.Get(7, "") == "seven"
 }
 
 @Test

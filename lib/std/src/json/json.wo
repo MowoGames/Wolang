@@ -11,8 +11,9 @@
 need std.doc.{Array, AsBool, AsInt, AsText, At, Field, IsNull, Len, Member, Null, Object, OfBool, OfInt, OfText, Push, Put, Value}
 need std.list.{List, ListNew}
 need std.text.{Bytes, BuilderNew, Builder, Repeat}
-/// What a document that is not one answers with.
-offer error Malformed
+/// What a document that is not one answers with, and where: the line and
+/// the column, both counted from one (D235).
+offer error Malformed(line: int, column: int)
 
 // ------------------------------------------------------------ reading ---
 
@@ -57,17 +58,47 @@ fun Fail(cursor: Cursor) -> Step {
   return Step(Value.Null, cursor, false)
 }
 
+fun LineOf(bytes: []u8, at: int) -> int {
+  var line = 1
+  var i = 0
+  while i < at && i < bytes.len {
+    if bytes[i] == 10 {
+      line = line + 1
+    }
+    i = i + 1
+  }
+  return line
+}
+
+fun ColumnOf(bytes: []u8, at: int) -> int {
+  var column = 1
+  var i = 0
+  while i < at && i < bytes.len {
+    if bytes[i] == 10 {
+      column = 1
+    } else {
+      column = column + 1
+    }
+    i = i + 1
+  }
+  return column
+}
+
 /// Reads one value from `input`.
-offer fun Parse(input: text) -> Value! uses unsafe {
+offer fun Parse(input: text) -> Value!Malformed uses unsafe {
   const start = Cursor(Bytes(input), 0)
   const step = ParseValue(SkipSpace(start), 0)
   if !step.ok {
-    return Malformed
+    return Malformed(
+        LineOf(start.bytes, step.cursor.at),
+        ColumnOf(start.bytes, step.cursor.at))
   }
   // Trailing bytes other than space mean the document said two things.
   const rest = SkipSpace(step.cursor)
   if !AtEnd(rest) {
-    return Malformed
+    return Malformed(
+        LineOf(start.bytes, rest.at),
+        ColumnOf(start.bytes, rest.at))
   }
   return step.value
 }
@@ -500,6 +531,18 @@ fun ReadsADocument() -> bool uses unsafe {
       return name == "wolang" && stars == 42 && fast && Len(tags) == 2 && second == "games" && missing && absent
     }
     Malformed => {
+      return false
+    }
+  }
+}
+
+@Test
+fun SaysWhereADocumentWentWrong() -> bool uses unsafe {
+  match Parse("1\n\n  x") {
+    Malformed(line, column) => {
+      return line == 3 && column == 3
+    }
+    _ => {
       return false
     }
   }

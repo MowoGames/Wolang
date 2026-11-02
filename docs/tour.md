@@ -31,7 +31,7 @@ string is interpolation.
 need std.io.{Print}
 
 fun main() uses io {
-  const fixed = 42            // an int, worked out from the value
+  const fixed = 42            // an int (64 bits, D238), worked out from the value
   var counter = 0             // `var` may change, `const` may not
   counter = counter + fixed
 
@@ -94,8 +94,9 @@ fun Half(x: int) -> int? {
 error TooBig
 error Negative
 
-// `T!` may fail, and the errors are inferred from the body.
-fun Root(x: int) -> int! {
+// `T!` may fail. Naming the errors, `T!(A, B)`, lets the compiler check that a
+// `match` covers each one.
+fun Root(x: int) -> int!(Negative, TooBig) {
   if x < 0 {
     return Negative
   }
@@ -283,6 +284,42 @@ fun main() uses io {
 }
 ```
 
+An operator is an ability too. `a + b` on a type that says it has `Add` is
+the call `a.Plus(b)`, and `Self` in the ability is the type that has it:
+
+```wolang
+need std.io.{Print}
+need std.ops.{Add, Eq, Neg, Ord}
+
+struct Vec3 {
+  var x: float
+  var y: float
+  var z: float
+}
+
+extend Vec3 as Add {
+  fun Plus(other: Self) -> Self => Vec3(x + other.x, y + other.y, z + other.z)
+}
+
+extend Vec3 as Neg {
+  fun Negate() -> Self => Vec3(-x, -y, -z)
+}
+
+extend Vec3 as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x && y == other.y && z == other.z
+}
+
+// Numbers have every one of these already, so `Twice(2)` works too.
+fun Twice<T: Add>(value: T) -> T => value + value
+
+fun main() uses io {
+  var v = Vec3(1.0, 2.0, 3.0) + Vec3(0.5, 0.5, 0.5)
+  v += v
+  const same = -v != v
+  Print("{v.x} {Twice(21)} {same}")
+}
+```
+
 An ability can leave a type for each implementation to choose: `type Item`
 is answered with `type Item = int` in the `extend`, and generic code reads
 it as `T.Item`. This is how `for` works over anything — `std.iter` says
@@ -380,6 +417,34 @@ fun main() uses io, unsafe {
 }
 ```
 
+A closure that is returned or stored owns what it took with it.
+
+```wolang
+need std.io.{Print}
+
+class Counter {
+  var n: int = 0
+
+  fun Bump() -> int {
+    n = n + 1
+    return n
+  }
+}
+
+fun Ticker() -> fun() -> int {
+  const counter = Counter(0)
+  return || counter.Bump()
+}
+
+fun main() uses io {
+  const tick = Ticker()
+  Print("{tick()} {tick()}")    // 1 2
+}
+```
+
+A function parameter may be called and passed down. To store it, write `keep`:
+`fun OnPress(handler: keep fun())`.
+
 ## Effects
 
 A signature says what a function may do, and the compiler checks the
@@ -407,10 +472,11 @@ fun main() uses io, unsafe {
 }
 ```
 
-The effects: `io`, `alloc`, `rand`, `time`, `net`, `gpu`, `unsafe`,
+The effects: `io`, `rand`, `time`, `net`, `gpu`, `unsafe`,
 `panic`. A function calling something with an effect must declare it or
-have it, which is what makes "this runs in the render loop and allocates
-nothing" a thing the compiler can check.
+have it. Allocation is not an effect: mark a function `@Hot` and the compiler
+checks that nothing it calls allocates, which is what makes "this runs in the
+render loop and allocates nothing" a thing it can check.
 
 ## Units and dimensions
 
@@ -504,6 +570,33 @@ fun main() uses io {
 
 An unreachable state is warning `W0109`.
 
+A transition can wait: `on Timeout after 2.0 -> Closed` fires once the machine
+has been in its state for two seconds. The machine is given its time by a
+generated `Tick(dt)`, so the game decides what a second is: not calling it is
+a pause, and a smaller `dt` is slow motion.
+
+```wolang
+need std.io.{Print}
+
+machine Door {
+  state Closed {
+    on Interact -> Open
+  }
+  state Open {
+    on Interact -> Closed
+    on Timeout after 2.0 -> Closed
+  }
+}
+
+fun main() uses io {
+  var door = Door()
+  const _opened = door.Interact()
+  const early = door.Tick(1.0)
+  const due = door.Tick(1.5)
+  Print("{early} {due} {door.IsClosed()}")  // false true true
+}
+```
+
 ## Memory
 
 ```wolang
@@ -511,7 +604,8 @@ need std.io.{Print}
 need std.mem.{ArrayNew, Free}
 
 fun main() uses io, unsafe {
-  // A view: a pointer and a length, with bounds checks.
+  // A view: a pointer and a length, with bounds checks. `ArrayNew` gives a
+  // `[]mut int`: a `[]int` is read-only.
   var room = ArrayNew<int>(4)
   room[0] = 7
   Print("{room[0]} of {room.len}")
@@ -560,6 +654,10 @@ fun main() uses io {
   }
 }
 ```
+
+A module-level `weak var` works the same way: `weak var current: Node? = null` does not keep the
+object alive, and reading it gives `null` once the object is gone. It is for a `C?` of a class or an
+`extern class` only; a weak local would be `null` by the next line, so it does not parse (`E0040`).
 
 ## Threads
 
@@ -616,6 +714,11 @@ fun main() uses io, unsafe {
 
 `wolang bind header.h` writes the declarations for you, and a package's
 manifest says which library to link.
+
+Your own code can make the same promise. `unsafe fun Poke(at: *mut u8)` has a
+body that may touch memory, and whoever calls it states `uses unsafe`, as for
+`extern`. `uses unsafe` on an ordinary function is the opposite: the author
+checked it and takes the responsibility, so callers do not have to.
 
 ## Testing
 

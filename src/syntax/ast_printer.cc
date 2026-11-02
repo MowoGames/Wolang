@@ -301,6 +301,7 @@ class Printer {
         {ItemFlags::kDerived, "derived"},
         {ItemFlags::kWeak, "weak"},
         {ItemFlags::kExtern, "extern"},
+        {ItemFlags::kUnsafe, "unsafe"},
         {ItemFlags::kHasError, "has-error"},
     };
     for (const auto& entry : kPrinterNames) {
@@ -690,6 +691,9 @@ class Printer {
     }
     if (HasFlag(type.flags, TypeRefFlags::kAos)) {
       Atom("aos");
+    }
+    if (HasFlag(type.flags, TypeRefFlags::kKeep)) {
+      Atom("keep");
     }
     if (HasFlag(type.flags, TypeRefFlags::kMutable) &&
         type.kind != TypeRefKind::kMut) {

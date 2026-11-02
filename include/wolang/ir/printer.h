@@ -29,6 +29,21 @@ std::string PrintModule(const StringInterner& interner,
                         const TypeStore& types,
                         const Module& module);
 
+// The typed form: everything the reader in `ir/reader.h` needs to rebuild the
+// module, which the stable form above leaves out on purpose (D264). It is a
+// separate entry point so the golden tests that compare the stable form do
+// not change.
+std::string PrintModuleTyped(const StringInterner& interner,
+                             const TypeStore& types,
+                             const Module& module);
+
+// One type in the typed form's grammar, which unlike `Describe` has no two
+// types with one spelling. A kind the reader cannot build is written in
+// backticks as `Describe` spells it, and the reader looks it up by that text.
+std::string PrintType(const StringInterner& interner,
+                      const TypeStore& types,
+                      TypeId type);
+
 }  // namespace ir
 }  // namespace wolang
 

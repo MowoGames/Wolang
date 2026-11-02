@@ -2,7 +2,7 @@
 
 This directory configures Claude Code for this repository. Everything here is
 committed and works the same locally and in cloud sessions. It needs nothing
-beyond what the project already uses: bash, python3 and clang.
+beyond what the project already uses: bash, py and clang.
 
 ## The model split
 

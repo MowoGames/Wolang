@@ -225,6 +225,10 @@ class Fixture {
   }
 
   static interp::Value Int(int64_t value) {
+    return interp::Value::Int(static_cast<uint64_t>(value), IntWidth::k64,
+                              true);
+  }
+  static interp::Value S32(int64_t value) {
     return interp::Value::Int(static_cast<uint64_t>(value), IntWidth::k32,
                               true);
   }
@@ -359,6 +363,10 @@ fun Shift(a: int, b: int) -> int => a << b
                                       Fixture::Byte(27)}),
                    "127");
   WOLANG_EXPECT_EQ(f.Run("Shift", {Fixture::Int(1), Fixture::Int(40)}),
+                   "1099511627776");
+  WOLANG_EXPECT_EQ(f.Run("Shift", {Fixture::Int(1), Fixture::Int(62)}),
+                   "4611686018427387904");
+  WOLANG_EXPECT_EQ(f.Run("Shift", {Fixture::Int(1), Fixture::Int(70)}),
                    "trap: overflow at @Shift:%2: "
                    "shifted by more than the width");
 }
@@ -395,9 +403,9 @@ fun ToFloat(n: int) -> float => n as float
 
 fun Truncate(x: float) -> int => x as int
 )");
-  WOLANG_EXPECT_EQ(f.Run("Widen", {Fixture::Int(-5)}), "-5");
-  WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::Int(200)}), "200");
-  WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::Int(300)}),
+  WOLANG_EXPECT_EQ(f.Run("Widen", {Fixture::S32(-5)}), "-5");
+  WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::S32(200)}), "200");
+  WOLANG_EXPECT_EQ(f.Run("Narrow", {Fixture::S32(300)}),
                    "trap: overflow at @Narrow:%1: "
                    "the value does not fit the integer it was cast to");
   WOLANG_EXPECT_EQ(f.Run("ToFloat", {Fixture::Int(3)}), "3");
@@ -429,7 +437,7 @@ fun Promote(n: s32) -> u64 => n as u64
       f.Run("ToSigned", {interp::Value::Int(7, IntWidth::k64, false)}),
       "7");
   std::snprintf(text, sizeof(text), kTrap, "Promote");
-  WOLANG_EXPECT_EQ(f.Run("Promote", {Fixture::Int(-1)}), text);
+  WOLANG_EXPECT_EQ(f.Run("Promote", {Fixture::S32(-1)}), text);
 }
 
 WOLANG_TEST(CodegenTest, ANegativeFloatCastToANarrowUnsignedTraps) {
@@ -721,6 +729,52 @@ fun Probe() -> int {
   WOLANG_EXPECT_EQ(f.Run("Probe"), "12");
 }
 
+WOLANG_TEST(CodegenTest, MatchReadsOnlyTheTag) {
+  // A tag is u32 wherever it is read (D238): `match` must not read the
+  // word beside it, which here is an s32 of -1 and a payload.
+  Fixture f(R"(
+enum Colour {
+  Red,
+  Green,
+  Blue,
+}
+
+enum Shape {
+  Dot,
+  Box(h: u64),
+}
+
+struct Paint {
+  var colour: Colour
+  var after: s32
+}
+
+fun Rank(colour: Colour) -> int {
+  return match colour {
+    Colour.Red => 0,
+    Colour.Green => 1,
+    Colour.Blue => 2,
+  }
+}
+
+fun Size(shape: Shape) -> int {
+  return match shape {
+    Shape.Dot => 0,
+    Shape.Box(h) => h as int,
+  }
+}
+
+fun Probe() -> int {
+  var paint = Paint(Colour.Blue, -1)
+  var shapes: [2]Shape
+  shapes[0] = Shape.Box(7)
+  shapes[1] = Shape.Dot
+  return Rank(paint.colour) * 100 + Size(shapes[0]) * 10 + Size(shapes[1]) + paint.after as int
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Probe"), "269");
+}
+
 WOLANG_TEST(CodegenTest, RunsAGenericMethod) {
   // A method with type parameters of its own, on a type that has none:
   // one copy per set of arguments, and the closure's parameter types come
@@ -776,6 +830,149 @@ fun Probe() -> int {
 )");
   // Eleven, twelve, ten and eleven.
   WOLANG_EXPECT_EQ(f.Run("Probe"), "44");
+}
+
+WOLANG_TEST(CodegenTest, AnEscapingClosureOwnsWhatItCaptured) {
+  // D240: a closure handed upwards owns its environment. The cell it
+  // captured lives as long as the closure does and goes with it.
+  Fixture f(R"(
+extern "C" fun wolang_objects_live() -> s64
+
+var drops: int = 0
+
+class Cell {
+  var n: int = 0
+  fun Bump() -> int {
+    n = n + 1
+    return n
+  }
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Make() -> fun() -> int {
+  const cell = Cell(0)
+  return || cell.Bump()
+}
+
+fun Run() -> int uses unsafe {
+  drops = 0
+  const before = wolang_objects_live() as int
+  var total = 0
+  {
+    const counter = Make()
+    total = counter() * 100
+    total = total + counter() * 10
+    total = total + counter()
+  }
+  return total * 10000 + drops * 100 + ((wolang_objects_live() as int) - before)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "1230100");
+}
+
+WOLANG_TEST(CodegenTest, AKeptClosureInAGlobalIsReleasedWhenReplaced) {
+  Fixture f(R"(
+var drops: int = 0
+
+class Cell {
+  var n: int = 0
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Zero() -> int => 0
+
+var saved: fun() -> int = Zero
+
+fun Constant(k: int) -> fun() -> int {
+  const cell = Cell(k)
+  return || cell.n
+}
+
+fun Run() -> int {
+  drops = 0
+  var total = 0
+  for i in 1..4 {
+    saved = Constant(i * 10)
+    total = total + saved()
+  }
+  saved = Zero
+  return total * 100 + drops
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "6003");
+}
+
+WOLANG_TEST(CodegenTest, ClosuresMadeInALoopKeepTheirOwnCaptures) {
+  Fixture f(R"(
+class Box {
+  var held: fun() -> int
+}
+
+fun Constant(k: int) -> fun() -> int {
+  return || k
+}
+
+fun Run() -> int {
+  var total = 0
+  const first = Box(Constant(1))
+  const second = Box(Constant(2))
+  for i in 0..3 {
+    const made = Box(Constant(i + 10))
+    total = total + made.held()
+  }
+  total = total + first.held() * 100 + second.held() * 1000
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "2133");
+}
+
+WOLANG_TEST(CodegenTest, AnEscapingClosureMovesAValueWithADeinit) {
+  Fixture f(R"(
+var drops: int = 0
+
+struct Res {
+  var id: int
+  deinit {
+    drops = drops + 1
+  }
+}
+
+fun Make(id: int) -> fun() -> int {
+  const r = Res(id)
+  return || r.id
+}
+
+fun Run() -> int {
+  drops = 0
+  var held = 0
+  {
+    const g = Make(7)
+    held = drops * 10 + g()
+  }
+  return held * 10 + drops
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "71");
+}
+
+WOLANG_TEST(CodegenTest, AnEscapingClosureCopiesAnOwnedText) {
+  Fixture f(R"(
+fun Greeter(name: text) -> fun() -> int {
+  const copy = "{name}!"
+  return || copy.len
+}
+
+fun Run() -> int {
+  const g = Greeter("abc")
+  return g() * 10 + g()
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Run", {}), "44");
 }
 
 WOLANG_TEST(CodegenTest, SaysWhatItCannotCompile) {
@@ -843,7 +1040,7 @@ fun PickFloat(a: float, b: float) -> float => Larger(a, b)
   WOLANG_EXPECT_EQ(f.Run("PickFloat", {Fixture::Float(2.5),
                                        Fixture::Float(1.5)}),
                    "2.5");
-  WOLANG_EXPECT_EQ(f.Skipped("Larger<s32>"), "");
+  WOLANG_EXPECT_EQ(f.Skipped("Larger<s64>"), "");
   WOLANG_EXPECT_EQ(f.Skipped("Larger<f32>"), "");
 }
 
@@ -857,7 +1054,7 @@ extern "C" fun abs(n: s32) -> s32
 
 extern "C" fun fabs(x: f64) -> f64
 
-fun Magnitude(n: int) -> int => abs(n)
+fun Magnitude(n: int) -> int => abs(n as s32) as int
 
 fun Distance(x: f64) -> f64 => fabs(x)
 )");
@@ -870,7 +1067,7 @@ WOLANG_TEST(CodegenTest, SaysWhenAForeignSymbolIsMissing) {
   Fixture f(R"(
 extern "C" fun NotInAnyLibrary(n: s32) -> s32
 
-fun Try(n: int) -> int => NotInAnyLibrary(n)
+fun Try(n: int) -> int => NotInAnyLibrary(n as s32) as int
 )");
   WOLANG_EXPECT_EQ(f.Skipped("Try"),
                    "calls something this tier cannot compile");
@@ -889,10 +1086,10 @@ extern "C" fun free(block: *s32)
 
 fun RoundTrip(n: int) -> int {
   const block = malloc(4)
-  *block = n + 1
+  *block = (n + 1) as s32
   const read = *block
   free(block)
-  return read
+  return read as int
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("RoundTrip", {Fixture::Int(41)}), "42");
@@ -985,8 +1182,8 @@ extern "C" fun free(block: *s32)
 fun Scoped(n: int) -> int {
   const block = malloc(4)
   defer free(block)
-  *block = n + 1
-  return *block
+  *block = (n + 1) as s32
+  return *block as int
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Scoped", {Fixture::Int(41)}), "42");
@@ -1427,7 +1624,7 @@ WOLANG_TEST(CodegenTest, LaysOutARecordAsOneArrayPerField) {
   // the first version of this got 36 where it should have had 10 because
   // every field shared one array.
   Fixture f(R"(
-offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
+offer unsafe fun SoaNew<T>(count: int) -> soa []mut T
 
 struct Particle {
   var x: float = 0.0
@@ -1469,7 +1666,7 @@ WOLANG_TEST(CodegenTest, TakesTheTypeArgumentACallWrites) {
   // []T` and the field offsets were computed against a type parameter,
   // which laid every field of every element on top of the others.
   Fixture f(R"(
-offer fun Empty<T>() -> []T uses unsafe
+offer unsafe fun Empty<T>() -> []T
 
 struct Pair {
   var a: int = 0
@@ -1550,7 +1747,7 @@ WOLANG_TEST(CodegenTest, ReadsAndWritesAnAggregateThroughAPointer) {
   // a frame slot, and the reference tier holds a slot as a value rather
   // than at an address, so there would be no pointer to write.
   Fixture f(R"(
-offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+offer unsafe fun ArrayNew<T>(count: int) -> []mut T
 
 class Rows {
   var data: []int
@@ -1578,8 +1775,8 @@ WOLANG_TEST(CodegenTest, AGenericStoreOverSoaStorage) {
   // them. Every piece of this works on its own, and putting them
   // together is what found the rest.
   Fixture f(R"(
-offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
-offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+offer unsafe fun SoaNew<T>(count: int) -> soa []mut T
+offer unsafe fun ArrayNew<T>(count: int) -> []mut T
 
 struct Point {
   var x: float = 0.0
@@ -1587,8 +1784,8 @@ struct Point {
 }
 
 class Store<T> {
-  var rows: soa []T
-  var owners: []int
+  var rows: soa []mut T
+  var owners: []mut int
   var count: int = 0
 
   fun Add(e: int) -> int {
@@ -1623,10 +1820,10 @@ fun Build() -> int uses unsafe {
 
 WOLANG_TEST(CodegenTest, WritesThroughASliceFieldOfAnObject) {
   Fixture f(R"(
-offer fun ArrayNew<T>(count: int) -> []T uses unsafe
+offer unsafe fun ArrayNew<T>(count: int) -> []mut T
 
 class Store {
-  var owners: []int
+  var owners: []mut int
   var count: int = 0
 }
 
@@ -1910,14 +2107,14 @@ WOLANG_TEST(CodegenTest, CarriesAnErrorThroughAFallible) {
   Fixture f(R"(
 error NotFound, Corrupt
 
-fun Half(n: int) -> int! {
+fun Half(n: int) -> int!(Corrupt, NotFound) {
   if n % 2 != 0 {
     return Corrupt
   }
   return n / 2
 }
 
-fun Quarter(n: int) -> int! {
+fun Quarter(n: int) -> int!(Corrupt, NotFound) {
   const half = Half(n)?
   return Half(half)?
 }
@@ -1937,6 +2134,165 @@ fun All() -> int {
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("All", {}), "189");
+}
+
+WOLANG_TEST(CodegenTest, PayloadErrorsAgree) {
+  Fixture f(R"(
+error Plain, Bad(line: int, why: text), Worse(code: int)
+
+fun Make(n: int) -> int!(Plain, Bad, Worse) {
+  if n == 0 {
+    return Plain
+  }
+  if n == 1 {
+    return Bad(40, "late")
+  }
+  if n == 2 {
+    return Worse(7)
+  }
+  return n
+}
+
+fun Pass(n: int) -> int!(Plain, Bad, Worse) {
+  const v = Make(n)?
+  return v + 1
+}
+
+fun Narrow(n: int) -> int!(Bad) {
+  if n == 1 {
+    return Bad(5, "narrow")
+  }
+  return n
+}
+
+fun Widen(n: int) -> int!(Bad, Worse) {
+  const v = Narrow(n)?
+  return v * 2
+}
+
+fun Use(n: int) -> int {
+  return match Pass(n) {
+    Ok(v) => v
+    Plain => -1
+    Bad(line, why) => line + why.len
+    Worse(code) => code * 100
+  }
+}
+
+fun UseBare(n: int) -> int {
+  return match Make(n) {
+    Ok(v) => v
+    Bad => 1000
+    _ => 0
+  }
+}
+
+fun UseWide(n: int) -> int {
+  return match Widen(n) {
+    Ok(v) => v
+    Bad(line, why) => line
+    Worse(code) => code
+  }
+}
+
+fun Dropped() -> int {
+  var total = 0
+  var i = 0
+  while i < 50 {
+    const ignored = Make(1)
+    total = total + 1
+    i = i + 1
+  }
+  return total
+}
+
+fun All() -> int {
+  return Use(0) + Use(1) * 10 + Use(2) + Use(3) + UseBare(1) + UseBare(2) + UseWide(1) + UseWide(4) + Dropped()
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Use", {Fixture::Int(1)}), "44");
+  WOLANG_EXPECT_EQ(f.Run("Use", {Fixture::Int(2)}), "700");
+  WOLANG_EXPECT_EQ(f.Run("Use", {Fixture::Int(0)}), "-1");
+  WOLANG_EXPECT_EQ(f.Run("Use", {Fixture::Int(3)}), "4");
+  WOLANG_EXPECT_EQ(f.Run("UseBare", {Fixture::Int(1)}), "1000");
+  WOLANG_EXPECT_EQ(f.Run("UseBare", {Fixture::Int(2)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("UseWide", {Fixture::Int(1)}), "5");
+  WOLANG_EXPECT_EQ(f.Run("UseWide", {Fixture::Int(4)}), "8");
+  WOLANG_EXPECT_EQ(f.Run("Dropped", {}), "50");
+}
+
+WOLANG_TEST(CodegenTest, APayloadMatchInsideAnArmLetsGoOfItsSubjectThere) {
+  Fixture f(R"(
+error Bad
+error Worse
+error Odd(code: int)
+
+fun Check(x: int) -> int!(Bad, Worse, Odd) {
+  if x > 100 {
+    return Odd(x)
+  }
+  if x > 50 {
+    return Bad
+  }
+  return x
+}
+
+fun F(n: int) -> int {
+  return match n & 3 {
+    0 => 1
+    1 => match Check(n) { Ok(v) => v, Bad => 2, Worse => 3, Odd(c) => c }
+    _ => 4
+  }
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("F", {Fixture::Int(0)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("F", {Fixture::Int(1)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("F", {Fixture::Int(57)}), "2");
+  WOLANG_EXPECT_EQ(f.Run("F", {Fixture::Int(101)}), "101");
+  WOLANG_EXPECT_EQ(f.Run("F", {Fixture::Int(2)}), "4");
+}
+
+WOLANG_TEST(CodegenTest, APayloadMatchOnTheFarSideOfAnOrElseIsHeldOnlyWhenRun) {
+  Fixture f(R"(
+error Bad
+error Worse
+error Odd(code: int)
+
+fun Check(x: int) -> int!(Bad, Worse, Odd) {
+  if x > 100 {
+    return Odd(x)
+  }
+  if x > 50 {
+    return Bad
+  }
+  return x
+}
+
+fun Maybe(x: int) -> int? {
+  if x % 2 == 0 {
+    return x
+  }
+  return null
+}
+
+fun G(n: int) -> int {
+  return Maybe(n) ?? (match Check(n) { Ok(v) => v, Bad => 2, Worse => 3, Odd(c) => c })
+}
+
+fun Sum() -> int {
+  var total = 0
+  var i = 0
+  while i < 110 {
+    total = total + G(i)
+    i = i + 1
+  }
+  return total
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("G", {Fixture::Int(4)}), "4");
+  WOLANG_EXPECT_EQ(f.Run("G", {Fixture::Int(57)}), "2");
+  WOLANG_EXPECT_EQ(f.Run("G", {Fixture::Int(101)}), "101");
+  WOLANG_EXPECT_EQ(f.Run("Sum", {}), "4170");
 }
 
 WOLANG_TEST(CodegenTest, CarriesAValueThroughAnOptional) {
@@ -1966,6 +2322,39 @@ fun All() -> int {
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("All", {}), "61");
+}
+
+WOLANG_TEST(CodegenTest, CallsAMethodThroughAnOptional) {
+  Fixture f(R"(
+class Pawn {
+  var hp: int
+  fun Hit(damage: int) {
+    hp = hp - damage
+  }
+  fun Health() -> int => hp
+  fun Maybe() -> int? {
+    if hp > 50 {
+      return hp
+    }
+    return null
+  }
+}
+
+fun Find(id: int) -> Pawn? {
+  if id == 0 {
+    return null
+  }
+  return Pawn(id * 10)
+}
+
+fun Reaches() -> int {
+  const pawn = Find(7)
+  pawn?.Hit(5)
+  Find(0)?.Hit(5)
+  return (pawn?.Health() ?? -1) + (Find(0)?.Health() ?? -100) + (Find(9)?.Maybe() ?? -1000)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Reaches", {}), "55");
 }
 
 WOLANG_TEST(CodegenTest, BuildsAndComparesStrings) {
@@ -2162,7 +2551,7 @@ WOLANG_TEST(CodegenTest, FillsABufferThroughASlice) {
   //   * a frame bigger than an instruction's immediate reach is still a
   //     frame, and a request buffer is four kilobytes on its own.
   Fixture f(R"(
-fun Fill(bytes: []u8, value: u8) -> int {
+fun Fill(bytes: []mut u8, value: u8) -> int {
   var written = 0
   while written < bytes.len {
     bytes[written] = value
@@ -2399,6 +2788,78 @@ fun EveryFlipFires() -> int {
   WOLANG_EXPECT_EQ(f.Run("EveryFlipFires", {}), "11");
 }
 
+WOLANG_TEST(CodegenTest, AMachineIsGivenItsTimeByTick) {
+  // `after` counts time the caller hands over: `Tick(dt)` adds to how long
+  // the machine has been in its state and takes the first transition whose
+  // delay has run out. Changing state starts the count again (D260).
+  Fixture f(R"(
+machine Door {
+  state Closed {
+    on Interact -> Open
+  }
+  state Open {
+    on Interact -> Closed
+    on Timeout after 2.0 -> Closed
+  }
+}
+
+fun One(yes: bool) -> int {
+  if yes {
+    return 1
+  }
+  return 0
+}
+
+fun NotYet() -> int {
+  const door = Door()
+  const _opened = door.Interact()
+  const early = door.Tick(1.0)
+  return One(early) * 10 + One(door.IsOpen())
+}
+
+fun WhenItsDue() -> int {
+  const door = Door()
+  const _opened = door.Interact()
+  const _first = door.Tick(1.0)
+  const due = door.Tick(1.5)
+  return One(due) * 10 + One(door.IsClosed())
+}
+
+fun ASmallStepAddsUp() -> int {
+  const door = Door()
+  const _opened = door.Interact()
+  var fired = 0
+  for _step in 0..4 {
+    if door.Tick(0.5) {
+      fired = fired + 1
+    }
+  }
+  return fired * 10 + One(door.IsClosed())
+}
+
+fun ChangingStateStartsTheCountAgain() -> int {
+  const door = Door()
+  const _opened = door.Interact()
+  const _spent = door.Tick(1.5)
+  const _closed = door.Interact()
+  const _reopened = door.Interact()
+  const early = door.Tick(1.5)
+  return One(early) * 10 + One(door.IsOpen())
+}
+
+fun ClosedHasNothingToCount() -> int {
+  const door = Door()
+  const fired = door.Tick(100.0)
+  return One(fired) * 10 + One(door.IsClosed())
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("NotYet", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("WhenItsDue", {}), "11");
+  WOLANG_EXPECT_EQ(f.Run("ASmallStepAddsUp", {}), "11");
+  WOLANG_EXPECT_EQ(f.Run("ChangingStateStartsTheCountAgain", {}), "1");
+  WOLANG_EXPECT_EQ(f.Run("ClosedHasNothingToCount", {}), "1");
+}
+
 WOLANG_TEST(CodegenTest, PassesArgumentsPastTheRegisters) {
   // Eight integer registers carry arguments on arm64 and six on x86-64,
   // and the dev tier indexed its table of them without checking -- so a
@@ -2507,14 +2968,14 @@ WOLANG_TEST(CodegenTest, AValueReturnedFromAFallible) {
   Fixture f(R"(
 error Broken
 
-fun Risky(ok: bool) -> int! {
+fun Risky(ok: bool) -> int!Broken {
   if !ok {
     return Broken
   }
   return 7
 }
 
-fun Floating(ok: bool) -> float! {
+fun Floating(ok: bool) -> float!Broken {
   if !ok {
     return Broken
   }
@@ -2740,8 +3201,8 @@ WOLANG_TEST(CodegenTest, ASignedThirtyTwoBitProductStillTrapsOnOverflow) {
   // The sign-extension that narrow `-` needs must not be applied to a
   // multiply's 64-bit product (D231).
   Fixture f(R"(
-fun Product() -> int {
-  var buf: [2]int
+fun Product() -> s32 {
+  var buf: [2]s32
   buf[0] = 0 - 2147483647
   const x = buf[0]
   const y = (~x) * x
@@ -2751,6 +3212,48 @@ fun Product() -> int {
 )");
   WOLANG_EXPECT_EQ(f.Run("Product", {}),
                    "trap: overflow at @Product:%13: mul overflowed");
+}
+
+WOLANG_TEST(CodegenTest, TheMinimumOfEverySignedWidthRoundTrips) {
+  Fixture f(R"(
+fun Minimums() -> int {
+  var a: s8 = -128
+  var b: s16 = -32768
+  var c: s32 = -2147483648
+  var d: s64 = -9223372036854775808
+  return (a as int) + (b as int) + (c as int) + (d as int) / 4611686018427387904
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Minimums", {}), "-2147516546");
+}
+
+WOLANG_TEST(CodegenTest, IntIsSixtyFourBitsInEveryTier) {
+  // `int` is s64 (D238): 2^31 is a value, not an overflow, while s32 and the
+  // top of s64 still trap.
+  Fixture f(R"(
+fun Grows() -> int {
+  var a = 2147483647
+  a += 1
+  return a
+}
+
+fun Narrow() -> s32 {
+  var a: s32 = 2147483647
+  a += 1
+  return a
+}
+
+fun Top() -> int {
+  var a = 9223372036854775807
+  a += 1
+  return a
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Grows", {}), "2147483648");
+  WOLANG_EXPECT_EQ(f.Run("Narrow", {}),
+                   "trap: overflow at @Narrow:%5: add overflowed");
+  WOLANG_EXPECT_EQ(f.Run("Top", {}),
+                   "trap: overflow at @Top:%5: add overflowed");
 }
 
 WOLANG_TEST(CodegenTest, AHugeUnsignedDoesNotCastToANarrowSigned) {
@@ -3023,6 +3526,48 @@ fun Firsts() -> int {
   WOLANG_EXPECT_EQ(f.Run("Firsts", {}), "709");
 }
 
+WOLANG_TEST(CodegenTest, AModuleLevelWeakVarDoesNotKeepItsObject) {
+  Fixture f(R"(
+extern "C" fun wolang_objects_live() -> s64
+
+class Thing {
+  var id: int = 0
+}
+
+weak var current: Thing? = null
+
+fun Live() -> int uses unsafe {
+  return wolang_objects_live() as int
+}
+
+fun Reads() -> int {
+  const thing = Thing(7)
+  current = thing
+  return current?.id ?? -1
+}
+
+fun Outlives() -> int {
+  current = Thing(9)
+  return current?.id ?? -1
+}
+
+fun Stays() -> int uses unsafe {
+  const before = Live()
+  var seen = 0
+  for i in 0..5 {
+    const thing = Thing(i)
+    current = thing
+    seen = seen + (current?.id ?? 100)
+  }
+  current = null
+  return (Live() - before) * 1000 + seen
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Reads", {}), "7");
+  WOLANG_EXPECT_EQ(f.Run("Outlives", {}), "-1");
+  WOLANG_EXPECT_EQ(f.Run("Stays", {}), "10");
+}
+
 WOLANG_TEST(CodegenTest, AWeakFieldDoesNotKeepItsObject) {
   Fixture f(R"(
 extern "C" fun wolang_objects_live() -> s64
@@ -3131,7 +3676,7 @@ WOLANG_TEST(CodegenTest, CarriesASliceAndACounterAroundALoop) {
   // other was not, so this walked an array on one machine and indexed
   // past the end of it on the other (D200).
   Fixture f(R"(
-fun Fill(out: []u8, count: int) -> int {
+fun Fill(out: []mut u8, count: int) -> int {
   var written = 0
   var i = 0
   while i < count {
@@ -3294,7 +3839,7 @@ struct Wide {
   var c: int
 }
 
-fun Make(n: int, d: int, e: int, g: int, h: int) -> Wide! {
+fun Make(n: int, d: int, e: int, g: int, h: int) -> Wide!Broken {
   // Enough live at once that every register the callee may use is saved.
   const p = n + d
   const q = p * 2 + e
@@ -3509,8 +4054,8 @@ fun Check() -> int {
 WOLANG_TEST(CodegenTest, CompoundAssignmentOperatesOnItsTarget) {
   // `i += 1` lowered as `i = 1`, so a loop on it never ended (D246).
   Fixture f(R"(
-offer fun ArrayNew<T>(count: int) -> []T uses unsafe
-offer fun SoaNew<T>(count: int) -> soa []T uses unsafe
+offer unsafe fun ArrayNew<T>(count: int) -> []mut T
+offer unsafe fun SoaNew<T>(count: int) -> soa []mut T
 
 var total: int = 10
 
@@ -3625,8 +4170,8 @@ fun Coalesced() -> int {
   return (empty ?? 0) * 10 + (full ?? 0) + calls * 1000
 }
 
-fun Overflow() -> int {
-  var a = 2147483647
+fun Overflow() -> s32 {
+  var a: s32 = 2147483647
   a += 1
   return a
 }
@@ -3658,6 +4203,168 @@ fun ShiftTooFar(n: int) -> int {
                 size_t{0});
   WOLANG_EXPECT(f.Run("ShiftTooFar", {Fixture::Wide(70)}).find("trap:") ==
                 size_t{0});
+}
+
+static constexpr const char kOperatorPrelude[] = R"(
+@Operator
+ability Add {
+  fun Plus(other: Self) -> Self
+}
+
+@Operator
+ability Sub {
+  fun Minus(other: Self) -> Self
+}
+
+@Operator
+ability Mul {
+  fun Times(other: Self) -> Self
+}
+
+@Operator
+ability Div {
+  fun Divide(other: Self) -> Self
+}
+
+@Operator
+ability Neg {
+  fun Negate() -> Self
+}
+
+@Operator
+ability Eq {
+  fun Equals(other: &Self) -> bool
+}
+
+@Operator
+ability Ord {
+  fun Compare(other: &Self) -> int
+}
+
+struct V {
+  var x: int
+  var y: int
+}
+
+extend V as Add {
+  fun Plus(other: Self) -> Self => V(x + other.x, y + other.y)
+}
+
+extend V as Sub {
+  fun Minus(other: Self) -> Self => V(x - other.x, y - other.y)
+}
+
+extend V as Mul {
+  fun Times(other: Self) -> Self => V(x * other.x, y * other.y)
+}
+
+extend V as Div {
+  fun Divide(other: Self) -> Self => V(x / other.x, y / other.y)
+}
+
+extend V as Neg {
+  fun Negate() -> Self => V(-x, -y)
+}
+
+extend V as Eq {
+  fun Equals(other: &Self) -> bool => x == other.x && y == other.y
+}
+
+extend V as Ord {
+  fun Compare(other: &Self) -> int => x - other.x
+}
+
+class Money {
+  var cents: int
+}
+
+extend Money as Add {
+  fun Plus(other: Self) -> Self => Money(cents + other.cents)
+}
+
+extend Money as Eq {
+  fun Equals(other: &Self) -> bool => cents == other.cents
+}
+
+fun Max<T: Ord>(a: T, b: T) -> T {
+  if a >= b {
+    return a
+  }
+  return b
+}
+
+fun Sign<T: Ord>(a: T, b: T) -> int => a.Compare(&b)
+)";
+
+// D239: an operator on a type of your own is a call, and every tier agrees on
+// its answer.
+WOLANG_TEST(CodegenTest, OperatorsOnStructsAreCallsInEveryTier) {
+  Fixture f(std::string(kOperatorPrelude) + R"(
+fun Arithmetic() -> int {
+  const a = V(12, 30)
+  const b = V(3, 5)
+  const sum = a + b
+  const less = a - b
+  const more = a * b
+  const part = a / b
+  const flipped = -a
+  return sum.x + sum.y * 10 + less.x * 100 + more.y + part.x + flipped.y
+}
+
+fun Equal() -> int {
+  const a = V(1, 2)
+  const b = V(1, 2)
+  const c = V(1, 3)
+  var n = 0
+  if a == b { n += 1 }
+  if a != c { n += 10 }
+  if a == c { n += 100 }
+  if a != b { n += 1000 }
+  return n
+}
+
+fun Ordered() -> int {
+  const small = V(1, 0)
+  const big = V(2, 0)
+  var n = 0
+  if small < big { n += 1 }
+  if small <= big { n += 2 }
+  if big > small { n += 4 }
+  if big >= small { n += 8 }
+  if small > big { n += 16 }
+  if big <= small { n += 32 }
+  if small <= V(1, 5) { n += 64 }
+  return n
+}
+
+fun InPlace() -> int {
+  var total = V(1, 1)
+  total += V(2, 3)
+  total -= V(1, 1)
+  return total.x * 10 + total.y
+}
+
+fun Classes() -> int {
+  const a = Money(250)
+  const b = Money(175)
+  var total = a + b
+  total += Money(5)
+  var n = total.cents
+  if a != b { n += 1000 }
+  return n + a.cents - 250
+}
+
+fun Generic() -> int {
+  const big = Max(V(1, 0), V(4, 0))
+  return big.x * 100 + Max(3, 9) * 10 + Sign(2, 7) + Sign(7, 2) * 5 + Sign(4, 4)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Arithmetic", {}), "1389");
+  WOLANG_EXPECT_EQ(f.Run("Equal", {}), "11");
+  WOLANG_EXPECT_EQ(f.Run("Ordered", {}), "79");
+  WOLANG_EXPECT_EQ(f.Run("InPlace", {}), "23");
+  WOLANG_EXPECT_EQ(f.Run("Classes", {}), "1430");
+  WOLANG_EXPECT_EQ(f.Run("Generic", {}), "494");
 }
 
 }  // namespace

@@ -132,6 +132,9 @@ enum class ItemFlags : uint16_t {
   kHasBody = 1 << 13,
   // `weak var`: a field that does not keep what it points at alive.
   kWeak = 1 << 14,
+  // `unsafe fun`: the function vouches for what it does, and a caller that
+  // names it pays for `unsafe` (D236).
+  kUnsafe = 1 << 15,
 };
 
 enum class ExprKind : uint8_t {
@@ -230,6 +233,8 @@ enum class TypeRefFlags : uint16_t {
   // can be stored both ways and the choice can be measured.
   kSoa = 1 << 2,
   kAos = 1 << 3,
+  // `keep fun(...)` on a parameter: the callee may store the function (D240).
+  kKeep = 1 << 4,
 };
 
 enum class PatternKind : uint8_t {
@@ -389,7 +394,8 @@ struct TypeRef {
   TypeRefFlags flags = TypeRefFlags::kNone;
   SourceSpan span;
   AstRange<Symbol> path;
-  // Generic arguments, tuple elements, or function parameter types.
+  // Generic arguments, tuple elements, function parameter types, or the
+  // errors a `T!(A, B)` states (D235; empty means any error).
   AstRange<TypeRefId> args;
   // The inner type of an optional, fallible, pointer, reference, slice,
   // array, `mut`, `with` or `without`, or the return type of a function type.
@@ -426,6 +432,8 @@ struct Param {
   TypeRefId type;
   ExprId default_value;
   AstRange<AttributeId> attributes;
+  // The error whose payload this field belongs to (D235); invalid elsewhere.
+  Symbol error;
   bool is_mutable = false;
 };
 

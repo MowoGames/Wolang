@@ -12,7 +12,7 @@
 need std.mem.{ArrayNew, Free}
 
 offer class Heap<T> {
-  var items: []T
+  var items: []mut T
   var count: int = 0
   /// Whether the first argument comes out before the second.
   var before: fun(T, T) -> bool
@@ -114,7 +114,7 @@ offer class Heap<T> {
   }
 }
 
-offer fun HeapNew<T>(before: fun(T, T) -> bool) -> Heap<T> uses unsafe {
+offer fun HeapNew<T>(before: keep fun(T, T) -> bool) -> Heap<T> uses unsafe {
   return Heap<T>(ArrayNew<T>(0), 0, before)
 }
 

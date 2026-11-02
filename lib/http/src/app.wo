@@ -19,31 +19,31 @@ offer class App {
 
   /// A route for `GET`. The same names a router has, so an application
   /// can be built without reaching inside it.
-  fun Get(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Get(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     router.Get(pattern, handle)
   }
 
-  fun Post(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Post(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     router.Post(pattern, handle)
   }
 
-  fun Put(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Put(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     router.Put(pattern, handle)
   }
 
-  fun Patch(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Patch(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     router.Patch(pattern, handle)
   }
 
-  fun Delete(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Delete(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     router.Delete(pattern, handle)
   }
 
-  fun Any(pattern: text, handle: fun(Request) -> Response) uses unsafe {
+  fun Any(pattern: text, handle: keep fun(Request) -> Response) uses unsafe {
     router.Any(pattern, handle)
   }
 
-  fun Otherwise(handle: fun(Request) -> Response) uses unsafe {
+  fun Otherwise(handle: keep fun(Request) -> Response) uses unsafe {
     router.Otherwise(handle)
   }
 
@@ -52,12 +52,12 @@ offer class App {
   }
 
   /// A layer that runs before every handler, and may answer instead.
-  fun Use(run: fun(&mut Request) -> Response?) uses unsafe {
+  fun Use(run: keep fun(&mut Request) -> Response?) uses unsafe {
     layers.Use(run)
   }
 
   /// A layer that runs after every handler.
-  fun Then(run: fun(&Request, Response) -> Response) uses unsafe {
+  fun Then(run: keep fun(&Request, Response) -> Response) uses unsafe {
     layers.Then(run)
   }
 }

@@ -85,6 +85,9 @@ class Lowerer {
     // (D138).
     std::vector<Symbol> captures;
     TypeId environment;
+    // Where the captures start in the environment: after the drop address
+    // an escaping closure keeps first (D240).
+    uint32_t first_field = 0;
   };
 
 
@@ -892,7 +895,7 @@ class Lowerer {
       const InstId value = Coerce(given, ValueType(given), field_type);
       const InstId address = builder_->FieldAddress(
           types_->Pointer(field_type, /*is_mutable=*/true), object, index);
-      builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+      builder_->Add(Opcode::kStore, TypeId{}, {address, IsWeakField(type, index) ? WeakStored(value, field_type) : value});
       if (IsWeakField(type, index)) {
         WeakRetainValue(value, field_type);
         if (IsFreshHandle(value)) {
@@ -1101,17 +1104,36 @@ class Lowerer {
     if (index != 0xFFFFFFFFu) {
       return index;
     }
+    index = DeclareMethodFrom(owner, member.name, member);
+    Remember(member.file, member.item, index, member.slot);
+    return index;
+  }
+
+  // The host's name for a method of an `extern class`: `Actor_Position`
+  // (D213).
+  Symbol ForeignMethodSymbol(TypeId owner, Symbol name) {
+    std::string symbol = types_->Describe(*interner_, owner);
+    symbol.push_back('_');
+    symbol.append(interner_->Text(name));
+    return interner_->Intern(symbol);
+  }
+
+  // A method declared in another file: lowering is per file, so this file
+  // gets a signature with the receiver first. A bodiless method of an
+  // `extern class` is the host's function, and reaches it by its symbol the
+  // way the declaring file's own calls do (D213).
+  uint32_t DeclareMethodFrom(TypeId owner, Symbol name, const Member& member) {
     std::vector<TypeId> params;
     params.push_back(owner);
     for (TypeId param : types_->ArgumentsOf(member.type)) {
       params.push_back(Erase(param));
     }
-    const TypeId signature =
-        types_->Function(params, Erase(types_->ElementOf(member.type)));
-    index = DeclareExternal(MethodName(owner, member.name), signature,
-                            member.file, member.item, /*is_task=*/false,
-                            /*has_body=*/false, member.slot);
-    Remember(member.file, member.item, index, member.slot);
+    const TypeId signature = types_->Function(params, Erase(types_->ElementOf(member.type)));
+    const uint32_t index = DeclareExternal(MethodName(owner, name), signature, member.file, member.item, /*is_task=*/false, /*has_body=*/false, member.slot);
+    if (types_->IsForeignClass(owner) && !member.has_body && !module_->functions[index].foreign_symbol.is_valid()) {
+      module_->functions[index].foreign_symbol = ForeignMethodSymbol(owner, name);
+      module_->functions[index].type = ForeignSignature(module_->functions[index].type);
+    }
     return index;
   }
 
@@ -1159,10 +1181,7 @@ class Lowerer {
     // A method of an `extern class` is the host's `Actor_Position`, called
     // with the object first (D213).
     if (types_->IsForeignClass(owner) && !item.body.is_valid()) {
-      std::string symbol = types_->Describe(*interner_, owner);
-      symbol.push_back('_');
-      symbol.append(interner_->Text(item.name));
-      function.foreign_symbol = interner_->Intern(symbol);
+      function.foreign_symbol = ForeignMethodSymbol(owner, item.name);
       function.type = ForeignSignature(function.type);
     }
 
@@ -1317,7 +1336,11 @@ class Lowerer {
       }
       Function function;
       function.name = MethodName(machine, member.name);
-      function.type = types_->Function({machine}, answer);
+      std::vector<TypeId> parameters = {machine};
+      if (IsMachineTick(machine, member.name)) {
+        parameters.push_back(types_->Float(FloatWidth::k32));
+      }
+      function.type = types_->Function(parameters, answer);
       function.self_type = machine;
       function.source_file = member.file;
       function.source_item = member.item;
@@ -1419,6 +1442,12 @@ class Lowerer {
     builder.SetCurrent(entry);
     self_ = builder.AddParam(entry, machine);
 
+    if (IsMachineTick(machine, method.name)) {
+      const InstId dt = builder.AddParam(entry, types_->Float(FloatWidth::k32));
+      LowerMachineTick(machine, states, dt);
+      return;
+    }
+
     const std::string_view name = interner_->Text(method.name);
     const bool predicate = name.size() > 2 && name.substr(0, 2) == "Is";
     const TypeId state_type = types_->Int(IntWidth::k32, true);
@@ -1491,6 +1520,7 @@ class Lowerer {
                   {state_address,
                    builder.ConstInt(state_type,
                                     static_cast<uint64_t>(targets[i]))});
+      ResetMachineClock(machine);
       for (uint32_t step : PathTo(states, froms[i], method.name)) {
         CallMachineBlock(machine, ast().Get(states[step]).name,
                          /*is_enter=*/true);
@@ -1509,12 +1539,126 @@ class Lowerer {
     builder_ = nullptr;
   }
 
+  // The generated `Tick(dt)` of a machine with an `after`: the time in this
+  // state goes up by |dt|, and the first transition of the current state
+  // whose delay has run out is taken, through the same exit, state and
+  // enter steps an event takes. The caller owns the clock, so a pause is
+  // not calling this and slow motion is a smaller |dt| (D260).
+  void LowerMachineTick(TypeId machine,
+                        const std::vector<StateId>& states,
+                        InstId dt) {
+    Builder& builder = *builder_;
+    PushLocal(Local{self_name_, InstId{}, self_, machine});
+
+    const TypeId seconds = types_->Float(FloatWidth::k32);
+    const TypeId state_type = types_->Int(IntWidth::k32, true);
+    const InstId clock_address = builder.FieldAddress(
+        types_->Pointer(seconds, true), self_,
+        MachineSlot(machine, MemberKind::kMachineClock));
+    const InstId elapsed =
+        builder.Add(Opcode::kLoad, seconds, {clock_address});
+    const InstId total = builder.Add(Opcode::kAdd, seconds, {elapsed, dt});
+    builder.Add(Opcode::kStore, TypeId{}, {clock_address, total});
+
+    const InstId state_address = builder.FieldAddress(
+        types_->Pointer(state_type, true), self_,
+        MachineStateIndex(machine));
+    const InstId current =
+        builder.Add(Opcode::kLoad, state_type, {state_address});
+
+    for (uint32_t i = 0; i < states.size(); ++i) {
+      const State& state = ast().Get(states[i]);
+      for (TransitionId transition_id : ast().Get(state.transitions)) {
+        if (!ast().Contains(transition_id)) {
+          continue;
+        }
+        const Transition& transition = ast().Get(transition_id);
+        if (!ast().Contains(transition.delay)) {
+          continue;
+        }
+
+        const BlockId check = builder.AddBlock("tick.check");
+        const BlockId fire = builder.AddBlock("tick.fire");
+        const BlockId next = builder.AddBlock("tick.next");
+        const InstId here = builder.Add(
+            Opcode::kEq, types_->bool_type(),
+            {current,
+             builder.ConstInt(state_type, static_cast<uint64_t>(i))});
+        builder.Branch(here, check, next);
+
+        builder.SetCurrent(check);
+        InstId limit = Value(transition.delay);
+        const TypeId found = ValueType(limit);
+        if (found.is_valid() && found != seconds) {
+          limit = builder.Add(Opcode::kCast, seconds, {limit});
+        }
+        const InstId due =
+            builder.Add(Opcode::kLe, types_->bool_type(), {limit, total});
+        builder.Branch(due, fire, next);
+
+        builder.SetCurrent(fire);
+        CallMachineBlock(machine, state.name, /*is_enter=*/false);
+        builder.Add(
+            Opcode::kStore, TypeId{},
+            {state_address,
+             builder.ConstInt(
+                 state_type,
+                 static_cast<uint64_t>(Settle(states, transition.target)))});
+        ResetMachineClock(machine);
+        for (uint32_t step : PathFrom(states, transition.target)) {
+          CallMachineBlock(machine, ast().Get(states[step]).name,
+                           /*is_enter=*/true);
+        }
+        builder.Return(builder.ConstBool(true));
+
+        builder.SetCurrent(next);
+      }
+    }
+
+    builder.Return(builder.ConstBool(false));
+    Finish();
+  }
+
+  // Only a machine that has an `after` has a clock, and only then is a
+  // method named `Tick` the generated one rather than an event (D260).
+  bool IsMachineTick(TypeId machine, Symbol name) {
+    return interner_->Text(name) == "Tick" &&
+           MachineSlot(machine, MemberKind::kMachineClock) != kNoSlot;
+  }
+
+  void ResetMachineClock(TypeId machine) {
+    const uint32_t slot = MachineSlot(machine, MemberKind::kMachineClock);
+    if (slot == kNoSlot) {
+      return;
+    }
+    const TypeId seconds = types_->Float(FloatWidth::k32);
+    const InstId address = builder_->FieldAddress(
+        types_->Pointer(seconds, true), self_, slot);
+    builder_->Add(Opcode::kStore, TypeId{},
+                  {address, builder_->ConstFloat(seconds, 0.0)});
+  }
+
+  static constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
+
+  uint32_t MachineSlot(TypeId machine, MemberKind kind) {
+    uint32_t index = 0;
+    for (const Member& member : resolution().MembersOf(machine)) {
+      if (!HasStorage(member.kind)) {
+        continue;
+      }
+      if (member.kind == kind) {
+        return index;
+      }
+      ++index;
+    }
+    return kNoSlot;
+  }
+
   // The states entered by taking |event| out of state |from|: the target,
   // and then whatever `always` leads on from it.
   std::vector<uint32_t> PathTo(const std::vector<StateId>& states,
                                uint32_t from,
                                Symbol event) {
-    std::vector<uint32_t> path;
     const State& state = ast().Get(states[from]);
     for (TransitionId transition_id : ast().Get(state.transitions)) {
       if (!ast().Contains(transition_id)) {
@@ -1524,22 +1668,29 @@ class Lowerer {
       if (transition.event != event) {
         continue;
       }
-      uint32_t at = IndexOfState(states, transition.target);
-      // `always` is followed until it stops or comes back round: a cycle
-      // of them would otherwise be a loop with no way out.
-      for (size_t guard = 0; guard <= states.size(); ++guard) {
-        if (at >= states.size() ||
-            std::find(path.begin(), path.end(), at) != path.end()) {
-          break;
-        }
-        path.push_back(at);
-        const uint32_t next = AlwaysFrom(states, at);
-        if (next == at || next >= states.size()) {
-          break;
-        }
-        at = next;
+      return PathFrom(states, transition.target);
+    }
+    return {};
+  }
+
+  // The states entered by arriving at |target|, and then whatever `always`
+  // leads on from it. `always` is followed until it stops or comes back
+  // round: a cycle of them would otherwise be a loop with no way out.
+  std::vector<uint32_t> PathFrom(const std::vector<StateId>& states,
+                                 Symbol target) {
+    std::vector<uint32_t> path;
+    uint32_t at = IndexOfState(states, target);
+    for (size_t guard = 0; guard <= states.size(); ++guard) {
+      if (at >= states.size() ||
+          std::find(path.begin(), path.end(), at) != path.end()) {
+        break;
       }
-      break;
+      path.push_back(at);
+      const uint32_t next = AlwaysFrom(states, at);
+      if (next == at || next >= states.size()) {
+        break;
+      }
+      at = next;
     }
     return path;
   }
@@ -1859,9 +2010,48 @@ class Lowerer {
     const bool wrapped =
         built.is_valid() &&
         types_->KindOf(Erase(built)) == TypeKind::kFallible;
+
+    // A `T!` into a `T!` that names other errors with data: the slots are
+    // moved to where the target keeps them, and the rest are empty (D235).
+    if (types_->KindOf(target) == TypeKind::kFallible && wrapped &&
+        Erase(built) != target &&
+        PayloadClasses(Erase(built)) != PayloadClasses(target)) {
+      const TypeId source_fallible = Erase(built);
+      const TypeId held = Erase(types_->ElementOf(target));
+      const std::vector<TypeId> have = PayloadClasses(source_fallible);
+      std::vector<InstId> fields;
+      fields.push_back(builder_->Extract(types_->u32(), value, 0));
+      fields.push_back(builder_->Extract(held, value, 1));
+      for (TypeId detail : PayloadClasses(target)) {
+        const TypeId optional = types_->Optional(detail);
+        const auto at = std::find(have.begin(), have.end(), detail);
+        if (at == have.end()) {
+          fields.push_back(builder_->ConstNull(optional));
+          continue;
+        }
+        const InstId slot = builder_->Extract(optional, value, 2 + static_cast<uint32_t>(at - have.begin()));
+        if (!IsFreshHandle(value)) {
+          RetainValue(slot, optional);
+        }
+        fields.push_back(slot);
+      }
+      return builder_->Add(Opcode::kMakeStruct, target, std::move(fields));
+    }
+
     if (types_->KindOf(target) == TypeKind::kFallible && !wrapped) {
       const TypeId held = Erase(types_->ElementOf(target));
+      TypeId pair_set;
+      if (built.is_valid()) {
+        for (const auto& [erased, original] : m_ErrorPairs) {
+          if (erased == Erase(built)) {
+            pair_set = original;
+            break;
+          }
+        }
+      }
       const bool is_error =
+          pair_set.is_valid() ||
+          types_->KindOf(from) == TypeKind::kErrorSet ||
           types_->KindOf(source_type) == TypeKind::kErrorSet ||
           (built.is_valid() &&
            types_->KindOf(Erase(built)) == TypeKind::kErrorSet);
@@ -1869,13 +2059,38 @@ class Lowerer {
         // The value *is* the tag, so it travels as it is and the payload
         // is whatever was there -- a `T!` that failed has no value, and
         // nothing may read one out of it without matching first.
-        return builder_->Add(Opcode::kMakeStruct, target,
-                             {value, builder_->ConstInt(held, 0)});
+        //
+        // An error with data arrives as the tag and the slot that holds
+        // its box, and the slot goes where the target keeps that error's
+        // (D235).
+        std::vector<ErrorMember> given;
+        if (pair_set.is_valid()) {
+          given = types_->StatedErrorsOf(pair_set);
+        } else if (types_->KindOf(from) == TypeKind::kErrorSet) {
+          given = types_->StatedErrorsOf(from);
+        }
+        const bool boxed = given.size() == 1 && given[0].detail.is_valid();
+        std::vector<InstId> fields;
+        fields.push_back(boxed ? builder_->Extract(types_->u32(), value, 0) : value);
+        fields.push_back(builder_->ConstInt(held, 0));
+        for (TypeId detail : PayloadClasses(target)) {
+          const TypeId optional = types_->Optional(detail);
+          fields.push_back(boxed && given[0].detail == detail ? builder_->Extract(optional, value, 1) : builder_->ConstNull(optional));
+        }
+        const bool fresh_box = boxed && IsFreshHandle(value);
+        const InstId failed = builder_->Add(Opcode::kMakeStruct, target, std::move(fields));
+        if (fresh_box) {
+          m_Fresh.emplace_back(current_function_, failed);
+        }
+        return failed;
       }
-      return builder_->Add(
-          Opcode::kMakeStruct, target,
-          {builder_->ConstInt(types_->u32(), 0),
-           Coerce(value, from, held, source)});
+      std::vector<InstId> fields;
+      fields.push_back(builder_->ConstInt(types_->u32(), 0));
+      fields.push_back(Coerce(value, from, held, source));
+      for (TypeId detail : PayloadClasses(target)) {
+        fields.push_back(builder_->ConstNull(types_->Optional(detail)));
+      }
+      return builder_->Add(Opcode::kMakeStruct, target, std::move(fields));
     }
 
     // A value where an ability is wanted: the pair that says what it is and
@@ -2042,6 +2257,24 @@ class Lowerer {
                                types_->Get(type).is_mutable);
       case TypeKind::kOptional:
         return types_->Optional(Erase(types_->ElementOf(type)));
+      // Only the errors that carry data are part of the shape: each has a
+      // slot beside the value, and the rest are the tag alone (D235).
+      case TypeKind::kFallible: {
+        std::vector<ErrorMember> carrying;
+        for (const ErrorMember& member : types_->StatedErrorsOf(types_->Get(type).base)) {
+          if (member.detail.is_valid()) {
+            carrying.push_back(member);
+          }
+        }
+        return types_->Fallible(types_->ElementOf(type), types_->StatedErrorSet(std::move(carrying)));
+      }
+      case TypeKind::kErrorSet: {
+        const std::vector<ErrorMember> stated = types_->StatedErrorsOf(type);
+        if (stated.size() == 1 && stated[0].detail.is_valid()) {
+          return types_->Tuple({types_->u32(), types_->Optional(stated[0].detail)});
+        }
+        return type;
+      }
       case TypeKind::kSlice:
         return types_->Slice(Erase(types_->ElementOf(type)),
                              types_->Get(type).is_soa);
@@ -2061,7 +2294,7 @@ class Lowerer {
         for (TypeId param : types_->ArgumentsOf(type)) {
           params.push_back(Erase(param));
         }
-        return types_->Function(params, Erase(types_->ElementOf(type)));
+        return types_->Function(params, Erase(types_->ElementOf(type)), types_->Get(type).is_kept);
       }
       default:
         return type;
@@ -2300,12 +2533,21 @@ class Lowerer {
                      TypeId type,
                      bool live,
                      bool in_slot = true,
-                     bool is_parameter = false) {
+                     bool is_parameter = false,
+                     bool anywhere = false) {
     if (is_parameter ? !Owns(type) : !Releases(type)) {
       return;
     }
-    const InstId flag =
-        builder_->Add(Opcode::kAlloca, types_->bool_type());
+    // A flag made at the entry starts false, so a path that never held the
+    // value does not let go of one it never had (D235).
+    InstId flag;
+    if (anywhere) {
+      flag = builder_->AddToEntry(Opcode::kAlloca, types_->bool_type());
+      const InstId none = builder_->AddToEntry(Opcode::kConstBool, types_->bool_type());
+      builder_->AddToEntry(Opcode::kStore, TypeId{}, {flag, none});
+    } else {
+      flag = builder_->Add(Opcode::kAlloca, types_->bool_type());
+    }
     builder_->Add(Opcode::kStore, TypeId{},
                   {flag, builder_->ConstBool(live)});
     deferred_.push_back(
@@ -2348,6 +2590,7 @@ class Lowerer {
             ? builder_->Add(Opcode::kLoad, Erase(entry.type), {entry.value})
             : entry.value;
     Destroy(value, entry.type);
+    builder_->Add(Opcode::kStore, TypeId{}, {entry.flag, builder_->ConstBool(false)});
     builder_->Jump(after, {});
     builder_->SetCurrent(after);
   }
@@ -2370,6 +2613,10 @@ class Lowerer {
       return;
     }
     const TypeId type = Erase(raw);
+    if (IsKeptFunction(type)) {
+      ReleaseEnvironment(builder_->Extract(types_->u64(), value, 1));
+      return;
+    }
     if (HoldsCounted(type) || HoldsOwned(type)) {
       builder_->Call(ValueDropFor(type), types_->void_type(), {value});
       return;
@@ -2381,7 +2628,12 @@ class Lowerer {
     }
     if (IsFallibleCounted(type)) {
       const TypeId element = Erase(types_->ElementOf(type));
-      OnValue(value, type, [&](InstId inner) { Destroy(inner, element); });
+      if (Counts(element)) {
+        OnValue(value, type, [&](InstId inner) { Destroy(inner, element); });
+      }
+      ForEachPayload(value, type, [&](InstId slot, TypeId optional) {
+        OnSome(slot, optional, [&](InstId inner) { Destroy(inner, types_->ElementOf(optional)); });
+      });
       return;
     }
     if (!types_->IsHandle(type)) {
@@ -2612,20 +2864,46 @@ class Lowerer {
     return builder_->Call(callee, result, {AsDeclared(callee, 0, handle)});
   }
 
+  bool IsWeakForeign(TypeId optional) {
+    return types_->IsForeignClass(types_->ElementOf(Erase(optional)));
+  }
+
   // A weak reference to a host object costs the host nothing: whether it
-  // is still there is asked when it is read.
+  // is still there is asked when it is read. What the slot holds is made by
+  // |WeakStored|, so there is nothing to count here (D254).
   void WeakRetainValue(InstId value, TypeId optional) {
-    if (types_->IsForeignClass(types_->ElementOf(Erase(optional)))) {
+    if (IsWeakForeign(optional)) {
       return;
     }
     OnSome(value, optional, [&](InstId inner) { CallObjectRuntime("wolang_object_weak_retain", inner, types_->void_type()); });
   }
 
   void WeakReleaseValue(InstId value, TypeId optional) {
-    if (types_->IsForeignClass(types_->ElementOf(Erase(optional)))) {
+    if (IsWeakForeign(optional)) {
+      const TypeId held = types_->ElementOf(Erase(optional));
+      OnSome(value, optional, [&](InstId inner) { CallHostRuntime("wolang_host_weak_free", held, inner, types_->void_type()); });
       return;
     }
     OnSome(value, optional, [&](InstId inner) { CallObjectRuntime("wolang_object_weak_release", inner, types_->void_type()); });
+  }
+
+  // What a weak slot holds for |value|. A script object is stored as it is.
+  // A host object is stored as what the host's token makes of it, so that a
+  // new object at the same address is not taken for the old one (D254).
+  InstId WeakStored(InstId value, TypeId optional) {
+    if (!IsWeakForeign(optional)) {
+      return value;
+    }
+    const TypeId erased = Erase(optional);
+    const TypeId held = types_->ElementOf(erased);
+    const InstId slot = builder_->Add(Opcode::kAlloca, erased);
+    builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->ConstNull(erased)});
+    OnSome(value, optional, [&](InstId inner) {
+      const InstId cell = CallHostRuntime("wolang_host_weak_make", held, inner, types_->u64());
+      const InstId bits = builder_->Add(Opcode::kCast, Erase(held), {cell});
+      builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->Add(Opcode::kOptionalWrap, erased, {bits})});
+    });
+    return builder_->Add(Opcode::kLoad, erased, {slot});
   }
 
   // What a weak field holds, as a strong reference when the object is
@@ -2636,13 +2914,24 @@ class Lowerer {
     builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->ConstNull(optional)});
     OnSome(value, optional, [&](InstId inner) {
       const TypeId held = types_->ElementOf(Erase(optional));
-      const InstId alive = types_->IsForeignClass(held) ? CallHostRuntime("wolang_host_upgrade", held, inner, s32) : CallObjectRuntime("wolang_object_upgrade", inner, s32);
-      const InstId yes = builder_->Add(Opcode::kNe, types_->bool_type(), {alive, builder_->ConstInt(s32, 0)});
+      const bool foreign = types_->IsForeignClass(held);
+      InstId object = inner;
+      InstId yes;
+      if (foreign) {
+        const TypeId word = types_->u64();
+        const InstId found = CallHostRuntime("wolang_host_weak_upgrade", held, inner, word);
+        yes = builder_->Add(Opcode::kNe, types_->bool_type(), {found, builder_->ConstInt(word, 0)});
+        object = builder_->Add(Opcode::kCast, Erase(held), {found});
+      }
+      else {
+        const InstId alive = CallObjectRuntime("wolang_object_upgrade", inner, s32);
+        yes = builder_->Add(Opcode::kNe, types_->bool_type(), {alive, builder_->ConstInt(s32, 0)});
+      }
       const BlockId keep = builder_->AddBlock("upgrade.alive");
       const BlockId after = builder_->AddBlock("upgrade.after");
       builder_->Branch(yes, keep, after);
       builder_->SetCurrent(keep);
-      builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->Add(Opcode::kOptionalWrap, optional, {inner})});
+      builder_->Add(Opcode::kStore, TypeId{}, {slot, builder_->Add(Opcode::kOptionalWrap, optional, {object})});
       builder_->Jump(after, {});
       builder_->SetCurrent(after);
     });
@@ -2664,16 +2953,111 @@ class Lowerer {
     return types_->KindOf(held) == TypeKind::kOptional && Counts(types_->ElementOf(held));
   }
 
+  // A function value that may be stored: its second word is an environment
+  // that is either absent or a counted object (D240).
+  bool IsKeptFunction(TypeId raw) {
+    const TypeId held = Erase(Apply(raw));
+    return held.is_valid() && types_->KindOf(held) == TypeKind::kFunction && types_->Get(held).is_kept;
+  }
+
   // Whether a value of |raw| carries a reference that is counted.
   bool Counts(TypeId raw) {
-    return raw.is_valid() && (IsCountedHandle(raw) || IsOptionalHandle(raw) || IsFallibleCounted(raw) || HoldsCounted(raw));
+    return raw.is_valid() && (IsCountedHandle(raw) || IsKeptFunction(raw) || IsOptionalHandle(raw) || IsFallibleCounted(raw) || HoldsCounted(raw));
+  }
+
+  // A named function has no environment: its second word is the constant
+  // zero, and counting that would only add a call the compile-time run
+  // cannot make (D240).
+  bool IsAbsentEnvironment(InstId environment) {
+    const ir::Function& function = module_->functions[current_function_];
+    const Inst& inst = function.Get(environment);
+    if (inst.opcode == Opcode::kConstInt) {
+      return inst.payload.integer == 0;
+    }
+    if (inst.opcode != Opcode::kExtract || inst.field != 1) {
+      return false;
+    }
+
+    const Inst& pair = function.Get(function.OperandsOf(inst)[0]);
+    if (pair.opcode != Opcode::kMakeStruct || function.OperandsOf(pair).size() != 2) {
+      return false;
+    }
+
+    const Inst& word = function.Get(function.OperandsOf(pair)[1]);
+    return word.opcode == Opcode::kConstInt && word.payload.integer == 0;
+  }
+
+  void RetainEnvironment(InstId environment) {
+    if (IsAbsentEnvironment(environment)) {
+      return;
+    }
+
+    const Symbol name = interner_->Intern("wolang_object_retain");
+    const uint32_t retain = DeclareExternal(name, types_->Function({types_->u64()}, types_->void_type()));
+    module_->functions[retain].foreign_symbol = name;
+    builder_->Call(retain, types_->void_type(), {AsDeclared(retain, 0, environment)});
+  }
+
+  // One reference to an environment goes. The last one runs the drop whose
+  // address the environment keeps in its first field, which lets go of what
+  // the closure captured and gives the storage back (D240).
+  void ReleaseEnvironment(InstId environment) {
+    if (IsAbsentEnvironment(environment)) {
+      return;
+    }
+
+    const TypeId i32 = types_->Int(IntWidth::k32, /*is_signed=*/true);
+    const Symbol released = interner_->Intern("wolang_object_release");
+    const uint32_t release = DeclareExternal(released, types_->Function({types_->u64()}, i32));
+    module_->functions[release].foreign_symbol = released;
+    const InstId last = builder_->Call(release, i32, {AsDeclared(release, 0, environment)});
+    const InstId gone = builder_->Add(Opcode::kNe, types_->bool_type(), {last, builder_->ConstInt(i32, 0)});
+    const BlockId destroy = builder_->AddBlock("env.last");
+    const BlockId after = builder_->AddBlock("env.after");
+    builder_->Branch(gone, destroy, after);
+
+    builder_->SetCurrent(destroy);
+    const TypeId header = types_->Tuple({types_->u64()});
+    const TypeId pointer = types_->Pointer(header, /*is_mutable=*/true);
+    const InstId opened = builder_->Add(Opcode::kCast, pointer, {environment});
+    const InstId field = builder_->FieldAddress(types_->Pointer(types_->u64(), /*is_mutable=*/true), opened, 0);
+    const InstId code = builder_->Add(Opcode::kLoad, types_->u64(), {field});
+    builder_->Add(Opcode::kCallIndirect, types_->void_type(), {code, environment});
+    builder_->Jump(after, {});
+    builder_->SetCurrent(after);
+  }
+
+  // The boxes of the errors with data a `T!` can hold, in the order of its
+  // slots (D235). Of the erased type, whose set names only those.
+  std::vector<TypeId> PayloadClasses(TypeId fallible) {
+    std::vector<TypeId> classes;
+    if (types_->KindOf(fallible) != TypeKind::kFallible) {
+      return classes;
+    }
+    for (const ErrorMember& member : types_->StatedErrorsOf(types_->Get(fallible).base)) {
+      if (member.detail.is_valid()) {
+        classes.push_back(member.detail);
+      }
+    }
+    return classes;
+  }
+
+  template <typename Visit>
+  void ForEachPayload(InstId value, TypeId fallible, Visit visit) {
+    uint32_t index = 2;
+    for (TypeId detail : PayloadClasses(fallible)) {
+      const TypeId optional = types_->Optional(detail);
+      visit(builder_->Extract(optional, value, index), optional);
+      ++index;
+    }
   }
 
   // A `T!` whose value is counted: `{which error, value}`, and the value
-  // is only there when the first is zero (D90).
+  // is only there when the first is zero (D90). One that can hold an error
+  // with data is counted too, for the box in its slot (D235).
   bool IsFallibleCounted(TypeId raw) {
     const TypeId held = Erase(Apply(raw));
-    return types_->KindOf(held) == TypeKind::kFallible && Counts(types_->ElementOf(held));
+    return types_->KindOf(held) == TypeKind::kFallible && (Counts(types_->ElementOf(held)) || !PayloadClasses(held).empty());
   }
 
   template <typename Then>
@@ -2978,13 +3362,22 @@ class Lowerer {
     if (!value.is_valid() || !Counts(raw)) {
       return;
     }
+    if (IsKeptFunction(raw)) {
+      RetainEnvironment(builder_->Extract(types_->u64(), value, 1));
+      return;
+    }
     if (IsOptionalHandle(raw)) {
       const TypeId optional = Erase(raw);
       OnSome(value, optional, [&](InstId inner) { RetainValue(inner, types_->ElementOf(optional)); });
       return;
     }
     if (IsFallibleCounted(raw)) {
-      OnValue(value, raw, [&](InstId inner) { RetainValue(inner, types_->ElementOf(raw)); });
+      if (Counts(types_->ElementOf(raw))) {
+        OnValue(value, raw, [&](InstId inner) { RetainValue(inner, types_->ElementOf(raw)); });
+      }
+      ForEachPayload(value, raw, [&](InstId slot, TypeId optional) {
+        OnSome(slot, optional, [&](InstId inner) { RetainValue(inner, types_->ElementOf(optional)); });
+      });
       return;
     }
     if (HoldsCounted(raw)) {
@@ -3031,8 +3424,22 @@ class Lowerer {
       case Opcode::kOptionalWrap:
       case Opcode::kCast:
         return inst.operands_count != 0 && IsFreshHandle(current.OperandsOf(inst)[0]);
-      case Opcode::kMakeStruct:
-        return types_->KindOf(Erase(inst.type)) == TypeKind::kFallible && inst.operands_count == 2 && IsFreshHandle(current.OperandsOf(inst)[1]);
+      case Opcode::kMakeStruct: {
+        if (types_->KindOf(Erase(inst.type)) != TypeKind::kFallible) {
+          return false;
+        }
+        const std::span<const InstId> operands = current.OperandsOf(inst);
+        if (operands.size() == 2) {
+          return IsFreshHandle(operands[1]);
+        }
+        for (size_t i = 2; i < operands.size(); ++i) {
+          const bool empty = current.Contains(operands[i]) && current.Get(operands[i]).opcode == Opcode::kConstNull;
+          if (!empty && !IsFreshHandle(operands[i])) {
+            return false;
+          }
+        }
+        return operands.size() > 2 && (!Counts(types_->ElementOf(Erase(inst.type))) || IsFreshHandle(operands[1]));
+      }
       default:
         return false;
     }
@@ -3053,6 +3460,10 @@ class Lowerer {
     // is a crash (D193).
     const TypeId held = Erase(raw);
     const TypeKind kind = types_->KindOf(held);
+    if (IsKeptFunction(held)) {
+      RetainEnvironment(builder_->Extract(types_->u64(), value, 1));
+      return;
+    }
     if (kind != TypeKind::kNamed && kind != TypeKind::kInstance) {
       return;
     }
@@ -3229,11 +3640,11 @@ class Lowerer {
       }
 
       case ExprKind::kUnary:
-        return LowerUnary(expr, type);
+        return LowerUnary(id, expr, type);
       case ExprKind::kBinary:
         return LowerBinary(id, expr, type);
       case ExprKind::kAssign:
-        return LowerAssign(expr);
+        return LowerAssign(id, expr);
 
       case ExprKind::kArrayLiteral: {
         std::vector<InstId> elements;
@@ -3622,6 +4033,39 @@ class Lowerer {
     return binding != nullptr ? binding->name : Symbol{};
   }
 
+  // The binding a call's callee names, whether written `Name` or `mod.Name`:
+  // an intrinsic is the same intrinsic either way (D246).
+  const Binding* IntrinsicBinding(const Expr& call) const {
+    if (!ast().Contains(call.lhs)) {
+      return nullptr;
+    }
+    const Expr& callee = ast().Get(call.lhs);
+    if (callee.kind == ExprKind::kPath) {
+      return resolution().Find(callee.name);
+    }
+    if (callee.kind == ExprKind::kField && IsQualifiedUse(call.lhs) && ast().Contains(callee.lhs)) {
+      return resolution().FindQualified(ast().Get(callee.lhs).name, callee.name);
+    }
+    return nullptr;
+  }
+
+  std::string_view IntrinsicName(const Expr& call) const {
+    if (!ast().Contains(call.lhs)) {
+      return {};
+    }
+    const Expr& callee = ast().Get(call.lhs);
+    if (callee.kind == ExprKind::kPath) {
+      return interner_->Text(callee.name);
+    }
+    if (callee.kind == ExprKind::kField && IsQualifiedUse(call.lhs)) {
+      const Binding* binding = IntrinsicBinding(call);
+      if (binding != nullptr) {
+        return interner_->Text(binding->real_name.is_valid() ? binding->real_name : callee.name);
+      }
+    }
+    return {};
+  }
+
   InstId LowerPath(ExprId id, const Expr& expr, TypeId type,
                    Symbol name) {
     const Local* local = Find(name);
@@ -3641,15 +4085,16 @@ class Lowerer {
       // either side knowing about the other.
       if (const Binding* tag = resolution().Find(name);
           tag != nullptr && tag->kind == BindingKind::kErrorTag) {
-        return builder_->ConstInt(
-            types_->u32(),
-            (tag->real_name.is_valid() ? tag->real_name : name).index + 1);
+        return builder_->ConstInt(types_->u32(), TagOfBinding(tag, name));
       }
       // A module-level `var`, read from its storage.
       if (const TypeId held = GlobalType(name); held.is_valid()) {
         const InstId address = GlobalAddress(name);
-        return Coerce(builder_->Add(Opcode::kLoad, held, {address}), held,
-                      type);
+        InstId loaded = builder_->Add(Opcode::kLoad, held, {address});
+        if (IsWeakGlobal(name)) {
+          loaded = Upgrade(loaded, held);
+        }
+        return Coerce(loaded, held, type);
       }
       // A module-level constant, read through the function it became.
       if (const InstId constant = ConstantValue(name, type);
@@ -3725,7 +4170,28 @@ class Lowerer {
     return false;
   }
 
-  InstId LowerUnary(const Expr& expr, TypeId type) {
+  InstId LowerUnary(ExprId id, const Expr& expr, TypeId type) {
+    // The checker settled this as a call to an `@Operator` ability's method
+    // (D239); a number keeps its opcode.
+    if (expr.op == TokenKind::kMinus && UsesOperatorCall(id, expr.lhs)) {
+      InstId receiver;
+      {
+        const Borrowing borrowing(this);
+        receiver = Value(expr.lhs);
+      }
+      const InstId called = LowerOperatorCall(id, expr.op, Erase(TypeOf(expr.lhs)), receiver, ExprId{}, type, /*binary=*/false);
+      return called.is_valid() ? called : builder_->Undef(type);
+    }
+    // The minimum of a signed type has a magnitude one past its maximum, so
+    // negating the positive constant would overflow; the negative value is
+    // built directly (D238).
+    if (expr.op == TokenKind::kMinus && ast().Get(expr.lhs).kind == ExprKind::kIntLiteral) {
+      const TypeId built = Unwrapped(type);
+      if (types_->KindOf(built) == TypeKind::kInt && types_->Get(built).is_signed) {
+        const NumberLiteral& number = ast().number(ast().Get(expr.lhs).aux);
+        return Coerce(builder_->ConstInt(built, uint64_t{0} - number.integer_value), built, type);
+      }
+    }
     const InstId operand = Value(expr.lhs);
     // What arithmetic produces is what it was given, not what the context
     // wanted: `-total` where an `int?` is expected is a negation of an
@@ -3756,6 +4222,185 @@ class Lowerer {
     }
   }
 
+  static std::string_view OperatorMethodName(OperatorKind kind) {
+    switch (kind) {
+      case OperatorKind::kPlus:
+        return "Plus";
+      case OperatorKind::kMinus:
+        return "Minus";
+      case OperatorKind::kTimes:
+        return "Times";
+      case OperatorKind::kDivide:
+        return "Divide";
+      case OperatorKind::kNegate:
+        return "Negate";
+      case OperatorKind::kEquals:
+        return "Equals";
+      case OperatorKind::kCompare:
+        return "Compare";
+      case OperatorKind::kNone:
+        break;
+    }
+    return "";
+  }
+
+  // A number, a `bool`, a `char` or a string: what the opcodes already
+  // answer for, and so what an operator ability is not called on (D239).
+  bool IsPrimitiveOperand(TypeId type) {
+    switch (types_->KindOf(type)) {
+      case TypeKind::kBool:
+      case TypeKind::kChar:
+      case TypeKind::kInt:
+      case TypeKind::kFloat:
+      case TypeKind::kIntLiteral:
+      case TypeKind::kFloatLiteral:
+      case TypeKind::kString:
+      case TypeKind::kStr:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // Whether |id| is an operator the checker made a call of, on an operand
+  // that is not a primitive: primitives keep today's opcodes, so a generic
+  // `Max<int>` copy has no call in it (D239).
+  bool UsesOperatorCall(ExprId id, ExprId operand) {
+    return typed().OperatorOf(id) != nullptr &&
+           !IsPrimitiveOperand(Erase(TypeOf(operand)));
+  }
+
+  // The operator at |id| as the call the checker said it was. The receiver
+  // is borrowed; the right operand is an address when the parameter is
+  // `&Self`. `!=` is `Equals` and then a not; `<` and friends compare what
+  // `Compare` answers with zero (D239).
+  InstId LowerOperatorCall(ExprId id, TokenKind op, TypeId owner, InstId receiver, ExprId rhs, TypeId type, bool binary) {
+    const TypedBody::OperatorCall* call = typed().OperatorOf(id);
+    const Symbol name = interner_->Intern(OperatorMethodName(call->kind));
+    const Member* member = resolution().FindMember(owner, name);
+    if (member == nullptr) {
+      member = resolution().FindInheritedMember(owner, name);
+    }
+    if (member == nullptr || member->kind != MemberKind::kMethod || !receiver.is_valid()) {
+      return InstId{};
+    }
+
+    const auto hold = [&](InstId value) {
+      if (binary) {
+        if (IsFreshHandle(value)) {
+          m_Temporaries.emplace_back(value, ValueType(value));
+        }
+      } else {
+        HoldTemporary(value);
+      }
+    };
+    hold(receiver);
+
+    std::vector<InstId> arguments;
+    if (ast().Contains(rhs)) {
+      const std::vector<TypeId> params = types_->ArgumentsOf(member->type);
+      InstId value;
+      {
+        const Borrowing borrowing(this);
+        value = Value(rhs);
+      }
+      hold(value);
+      if (!params.empty() && types_->KindOf(params[0]) == TypeKind::kReference) {
+        value = Address(rhs, value);
+      } else if (!params.empty() && IsPrimitiveOperand(Erase(params[0]))) {
+        value = Coerce(value, TypeOf(rhs), Erase(params[0]), rhs);
+      }
+      arguments.push_back(value);
+    }
+
+    const bool compare = call->kind == OperatorKind::kCompare;
+    const InstId result = CallMethodOn(owner, name, receiver, &arguments, compare ? types_->default_int() : type, id);
+    if (!result.is_valid()) {
+      return result;
+    }
+
+    if (call->kind == OperatorKind::kEquals) {
+      return op == TokenKind::kBangEq ? builder_->Add(Opcode::kLogicalNot, types_->bool_type(), {result}) : result;
+    }
+    if (compare) {
+      return builder_->Add(BinaryOpcode(op), types_->bool_type(), {result, builder_->ConstInt(ValueType(result), 0)});
+    }
+
+    return result;
+  }
+
+  // `a.Plus(b)` and the rest on a number: the opcode its operator is.
+  // `Compare` is -1, 0 or 1 by two branches: the interpreter does not cast
+  // a `bool` to an integer, so `(a > b) - (a < b)` would not agree (D239).
+  InstId LowerPrimitiveOperator(Symbol name, InstId receiver, const std::vector<InstId>& arguments) {
+    const std::string_view text = interner_->Text(name);
+    const TypeId held = ValueType(receiver);
+    if (!held.is_valid()) {
+      return InstId{};
+    }
+
+    InstId right = arguments.empty() ? InstId{} : arguments[0];
+    if (right.is_valid() && types_->KindOf(ValueType(right)) == TypeKind::kPointer) {
+      right = builder_->Add(Opcode::kLoad, Erase(types_->ElementOf(ValueType(right))), {right});
+    }
+
+    if (text == "Negate" && !right.is_valid()) {
+      return builder_->Add(Opcode::kNeg, held, {receiver});
+    }
+    if (!right.is_valid()) {
+      return InstId{};
+    }
+    right = AsType(right, held);
+
+    Opcode opcode = Opcode::kUndef;
+    if (text == "Plus") {
+      opcode = Opcode::kAdd;
+    } else if (text == "Minus") {
+      opcode = Opcode::kSub;
+    } else if (text == "Times") {
+      opcode = Opcode::kMul;
+    } else if (text == "Divide") {
+      opcode = Opcode::kDiv;
+    }
+    if (opcode != Opcode::kUndef) {
+      return builder_->Add(opcode, held, {receiver, right});
+    }
+
+    if (text == "Equals") {
+      if (IsView(held)) {
+        return TextEqual(receiver, right);
+      }
+      return builder_->Add(Opcode::kEq, types_->bool_type(), {receiver, right});
+    }
+    if (text == "Compare" && !IsView(held)) {
+      const TypeId order = types_->default_int();
+      const BlockId greater = builder_->AddBlock("compare.greater");
+      const BlockId rest = builder_->AddBlock("compare.rest");
+      const BlockId less = builder_->AddBlock("compare.less");
+      const BlockId equal = builder_->AddBlock("compare.equal");
+      const BlockId join = builder_->AddBlock("compare.join");
+      const InstId result = builder_->AddParam(join, order);
+      builder_->Branch(builder_->Add(Opcode::kGt, types_->bool_type(), {receiver, right}), greater, rest);
+
+      builder_->SetCurrent(greater);
+      builder_->Jump(join, {builder_->ConstInt(order, 1)});
+
+      builder_->SetCurrent(rest);
+      builder_->Branch(builder_->Add(Opcode::kLt, types_->bool_type(), {receiver, right}), less, equal);
+
+      builder_->SetCurrent(less);
+      builder_->Jump(join, {builder_->ConstInt(order, static_cast<uint64_t>(-1))});
+
+      builder_->SetCurrent(equal);
+      builder_->Jump(join, {builder_->ConstInt(order, 0)});
+
+      builder_->SetCurrent(join);
+      return result;
+    }
+
+    return InstId{};
+  }
+
   // An operand made only to be compared -- `tracker.seen != null` reads a
   // weak field into a reference of its own -- is let go once the answer is
   // in (D213).
@@ -3771,6 +4416,17 @@ class Lowerer {
   }
 
   InstId LowerBinaryInner(ExprId id, const Expr& expr, TypeId type) {
+    // An `@Operator` call (D239); a number keeps its opcode, which is what
+    // keeps `Max<int>` free of calls.
+    if (UsesOperatorCall(id, expr.lhs)) {
+      InstId receiver;
+      {
+        const Borrowing borrowing(this);
+        receiver = Value(expr.lhs);
+      }
+      const InstId called = LowerOperatorCall(id, expr.op, Erase(TypeOf(expr.lhs)), receiver, expr.rhs, type, /*binary=*/true);
+      return called.is_valid() ? called : builder_->Undef(type);
+    }
     // `&&` and `||` do not evaluate their right side unless they have to, so
     // they are control flow rather than operations.
     if (expr.op == TokenKind::kAmpAmp || expr.op == TokenKind::kPipePipe) {
@@ -4116,7 +4772,13 @@ class Lowerer {
       builder.Mutable(address).payload.integer = global.token;
       const InstId value =
           builder.Call(global.initializer, global.type, {});
-      builder.Add(Opcode::kStore, TypeId{}, {address, value});
+      builder.Add(Opcode::kStore, TypeId{}, {address, global.weak ? WeakStored(value, global.type) : value});
+      if (global.weak) {
+        // The initializer answers a strong reference; the global keeps only
+        // the weak count, so the strong one is let go (D253).
+        WeakRetainValue(value, global.type);
+        ReleaseValue(value, global.type);
+      }
     }
     builder.ReturnVoid();
     builder_ = outer;
@@ -4160,7 +4822,18 @@ class Lowerer {
         // what the runtime's storage already holds -- so there is nothing
         // to call, and calling the initializer that was never given a
         // body trapped with "no body to run" (D136).
-        item.init.is_valid()});
+        item.init.is_valid(), HasFlag(item.flags, ItemFlags::kWeak)});
+  }
+
+  // Whether |name| is a module-level `var` that holds its object weakly (D253).
+  bool IsWeakGlobal(Symbol name) {
+    for (const Global& global : globals_) {
+      if (global.name == name) {
+        return global.weak;
+      }
+    }
+    const Binding* binding = resolution().Find(name);
+    return binding != nullptr && binding->kind == BindingKind::kValue && binding->is_mutable && binding->is_weak;
   }
 
   // What |name| holds, or an invalid id when it is not a global.
@@ -4437,6 +5110,7 @@ class Lowerer {
     // many elements there are.
     TypeId soa_record;
     bool Global = false;
+    bool WeakGlobal = false;
 
     bool readable() const {
       return slot.is_valid() || pointer.is_valid() || value.is_valid();
@@ -4472,6 +5146,7 @@ class Lowerer {
           place.pointer = address;
           place.root_type = Erase(TypeOf(id));
           place.Global = true;
+          place.WeakGlobal = IsWeakGlobal(expr.name);
           return place;
         }
         // Inside a method a bare name may be a field of the enclosing
@@ -4490,6 +5165,17 @@ class Lowerer {
         return place;
       }
       case ExprKind::kField: {
+        // `m.count = 1` where `m` is a module: the module's `var`, not a
+        // field of anything (D246).
+        if (const Symbol named = QualifiedName(id, expr); named.is_valid()) {
+          if (const InstId address = GlobalAddress(named); address.is_valid()) {
+            place.pointer = address;
+            place.root_type = Erase(TypeOf(id));
+            place.Global = true;
+            place.WeakGlobal = IsWeakGlobal(named);
+            return place;
+          }
+        }
         const TypeId owner = Erase(TypeOf(expr.lhs));
         // What this step reads is the *field's* type. The checker records
         // the type the context wanted at the expression, so a field read
@@ -4837,7 +5523,7 @@ class Lowerer {
 
     if (IsWeakPlace(place)) {
       const InstId old = builder_->Add(Opcode::kLoad, stored, {address});
-      builder_->Add(Opcode::kStore, TypeId{}, {address, value});
+      builder_->Add(Opcode::kStore, TypeId{}, {address, WeakStored(value, stored)});
       InvalidateDerived(place);
       WeakRetainValue(value, stored);
       WeakReleaseValue(old, stored);
@@ -4935,6 +5621,9 @@ class Lowerer {
   }
 
   bool IsWeakPlace(const Place& place) {
+    if (place.path.empty() && place.WeakGlobal) {
+      return true;
+    }
     if (place.path.empty() || place.path.back().index.is_valid() || place.soa_record.is_valid()) {
       return false;
     }
@@ -5020,7 +5709,7 @@ class Lowerer {
   // and then written, so `xs[next()] += 1` calls `next` once. The operation
   // is the binary operator's own instruction, so it traps the same way
   // (D246).
-  InstId LowerCompoundAssign(const Expr& expr) {
+  InstId LowerCompoundAssign(ExprId id, const Expr& expr) {
     const Place place = PlaceOf(expr.lhs);
     const TypeId held = TypeAt(place);
     if (!place.addressable() || !held.is_valid()) {
@@ -5039,6 +5728,12 @@ class Lowerer {
       WritePlace(place, Coerce(value, ValueType(value), held, expr.rhs));
       builder_->Jump(after, {});
       builder_->SetCurrent(after);
+      return InstId{};
+    }
+    // `a += b` on a type with `Plus` is `a = a.Plus(b)` (D239).
+    if (UsesOperatorCall(id, expr.lhs)) {
+      const InstId called = LowerOperatorCall(id, expr.op, Erase(TypeOf(expr.lhs)), old, expr.rhs, held, /*binary=*/false);
+      WritePlace(place, called);
       return InstId{};
     }
     const InstId right = Value(expr.rhs);
@@ -5098,9 +5793,9 @@ class Lowerer {
     return InstId{};
   }
 
-  InstId LowerAssign(const Expr& expr) {
+  InstId LowerAssign(ExprId id, const Expr& expr) {
     if (expr.op != TokenKind::kEq) {
-      return LowerCompoundAssign(expr);
+      return LowerCompoundAssign(id, expr);
     }
     const InstId value = Value(expr.rhs);
     const Place place = PlaceOf(expr.lhs);
@@ -5186,9 +5881,7 @@ class Lowerer {
 
     // `Free(items)` gives the storage back. Not a call either: what a
     // view's storage is depends on how the tier laid it out.
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        interner_->Text(ast().Get(expr.lhs).name) == "Free" &&
+    if (IntrinsicName(expr) == "Free" &&
         arguments.size() == 1 &&
         types_->KindOf(Erase(TypeOf(ast().Get(expr.args).empty()
                                         ? ExprId{}
@@ -5199,7 +5892,12 @@ class Lowerer {
       if (types_->KindOf(slice) == TypeKind::kSlice && Counts(types_->ElementOf(slice))) {
         builder_->Call(SliceReleaseFor(slice), types_->void_type(), {arguments[0]});
       }
-      const InstId data = builder_->Extract(word, arguments[0], 0);
+      // The data of a slice is a pointer (D238); the runtime's parameter is
+      // declared as a word, which `AsDeclared` converts to.
+      const TypeId bytes = types_->Pointer(
+          types_->Int(IntWidth::k8, /*is_signed=*/false),
+          /*is_mutable=*/true);
+      const InstId data = builder_->Extract(bytes, arguments[0], 0);
       const Symbol name = interner_->Intern("wolang_object_free");
       const uint32_t free = DeclareExternal(
           name, types_->Function({word}, types_->void_type()));
@@ -5212,11 +5910,9 @@ class Lowerer {
     // is this file's schedule, which only the compiler knows. Every
     // stage's systems are handed to the runtime together, because a stage
     // is exactly a set that may run at the same time (D101).
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        interner_->Text(ast().Get(expr.lhs).name) == "RunSystems" &&
+    if (IntrinsicName(expr) == "RunSystems" &&
         arguments.size() == 2) {
-      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      const Binding* binding = IntrinsicBinding(expr);
       if (binding == nullptr || !binding->has_body) {
         return RunSchedule(arguments[0], arguments[1]);
       }
@@ -5230,11 +5926,9 @@ class Lowerer {
     // stepping a generator: those *want* the low bits of a wrapped
     // result. Not a call, because what they stand for is the instruction
     // the compiler already writes for its own address arithmetic (D107).
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
+    if (!IntrinsicName(expr).empty() &&
         arguments.size() == 2) {
-      const std::string_view called =
-          interner_->Text(ast().Get(expr.lhs).name);
+      const std::string_view called = IntrinsicName(expr);
       Opcode wrapping = Opcode::kUndef;
       if (called == "WrappingAdd") {
         wrapping = Opcode::kAdd;
@@ -5243,7 +5937,7 @@ class Lowerer {
       } else if (called == "WrappingMul") {
         wrapping = Opcode::kMul;
       }
-      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      const Binding* binding = IntrinsicBinding(expr);
       if (wrapping != Opcode::kUndef &&
           (binding == nullptr || !binding->has_body)) {
         const TypeId word = Erase(type);
@@ -5260,11 +5954,9 @@ class Lowerer {
     // carries the type and each tier answers it. The value itself is not
     // read -- what is wanted is its type, which is why this is spelled
     // with an argument at all (D100).
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        interner_->Text(ast().Get(expr.lhs).name) == "SizeOf" &&
+    if (IntrinsicName(expr) == "SizeOf" &&
         arguments.size() == 1) {
-      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      const Binding* binding = IntrinsicBinding(expr);
       if ((binding == nullptr || !binding->has_body) &&
           !ast().Get(expr.args).empty()) {
         // Through the substitution in force: inside `Add<T>` the
@@ -5286,11 +5978,9 @@ class Lowerer {
     // is, is the one every tier computes the same way -- the declaration
     // it was written as, packed (D85). The result type is what carries
     // `T`, which is why it is a `Token<T>` rather than a bare number.
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        interner_->Text(ast().Get(expr.lhs).name) == "TokenOf" &&
+    if (IntrinsicName(expr) == "TokenOf" &&
         arguments.empty()) {
-      const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+      const Binding* binding = IntrinsicBinding(expr);
       const TypeId wrapper = Erase(Apply(type));
       const std::vector<TypeId> named = types_->ArgumentsOf(wrapper);
       if ((binding == nullptr || !binding->has_body) && !named.empty()) {
@@ -5303,10 +5993,7 @@ class Lowerer {
 
     // `SoaNew<T>(count)` is not a call either: how big that storage is, is
     // a question only a tier can answer.
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        (interner_->Text(ast().Get(expr.lhs).name) == "SoaNew" ||
-         interner_->Text(ast().Get(expr.lhs).name) == "ArrayNew") &&
+    if ((IntrinsicName(expr) == "SoaNew" || IntrinsicName(expr) == "ArrayNew") &&
         arguments.size() == 1 &&
         types_->KindOf(Unwrapped(type)) == TypeKind::kSlice) {
       const TypeId word = types_->Int(IntWidth::k64, /*is_signed=*/false);
@@ -5320,9 +6007,7 @@ class Lowerer {
     // halves of the body's function value: the code, and what it closed
     // over. Which is a thing only lowering can do -- the language has no
     // way to take a function value apart, and should not (D147).
-    if (ast().Contains(expr.lhs) &&
-        ast().Get(expr.lhs).kind == ExprKind::kPath &&
-        interner_->Text(ast().Get(expr.lhs).name) == "ParallelFor" &&
+    if (IntrinsicName(expr) == "ParallelFor" &&
         arguments.size() == 3) {
       const TypeId word = types_->u64();
       const TypeId count = types_->Int(IntWidth::k64, /*is_signed=*/true);
@@ -5339,7 +6024,7 @@ class Lowerer {
       return builder_->Call(
           runtime, types_->void_type(),
           {code, environment, Widen(arguments[0], count),
-           Coerce(arguments[1], ValueType(arguments[1]), threads)});
+           Widen(arguments[1], threads)});
     }
 
     // `BytesFromRaw(data, length)` is not a call: a slice *is* a pointer
@@ -5401,6 +6086,20 @@ class Lowerer {
       }
 
       const Binding* binding = resolution().Find(name);
+      // An error with data: its box is built, and travels with the tag
+      // until it is put into a `T!` (D235).
+      if (binding != nullptr && binding->kind == BindingKind::kErrorTag) {
+        const std::vector<ErrorMember> stated = types_->StatedErrorsOf(binding->type);
+        if (stated.size() == 1 && stated[0].detail.is_valid()) {
+          const TypeId optional = types_->Optional(stated[0].detail);
+          const InstId box = NewObject(stated[0].detail, arguments);
+          const InstId slot = builder_->Add(Opcode::kOptionalWrap, optional, {box});
+          const InstId pair = builder_->Add(Opcode::kMakeStruct, Erase(binding->type), {builder_->ConstInt(types_->u32(), TagOfBinding(binding, name)), slot});
+          m_ErrorPairs.emplace_back(Erase(binding->type), binding->type);
+          m_Fresh.emplace_back(current_function_, pair);
+          return pair;
+        }
+      }
       // A constructor: the callee is a type, and the arguments are its
       // fields in order.
       if (binding != nullptr && binding->kind == BindingKind::kType) {
@@ -5655,11 +6354,10 @@ class Lowerer {
   InstId LowerBytesFromRaw(const Expr& expr,
                            TypeId type,
                            const std::vector<InstId>& arguments) {
-    if (arguments.size() != 2 || !ast().Contains(expr.lhs) ||
-        ast().Get(expr.lhs).kind != ExprKind::kPath) {
+    const std::string_view called = IntrinsicName(expr);
+    if (arguments.size() != 2 || called.empty()) {
       return InstId{};
     }
-    const std::string_view called = interner_->Text(ast().Get(expr.lhs).name);
     // `TextFromRaw` is the same instruction with a different name: a
     // `text` is a pointer and a length too (D67), so what both stand for
     // is the pair rather than a call.
@@ -5673,7 +6371,7 @@ class Lowerer {
     // pointer moved on by `at` elements and the length shortened by as
     // many. Between the two a caller can name any run inside a view
     // without copying it (D177).
-    if (called == "Prefix" || called == "Suffix") {
+    if (called == "Prefix" || called == "PrefixMut" || called == "Suffix") {
       const TypeId slice = Unwrapped(type);
       if (types_->KindOf(slice) != TypeKind::kSlice) {
         return InstId{};
@@ -5684,7 +6382,7 @@ class Lowerer {
           types_->Int(IntWidth::k8, /*is_signed=*/false),
           /*is_mutable=*/true);
       const InstId data = builder_->Extract(pointer, arguments[0], 0);
-      if (called == "Prefix") {
+      if (called != "Suffix") {
         return Coerce(builder_->Add(Opcode::kMakeStruct, slice,
                                     {data, Widen(arguments[1], word)}),
                       slice, type);
@@ -5734,7 +6432,7 @@ class Lowerer {
         types_->KindOf(slice) != TypeKind::kStr) {
       return InstId{};
     }
-    const Binding* binding = resolution().Find(ast().Get(expr.lhs).name);
+    const Binding* binding = IntrinsicBinding(expr);
     if (binding != nullptr && binding->has_body) {
       // Somebody wrote their own function of that name, and theirs wins.
       return InstId{};
@@ -5999,6 +6697,10 @@ class Lowerer {
       return InstId{};
     }
 
+    if (callee.kind == ExprKind::kOptionalField) {
+      return LowerOptionalMethodCall(callee, type, arguments, id);
+    }
+
     TypeId owner;
     Symbol name;
     InstId receiver;
@@ -6022,6 +6724,91 @@ class Lowerer {
       return InstId{};
     }
 
+    // `a.Compare(&b)` on a number, reached through a bound like `T: Ord`
+    // with `T` = `int`: a number has no such method, and the opcodes are
+    // what its operator was always going to be (D239).
+    if (IsPrimitiveOperand(owner) &&
+        resolution().FindMember(owner, name) == nullptr) {
+      return LowerPrimitiveOperator(name, receiver, *arguments);
+    }
+    return CallMethodOn(owner, name, receiver, arguments, type, id);
+  }
+
+  InstId LowerOptionalMethodCall(const Expr& callee,
+                                 TypeId type,
+                                 std::vector<InstId>* arguments,
+                                 ExprId id) {
+    InstId optional;
+    {
+      const Borrowing borrowing(this);
+      optional = Value(callee.lhs);
+    }
+    if (!optional.is_valid()) {
+      return InstId{};
+    }
+
+    const TypeId owner = Erase(types_->ElementOf(TypeOf(callee.lhs)));
+    const Member* member = resolution().FindMember(owner, callee.name);
+    if (member == nullptr) {
+      member = resolution().FindInheritedMember(owner, callee.name);
+    }
+    if (member == nullptr || member->kind != MemberKind::kMethod) {
+      return InstId{};
+    }
+
+    const bool produces = types_->KindOf(type) != TypeKind::kVoid;
+    const bool wraps = produces && !types_->IsOptional(Erase(types_->ElementOf(member->type)));
+    const TypeId inner = wraps ? Erase(types_->ElementOf(type)) : type;
+
+    const InstId present = builder_->Add(Opcode::kOptionalIsPresent, types_->bool_type(), {optional});
+    const BlockId have = builder_->AddBlock("call.have");
+    const BlockId absent = builder_->AddBlock("call.absent");
+    const BlockId join = builder_->AddBlock("call.join");
+    InstId result;
+    if (produces) {
+      result = builder_->AddParam(join, type);
+    }
+
+    builder_->Branch(present, have, absent);
+
+    builder_->SetCurrent(have);
+    const InstId object = builder_->Add(Opcode::kOptionalValue, owner, {optional});
+    InstId called = CallMethodOn(owner, callee.name, object, arguments, inner, id);
+    if (produces) {
+      if (!called.is_valid()) {
+        called = builder_->Undef(inner);
+      }
+      if (wraps) {
+        called = builder_->Add(Opcode::kOptionalWrap, type, {called});
+      }
+      builder_->Jump(join, {called});
+    } else {
+      builder_->Jump(join, {});
+    }
+
+    builder_->SetCurrent(absent);
+    if (produces) {
+      builder_->Jump(join, {builder_->ConstNull(type)});
+    } else {
+      builder_->Jump(join, {});
+    }
+
+    builder_->SetCurrent(join);
+    if (IsFreshHandle(optional)) {
+      ReleaseValue(optional, ValueType(optional));
+    }
+    return produces ? result : builder_->ConstBool(true);
+  }
+
+  // The call of |name| on |receiver|, once both are known. A written call
+  // and an operator the checker settled as one (D239) end up here, so the
+  // tiers see one shape for both.
+  InstId CallMethodOn(TypeId owner,
+                      Symbol name,
+                      InstId receiver,
+                      std::vector<InstId>* arguments,
+                      TypeId type,
+                      ExprId id) {
     // A method on a reference is the method of what it refers to (D109).
     //
     // A reference is a pointer by the time it gets here (see `Erase`).
@@ -6096,17 +6883,7 @@ class Lowerer {
       // Declared in another file. Lowering is per file, so it gets a
       // declaration here with the receiver in its signature, and the
       // linker resolves it by the declaration it came from.
-      std::vector<TypeId> params;
-      params.push_back(owner);
-      for (TypeId param : types_->ArgumentsOf(member->type)) {
-        params.push_back(Erase(param));
-      }
-      const TypeId signature = types_->Function(
-          params, Erase(types_->ElementOf(member->type)));
-      index = DeclareExternal(MethodName(owner, name), signature,
-                              member->file, member->item,
-                              /*is_task=*/false, /*has_body=*/false,
-                              member->slot);
+      index = DeclareMethodFrom(owner, name, *member);
       Remember(member->file, member->item, index, member->slot);
     }
 
@@ -6273,9 +7050,9 @@ class Lowerer {
     if (!value.is_valid() || !IsFreshHandle(value) || !Counts(held)) {
       return;
     }
-    const InstId slot = builder_->Add(Opcode::kAlloca, Erase(held));
+    const InstId slot = builder_->AddToEntry(Opcode::kAlloca, Erase(held));
     builder_->Add(Opcode::kStore, TypeId{}, {slot, value});
-    RememberOwner(Symbol{}, slot, held, /*live=*/true);
+    RememberOwner(Symbol{}, slot, held, /*live=*/true, /*in_slot=*/true, /*is_parameter=*/false, /*anywhere=*/true);
   }
 
   InstId LowerMatch(const Expr& expr, TypeId type) {
@@ -6361,6 +7138,10 @@ class Lowerer {
       builder_->SetCurrent(arms[i].body);
       const size_t depth = locals_.size();
       const size_t owners_before = owners_.size();
+      // What an arm holds is let go of where the arm ends: its slot and
+      // flag live in the arm's block, which does not dominate the end of
+      // the statement the `match` is part of (D235).
+      ++scope_depth_;
       BindArm(arm, subject, subject_type);
       if (subject_flag.is_valid()) {
         // A payload that owns something is the subject's own storage, so
@@ -6373,15 +7154,20 @@ class Lowerer {
       }
       if (produces) {
         const InstId value = Value(arm.body);
+        const InstId yielded = Coerce(value, ValueType(value), Erase(type), arm.body);
         if (!builder_->Terminated()) {
-          builder_->Jump(join_block(), {Coerce(value, ValueType(value), Erase(type), arm.body)});
+          RunDeferred(scope_depth_);
+          builder_->Jump(join_block(), {yielded});
         }
       } else {
         Lower(arm.body);
         if (!builder_->Terminated()) {
+          RunDeferred(scope_depth_);
           builder_->Jump(join_block());
         }
       }
+      ForgetDeferred(scope_depth_);
+      --scope_depth_;
       PopLocals(depth);
       if (owners_.size() > owners_before) {
         owners_.resize(owners_before);
@@ -6458,6 +7244,64 @@ class Lowerer {
                          {combined, guard});
   }
 
+  // The error a pattern names, written `Name` or `module.Name` (D246).
+  const Binding* ErrorBindingOf(const Pattern& pattern) const {
+    const std::span<const Symbol> path = ast().Get(pattern.path);
+    if (path.size() == 2 && resolution().IsQualifier(path.front()) && resolution().Find(path.front()) == nullptr) {
+      return resolution().FindQualified(path.front(), path.back());
+    }
+    return resolution().Find(path.empty() ? pattern.name : path.back());
+  }
+
+  // `Name(x, y)` on a `T!`, where `Name` is an error with data: each name
+  // binds a field of the box in the error's slot (D235). False for `Ok` and
+  // for anything else.
+  bool BindsPayload(const Pattern& pattern, InstId subject, TypeId subject_type) {
+    const Binding* tag = ErrorBindingOf(pattern);
+    if (tag == nullptr || tag->kind != BindingKind::kErrorTag) {
+      return false;
+    }
+    const std::vector<ErrorMember> stated = types_->StatedErrorsOf(tag->type);
+    if (stated.size() != 1 || !stated[0].detail.is_valid()) {
+      return false;
+    }
+
+    const TypeId detail = stated[0].detail;
+    const std::vector<TypeId> classes = PayloadClasses(Erase(subject_type));
+    const auto at = std::find(classes.begin(), classes.end(), detail);
+    if (at == classes.end()) {
+      return true;
+    }
+
+    const TypeId optional = types_->Optional(detail);
+    const InstId slot = builder_->Extract(optional, subject, 2 + static_cast<uint32_t>(at - classes.begin()));
+    const InstId box = builder_->Add(Opcode::kOptionalValue, detail, {slot});
+    uint32_t position = 0;
+    for (PatternId element : ast().Get(pattern.elements)) {
+      if (ast().Contains(element) && ast().Get(element).kind == PatternKind::kBinding) {
+        const TypeId field_type = Erase(FieldTypeAt(detail, position));
+        const InstId address = builder_->FieldAddress(types_->Pointer(field_type, /*is_mutable=*/false), box, position);
+        const InstId field = builder_->Add(Opcode::kLoad, field_type, {address});
+        PushLocal(Local{ast().Get(element).name, InstId{}, field, field_type});
+      }
+      ++position;
+    }
+    return true;
+  }
+
+  // The tag of an error: a hash of `module.Name`, so two modules' `Malformed`
+  // differ and the number is the same in every build (D235).
+  uint32_t TagOfBinding(const Binding* binding, Symbol name) const {
+    if (binding != nullptr && binding->error_name.is_valid()) {
+      return ErrorTag(interner_->Text(binding->error_name));
+    }
+    return name.index + 1;
+  }
+
+  uint32_t TagOfName(Symbol name) const {
+    return TagOfBinding(resolution().Find(name), name);
+  }
+
   // Whether |name| is one of the program's error tags.
   bool IsErrorName(Symbol name) const {
     const Binding* binding = resolution().Find(name);
@@ -6476,7 +7320,7 @@ class Lowerer {
     const bool is_ok = interner_->Text(name) == "Ok";
     const InstId tag = builder_->Extract(types_->u32(), subject, 0);
     const InstId expected = builder_->ConstInt(
-        types_->u32(), is_ok ? 0 : name.index + 1);
+        types_->u32(), is_ok ? 0 : TagOfBinding(ErrorBindingOf(pattern), name));
     return builder_->Add(Opcode::kEq, types_->bool_type(),
                          {tag, expected});
   }
@@ -6512,11 +7356,11 @@ class Lowerer {
           return FallibleTest(pattern, subject);
         }
         // A variant is identified by the tag the enum stores first. Reading
-        // it as a field keeps the layout decision in one place.
-        const InstId tag = builder_->Extract(types_->default_int(), subject,
-                                             0);
+        // it as a field keeps the layout decision in one place. The tag is
+        // u32 wherever it is read, never `int` (D238).
+        const InstId tag = builder_->Extract(types_->u32(), subject, 0);
         const InstId expected = builder_->ConstInt(
-            types_->default_int(), VariantIndex(subject_type, pattern));
+            types_->u32(), VariantIndex(subject_type, pattern));
         return builder_->Add(Opcode::kEq, types_->bool_type(),
                              {tag, expected});
       }
@@ -6569,6 +7413,11 @@ class Lowerer {
           !IsVariantName(subject_type, pattern.name)) {
         PushLocal(
             Local{pattern.name, InstId{}, subject, subject_type});
+        continue;
+      }
+      if (pattern.kind == PatternKind::kVariant &&
+          types_->KindOf(subject_type) == TypeKind::kFallible &&
+          BindsPayload(pattern, subject, subject_type)) {
         continue;
       }
       if (pattern.kind == PatternKind::kVariant &&
@@ -6656,9 +7505,24 @@ class Lowerer {
     const TypeId returned = Erase(return_type_);
     if (types_->KindOf(returned) == TypeKind::kFallible) {
       const TypeId mine = Erase(types_->ElementOf(returned));
-      const InstId again = builder_->Add(
-          Opcode::kMakeStruct, returned,
-          {tag, builder_->ConstInt(mine, 0)});
+      std::vector<InstId> fields;
+      fields.push_back(tag);
+      fields.push_back(builder_->ConstInt(mine, 0));
+      const std::vector<TypeId> have = PayloadClasses(Erase(inner));
+      for (TypeId detail : PayloadClasses(returned)) {
+        const TypeId optional = types_->Optional(detail);
+        const auto at = std::find(have.begin(), have.end(), detail);
+        if (at == have.end()) {
+          fields.push_back(builder_->ConstNull(optional));
+          continue;
+        }
+        const InstId slot = builder_->Extract(optional, subject, 2 + static_cast<uint32_t>(at - have.begin()));
+        if (!IsFreshHandle(subject)) {
+          RetainValue(slot, optional);
+        }
+        fields.push_back(slot);
+      }
+      const InstId again = builder_->Add(Opcode::kMakeStruct, returned, std::move(fields));
       RunDeferred(0);
       builder_->Return(again);
     } else {
@@ -6889,6 +7753,7 @@ class Lowerer {
     // function being lowered, by the names the checker recorded (D138).
     std::vector<Symbol> captures;
     std::vector<TypeId> captured_types;
+    std::vector<TypeId> captured_raw;
     std::vector<InstId> captured_values;
     for (const Symbol captured : typed().CapturesOf(id)) {
       const Local* local = Find(captured);
@@ -6905,8 +7770,10 @@ class Lowerer {
       }
       captures.push_back(captured);
       captured_types.push_back(held);
+      captured_raw.push_back(local->type);
       captured_values.push_back(value);
     }
+    const bool escaping = !captures.empty() && typed().IsEscaping(id);
 
     std::string name = "closure$";
     name.append(std::to_string(closure_serial_++));
@@ -6920,7 +7787,12 @@ class Lowerer {
     // the value (D138).
     TypeId environment;
     if (!captures.empty()) {
-      environment = types_->Tuple(captured_types);
+      std::vector<TypeId> held_types;
+      if (escaping) {
+        held_types.push_back(types_->u64());
+      }
+      held_types.insert(held_types.end(), captured_types.begin(), captured_types.end());
+      environment = types_->Tuple(held_types);
       std::vector<TypeId> params;
       params.push_back(types_->Pointer(environment, /*is_mutable=*/true));
       for (const TypeId held : types_->ArgumentsOf(signature)) {
@@ -6938,6 +7810,9 @@ class Lowerer {
 
     closures_.push_back(PendingClosure{id, index, substitution_, self_type_,
                                        here_, captures, environment});
+    if (escaping) {
+      closures_.back().first_field = 1;
+    }
 
     // The value is the pair every function value is: the code, and what
     // it closed over. A closure that captures nothing closed over
@@ -6947,6 +7822,32 @@ class Lowerer {
     const InstId code = builder_->Add(Opcode::kFuncAddress, types_->u64());
     builder_->Mutable(code).payload.callee = index;
     InstId closed = builder_->ConstInt(types_->u64(), 0);
+    if (escaping) {
+      const uint32_t drop = EnvironmentDrop(name, environment, captured_raw);
+      const InstId storage = builder_->Add(Opcode::kNew, types_->Pointer(environment, /*is_mutable=*/true));
+      const InstId drop_code = builder_->Add(Opcode::kFuncAddress, types_->u64());
+      builder_->Mutable(drop_code).payload.callee = drop;
+      builder_->Add(Opcode::kStore, TypeId{}, {builder_->FieldAddress(types_->Pointer(types_->u64(), /*is_mutable=*/true), storage, 0), drop_code});
+      for (size_t i = 0; i < captured_values.size(); ++i) {
+        InstId kept = captured_values[i];
+        const TypeId raw = captured_raw[i];
+        if (types_->KindOf(raw) == TypeKind::kString) {
+          kept = ConcatText(kept, builder_->ConstString(types_->str(), std::string()));
+        } else if (Owns(raw)) {
+          if (const InstId flag = FlagOf(captures[i]); flag.is_valid()) {
+            builder_->Add(Opcode::kStore, TypeId{}, {flag, builder_->ConstBool(false)});
+          }
+        } else if (Counts(raw)) {
+          RetainValue(kept, raw);
+        }
+        const InstId field = builder_->FieldAddress(types_->Pointer(captured_types[i], /*is_mutable=*/true), storage, static_cast<uint32_t>(i + 1));
+        builder_->Add(Opcode::kStore, TypeId{}, {field, kept});
+      }
+      closed = builder_->Add(Opcode::kCast, types_->u64(), {storage});
+      const InstId made = builder_->Add(Opcode::kMakeStruct, signature, {code, closed});
+      m_Fresh.emplace_back(current_function_, made);
+      return made;
+    }
     if (!captures.empty()) {
       // On the heap rather than in the frame: the environment's *address*
       // is what travels, and a frame slot has no address in the
@@ -6973,6 +7874,43 @@ class Lowerer {
       FreeAtScopeExit(storage);
     }
     return builder_->Add(Opcode::kMakeStruct, signature, {code, closed});
+  }
+
+  // `closure$N$drop`: what the last release of an escaping closure's
+  // environment runs. It lets go of each capture and gives the storage back
+  // (D240).
+  uint32_t EnvironmentDrop(const std::string& closure, TypeId environment, const std::vector<TypeId>& raw_types) {
+    Function drop;
+    drop.name = interner_->Intern(closure + "$drop");
+    const TypeId pointer = types_->Pointer(environment, /*is_mutable=*/true);
+    drop.type = types_->Function({pointer}, types_->void_type());
+    const auto index = static_cast<uint32_t>(module_->functions.size());
+    module_->functions.push_back(std::move(drop));
+
+    Builder builder(module_, FunctionId{index});
+    builder.types = types_;
+    Builder* const outer = builder_;
+    const uint32_t outer_function = current_function_;
+    builder_ = &builder;
+    current_function_ = index;
+
+    const BlockId entry = builder.AddBlock("entry");
+    builder.SetCurrent(entry);
+    const InstId self = builder.AddParam(entry, pointer);
+    const std::vector<TypeId> inside = types_->ArgumentsOf(environment);
+    for (size_t i = 0; i < raw_types.size() && i + 1 < inside.size(); ++i) {
+      if (!Releases(raw_types[i])) {
+        continue;
+      }
+      const InstId address = builder.FieldAddress(types_->Pointer(inside[i + 1], /*is_mutable=*/true), self, static_cast<uint32_t>(i + 1));
+      Destroy(builder.Add(Opcode::kLoad, inside[i + 1], {address}), raw_types[i]);
+    }
+    FreeObject(self);
+    builder.ReturnVoid();
+
+    builder_ = outer;
+    current_function_ = outer_function;
+    return index;
   }
 
   // The body of one, as an ordinary function of its parameters.
@@ -7013,15 +7951,17 @@ class Lowerer {
         const InstId held = builder.AddParam(entry, params.front());
         const std::vector<TypeId> inside =
             types_->ArgumentsOf(work.environment);
-        for (size_t i = 0; i < work.captures.size() && i < inside.size();
+        for (size_t i = 0; i < work.captures.size() &&
+                           i + work.first_field < inside.size();
              ++i) {
+          const size_t at = i + work.first_field;
           const InstId field = builder.FieldAddress(
-              types_->Pointer(inside[i], /*is_mutable=*/true), held,
-              static_cast<uint32_t>(i));
+              types_->Pointer(inside[at], /*is_mutable=*/true), held,
+              static_cast<uint32_t>(at));
           const InstId value =
-              builder.Add(Opcode::kLoad, inside[i], {field});
+              builder.Add(Opcode::kLoad, inside[at], {field});
           PushLocal(
-              Local{work.captures[i], InstId{}, value, inside[i]});
+              Local{work.captures[i], InstId{}, value, inside[at]});
         }
         params.erase(params.begin());
       }
@@ -7624,6 +8564,7 @@ class Lowerer {
   std::vector<Owner> owners_;
   std::vector<std::pair<InstId, TypeId>> m_Temporaries;
   std::vector<std::pair<uint32_t, InstId>> m_Fresh;
+  std::vector<std::pair<TypeId, TypeId>> m_ErrorPairs;
   std::vector<std::pair<TypeId, bool>> m_HoldsCounted;
   // How many enclosing reads are through a name rather than of it.
   int borrow_depth_ = 0;
@@ -7637,6 +8578,8 @@ class Lowerer {
     // Whether the source gave it one. A `var` with none is its type's
     // zero, which the runtime's storage already is (D136).
     bool has_initializer = true;
+    // `weak var`: a `C?` that does not keep its object alive (D253).
+    bool weak = false;
   };
   std::vector<Global> globals_;
   // Whether the function being lowered is a `task`.

@@ -6,7 +6,7 @@
 // (D91). Written in Wolang over `ArrayNew` and `Free`, which is what the
 // generics and destructors were for.
 
-need std.mem.{ArrayNew, Free, Prefix}
+need std.mem.{ArrayNew, Free, PrefixMut}
 need std.iter.{Iterable, Iterator}
 
 /// A sequence that grows.
@@ -16,7 +16,7 @@ need std.iter.{Iterable, Iterator}
 /// frame loop wants. `deinit` gives the storage back, so a list that goes
 /// out of scope leaves nothing behind.
 offer class List<T> {
-  var items: []T
+  var items: []mut T
   var count: int = 0
 
   deinit  {
@@ -43,11 +43,11 @@ offer class List<T> {
   /// past the capacity moves the storage and leaves the view pointing at
   /// freed memory, and so does the list dying. Take it after the last
   /// mutation and use it before the next (D227).
-  fun Items() -> []T uses unsafe {
+  fun Items() -> []mut T uses unsafe {
     if count == 0 {
       return ArrayNew<T>(0)
     }
-    return Prefix<T>(items, count)
+    return PrefixMut<T>(items, count)
   }
 
   fun Capacity() -> int {
@@ -295,7 +295,7 @@ offer fun Fold<T, A>(items: []T, start: A, join: fun(A, T) -> A) -> A {
 ///
 /// In place rather than into a new list: a list that owns its storage is
 /// something to free, and a caller that wants both keeps a copy.
-offer fun MapInPlace<T>(items: []T, change: fun(T) -> T) {
+offer fun MapInPlace<T>(items: []mut T, change: fun(T) -> T) {
   var i = 0
   while i < items.len {
     items[i] = change(items[i])
@@ -308,7 +308,7 @@ offer fun MapInPlace<T>(items: []T, change: fun(T) -> T) {
 ///
 /// What filtering is without allocating: the caller takes the first `n`
 /// elements, and what was dropped is past them.
-offer fun Keep<T>(items: []T, holds: fun(T) -> bool) -> int {
+offer fun Keep<T>(items: []mut T, holds: fun(T) -> bool) -> int {
   var kept = 0
   var i = 0
   while i < items.len {

@@ -41,7 +41,7 @@ offer const kMaxPixels: int = 67108864
 ///
 /// Owns its storage and gives it back when it goes out of scope.
 offer class Image {
-  var pixels: []u8
+  var pixels: []mut u8
   var width: int = 0
   var height: int = 0
 
@@ -78,7 +78,7 @@ offer class Image {
 
 /// A transparent black picture of the given size, or `TooLarge`, or
 /// `Malformed` when a side is not positive.
-offer fun ImageNew(width: int, height: int) -> Image! uses unsafe {
+offer fun ImageNew(width: int, height: int) -> Image!(Malformed, TooLarge) uses unsafe {
   if width < 1 || height < 1 {
     return Malformed
   }
@@ -107,9 +107,10 @@ fun Has(data: []u8, at: int, count: int) -> bool {
   return at >= 0 && count >= 0 && at <= data.len && count <= data.len - at
 }
 
-/// A big-endian 32-bit field. `int` is 32 bits here, so anything at or
-/// above 2^31 answers 2^31 - 1: every length and size check refuses it
-/// the same way, and no multiply can overflow on the way (D245).
+/// A big-endian 32-bit field. Anything at or above 2^31 answers 2^31 - 1
+/// so every length and size check refuses it the same way (D245). `int` is
+/// 64 bits (D238), and `SizeOk` bounds each side by `kMaxSide` before any
+/// product is formed, so `width * height * 4` stays far below 2^63.
 fun Be32(data: []u8, at: int) -> int {
   if data[at] >= 128 {
     return 2147483647
@@ -229,16 +230,16 @@ class PngInfo {
   var depth: int = 0
   var kind: int = 0
   var interlace: int = 0
-  var palette: []u8
+  var palette: []mut u8
   var palette_count: int = 0
   /// Alpha per palette entry; 255 where a tRNS chunk did not say.
-  var alpha: []u8
+  var alpha: []mut u8
   var has_key: bool = false
   /// The colour tRNS marks as transparent, as full 16-bit samples.
   var key_r: int = 0
   var key_g: int = 0
   var key_b: int = 0
-  var raw: []u8
+  var raw: []mut u8
 
   deinit  {
     Free(palette)
@@ -347,7 +348,7 @@ fun Predict(data: []u8, cur: int, prev: int, x: int, bpp: int, kind: int) -> int
 
 /// Undoes the filters of one pass in place. False for a filter type
 /// that is not 0 to 4.
-fun Unfilter(raw: []u8, start: int, rowbytes: int, rows: int, bpp: int) -> bool {
+fun Unfilter(raw: []mut u8, start: int, rowbytes: int, rows: int, bpp: int) -> bool {
   var y = 0
   while y < rows {
     const row = start + y * (rowbytes + 1)
@@ -409,7 +410,13 @@ fun Scale(value: int, depth: int) -> int {
 
 /// Writes pixel `x` of the row at `row` as RGBA at `at`. False when a
 /// palette index points past the palette.
-fun PngPixel(raw: []u8, row: int, x: int, info: &PngInfo, dest: []u8, at: int) -> bool {
+fun PngPixel(
+    raw: []u8,
+    row: int,
+    x: int,
+    info: &PngInfo,
+    dest: []mut u8,
+    at: int) -> bool {
   const depth = info.depth
   var r = 0
   var g = 0
@@ -465,7 +472,7 @@ fun PngPixel(raw: []u8, row: int, x: int, info: &PngInfo, dest: []u8, at: int) -
 /// header and its Adler-32 are checked, and the inflater is held to the
 /// size the header implies, so a small file cannot inflate into a large
 /// one (D227, D245).
-offer fun PngDecode(data: []u8) -> Image! uses unsafe {
+offer fun PngDecode(data: []u8) -> Image!(Malformed, TooLarge, Unsupported) uses unsafe {
   if !Has(data, 0, 8) {
     return Malformed
   }
@@ -801,7 +808,7 @@ fun Delta(a: int, b: int) -> int {
 
 /// Reads a QOI file, all six operations. Anything after the last pixel
 /// is ignored; running out of bytes before the last pixel is `Malformed`.
-offer fun QoiDecode(data: []u8) -> Image! uses unsafe {
+offer fun QoiDecode(data: []u8) -> Image!(Malformed, TooLarge) uses unsafe {
   if !Has(data, 0, 14) {
     return Malformed
   }
@@ -1007,7 +1014,7 @@ offer fun QoiEncode(image: &Image) -> []u8 uses unsafe {
 /// Reads a BMP: 24 or 32 bits, uncompressed, bottom-up or top-down, with
 /// a 40-byte or larger header. A 32-bit file's fourth byte is taken as
 /// alpha. Palettes, RLE and bit fields are `Unsupported`.
-offer fun BmpDecode(data: []u8) -> Image! uses unsafe {
+offer fun BmpDecode(data: []u8) -> Image!(Malformed, TooLarge, Unsupported) uses unsafe {
   if !Has(data, 0, 26) {
     return Malformed
   }

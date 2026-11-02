@@ -89,7 +89,11 @@ void ForgetSymbols() {
 
 void* LookupSymbol(std::string_view name) {
   // The host's own first: a program that binds `host_log` means its
-  // `host_log` and not one that happens to be in the process.
+  // `host_log` and not one that happens to be in the process. The vm
+  // whose turn this is comes before the process (D257).
+  if (void* owned = SpaceSymbol(name); owned != nullptr) {
+    return owned;
+  }
   for (const auto& [registered, address] : Registered()) {
     if (registered == name) {
       return address;
@@ -319,6 +323,9 @@ void* LookupSymbol(std::string_view name) {
       {"wolang_host_retain", reinterpret_cast<void*>(&wolang_host_retain)},
       {"wolang_host_release", reinterpret_cast<void*>(&wolang_host_release)},
       {"wolang_host_upgrade", reinterpret_cast<void*>(&wolang_host_upgrade)},
+      {"wolang_host_weak_make", reinterpret_cast<void*>(&wolang_host_weak_make)},
+      {"wolang_host_weak_upgrade", reinterpret_cast<void*>(&wolang_host_weak_upgrade)},
+      {"wolang_host_weak_free", reinterpret_cast<void*>(&wolang_host_weak_free)},
   };
   for (const BuiltinEntry& entry : kTable) {
     if (entry.name == name) {

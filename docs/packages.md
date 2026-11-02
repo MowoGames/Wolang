@@ -52,7 +52,7 @@ W0102 = "error"
 unsafe = "allow"
 # What this package may do at all. Omit the key to leave it unrestricted;
 # an empty string sandboxes it completely.
-capabilities = "io, alloc"
+capabilities = "io"
 ```
 
 Only the `name` key of `[package]` is required. Unknown keys and tables are reported rather

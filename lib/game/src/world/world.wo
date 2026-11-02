@@ -187,7 +187,7 @@ fun ForgetsADespawnedEntity() -> bool uses unsafe {
 /// address of a function is something only the module holding it can
 /// give. A program whose systems live in several files calls it once per
 /// file.
-offer fun RunSystems(world: World, delta: f32) uses unsafe
+offer unsafe fun RunSystems(world: World, delta: f32)
 
 component Health {
   var value: int

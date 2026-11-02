@@ -30,7 +30,6 @@ struct EffectId {
 // their ids are these constants and a lookup table is not needed to test for
 // one.
 enum class BuiltinEffect : uint32_t {
-  kAlloc,
   kIo,
   kRand,
   kTime,

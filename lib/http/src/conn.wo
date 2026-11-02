@@ -41,7 +41,7 @@ offer fun LimitsDefault() -> Limits {
 /// Where one connection's bytes are kept.
 offer struct Held {
   var fd: int = -1
-  var buffer: []u8
+  var buffer: []mut u8
   var filled: int = 0
   /// Set when the client said `Connection: close`, or when the server
   /// decided this one is done: the loop closes it after answering.
@@ -80,7 +80,7 @@ offer fun IsExpired(
 
 /// A pool of connection buffers, one slot per connection held at once.
 offer class Connections {
-  var slots: []Held
+  var slots: []mut Held
   var limits: Limits
 
   deinit  {

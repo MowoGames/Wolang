@@ -31,12 +31,12 @@ offer class Layers {
   var closing: List<After>
 
   /// Adds a layer that runs before the handler.
-  fun Use(run: fun(&mut Request) -> Response?) uses unsafe {
+  fun Use(run: keep fun(&mut Request) -> Response?) uses unsafe {
     opening.Push(Before(run))
   }
 
   /// Adds a layer that runs after it.
-  fun Then(run: fun(&Request, Response) -> Response) uses unsafe {
+  fun Then(run: keep fun(&Request, Response) -> Response) uses unsafe {
     closing.Push(After(run))
   }
 

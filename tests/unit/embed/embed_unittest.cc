@@ -116,6 +116,7 @@ struct FakeActor {
   int32_t Health = 100;
   int32_t References = 0;
   bool Alive = true;
+  uint64_t Serial = 1;
 };
 
 static void FakeRetain(void* object, void* user) {
@@ -132,12 +133,138 @@ static int32_t FakeAlive(void* object, void* user) {
   return static_cast<FakeActor*>(object)->Alive ? 1 : 0;
 }
 
+static uint64_t FakeToken(void* object, void* user) {
+  return static_cast<FakeActor*>(object)->Serial;
+}
+
 static int32_t Actor_Health(void* actor) {
   return static_cast<FakeActor*>(actor)->Health;
 }
 
 static void Actor_Hurt(void* actor, int32_t amount) {
   static_cast<FakeActor*>(actor)->Health -= amount;
+}
+
+static const char* const kWatchSource = R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+class Tracker {
+  weak var seen: Actor? = null
+}
+
+var tracker: Tracker = Tracker(null)
+
+weak var global_seen: Actor? = null
+
+offer fun Watch(pawn: Actor) {
+  tracker.seen = pawn
+  global_seen = pawn
+}
+
+offer fun FieldSees() -> bool {
+  return tracker.seen != null
+}
+
+offer fun GlobalSees() -> bool {
+  return global_seen != null
+}
+)";
+
+static void CheckAReusedAddress(bool with_token) {
+  WolangVm* vm = wolang_vm_create();
+  int32_t calls = 0;
+  WolangHostClass host;
+  std::memset(&host, 0, sizeof(host));
+  host.size = sizeof(host);
+  host.name = "Actor";
+  host.retain = &FakeRetain;
+  host.release = &FakeRelease;
+  host.alive = &FakeAlive;
+  host.token = with_token ? &FakeToken : nullptr;
+  host.user = &calls;
+  WOLANG_EXPECT_EQ(wolang_vm_register_class_ex(vm, &host), kWolangOk);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "reused.wo", kWatchSource), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  FakeActor actor;
+  WolangValue argument = wolang_handle(&actor);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Watch", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "FieldSees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 1);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "GlobalSees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 1);
+
+  actor.Serial += 1;
+  const int32_t expected = with_token ? 0 : 1;
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "FieldSees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, expected);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "GlobalSees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, expected);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+
+  actor.Alive = false;
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "FieldSees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 0);
+  wolang_vm_destroy(vm);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+}
+
+WOLANG_TEST(EmbedTest, ATokenTellsAReusedAddressFromTheObjectBefore) {
+  CheckAReusedAddress(true);
+}
+
+WOLANG_TEST(EmbedTest, WithoutATokenAReusedAddressLooksAlive) {
+  CheckAReusedAddress(false);
+}
+
+WOLANG_TEST(EmbedTest, AHostClassStructMustSayItsSize) {
+  WolangVm* vm = wolang_vm_create();
+  WolangHostClass host;
+  std::memset(&host, 0, sizeof(host));
+  host.name = "Actor";
+  WOLANG_EXPECT_EQ(wolang_vm_register_class_ex(vm, &host), kWolangError);
+  host.size = sizeof(host);
+  WOLANG_EXPECT_EQ(wolang_vm_register_class_ex(vm, &host), kWolangOk);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, AModuleLevelWeakVarDoesNotKeepAHostObject) {
+  WolangVm* vm = wolang_vm_create();
+  int32_t calls = 0;
+  WOLANG_EXPECT_EQ(wolang_vm_register_class(vm, "Actor", &FakeRetain, &FakeRelease, &FakeAlive, &calls), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "weak_global.wo", R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+weak var seen: Actor? = null
+
+offer fun Watch(pawn: Actor) {
+  seen = pawn
+}
+
+offer fun Sees() -> bool {
+  return seen != null
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  FakeActor actor;
+  WolangValue argument = wolang_handle(&actor);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Watch", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Sees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 1);
+
+  actor.Alive = false;
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Sees", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 0);
+  wolang_vm_destroy(vm);
+  WOLANG_EXPECT_EQ(actor.References, 0);
 }
 
 WOLANG_TEST(EmbedTest, ScriptsUseTheHostsObjects) {
@@ -805,7 +932,7 @@ WOLANG_TEST(EmbedTest, SaysWhatIsWrongWithAProgram) {
   WOLANG_EXPECT(wolang_vm_ok(vm) == 0);
   // The same diagnostic the command line gives, rendered without colour.
   const std::string errors(wolang_vm_errors(vm));
-  WOLANG_EXPECT(errors.find("expected `s32`") != std::string::npos);
+  WOLANG_EXPECT(errors.find("expected `s64`") != std::string::npos);
   WOLANG_EXPECT(errors.find("broken.wo") != std::string::npos);
 
   // And a call into a program with errors is refused rather than run.
@@ -999,4 +1126,416 @@ WOLANG_TEST(EmbedTest, CallsAnswerAStatus) {
 WOLANG_TEST(EmbedTest, LibraryAbiVersionMatchesTheHeader) {
   WOLANG_EXPECT_EQ(wolang::codegen::kLibraryAbiVersion,
                    static_cast<uint32_t>(WOLANG_ABI_VERSION));
+}
+
+static void CheckAnOptionalHostParameter(bool compiled) {
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_compiled(vm, compiled ? 1 : 0);
+  int32_t calls = 0;
+  WOLANG_EXPECT_EQ(wolang_vm_register_class(vm, "Actor", &FakeRetain, &FakeRelease, &FakeAlive, &calls), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_bind(vm, "Actor_Health", reinterpret_cast<void*>(&Actor_Health)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "optional_actor.wo", R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+offer fun Hp(pawn: Actor?) -> int uses unsafe {
+  if const found = pawn {
+    return found.Health() as int
+  }
+  return -1
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  FakeActor actor;
+  WolangValue argument = wolang_handle(&actor);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Hp", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 100);
+
+  argument = wolang_handle(nullptr);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Hp", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, -1);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, AnOptionalHostObjectIsPresentOrAbsent) {
+  CheckAnOptionalHostParameter(true);
+  CheckAnOptionalHostParameter(false);
+}
+
+WOLANG_TEST(EmbedTest, ObjectParametersHaveAKind) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_register_class(vm, "Actor", &FakeRetain, &FakeRelease, &FakeAlive, nullptr), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "kinds.wo", R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+offer class Enemy {
+  var health: int
+}
+
+offer fun Spawn(health: int) -> Enemy => Enemy(health)
+
+offer fun Describe(e: Enemy, tag: text) -> int => e.health + tag.len
+
+offer fun Host(_pawn: Actor?, _other: Actor) {}
+
+offer fun Number(n: int) -> int => n
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  WolangFunction* describe = wolang_vm_function(vm, "Describe");
+  WolangFunction* host = wolang_vm_function(vm, "Host");
+  WolangFunction* number = wolang_vm_function(vm, "Number");
+  WOLANG_EXPECT(describe != nullptr && host != nullptr && number != nullptr);
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(wolang_function_parameter(describe, 0)), static_cast<int32_t>(kWolangObject));
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(wolang_function_parameter(describe, 1)), static_cast<int32_t>(kWolangText));
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(wolang_function_parameter(host, 0)), static_cast<int32_t>(kWolangHandle));
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(wolang_function_parameter(host, 1)), static_cast<int32_t>(kWolangHandle));
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(wolang_function_parameter(number, 0)), static_cast<int32_t>(kWolangInt));
+
+  WolangValue health = wolang_int(40);
+  WolangValue enemy = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Spawn", &health, 1, &enemy), 0);
+  WolangValue arguments[2] = {enemy, wolang_text("abc", 3)};
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Describe", arguments, 2, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 43);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, enemy), 0);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, AFunctionIsNamedBareOrWithItsModule) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "named.wo", "offer fun Tick(n: int) -> int => n + 1\n"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_function_module(vm, 0)), "host");
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_function_module(vm, 5)), "");
+
+  WolangValue argument = wolang_int(1);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Tick", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 2);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "host.Tick", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 2);
+  WOLANG_EXPECT(wolang_vm_has(vm, "host.Tick") == 1);
+  WOLANG_EXPECT(wolang_vm_has(vm, "other.Tick") == 0);
+  WOLANG_EXPECT(wolang_vm_call(vm, "other.Tick", &argument, 1, &answer) != 0);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, ALoneFileResolvesNeed) {
+  const std::filesystem::path directory = std::filesystem::path(WOLANG_PROJECT_DIR) / "build" / "scratch";
+  std::filesystem::create_directories(directory);
+  const std::filesystem::path file = directory / "lone_need.wo";
+  const std::string measured = (std::filesystem::path(WOLANG_PROJECT_DIR) / "CMakeLists.txt").generic_string();
+  const std::string source = "need std.fs\n\noffer fun Size() -> int uses io {\n  return fs.SizeOf(\"" + measured + "\") as int\n}\n";
+  WriteFile(file, source.c_str());
+
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, file.string().c_str()), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Size", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT(answer.integer > 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(file);
+}
+
+WOLANG_TEST(EmbedTest, DestroyingAVmReleasesWhatItsGlobalsHold) {
+  WolangVm* vm = wolang_vm_create();
+  int32_t calls = 0;
+  WOLANG_EXPECT_EQ(wolang_vm_register_class(vm, "Actor", &FakeRetain, &FakeRelease, &FakeAlive, &calls), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "held.wo", R"(
+extern class Actor {
+  fun Health() -> s32
+}
+
+var kept: Actor? = null
+
+offer fun Keep(pawn: Actor) {
+  kept = pawn
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  FakeActor actor;
+  WolangValue argument = wolang_handle(&actor);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Keep", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(actor.References, 1);
+  wolang_vm_destroy(vm);
+  WOLANG_EXPECT_EQ(actor.References, 0);
+}
+
+static void CheckPrintReachesTheHost(bool compiled) {
+  captured.clear();
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_compiled(vm, compiled ? 1 : 0);
+  wolang_vm_set_writer(vm, &Capture, nullptr);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "printing.wo", R"(
+need std.io
+
+offer fun Say() -> int uses io {
+  io.Print("from print")
+  return 1
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Say", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(captured, std::string("from print\n"));
+  wolang_vm_set_writer(vm, nullptr, nullptr);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, PrintFromStdReachesTheHostsWriter) {
+  CheckPrintReachesTheHost(true);
+  CheckPrintReachesTheHost(false);
+}
+
+namespace {
+
+int32_t test_host_triple(int32_t value) {
+  return value * 3;
+}
+
+void AppendTo(void* user, const char* bytes, uint64_t length) {
+  static_cast<std::string*>(user)->append(bytes, static_cast<size_t>(length));
+}
+
+}  // namespace
+
+WOLANG_TEST(EmbedTest, TwoVmsHaveTheirOwnBindingsAndWriters) {
+  const char* source = R"(
+need std.io
+
+extern "C" fun test_host_scale(value: s32) -> s32
+
+offer fun Scale(value: int) -> int uses unsafe {
+  return test_host_scale(value as s32) as int
+}
+
+offer fun Say() -> int uses io {
+  io.Print("hi")
+  return 1
+}
+)";
+  std::string first_out;
+  std::string second_out;
+  WolangVm* first = wolang_vm_create();
+  WolangVm* second = wolang_vm_create();
+  wolang_vm_set_writer(first, &AppendTo, &first_out);
+  wolang_vm_set_writer(second, &AppendTo, &second_out);
+  WOLANG_EXPECT_EQ(wolang_vm_bind(first, "test_host_scale", reinterpret_cast<void*>(&test_host_double)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_bind(second, "test_host_scale", reinterpret_cast<void*>(&test_host_triple)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(first, "scale.wo", source), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(second, "scale.wo", source), 0);
+
+  WolangValue argument = wolang_int(5);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(first, "Scale", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 10);
+  WOLANG_EXPECT_EQ(wolang_vm_call(second, "Scale", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 15);
+
+  WOLANG_EXPECT_EQ(wolang_vm_call(second, "Say", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(first_out, std::string());
+  WOLANG_EXPECT_EQ(second_out, std::string("hi\n"));
+
+  wolang_vm_destroy(first);
+  wolang_vm_destroy(second);
+}
+
+WOLANG_TEST(EmbedTest, AFailedReloadKeepsTheProgramThatWasRunning) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_failed_reload_test.wo";
+  WriteFile(path, "offer fun Answer() -> int => 1\n");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Answer", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 1);
+
+  WriteFile(path, "offer fun Answer() -> int => nope\n");
+  WOLANG_EXPECT(wolang_vm_reload(vm) != 0);
+  WOLANG_EXPECT(!std::string(wolang_vm_errors(vm)).empty());
+  WOLANG_EXPECT_EQ(wolang_vm_ok(vm), 1);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Answer", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 1);
+
+  WriteFile(path, "offer fun Answer() -> int => 2\n");
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Answer", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 2);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, AReloadThatChangesAnObjectTheHostHoldsIsRefused) {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "wolang_held_reload_test.wo";
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5)
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+)");
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  WolangValue mover = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Make", nullptr, 0, &mover), 0);
+
+  WriteFile(path, R"(
+class Mover {
+  var steps: int
+  var speed: int
+}
+
+offer fun Make() -> Mover {
+  return Mover(5, 2)
+}
+
+offer fun Steps(mover: Mover) -> int => mover.steps
+)");
+  WOLANG_EXPECT(wolang_vm_reload(vm) != 0);
+  WOLANG_EXPECT_EQ(wolang_vm_ok(vm), 1);
+  WOLANG_EXPECT(std::string(wolang_vm_errors(vm)).find("Mover") != std::string::npos);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &mover, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 5);
+
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, mover), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Make", nullptr, 0, &mover), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Steps", &mover, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 5);
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, mover), 0);
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, AReloadKeepsTheBindingsAndTheWriter) {
+  const std::filesystem::path scratch = std::filesystem::path(WOLANG_PROJECT_DIR) / "build" / "scratch";
+  std::filesystem::create_directories(scratch);
+  const std::filesystem::path path = scratch / "wolang_kept_bindings_test.wo";
+  const char* source = R"(
+need std.io
+
+extern "C" fun test_host_scale(value: s32) -> s32
+
+offer fun Scale(value: int) -> int uses unsafe {
+  return test_host_scale(value as s32) as int
+}
+
+offer fun Say() -> int uses io {
+  io.Print("again")
+  return 1
+}
+)";
+  WriteFile(path, source);
+  std::string out;
+  WolangVm* vm = wolang_vm_create();
+  wolang_vm_set_writer(vm, &AppendTo, &out);
+  WOLANG_EXPECT_EQ(wolang_vm_bind(vm, "test_host_scale", reinterpret_cast<void*>(&test_host_triple)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_load(vm, path.string().c_str()), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_reload(vm), 0);
+
+  WolangValue argument = wolang_int(4);
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Scale", &argument, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 12);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "Say", nullptr, 0, &answer), 0);
+  WOLANG_EXPECT_EQ(out, std::string("again\n"));
+  wolang_vm_destroy(vm);
+  std::filesystem::remove(path);
+}
+
+WOLANG_TEST(EmbedTest, AHostMakesAndFillsAScriptObject) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "shapes.wo", R"(
+@Replicated
+class Spot {
+  var x: int
+  var y: float
+  var lit: bool
+}
+
+class Label {
+  var name: text
+}
+
+class Base {
+  virtual fun Id() -> int {
+    return 1
+  }
+  var n: int
+}
+
+offer fun SumX(spot: Spot) -> int => spot.x
+
+offer fun IsLit(spot: Spot) -> bool => spot.lit
+)"), 0);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_errors(vm)), "");
+
+  WolangValue spot = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_object_new(vm, "Spot", &spot), 0);
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(spot.kind), static_cast<int32_t>(kWolangObject));
+  WOLANG_EXPECT_EQ(wolang_vm_object_set(vm, spot, "x", wolang_int(7)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_set(vm, spot, "y", wolang_float(2.5)), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_object_set(vm, spot, "lit", wolang_bool(1)), 0);
+  WOLANG_EXPECT(wolang_vm_object_set(vm, spot, "nope", wolang_int(1)) != 0);
+
+  WolangValue answer = wolang_void();
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "SumX", &spot, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.integer, 7);
+  WOLANG_EXPECT_EQ(wolang_vm_call(vm, "IsLit", &spot, 1, &answer), 0);
+  WOLANG_EXPECT_EQ(answer.boolean, 1);
+  WOLANG_EXPECT_EQ(wolang_vm_object_get(vm, spot, "y", &answer), 0);
+  WOLANG_EXPECT_EQ(answer.number, 2.5);
+
+  WolangValue refused = wolang_void();
+  WOLANG_EXPECT(wolang_vm_object_new(vm, "Label", &refused) != 0);
+  WOLANG_EXPECT(wolang_vm_object_new(vm, "Base", &refused) != 0);
+  WOLANG_EXPECT(wolang_vm_object_new(vm, "Missing", &refused) != 0);
+  WOLANG_EXPECT(wolang_vm_object_set(vm, spot, "x", wolang_text("a", 1)) != 0);
+
+  WOLANG_EXPECT_EQ(wolang_vm_object_release(vm, spot), 0);
+  wolang_vm_destroy(vm);
+}
+
+WOLANG_TEST(EmbedTest, TheHostCanReadClassesFieldsAndAttributes) {
+  WolangVm* vm = wolang_vm_create();
+  WOLANG_EXPECT_EQ(wolang_vm_load_source(vm, "reflect.wo", R"(
+@Replicated
+class Spot {
+  var x: int
+  var y: float
+  var name: text
+}
+
+class Plain {
+  var n: int
+}
+)"), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_class_count(vm), 2);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_name(vm, 0)), "Spot");
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_name(vm, 1)), "Plain");
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_name(vm, 2)), "");
+  WOLANG_EXPECT_EQ(wolang_vm_class_field_count(vm, "Spot"), 3);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_field_name(vm, "Spot", 1)), "y");
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(wolang_vm_class_field_kind(vm, "Spot", 0)), static_cast<int32_t>(kWolangInt));
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(wolang_vm_class_field_kind(vm, "Spot", 1)), static_cast<int32_t>(kWolangFloat));
+  WOLANG_EXPECT_EQ(static_cast<int32_t>(wolang_vm_class_field_kind(vm, "Spot", 2)), static_cast<int32_t>(kWolangText));
+  WOLANG_EXPECT_EQ(wolang_vm_class_attribute_count(vm, "Spot"), 1);
+  WOLANG_EXPECT_EQ(std::string(wolang_vm_class_attribute_name(vm, "Spot", 0)), "Replicated");
+  WOLANG_EXPECT_EQ(wolang_vm_class_attribute_count(vm, "Plain"), 0);
+  WOLANG_EXPECT_EQ(wolang_vm_class_field_count(vm, "Missing"), 0);
+  wolang_vm_destroy(vm);
 }

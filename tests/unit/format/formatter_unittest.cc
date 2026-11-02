@@ -94,6 +94,41 @@ WOLANG_TEST(Formatter, NormalizesSpacingAndIndentation) {
                    "}\n");
 }
 
+WOLANG_TEST(Formatter, WritesStatedErrorSetsAndPayloads) {
+  Pass pass("error A,B(line:int)\nfun f()->int!(A,B){return 1}\nfun g()->int!A{return 1}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(),
+                   "error A, B(line: int)\n"
+                   "fun f() -> int!(A, B) {\n"
+                   "  return 1\n"
+                   "}\n"
+                   "fun g() -> int!A {\n"
+                   "  return 1\n"
+                   "}\n");
+}
+
+WOLANG_TEST(Formatter, KeepsUnsafeFun) {
+  Pass pass("offer   unsafe fun F(){}\nclass A{virtual unsafe fun G(){}}\nclass B:A{override unsafe fun G(){}}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(),
+                   "offer unsafe fun F() {}\n"
+                   "class A {\n"
+                   "  virtual unsafe fun G() {}\n"
+                   "}\n"
+                   "class B : A {\n"
+                   "  override unsafe fun G() {}\n"
+                   "}\n");
+}
+
+WOLANG_TEST(Formatter, KeepsMutOnASlice) {
+  Pass pass("fun   Fill(xs:[]mut  int,ys:[]int){}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(), "fun Fill(xs: []mut int, ys: []int) {}\n");
+  WOLANG_EXPECT_STABLE(pass.formatted());
+}
+
+WOLANG_TEST(Formatter, KeepsKeepOnAParameter) {
+  Pass pass("fun   Store(f:keep fun(int)->int,g:fun()){}\n");
+  WOLANG_EXPECT_EQ(pass.formatted(), "fun Store(f: keep fun(int) -> int, g: fun()) {}\n");
+}
+
 WOLANG_TEST(Formatter, DropsSemicolonsAndExtraBlankLines) {
   Pass pass("fun f() {\n  const a = 1;\n\n\n  const b = 2;\n}\n");
   WOLANG_EXPECT_EQ(pass.formatted(),

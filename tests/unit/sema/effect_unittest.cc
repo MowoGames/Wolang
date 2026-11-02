@@ -16,7 +16,7 @@ WOLANG_TEST(EffectRowTest, BuiltinsAreInternedFirst) {
   // Their ids are the enumerator values, so testing for one is an index
   // comparison rather than a lookup.
   TypeStore store;
-  WOLANG_EXPECT_EQ(store.BuiltinEffectId(BuiltinEffect::kAlloc).index,
+  WOLANG_EXPECT_EQ(store.BuiltinEffectId(BuiltinEffect::kIo).index,
                    uint32_t{0});
   WOLANG_EXPECT(store.IsBuiltinEffect(
       store.BuiltinEffectId(BuiltinEffect::kPanic)));
@@ -32,14 +32,14 @@ WOLANG_TEST(EffectRowTest, BuiltinsAreInternedFirst) {
 
 WOLANG_TEST(EffectRowTest, LooksUpBuiltinsByName) {
   WOLANG_EXPECT_EQ(LookupBuiltinEffect("io"), BuiltinEffect::kIo);
-  WOLANG_EXPECT_EQ(LookupBuiltinEffect("alloc"), BuiltinEffect::kAlloc);
+  WOLANG_EXPECT_EQ(LookupBuiltinEffect("alloc"), BuiltinEffect::kCount);
   WOLANG_EXPECT_EQ(LookupBuiltinEffect("Telemetry"), BuiltinEffect::kCount);
   WOLANG_EXPECT_EQ(BuiltinEffectName(BuiltinEffect::kRand), "rand");
 }
 
 WOLANG_TEST(EffectRowTest, StaysSortedAndDeduplicated) {
   const EffectId io{static_cast<uint32_t>(BuiltinEffect::kIo)};
-  const EffectId alloc{static_cast<uint32_t>(BuiltinEffect::kAlloc)};
+  const EffectId alloc{static_cast<uint32_t>(BuiltinEffect::kNet)};
 
   EffectRow row;
   WOLANG_EXPECT(row.empty());
@@ -222,14 +222,14 @@ WOLANG_TEST(EffectRowTest, BodilessUnsafePrimitiveReExportsUnsafe) {
   // A primitive has no body vouching for it, so its `uses unsafe` is the
   // caller's to state, like `extern` (D221).
   WOLANG_EXPECT_EQ(CodesOf("prim-fires", R"(
-fun Free(items: []u8) uses unsafe
+unsafe fun Free(items: []u8)
 
 offer fun Drop(items: []u8) {
   Free(items)
 }
 )"), "E0704");
   WOLANG_EXPECT_EQ(CodesOf("prim-twin", R"(
-fun Free(items: []u8) uses unsafe
+unsafe fun Free(items: []u8)
 
 offer fun Drop(items: []u8) uses unsafe {
   Free(items)
@@ -239,7 +239,7 @@ offer fun Drop(items: []u8) uses unsafe {
 
 WOLANG_TEST(EffectRowTest, WrapperWithABodyStillAbsorbsUnsafe) {
   WOLANG_EXPECT_EQ(CodesOf("wrap-absorbs", R"(
-fun Free(items: []u8) uses unsafe
+unsafe fun Free(items: []u8)
 
 fun Release(items: []u8) uses unsafe {
   Free(items)
@@ -248,6 +248,132 @@ fun Release(items: []u8) uses unsafe {
 fun Safe(items: []u8) {
   Release(items)
 }
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, AnUnsafeFunChargesItsCaller) {
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-fires", R"(
+unsafe fun Poke() {}
+
+offer fun Use() {
+  Poke()
+}
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-twin", R"(
+unsafe fun Poke() {}
+
+offer fun Use() uses unsafe {
+  Poke()
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, AnUnsafeFunBodyStatesNothing) {
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-body", R"(
+extern "C" fun abs(n: s32) -> s32
+
+offer unsafe fun Abs(n: s32) -> s32 {
+  return abs(n)
+}
+)"), "");
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-named", R"(
+unsafe fun Poke() {}
+
+offer fun Pick() uses io {
+  const _f: fun() = Poke
+}
+)"), "E0701");
+}
+
+WOLANG_TEST(EffectRowTest, ABodilessUsesUnsafeIsAnUnsafeFun) {
+  WOLANG_EXPECT_EQ(CodesOf("bodiless-fires", R"(
+fun Free(items: []u8) uses unsafe
+)"), "E0153");
+  WOLANG_EXPECT_EQ(CodesOf("bodiless-twin", R"(
+unsafe fun Free(items: []u8)
+
+offer fun Drop(items: []u8) uses unsafe {
+  Free(items)
+}
+)"), "");
+  WOLANG_EXPECT_EQ(CodesOf("bodiless-extern", R"(
+extern "C" fun abs(n: s32) -> s32 uses unsafe
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, AnUnsafeOverrideNeedsAnUnsafeBase) {
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-override-fires", R"(
+class Actor {
+  virtual fun F() {}
+}
+
+class Pawn : Actor {
+  override unsafe fun F() {}
+}
+)"), "E0154");
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-override-twin", R"(
+class Actor {
+  virtual unsafe fun F() {}
+}
+
+class Pawn : Actor {
+  override unsafe fun F() {}
+}
+)"), "");
+  WOLANG_EXPECT_EQ(CodesOf("safe-override-of-unsafe", R"(
+class Actor {
+  virtual unsafe fun F() {}
+}
+
+class Pawn : Actor {
+  override fun F() {}
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, AnUnsafeAbilityMethodNeedsAnUnsafeRequirement) {
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-ability-fires", R"(
+ability Poke {
+  fun Poke()
+}
+
+struct Pawn {
+  var x: int
+}
+
+extend Pawn as Poke {
+  unsafe fun Poke() {}
+}
+)"), "E0154");
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-ability-twin", R"(
+ability Poke {
+  unsafe fun Poke()
+}
+
+struct Pawn {
+  var x: int
+}
+
+extend Pawn as Poke {
+  unsafe fun Poke() {}
+}
+)"), "");
+}
+
+WOLANG_TEST(EffectRowTest, AnUnsafeFunStillStatesItsOtherEffects) {
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-io", R"(
+offer unsafe fun Poke() {
+  Out()
+}
+
+fun Out() uses io
+)"), "E0704");
+  WOLANG_EXPECT_EQ(CodesOf("unsafe-fun-io-twin", R"(
+offer unsafe fun Poke() uses io {
+  Out()
+}
+
+fun Out() uses io
 )"), "");
 }
 
@@ -271,7 +397,7 @@ offer fun Sneaky() uses io {
 }
 )"), "");
   WOLANG_EXPECT_EQ(CodesOf("value-unsafe", R"(
-fun Free(items: []u8) uses unsafe
+unsafe fun Free(items: []u8)
 
 offer fun Sneaky() {
   const _w: fun([]u8) = Free

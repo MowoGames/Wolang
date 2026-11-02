@@ -19,7 +19,7 @@ be embedded into.
 
 **Status:** the language runs, compiles to machine code for five
 targets, embeds in other programs, opens a window, serves HTTP and has
-a standard library of thirty-four modules. Three tiers agree on every test: an
+a standard library of thirty-five modules. Three tiers agree on every test: an
 interpreter as the reference, a just-in-time tier for `run`, and an
 ahead-of-time tier through LLVM for `build`. A differential fuzzer
 compares all of them on generated programs, which is what finds
@@ -55,7 +55,7 @@ the usual places. These five are the parts it is actually built around:
 
 | | |
 |---|---|
-| **Effects and capabilities** | A function's signature states what it may do (`uses io, alloc, rand`). One mechanism covers determinism, allocation-free hot paths, sandboxed plugins, compile-time evaluation and server/client separation. |
+| **Effects and capabilities** | A function's signature states what it may do (`uses io, rand, time`). One mechanism covers determinism, allocation-free hot paths, sandboxed plugins, compile-time evaluation and server/client separation. |
 | **Units in the type system** | `dimension` and `unit` declarations make `10m / 2s` a velocity and `Quat.FromAxis(up, 90deg)` reject radians. Checked at compile time, free at runtime. |
 | **Layout polymorphism** | `soa []Particle` stores one array per field; `aos []Particle` stores records. Layout belongs to the storage, so the same type works both ways and `foreach` maps the loop onto SIMD lanes either way. |
 | **State machines and timelines** | `machine`, `state`, `on ... ->` are language constructs, checked for unreachable states, survivable across hot reload. |

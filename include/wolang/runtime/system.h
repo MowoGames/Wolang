@@ -13,6 +13,10 @@ extern "C" {
 
 int64_t wolang_fd_read(int32_t fd, uint8_t* buffer, uint64_t count);
 int64_t wolang_fd_write(int32_t fd, const uint8_t* buffer, uint64_t count);
+
+typedef int64_t (*WolangFdWriteHook)(void* user, int32_t fd, const uint8_t* buffer, uint64_t count);
+
+void wolang_set_fd_write_hook(WolangFdWriteHook hook, void* user);
 int32_t wolang_fd_close(int32_t fd);
 int32_t wolang_process_id();
 void wolang_sleep_micros(uint64_t micros);

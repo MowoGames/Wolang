@@ -36,7 +36,7 @@ offer class Set<T> {
   }
 }
 
-offer fun SetNew<T>(hash: fun(T) -> int, equals: fun(T, T) -> bool) -> Set<T> uses unsafe {
+offer fun SetNew<T>(hash: keep fun(T) -> int, equals: keep fun(T, T) -> bool) -> Set<T> uses unsafe {
   return Set<T>(MapNew<T, bool>(hash, equals))
 }
 

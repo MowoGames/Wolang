@@ -51,6 +51,10 @@ WOLANG_QUERY(ModuleEffects,
              "module",
              "the effect row of every declaration in a module, inferred to a "
              "fixpoint")
+WOLANG_QUERY(Allocation,
+             "ignored",
+             "which functions of the whole program allocate, and through "
+             "what they call")
 WOLANG_QUERY(EffectDiagnostics,
              "file",
              "what a file's declarations do against what they declare")

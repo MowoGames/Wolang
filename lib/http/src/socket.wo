@@ -71,7 +71,7 @@ offer fun Close(fd: s32) -> s32 uses net, unsafe {
 /// Reads into `buffer` and returns how many bytes arrived, or a negative
 /// number. The buffer is the caller's, which is what makes this allocate
 /// nothing per request.
-offer fun Read(fd: s32, buffer: *mut u8, capacity: int) -> int uses net, unsafe {
+offer unsafe fun Read(fd: s32, buffer: *mut u8, capacity: int) -> int uses net {
   return wolang_socket_receive(fd as s64, buffer, capacity as s64) as int
 }
 

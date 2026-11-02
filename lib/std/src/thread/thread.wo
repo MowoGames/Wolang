@@ -81,7 +81,7 @@ offer fun MutexNew() -> Mutex uses unsafe {
 
 /// Adds `delta` to the number at `counter` and gives back what was there
 /// before, with no other thread able to see a half-done sum.
-offer fun AtomicAdd(counter: *mut s64, delta: s64) -> s64 uses unsafe {
+offer unsafe fun AtomicAdd(counter: *mut s64, delta: s64) -> s64 {
   return wolang_atomic_add(counter, delta)
 }
 
@@ -139,7 +139,7 @@ fun ReportsHowManyThreadsRun() -> bool uses unsafe {
 /// the body's function value, and lowering is the only place that can
 /// take a function value apart (D147).
 @Thread(captures)
-offer fun ParallelFor(count: int, threads: int, body: fun(int, int)) uses unsafe
+offer unsafe fun ParallelFor(count: int, threads: int, body: fun(int, int))
 
 @Test
 fun SplitsALoopAcrossThreads() -> bool uses unsafe {
