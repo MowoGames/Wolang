@@ -932,6 +932,62 @@ fun main() uses io, unsafe {
 
 There is no general matrix inverse and no projection matrix yet.
 
+## The `font` package
+
+TrueType fonts, read and drawn in Wolang (D276). `FontLoad(bytes)` parses a
+`.ttf` (or an OpenType file whose outlines are TrueType); `Rasterize` turns one
+glyph into an anti-aliased coverage bitmap; `LayoutText` places a string with
+advances, kerning and word wrapping; `Atlas` packs glyph bitmaps into one
+texture for a renderer. Everything is computation over bytes, so all of it runs
+and is tested with no window and no device.
+
+The reader treats the file as hostile. Every table, offset and count is checked
+against the bytes that are there, a glyph is capped in points and components,
+and the way out of a bad file is an error, never a trap: `Malformed` for bytes
+that are not a font, `Unsupported` for an OpenType file with CFF outlines
+(`OTTO`), `TooLarge` for a file over `kMaxFontBytes` (64 MiB) or a glyph over
+`kMaxBitmapSide` pixels, and `BadSize` for a text size that is not positive.
+Glyph positions come from the `hmtx` and `cmap` tables (formats 4 and 12) and
+pairs from the `kern` table; `GPOS` kerning and hinting are not read.
+
+`SampleFont()` is a small built-in font (letters in one case, digits, and the
+usual punctuation, drawn on a 5 by 7 grid), so a program can put text on screen
+with no font file. `FontLoadFile(path)` reads one from disk, and
+`SystemFontFile(name)` looks for `name.ttf` in the places each system keeps
+fonts and answers `null` when there is none; `Available()` says whether it found
+a common system font at all.
+
+```wolang
+need font.{LayoutText, Measure, SampleFont}
+need std.io.{Print}
+
+fun main() uses io, unsafe {
+  match SampleFont() {
+    Ok(font) => {
+      const width = Measure(font, "HELLO", 16.0)
+      Print("{width}")
+      const layout = LayoutText(font, "HELLO WORLD", 16.0, 60.0)
+      Print("{layout.lines}")
+    },
+    _ => Print("no font"),
+  }
+}
+```
+
+| Function | What |
+|---|---|
+| `FontLoad(bytes)`, `FontLoadFile(path)`, `SampleFont()` | a `Font`, or `Malformed`, `TooLarge`, `Unsupported` (and `Missing` for a path) |
+| `UnitsPerEm()`, `Ascent()`, `Descent()`, `LineGap()`, `GlyphCount()` | on `Font`, in font units |
+| `GlyphIndex(code)` | the glyph for a code point; 0 (the missing glyph) when there is none |
+| `Advance(glyph)`, `LeftBearing(glyph)`, `Kerning(left, right)` | in font units; `Scale(size)` is pixels per unit |
+| `GlyphOutline(glyph)` | the contours as points, composites resolved |
+| `Rasterize(font, glyph, size)` | a `Glyph`: `coverage` bytes, `width`, `height`, `left`, `top`, `advance` |
+| `Glyph.At(x, y)`, `Glyph.Total()`, `Glyph.ToImage(r, g, b)` | one coverage byte; the sum; an `image.Image` with the coverage as alpha |
+| `LayoutText(font, text, size, wrap)` | a `Layout` of `Placement`s; `wrap` of 0 or less does not wrap |
+| `Measure(font, text, size)`, `LineHeight(font, size)` | the width of the widest line; the distance between baselines |
+| `DrawText(image, font, text, size, x, y, colour)`, `DrawGlyph` | blend text into an `image.Image` in software |
+| `AtlasNew(width, height)`, `Atlas.Get(font, glyph, size)` | a shelf-packed coverage bitmap; a `Slot` per glyph and size, `null` when full |
+
 ## How this compares
 
 Go's standard library is bigger — net/http with HTTP/2, crypto/tls,

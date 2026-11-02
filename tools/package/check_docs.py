@@ -31,6 +31,7 @@ db = {{ path = "{root}/lib/db" }}
 gfx = {{ path = "{root}/lib/gfx" }}
 image = {{ path = "{root}/lib/image" }}
 math = {{ path = "{root}/lib/math" }}
+font = {{ path = "{root}/lib/font" }}
 game = {{ path = "{root}/lib/game" }}
 """
 
