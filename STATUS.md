@@ -23,12 +23,12 @@ that they do.
 | Cross targets | `--target`: Windows COFF, Linux ELF, WebAssembly, RISC-V |
 | std | 38 modules (see [docs/stdlib.md](docs/stdlib.md)) |
 | Packages | `http` (server and client), `db` (storage), `gfx` (window/GPU/sound/gamepads), `image` (PNG/QOI/BMP), `tls`, `game`, `core`, `math` (vectors, matrices, quaternions), `font` (TrueType), `ui` (immediate mode), `audio` (mixer, WAV), `gpu` (null and OpenGL 3.3), `app` (the shell) |
-| Tests | 1028 unit tests + 460 library tests, a three-tier fuzzer, a check of every example in the docs |
+| Tests | 1032 unit tests + 460 library tests, a three-tier fuzzer, a check of every example in the docs |
 | Server | 53,900 requests/s on one thread, 58,900 on eight |
 
 ## Done since 1.2.0: 1.3.0 (D265–D289)
 
-Verified on Windows x86-64 only: 1028 unit tests, the library tests of every
+Verified on Windows x86-64 only: 1032 unit tests, the library tests of every
 package, the docs check, `wl fuzz 200` on seeds 16586 and 4242, and `wl ci`.
 Nothing has run on Linux, macOS or Windows on ARM64 yet; see
 [docs/plans/1.3.0-status.md](docs/plans/1.3.0-status.md) for what was and was
