@@ -3527,5 +3527,46 @@ class Pawn {
   WOLANG_EXPECT(struct_with_object.HasCode("E0179"));
 }
 
+WOLANG_TEST(TypeCheck, ASavedStructIsSavedWholeUnlessItMarksItsOwnFields) {
+  Fixture whole(R"(
+struct Spot {
+  var x: float
+  var y: float
+}
+
+class Mover {
+  @Save
+  var spot: Spot = Spot(0.0, 0.0)
+}
+)");
+  WOLANG_EXPECT(!whole.HasCode("E0176"));
+
+  Fixture hole(R"(
+struct Grid {
+  var cells: [4]int
+}
+
+class Mover {
+  @Save
+  var grid: Grid
+}
+)");
+  WOLANG_EXPECT(hole.HasCode("E0176"));
+
+  Fixture marked(R"(
+struct Grid {
+  @Save
+  var size: int
+  var cells: [4]int
+}
+
+class Mover {
+  @Save
+  var grid: Grid
+}
+)");
+  WOLANG_EXPECT(!marked.HasCode("E0176"));
+}
+
 }  // namespace
 }  // namespace wolang

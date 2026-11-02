@@ -1558,10 +1558,16 @@ class FunctionEmitter {
         // rather than a call (D100).
         const TypeId measured{static_cast<uint32_t>(inst.payload.integer)};
         const Register reg = DestInt(id, 0);
-        assembler_.MovImmediate(
-            IWidth::k64, reg,
-            measured.is_valid() ? std::max(layouts_.SizeOf(measured), 1u)
-                                : 1u);
+        uint64_t answer = 1u;
+        if (measured.is_valid() && inst.field == ir::kObjectSizeField) {
+          answer = std::max(layouts_.ObjectOf(measured).size, 1u);
+        } else if (measured.is_valid() && inst.field != 0) {
+          const std::vector<uint32_t>& offsets = layouts_.ObjectOf(measured).offsets;
+          answer = inst.field <= offsets.size() ? offsets[inst.field - 1] : 0;
+        } else if (measured.is_valid()) {
+          answer = std::max(layouts_.SizeOf(measured), 1u);
+        }
+        assembler_.MovImmediate(IWidth::k64, reg, answer);
         FinishInt(id, reg);
         return;
       }

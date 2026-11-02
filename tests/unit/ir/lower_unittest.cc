@@ -898,6 +898,120 @@ fun Replace(n: int) -> int {
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   WOLANG_EXPECT_EQ(FreesIn(f.Function("Replace")), 0u);
+
+static std::string SchemaOf(const ir::Module& module) {
+  for (const std::string& text : module.strings) {
+    if (text.rfind("WSCHEMA", 0) == 0) {
+      return text;
+    }
+  }
+
+  return std::string();
+}
+
+WOLANG_TEST(LowerTest, ShapeOfListsTheSavedFieldsAndAsksTheTierForTheirOffsets) {
+  Fixture f(R"(
+struct Shape<T> {
+  var schema: text
+  var offsets: u64
+}
+
+fun ShapeOf<T>() -> Shape<T>
+
+class Mover {
+  @Save
+  var steps: int = 0
+  @Save
+  var name: text = ""
+  @Save
+  var next: Mover? = null
+  var scratch: int = 0
+}
+
+fun Use() -> u64 {
+  const shape = ShapeOf<Mover>()
+  return shape.offsets
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string schema = SchemaOf(f.Lowered()->unoptimized);
+  WOLANG_EXPECT(schema.find("ROOT Mover") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD steps @") != std::string::npos);
+  WOLANG_EXPECT(schema.find(" i8 i8") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD name @") != std::string::npos);
+  WOLANG_EXPECT(schema.find(" s s") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD next @") != std::string::npos);
+  WOLANG_EXPECT(schema.find("o(r:Mover)") != std::string::npos);
+  WOLANG_EXPECT(schema.find("scratch") == std::string::npos);
+  WOLANG_EXPECT(f.Function("Use").find("type.size") != std::string::npos);
+  WOLANG_EXPECT(f.Function("Use").find("@size") != std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, ShapeOfRefusesWhatItCannotWrite) {
+  Fixture f(R"(
+struct Shape<T> {
+  var schema: text
+  var offsets: u64
+}
+
+fun ShapeOf<T>() -> Shape<T>
+
+class Actor {
+  virtual fun Tick() {}
+  @Save
+  var hp: int = 0
+}
+
+fun Use() -> u64 {
+  const shape = ShapeOf<Actor>()
+  return shape.offsets
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string schema = SchemaOf(f.Lowered()->unoptimized);
+  WOLANG_EXPECT(schema.find("WSCHEMA 0") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD") == std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, ShapeOfWritesAStructWholeUnlessItMarksItsOwnFields) {
+  Fixture f(R"(
+struct Shape<T> {
+  var schema: text
+  var offsets: u64
+}
+
+fun ShapeOf<T>() -> Shape<T>
+
+struct Spot {
+  var x: float
+  var y: float
+}
+
+struct Pair {
+  @Save
+  var a: int
+  var b: int
+}
+
+class Mover {
+  @Save
+  var spot: Spot = Spot(0.0, 0.0)
+  @Save
+  var pair: Pair = Pair(1, 2)
+}
+
+fun Use() -> u64 {
+  const shape = ShapeOf<Mover>()
+  return shape.offsets
+}
+)");
+  WOLANG_EXPECT_EQ(f.Problems(), "");
+  const std::string schema = SchemaOf(f.Lowered()->unoptimized);
+  WOLANG_EXPECT(schema.find("TYPE S Spot") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD x @") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD y @") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD a @") != std::string::npos);
+  WOLANG_EXPECT(schema.find("FIELD b @") == std::string::npos);
 }
 
 }  // namespace

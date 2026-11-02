@@ -1385,6 +1385,21 @@ class Interpreter {
           return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
                 "asked how big a type is without a layout to ask");
         }
+        if (inst.field == ir::kObjectSizeField) {
+          return Value::Int(std::max(layouts_->ObjectOf(measured).size, 1u), IntWidth::k64, /*is_signed=*/true);
+        }
+        if (inst.field != 0) {
+          // Where a field sits, which `std.save` needs to read an object
+          // the way compiled code lays it out (D266).
+          const abi::Layout& layout = layouts_->ObjectOf(measured);
+          if (inst.field > layout.offsets.size()) {
+            return TrapAt(outcome, TrapKind::kUndefinedValue, function, id,
+                  "asked where a field is that the type does not have");
+          }
+
+          return Value::Int(layout.offsets[inst.field - 1], IntWidth::k64, /*is_signed=*/true);
+        }
+
         return Value::Int(std::max(layouts_->SizeOf(measured), 1u),
                           IntWidth::k64, /*is_signed=*/true);
       }

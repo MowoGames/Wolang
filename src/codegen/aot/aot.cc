@@ -1053,10 +1053,16 @@ void Translator::Emit(ir::InstId id, const ir::Inst& inst) {
 
     case ir::Opcode::kTypeSize: {
       const TypeId measured{static_cast<uint32_t>(inst.payload.integer)};
-      Produce(id, Const(measured.is_valid()
-                            ? std::max(layouts.SizeOf(measured), 1u)
-                            : 1u,
-                        Held(file_, inst.type)));
+      uint64_t answer = 1u;
+      if (measured.is_valid() && inst.field == ir::kObjectSizeField) {
+        answer = std::max(layouts.ObjectOf(measured).size, 1u);
+      } else if (measured.is_valid() && inst.field != 0) {
+        const std::vector<uint32_t>& offsets = layouts.ObjectOf(measured).offsets;
+        answer = inst.field <= offsets.size() ? offsets[inst.field - 1] : 0;
+      } else if (measured.is_valid()) {
+        answer = std::max(layouts.SizeOf(measured), 1u);
+      }
+      Produce(id, Const(answer, Held(file_, inst.type)));
       return;
     }
 

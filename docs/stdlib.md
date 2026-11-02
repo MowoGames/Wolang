@@ -45,6 +45,8 @@ promise from the caller.
 | [`std.ops`](#stdops) | Operators as abilities: `Add`, `Eq`, `Ord` and the rest |
 | [`std.iter`](#stditer) | What being walked means: `Iterator` and `Iterable` |
 
+| [`std.save`](#stdsave) | Save games: the `@Save` fields of an object graph, written and read back |
+
 And first-party packages beside it: [`http`](#the-http-package),
 [`db`](#the-db-package), [`gfx`](#the-gfx-package),
 [`image`](#the-image-package), [`math`](#the-math-package), plus `tls` and
@@ -780,6 +782,50 @@ fun main() uses io {
 Numbers, `bool`, `char` and `text` have the operators they were always
 given, so `Max(3, 9)` is a compare and not a call. `Hash` is not an
 operator: it is the number `std.map` files a key under.
+
+## std.save
+
+`Save(object)` writes the fields marked `@Save` of an object and of every
+object they reach; `Load<T>(bytes)` builds them again, or answers `Corrupt`.
+A field is written by name with a code for its type, so a program that gained
+or lost a field since the save still reads it: a field the bytes have and the
+class lacks is dropped, and one the class has and the bytes lack stays zero.
+An object is written once however many fields point at it, so a shared
+reference stays shared and a cycle comes back as a cycle (D266).
+
+```wolang
+need std.io.{Print}
+need std.mem.{Free}
+need std.save.{Corrupt, Load, Save}
+
+class Hero {
+  @Save
+  var level: int = 1
+  @Save
+  var name: text = ""
+  var scratch: int = 0
+}
+
+fun main() uses io, unsafe {
+  const hero = Hero()
+  hero.level = 7
+  hero.name = "Ada"
+  hero.scratch = 99
+  const bytes = Save(hero)
+  const back = match Load<Hero>(bytes) {
+    Ok(found) => found,
+    Corrupt => Hero(),
+  }
+  Free(bytes)
+  Print("{back.name} {back.level} {back.scratch}")
+}
+```
+
+It prints `Ada 7 0`: `scratch` was not marked. What a marked field may hold
+is numbers, `bool`, `char`, `text`, enums that carry nothing, structs, classes
+without a virtual method, and an optional of any of those; a struct is saved
+whole unless it marks fields of its own. Anything else is `E0176`. An object
+is written as its declared class. `Save` gives back storage for `Free`.
 
 ## The `http` package
 

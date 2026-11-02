@@ -2804,6 +2804,8 @@ class Lowerer {
     uint32_t Index = 0;
     TypeId Type;
     bool Weak = false;
+    Symbol Name;
+    bool Save = false;
   };
 
   std::vector<StoredField> StoredFields(TypeId type) {
@@ -2845,11 +2847,264 @@ class Lowerer {
         field.Index = index;
         field.Type = substitution.empty() ? member.type : types_->Substitute(member.type, substitution);
         field.Weak = member.is_weak;
+        field.Name = member.name;
+        field.Save = member.is_save;
         fields.push_back(field);
         ++index;
       }
     }
     return fields;
+  }
+
+  // One number the schema leaves for the tier to fill in: where field
+  // |Field| of |Type| sits, or how big its object is (D266).
+  struct SaveWant {
+    TypeId Type;
+    uint32_t Field = 0;
+  };
+
+  // A name the schema can carry on one line, one per type.
+  std::string SaveNameOf(TypeId type, std::vector<std::pair<TypeId, std::string>>* names) {
+    for (const auto& [seen, name] : *names) {
+      if (seen == type) {
+        return name;
+      }
+    }
+
+    std::string spelled = types_->Describe(*interner_, type);
+    for (char& letter : spelled) {
+      if (letter == ' ' || letter == '\t' || letter == '\n') {
+        letter = '_';
+      }
+    }
+    for (const auto& [seen, name] : *names) {
+      if (name == spelled) {
+        spelled.append("#");
+        spelled.append(std::to_string(type.index));
+        break;
+      }
+    }
+    names->emplace_back(type, spelled);
+
+    return spelled;
+  }
+
+  std::string SaveWantToken(std::vector<SaveWant>* wants, TypeId type, uint32_t field) {
+    for (size_t i = 0; i < wants->size(); ++i) {
+      if ((*wants)[i].Type == type && (*wants)[i].Field == field) {
+        return "@" + std::to_string(i);
+      }
+    }
+
+    SaveWant want;
+    want.Type = type;
+    want.Field = field;
+    wants->push_back(want);
+
+    return "@" + std::to_string(wants->size() - 1);
+  }
+
+  bool HasVirtualMethods(TypeId type) {
+    const FileResolution* const where = ResolutionOf(type);
+    TypeId named = type;
+    if (types_->KindOf(named) == TypeKind::kInstance) {
+      named = types_->Get(type).base;
+    }
+    for (TypeId current = named; current.is_valid(); current = where->BaseOf(current)) {
+      for (const Member& member : where->MembersOf(current)) {
+        if (member.kind == MemberKind::kMethod && (member.is_virtual || member.is_override)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  // The shape and the wire code of a field type `std.save` can write, and
+  // false for one it cannot. Classes and structs it meets are queued so
+  // that their own fields get described too (D266).
+  bool SaveShapeOf(TypeId type, std::vector<SaveWant>* wants, std::vector<std::pair<TypeId, std::string>>* names, std::vector<TypeId>* queue, std::string* shape, std::string* wire, int depth) {
+    if (depth > 8) {
+      return false;
+    }
+
+    switch (types_->KindOf(type)) {
+      case TypeKind::kBool:
+        *shape = "b";
+        *wire = "b";
+        return true;
+      case TypeKind::kChar:
+        *shape = "c";
+        *wire = "c";
+        return true;
+      case TypeKind::kInt: {
+        const Type& info = types_->Get(type);
+        const uint32_t bytes = 1u << static_cast<uint32_t>(info.int_width);
+        *shape = std::string(info.is_signed ? "i" : "u") + std::to_string(bytes);
+        *wire = *shape;
+        return true;
+      }
+      case TypeKind::kFloat:
+        *shape = types_->Get(type).float_width == FloatWidth::k32 ? "f4" : "f8";
+        *wire = *shape;
+        return true;
+      case TypeKind::kStr:
+        *shape = "s";
+        *wire = "s";
+        return true;
+      case TypeKind::kOptional: {
+        std::string inner_shape;
+        std::string inner_wire;
+        if (!SaveShapeOf(types_->ElementOf(type), wants, names, queue, &inner_shape, &inner_wire, depth + 1)) {
+          return false;
+        }
+        *shape = "o " + SaveWantToken(wants, type, 2) + " " + inner_shape;
+        *wire = "o(" + inner_wire + ")";
+        return true;
+      }
+      case TypeKind::kNamed:
+      case TypeKind::kInstance: {
+        const FileResolution* const where = ResolutionOf(type);
+        if (where->IsAbility(type) || types_->IsForeignClass(type)) {
+          return false;
+        }
+
+        const std::string name = SaveNameOf(type, names);
+        if (types_->IsHandle(type)) {
+          if (HasVirtualMethods(type)) {
+            return false;
+          }
+          *shape = "r " + name;
+          *wire = "r:" + name;
+          queue->push_back(type);
+          return true;
+        }
+
+        bool variants = false;
+        for (const Member& member : MembersAnywhere(type)) {
+          if (member.kind == MemberKind::kVariant) {
+            if (types_->KindOf(member.type) == TypeKind::kFunction) {
+              return false;
+            }
+            variants = true;
+          }
+        }
+        if (variants) {
+          *shape = "e";
+          *wire = "e:" + name;
+          return true;
+        }
+
+        *shape = "v " + name;
+        *wire = "v:" + name;
+        queue->push_back(type);
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  // The text `wolang_save_encode` and `wolang_save_decode` read: every class
+  // and struct reachable from |root| through a field marked `@Save`, with
+  // the numbers only a tier knows left as `@k` places (D266). Empty when a
+  // marked field holds something that cannot be written.
+  std::string SaveSchemaFor(TypeId root, std::vector<SaveWant>* wants) {
+    std::vector<std::pair<TypeId, std::string>> names;
+    std::vector<TypeId> queue;
+    std::vector<TypeId> done;
+
+    if (!types_->IsHandle(root) || types_->IsForeignClass(root) || HasVirtualMethods(root)) {
+      return std::string();
+    }
+
+    const std::string root_name = SaveNameOf(root, &names);
+    std::string body;
+    queue.push_back(root);
+    for (size_t at = 0; at < queue.size(); ++at) {
+      const TypeId type = queue[at];
+      if (std::find(done.begin(), done.end(), type) != done.end()) {
+        continue;
+      }
+      done.push_back(type);
+
+      // A struct is a value, and half of one is not worth saving: unless it
+      // marks fields of its own, all of it is written (D266).
+      const bool is_class = types_->IsHandle(type);
+      const std::vector<StoredField> every = StoredFields(type);
+      bool marked = is_class;
+      for (const StoredField& field : every) {
+        marked = marked || field.Save;
+      }
+
+      std::vector<StoredField> saved;
+      for (const StoredField& field : every) {
+        if (!marked || field.Save) {
+          saved.push_back(field);
+        }
+      }
+
+      body.append("TYPE ");
+      body.append(is_class ? "C " : "S ");
+      body.append(SaveNameOf(type, &names));
+      body.append(" ");
+      body.append(is_class ? SaveWantToken(wants, type, ir::kObjectSizeField) : std::string("0"));
+      body.append(" ");
+      body.append(std::to_string(saved.size()));
+      body.append("\n");
+      for (const StoredField& field : saved) {
+        std::string shape;
+        std::string wire;
+        if (!SaveShapeOf(Erase(field.Type), wants, &names, &queue, &shape, &wire, 0)) {
+          return std::string();
+        }
+        body.append("FIELD ");
+        body.append(interner_->Text(field.Name));
+        body.append(" ");
+        body.append(SaveWantToken(wants, type, field.Index + 1));
+        body.append(" ");
+        body.append(wire);
+        body.append(" ");
+        body.append(shape);
+        body.append("\n");
+      }
+    }
+
+    return "WSCHEMA 1\nROOT " + root_name + "\n" + body;
+  }
+
+  // The schema as a string, and a heap table holding the numbers it asks
+  // each tier for, as the pair `Shape<T>` is (D266).
+  InstId LowerSaveShape(TypeId wrapper, TypeId root) {
+    std::vector<SaveWant> wants;
+    const std::string schema = SaveSchemaFor(root, &wants);
+    const TypeId word = types_->u64();
+    const TypeId number = types_->Int(IntWidth::k64, /*is_signed=*/true);
+
+    InstId table = builder_->ConstInt(word, 0);
+    if (!schema.empty() && !wants.empty()) {
+      const TypeId made = types_->Slice(number, /*is_soa=*/false, /*is_mutable=*/true);
+      const InstId count = builder_->ConstInt(word, wants.size());
+      const InstId storage = builder_->Add(Opcode::kSoaNew, made, {count});
+      const TypeId pointer = types_->Pointer(number, /*is_mutable=*/true);
+      const InstId first = builder_->Extract(pointer, storage, 0);
+      const InstId length = builder_->ConstInt(types_->default_int(), wants.size());
+      for (size_t i = 0; i < wants.size(); ++i) {
+        const InstId answer = builder_->Add(Opcode::kTypeSize, number);
+        builder_->Mutable(answer).payload.integer = wants[i].Type.index;
+        builder_->Mutable(answer).field = wants[i].Field;
+
+        const InstId at = builder_->Add(Opcode::kIndexAddress, pointer, {first, builder_->ConstInt(types_->default_int(), i), length});
+        builder_->Mutable(at).is_unchecked = true;
+        builder_->Add(Opcode::kStore, TypeId{}, {at, answer});
+      }
+      table = builder_->Add(Opcode::kCast, word, {first});
+    }
+
+    const InstId text = builder_->ConstString(types_->str(), schema.empty() ? std::string("WSCHEMA 0\n") : schema);
+
+    return builder_->Add(Opcode::kMakeStruct, wrapper, {text, table});
   }
 
   bool IsWeakField(TypeId owner, uint32_t index) {
@@ -6025,6 +6280,33 @@ class Lowerer {
           builder_->Mutable(size).payload.integer = measured.index;
           return size;
         }
+      }
+    }
+
+    // `ShapeOf<T>()` is the schema `std.save` reads an object by, and a
+    // table of the numbers only a tier knows. `HandleOf(object)` and
+    // `FromHandle<T>(word)` are the object as the word the runtime takes
+    // and the word it gives back (D266).
+    if (IntrinsicName(expr) == "ShapeOf" && arguments.empty()) {
+      const Binding* binding = IntrinsicBinding(expr);
+      const TypeId wrapper = Erase(Apply(type));
+      const std::vector<TypeId> named = types_->ArgumentsOf(wrapper);
+      if ((binding == nullptr || !binding->has_body) && !named.empty()) {
+        return LowerSaveShape(wrapper, Erase(Apply(named[0])));
+      }
+    }
+    if (IntrinsicName(expr) == "HandleOf" && arguments.size() == 1) {
+      const Binding* binding = IntrinsicBinding(expr);
+      if (binding == nullptr || !binding->has_body) {
+        return builder_->Add(Opcode::kCast, types_->u64(), {arguments[0]});
+      }
+    }
+    if (IntrinsicName(expr) == "FromHandle" && arguments.size() == 1) {
+      const Binding* binding = IntrinsicBinding(expr);
+      if (binding == nullptr || !binding->has_body) {
+        const InstId made = builder_->Add(Opcode::kCast, Erase(Apply(type)), {Widen(arguments[0], types_->u64())});
+        m_Fresh.emplace_back(current_function_, made);
+        return made;
       }
     }
 

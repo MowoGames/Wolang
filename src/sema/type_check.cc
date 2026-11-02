@@ -4757,14 +4757,18 @@ std::string Checker::SaveBlocker(TypeId type, bool wire, int depth) const {
           return "an enum whose variants carry values is not saved yet";
         }
       }
-      if (wire) {
+      bool marked = false;
+      for (const Member& member : resolution_->MembersOf(type)) {
+        marked = marked || (member.kind == MemberKind::kField && member.is_save);
+      }
+      if (wire || !marked) {
         for (const Member& member : resolution_->MembersOf(type)) {
           if (member.kind != MemberKind::kField) {
             continue;
           }
           const std::string inner = SaveBlocker(member.type, wire, depth + 1);
           if (!inner.empty()) {
-            return "its field `" + std::string(interner_->Text(member.name)) + "` is not sendable: " + inner;
+            return "its field `" + std::string(interner_->Text(member.name)) + (wire ? "` is not sendable: " : "` cannot be saved: ") + inner;
           }
         }
       }

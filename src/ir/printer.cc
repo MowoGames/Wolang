@@ -256,6 +256,12 @@ class Printer {
       case Opcode::kTypeSize:
         out_.append(" : ");
         out_.append(PrintType(interner_, types_, TypeId{static_cast<uint32_t>(inst.payload.integer)}));
+        if (inst.field == kObjectSizeField) {
+          out_.append(" @size");
+        } else if (inst.field != 0) {
+          out_.append(" @");
+          out_.append(std::to_string(inst.field - 1));
+        }
         break;
       case Opcode::kAlloca:
         out_.append(" slots ");
@@ -372,6 +378,12 @@ class Printer {
         out_.append(types_.Describe(
             interner_,
             TypeId{static_cast<uint32_t>(inst.payload.integer)}));
+        if (inst.field == kObjectSizeField) {
+          out_.append(" @size");
+        } else if (inst.field != 0) {
+          out_.append(" @");
+          out_.append(std::to_string(inst.field - 1));
+        }
         break;
       case Opcode::kAlloca:
       case Opcode::kUndef:

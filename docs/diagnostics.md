@@ -36,6 +36,8 @@ searched for. Codes never change meaning; retired codes are not reused.
 | `E0161`, `E0162` | a borrowed function value in a place that keeps it, an escaping closure that takes a reference, pointer, slice or borrowed function | D240 |
 | `E0164` | a script class that derives from an `extern class` | D256 |
 | `E0165` | an element written through a slice that is not `[]mut T` | D251 |
+| `E0175`, `E0176` | `@Save` on something that is not a stored field of a class or a struct, a saved field of a type `std.save` cannot write | D266 |
+| `E0178`, `E0179` | a replication attribute where it means nothing, a replicated field or an RPC that carries a type a host cannot send | D268 |
 
 | `E0149` | an owning field moved out of the value that holds it | D233 |
 | `E0201` | pattern matching | implemented (wave 4) |
@@ -257,6 +259,10 @@ Per-code severity from the manifest's `[lints]` table still applies, and
 | `E0157` | an ability whose method names `Self` used as the type of a value; use it as a bound instead (D239) | `const e: Eq = a`, `fun F(e: Eq)` |
 | `E0161` | a function value from a parameter that is not `keep` stored, returned, or given to a `keep` parameter, field or kept local (D240) | `fun Hold(f: fun()) { saved = f }` |
 | `E0162` | a closure that outlives its call taking a reference, a pointer, a slice or a borrowed function with it (D240) | `fun M(r: &int) -> fun() -> int { return \|\| r }` |
+| `E0175` | `@Save` on a method, a derived or weak field, a host class's member, or anything that is not a stored field of a `class` or a `struct` (D266) | `class Mover { @Save fun Step() {} }` |
+| `E0176` | a `@Save` field whose type `std.save` cannot write back: an array, a slice, a function, a class with a virtual method, an enum that carries values, a struct holding one of these (D266) | `class Mover { @Save var cells: [4]int }` |
+| `E0178` | `@Replicated`, `@Server`, `@Client` or `@Multicast` on a member of a struct, on a free function, on the wrong kind of member (a field for an RPC attribute, a method for `@Replicated`), two of them on one member, or an argument the attribute does not take (D268) | `struct S { @Replicated var n: int }` |
+| `E0179` | a replicated field or an RPC parameter a host cannot send (an object reference, an array, a struct that holds one), or an RPC that returns a value (D268) | `class P { @Server fun Fire() -> int => 1 }` |
 | `E0165` | an element written, or `&mut` taken of one, through a slice that is `[]T` and not `[]mut T`; a write through a handle the slice holds is not one (D251) | `fun Fill(xs: []int) { xs[0] = 1 }` |
 | `E0164` | a script `class` with an `extern class` as its base: no host object stands behind it, and an upcast would hand the host a pointer it never made (D256) | `extern class A {}` then `class B : A {}` |
 | `E0160` | an `@Operator` ability that is not exactly one method named `Plus`, `Minus`, `Times`, `Divide`, `Negate`, `Equals` or `Compare` with that operator's shape (D239) | `@Operator ability A { fun Frob(o: Self) -> Self }` |

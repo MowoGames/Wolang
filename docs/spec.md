@@ -606,6 +606,37 @@ const zero = Vec3()
 const bad = Vec3(1.0)          // E0102: Vec3 has 3 fields, found 1 argument
 ```
 
+### 4.4a Saved and replicated members
+
+`@Save` marks a stored field of a class or a struct as one `std.save` writes
+and reads back (D266). Elsewhere it is `E0175`. The field's type must be one
+the format can hold: a number, `bool`, `char`, `text`, an enum whose variants
+carry nothing, a struct, a class without a virtual method, or an optional of
+those; anything else is `E0176`. A struct reached through a saved field is
+saved whole, unless it marks fields of its own.
+
+```wolang
+class Hero {
+  @Save
+  var level: int = 1
+  @Save
+  var friend: Hero? = null    // a reference: written once, restored shared
+  var scratch: int = 0        // not marked, not saved
+}
+```
+
+`@Replicated` on a stored field of a script class, and `@Server`, `@Client`
+and `@Multicast` on its methods, say what the host should send where (D268).
+Wolang does no networking: the checker validates the declaration and the
+reflection API reports it, and the host maps it to its own policy. A
+replicated field and every parameter of an RPC must be a type a host can read
+bytes of -- the saveable types, except that an object reference means nothing
+on the other side -- and an RPC returns nothing (`E0179`). `@Replicated(owner)`
+asks that only the owning connection receives the field; `@Server`,
+`@Client` and `@Multicast` take `owner`, `reliable` or `unreliable`. An
+attribute on a member of a struct, on a free function, on the wrong kind of
+member, two on one member, or an argument they do not take is `E0178`.
+
 ### 4.5 Generics
 
 Type parameters are inferred from the arguments at a call site, and may
