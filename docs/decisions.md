@@ -3407,3 +3407,39 @@ Not covered: a method that changes a value-type element in place
 **D276. `font` reads TrueType and rasterizes it in Wolang, and every part but file lookup is computation.** The package parses a font from bytes (`FontLoad`): the table directory, `head`, `maxp`, `hhea`, `hmtx`, `loca`, `glyf` (simple and composite glyphs, with scale and 2 by 2 transforms), `cmap` formats 4 and 12, and a horizontal `kern` format 0 subtable. It is written here and not bound to FreeType for the reason `image` and deflate are (D177, D245): the reader is the first code a hostile file reaches, so every offset, count and table is checked against the bytes that are there, a glyph is capped in points (16384) and components (64, depth 6), and the way out of a bad file is `Malformed`, `Unsupported` or `TooLarge`, never a trap. OpenType with CFF outlines (`OTTO`) is `Unsupported`, and `GPOS` kerning and hinting are not read: the first needs a charstring interpreter and the second is not needed at the sizes a game draws. `Rasterize` fills the flattened outline with exact signed-area coverage per pixel (a scanline accumulation, so edges are anti-aliased without sampling and a pixel-aligned box is exactly 255), at a size in pixels per em. `LayoutText` places code points by advance and kerning, breaks at newlines and at spaces when a width is given, and breaks inside a word that is longer than the line. `Atlas` packs glyph bitmaps on shelves into one coverage bitmap and caches a slot per glyph and size, so a renderer uploads it once. `SampleFont` is a built-in 5 by 7 font in one case, generated from rectangles by `tools/gen/make_font_fixtures.py`, so text can be drawn with no file and the tests have real bytes. The part that needs the machine, `SystemFontFile` and `FontLoadFile`, answers `null` or `Missing` when there is no such file, and `Available()` says whether a common system font was found. Class values are passed by value, not as `&Font`: a handle is already a reference.
 
 **D277. `ui` is immediate-mode, its output is a draw list, and the draw list is plain data.** The program describes the interface on every frame and each widget call answers what happened to it (`if ui.Button("Play") { ... }`), so there is no widget tree to keep in step with the program's state. A frame is `Begin`, widgets, `End`; a widget's identity is the order it was called in, which is enough for the handful of kinds the package has (label, button, checkbox, slider, text field, list box, panel) and costs the program nothing to remember. What the frame produces is a list of `DrawCommand`s, a filled rectangle or a run of text with a position and an `0xAARRGGBB` colour, and nothing else: layout, hit testing and the state machine of press, hold and release are therefore computation, tested with no window, and any renderer (the software one in the package, a `gpu` batch later) draws the same list. `Render(image, ui)` is the software renderer; it blends with the alpha each colour carries, and a frame is checked against a stored picture by its checksum. Input is a struct the program fills, by hand or from a `gfx` event as it is. A click is a release over the widget the press began on, and `active` is forgotten on the frame the button is up, so a lost release cannot wedge the interface. The labels of a frame are copied into one `Builder` the context owns and each command holds an offset and a length into it, not an owned `Text`: a class with a `Text` field corrupts the heap when its last handle goes (found while writing this package, in the reference interpreter and the compiled tier alike; it is a gap in the compiler, not in `ui`), and a builder per frame is the shape that needs nothing freed per label anyway.
+
+**D272. Ahead-of-time output links without a C compiler.** On Linux
+`wolang build` used to call `c++`, so a container with no compiler built
+nothing. Now `LinkCommand` picks between two linkers. The system one (`c++`)
+stays, and is used whenever it is on `PATH` and the owner has not asked for the
+other. The bundled one is `ld.lld` from a sysroot that holds musl's start-up
+files and `libc.a`, a libc++ built for musl, and the runtime archive compiled
+against them (`tools/package/make_sysroot.sh`, built in Alpine and released as
+`wolang-sysroot-linux-<arch>.tar.gz`). The sysroot is `WOLANG_SYSROOT`, or
+`lib/wolang/sysroot` beside the runtime archive of an installed compiler. It is
+chosen when there is no `c++` or `cc` on `PATH`, or when `WOLANG_LINKER=bundled`;
+`WOLANG_LINKER=system` forces the old way. The output is a static executable,
+so it runs on any Linux of the same architecture. The same source and flags give
+the same bytes: the object is a pure function of the program (a test emits one
+twice from separate databases and compares), and the bundled link line passes
+`--build-id=none`. macOS and Windows keep the platform linker, which is always
+there. Also: the AOT link line carries the sanitizers the runtime archive was
+built with, and the release C runtime when they are on, because `clang-cl`
+refuses `/MDd` with `-fsanitize=address`. Not done: the sysroot has been
+written but not yet built in CI, and nothing pins the hashes of what it
+downloads; its `MANIFEST` records them so that the first release can.
+
+**D273. The cost of a script call is published.** An engine budgets scripts per
+actor, so it needs calls per millisecond and allocation per call, per tier, on a
+build that is not a debug build. `benchmarks/actors` ticks a crowd of actors in
+the interpreter, the JIT, ahead-of-time code and C++ behind virtual calls, and
+prints a table of microseconds a frame and a second table at 1000 actors a
+frame: calls per millisecond, and objects allocated per call. The second
+number needs a counter that does not forget: `wolang_objects_allocated` counts
+every object ever allocated, arena or not, beside `wolang_objects_live`; the
+script reads it through an `extern "C"` declaration and the AOT build through
+the exported `Allocated`. `docs/benchmarks.md` holds the measured table with the
+machine described, and is part of the site. `wl bench [preset]` runs it, and
+the `windows-release` preset exists so that a Windows number is not a debug
+number. The table is measured again when the runtime or a back end changes
+enough to move it.

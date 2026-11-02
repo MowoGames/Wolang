@@ -94,7 +94,9 @@ purpose.
 | `release` | `-O2`, no assertions. What to measure and ship. |
 | `asan` | Address and undefined-behaviour sanitizers. Where memory bugs die. |
 | `ubsan` | Undefined-behaviour sanitizer alone, recovery off; cheaper than `asan`, run in CI. |
-| `windows` | clang-cl, on Windows. |
+| `windows` | clang-cl, on Windows. A debug build. |
+| `windows-release` | clang-cl on Windows, optimized. What to time there. |
+| `windows-arm64` | clang-cl on a Windows ARM64 machine, told to compile for arm64. Checked in CI, informationally. |
 | `x64` | Cross-build to x86-64 on an arm64 machine, for the other back end. |
 
 ```sh
@@ -199,6 +201,28 @@ No npm needed:
 python3 tools/package/make_vsix.py
 code --install-extension build/wolang-1.2.0.vsix
 ```
+
+## Building programs with no C compiler
+
+`wolang build` links its output with the system's own linker, `c++`, where
+there is one. On Linux a machine with no compiler, a minimal container for
+instance, can still build programs: unpack the sysroot for its architecture
+(`wolang-sysroot-linux-x86_64.tar.gz` or `-arm64`, from the release) into
+`lib/wolang/sysroot` of the installed compiler, or anywhere with
+`WOLANG_SYSROOT` pointing at it. With no `c++` or `cc` on `PATH`, the build then
+links with the sysroot's own `ld.lld`, against musl, and writes a static
+executable that runs on any Linux of the same architecture. The same source and
+flags give the same bytes (D272).
+
+`WOLANG_LINKER=bundled` uses the sysroot even where a compiler exists, which is
+how to check a reproducible build; `WOLANG_LINKER=system` never does. To build
+the sysroot yourself, run `tools/package/make_sysroot.sh` in an Alpine
+container; the script's header says how. macOS and Windows keep their own
+linker, which is always there.
+
+The `asan` preset links the programs it builds with the sanitizers it was built
+with, so an `AotTest` there needs the sanitizer runtime on `PATH` on Windows
+(`C:\Program Files\LLVM\lib\clang\<version>\lib\windows`).
 
 ## When something goes wrong
 

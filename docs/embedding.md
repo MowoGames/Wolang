@@ -212,7 +212,15 @@ like any C function. The dev tier is what an editor runs, with hot
 reloading; a call through a `WolangFunction` handle goes straight into
 compiled code when every argument is a number, a `bool` or an object. The
 interpreter is what runs under a debugger. `wolang_actor_bench` is built
-with everything else, and prints the table (D219).
+with everything else, and prints the table (D219), and a second one with
+calls per millisecond and objects allocated per call. The measured numbers,
+on a named machine and an optimized build, are in
+[benchmarks.md](benchmarks.md) (D273).
+
+A game that ships a library built ahead of time does not need a C compiler on
+the machine that builds it: on Linux `wolang build` links with a bundled
+`ld.lld` and a musl sysroot when there is no `c++` on `PATH`, and the object it
+writes is the same every time (D272, [building.md](building.md)).
 
 ## Bindings from an engine's reflection
 
