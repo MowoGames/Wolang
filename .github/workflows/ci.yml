@@ -18,39 +18,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which machines the build job runs on. The Linux rows are always there.
+  # The macOS rows are put in when the repository variable WOLANG_CI_MACOS
+  # is `true`: the account's macOS jobs were cancelled before they started,
+  # and a row that can never start is a red mark on every pull request. Set
+  # the variable (Settings, Secrets and variables, Actions, Variables) once
+  # macOS runners are available, and the next run has them (D131).
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        shell: bash
+        env:
+          MACOS: ${{ vars.WOLANG_CI_MACOS }}
+        run: |
+          # `aot` machines also build the ahead-of-time backend against
+          # the pinned LLVM and run the binaries it makes (D200, D208).
+          # UBSan alone, with recovery off: a finding fails the run
+          # instead of scrolling past. linux-arm64 is the machine a laptop
+          # cannot check: same architecture as macOS, different system
+          # (D157).
+          rows='[
+            {"name":"linux-x86_64","os":"ubuntu-24.04","preset":"debug","aot":true},
+            {"name":"linux-x86_64-ubsan","os":"ubuntu-24.04","preset":"ubsan"},
+            {"name":"linux-x86_64-release","os":"ubuntu-24.04","preset":"release"},
+            {"name":"linux-arm64","os":"ubuntu-24.04-arm","preset":"debug","aot":true}
+          ]'
+          if [ "$MACOS" = true ]; then
+            rows=$(echo "$rows" | jq -c '. + [
+              {"name":"macos-arm64","os":"macos-14","preset":"debug","aot":true},
+              {"name":"macos-arm64-asan","os":"macos-14","preset":"asan"}
+            ]')
+          else
+            rows=$(echo "$rows" | jq -c '.')
+          fi
+          echo "matrix=$rows" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.name }}
+    needs: plan
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # `aot` machines also build the ahead-of-time backend against
-          # the pinned LLVM and run the binaries it makes (D200, D208).
-          - name: linux-x86_64
-            os: ubuntu-24.04
-            preset: debug
-            aot: true
-          # UBSan alone, with recovery off: a finding fails the run
-          # instead of scrolling past.
-          - name: linux-x86_64-ubsan
-            os: ubuntu-24.04
-            preset: ubsan
-          - name: linux-x86_64-release
-            os: ubuntu-24.04
-            preset: release
-          # The other machine this language claims to run on, and the one
-          # a laptop cannot check: same architecture as macOS, different
-          # system (D157).
-          - name: linux-arm64
-            os: ubuntu-24.04-arm
-            preset: debug
-            aot: true
-          # macOS is out of the matrix while the account has no macOS
-          # runners: those jobs were cancelled before they started. The
-          # rows to put back are a debug job with `aot: true` and an
-          # `asan` one, both on macos-14.
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -283,6 +297,57 @@ jobs:
           clang-cl -nologo -Iinclude examples/embed/host.c -Fehost.exe \
             -link build/windows/src/wolang_embed_dll.lib
           PATH="$PWD/build/windows/src:$PATH" ./host.exe examples/embed/script
+
+  # Windows on ARM64: the JIT's arm64 tier and the x64 one are both claimed
+  # to work there, and nothing had run them (D157). clang-cl from the x64
+  # LLVM installer runs under emulation and is told to compile for arm64.
+  # Informational until it has been green once: a failure here is an
+  # annotation, not a red pull request.
+  windows-arm64:
+    name: windows-arm64
+    runs-on: windows-11-arm
+    timeout-minutes: 90
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Cache the LLVM SDK
+        id: llvm-sdk
+        uses: actions/cache@v4
+        with:
+          path: build/llvm-sdk
+          key: llvm-sdk-22.1.8-windows-aarch64
+      - name: Install ninja and LLVM
+        run: |
+          choco install ninja --no-progress -y
+          choco install llvm --no-progress -y
+          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
+      - name: Fetch the LLVM SDK
+        if: steps.llvm-sdk.outputs.cache-hit != 'true'
+        run: python tools/package/fetch_llvm.py --version 22.1.8 --arch aarch64
+      - name: Configure
+        run: cmake --preset windows-arm64
+      - name: Build
+        run: cmake --build --preset windows-arm64 -j
+      - name: Unit tests
+        run: ctest --preset windows-arm64 -E "^unit$" --timeout 1200 --output-on-failure
+      - name: Library tests
+        shell: bash
+        run: |
+          W=build/windows-arm64/tools/wolang/wolang.exe
+          $W test lib/std
+          $W test lib/core
+          $W test lib/math
+      - name: Fuzz the tiers against each other
+        shell: bash
+        run: |
+          W=build/windows-arm64/tools/wolang/wolang.exe
+          $W fuzz --seed ${{ github.run_number }} --count 100
 
   embed:
     name: embed the language in C
