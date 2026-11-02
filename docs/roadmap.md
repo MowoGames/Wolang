@@ -85,6 +85,18 @@ The library is written in Wolang, with a thin non-Wolang floor:
 nothing to execute Wolang with. That is why wave 7 explicitly includes the first
 `core` modules.
 
-**Self-hosting is not a goal.** The compiler stays C++20. Rewriting it in Wolang
-would require the whole language to be finished first and would double the work
-for years; it stays an option after phase D, not a commitment.
+**Self-hosting comes in stages, after 1.2.0 (D250).** The compiler is C++20
+today and stays the bootstrap. Tools written in Wolang come first, then the
+lexer and parser, then the checker and lowering, and last the driver built by
+the ahead-of-time tier. The reasons, and what each stage needs from `std`, are
+in [docs/plans/self-hosting.md](plans/self-hosting.md).
+
+## Releases since the waves
+
+The waves above built the language. Releases since then each close a list.
+
+| Release | What it settled |
+|---|---|
+| 1.1 | The first published release. An audit of the compiler, the runtime, the sandbox and the libraries that read other people's bytes; image and UDP; a frozen C ABI; a release pipeline |
+| 1.2 | `int` is 64 bits; errors carry data; `unsafe fun`; read-only slices; escaping closures with `keep`; operators as abilities; the `math` package; what an engine needs from the embedding API ([what is new](whats-new.md)) |
+| 1.3 | In planning: closing 1.2's open ends, the engine's execution budget, serialization, coroutines and replication, then `font`, `audio`, `ui`, `gpu` and `app`, and the first stage of self-hosting ([the plan](plans/1.3.0.md)) |

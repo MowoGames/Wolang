@@ -1,6 +1,6 @@
 # The standard library
 
-Thirty-five modules, all written in Wolang over a floor of about sixty C
+Thirty-six modules, all written in Wolang over a floor of about sixty C
 calls. This is what each one is for, what it gives you, and what it does
 not. Every example here compiles.
 
@@ -42,9 +42,11 @@ promise from the caller.
 | [`std.thread`](#stdthread), [`std.tasks`](#stdtasks) | Threads, locks, and a frame's worth of parallel work |
 | [`std.mem`](#stdmem), [`std.own`](#stdown) | Storage, views and ownership |
 | [`std.ops`](#stdops) | Operators as abilities: `Add`, `Eq`, `Ord` and the rest |
+| [`std.iter`](#stditer) | What being walked means: `Iterator` and `Iterable` |
 
-And three first-party packages beside it: [`http`](#the-http-package),
-[`db`](#the-db-package), [`gfx`](#the-gfx-package), plus `tls` and
+And first-party packages beside it: [`http`](#the-http-package),
+[`db`](#the-db-package), [`gfx`](#the-gfx-package),
+[`image`](#the-image-package), [`math`](#the-math-package), plus `tls` and
 `game`.
 
 ---
