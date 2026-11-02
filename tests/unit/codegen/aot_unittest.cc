@@ -517,6 +517,66 @@ WOLANG_TEST(AotTest, TheLinkLineCarriesTheSanitizersTheRuntimeWasBuiltWith) {
   } else {
     WOLANG_EXPECT(command.find(flag) != std::string::npos);
   }
+
+WOLANG_TEST(AotTest, SavesAndLoadsAnObjectGraph) {
+  if (!Links()) {
+    return;
+  }
+  Binary program(R"(
+extern "C" fun exit(code: s32)
+extern "C" fun wolang_save_encode(schema: *u8, schema_length: u64, offsets: u64, root: u64, out_length: *mut u64) -> *mut u8
+extern "C" fun wolang_save_decode(schema: *u8, schema_length: u64, offsets: u64, data: *u8, data_length: u64, status: *mut s32) -> u64
+
+struct Shape<T> {
+  var schema: text
+  var offsets: u64
+}
+
+fun ShapeOf<T>() -> Shape<T>
+fun HandleOf<T>(value: T) -> u64
+fun FromHandle<T>(word: u64) -> T
+
+class Node {
+  @Save
+  var n: int = 0
+  @Save
+  var name: text = ""
+  @Save
+  var next: Node? = null
+  var scratch: int = 0
+}
+
+fun main() uses unsafe {
+  const a = Node()
+  const b = Node()
+  a.n = 1
+  b.n = 2
+  a.name = "ab"
+  a.scratch = 50
+  a.next = b
+  b.next = a
+
+  const first = ShapeOf<Node>()
+  var length: u64 = 0
+  const bytes = wolang_save_encode(first.schema.data, first.schema.length, first.offsets, HandleOf(a), &mut length)
+
+  const second = ShapeOf<Node>()
+  var status: s32 = 0
+  const word = wolang_save_decode(second.schema.data, second.schema.length, second.offsets, bytes, length, &mut status)
+  const back = FromHandle<Node>(word)
+
+  var code = back.n + (back.name.length as int) * 100 + back.scratch
+  if const hop = back.next {
+    code = code + hop.n * 10
+    if const around = hop.next {
+      around.n = 3
+      code = code + back.n * 1000
+    }
+  }
+  exit((code % 256) as s32)
+}
+)");
+  WOLANG_EXPECT_EQ(program.Output(), "exit 149");
 }
 
 }  // namespace
