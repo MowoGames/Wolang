@@ -36,7 +36,7 @@ bool IsSupportedTarget() {
 }
 
 static void SkipUnwinding(jmp_buf* landing) {
-#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64))
   reinterpret_cast<_JUMP_BUFFER*>(landing)->Frame = 0;
 #else
   (void)landing;
