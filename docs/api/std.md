@@ -1,5 +1,88 @@
 # std
 
+## std.arena
+
+### class `Arena`
+
+```wolang
+offer class Arena
+```
+
+Chunks of storage and a cursor into them.
+
+`Take` never moves what it already gave out: a run stays where it is
+until `Reset` or the arena's own drop, so a view of one is safe to keep
+for that long. `deinit` gives every chunk back.
+
+#### field `chunks`
+
+```wolang
+var chunks: List<[]mut u8>
+```
+
+#### field `chunk_size`
+
+```wolang
+var chunk_size: int
+```
+
+#### field `current`
+
+```wolang
+var current: int
+```
+
+#### field `used`
+
+```wolang
+var used: int
+```
+
+#### method `deinit`
+
+```wolang
+deinit
+```
+
+#### method `Take`
+
+```wolang
+fun Take(count: int) -> []mut u8 uses unsafe
+```
+
+A run of `count` bytes, a multiple of eight apart from the last one.
+
+What comes back is whatever the chunk held: fresh chunks are zero, but
+a run handed out again after `Reset` still has its old bytes.
+
+#### method `Reset`
+
+```wolang
+fun Reset()
+```
+
+Hands the whole arena out again from the start, keeping its chunks.
+
+Every view taken before is dead: the next `Take` writes over it.
+
+#### method `Capacity`
+
+```wolang
+fun Capacity() -> int
+```
+
+How many bytes the arena holds, used or not.
+
+### function `ArenaNew`
+
+```wolang
+offer fun ArenaNew(chunk_size: int) -> Arena uses unsafe
+```
+
+An arena that asks for storage `chunk_size` bytes at a time.
+
+A run bigger than a chunk gets a chunk of its own.
+
 ## std.compress
 
 ### error `Malformed`
@@ -1008,6 +1091,9 @@ Whether `path` is a file, a directory, something else, or nothing.
 ### function `Exists`
 
 ```wolang
+// These read the tag with `match` and not with `==`: the dev tier does not
+// compare two enum values, and one function it refuses takes every caller
+// of it into the interpreter with it (D284).
 offer fun Exists(path: text) -> bool uses io, unsafe
 ```
 
@@ -2436,6 +2522,18 @@ offer unsafe fun PrefixMut<T>(items: []mut T, count: int) -> []mut T
 `Prefix` of a view that may be written, as a view that may be written
 (D251). The same instruction: only what the caller is promised differs.
 
+### function `Copy`
+
+```wolang
+offer unsafe fun Copy(to: []mut u8, at: int, from: []u8, count: int)
+```
+
+Copies the first `count` bytes of `from` into `to`, starting at `at`.
+
+One call where a loop would make one per byte: a builder that appends
+a text, or a buffer that grows, is a copy and nothing else (D284). The
+runs must not overlap, and `to` must have room, which `unsafe` is for.
+
 ### function `SizeOf`
 
 ```wolang
@@ -3528,6 +3626,81 @@ offer fun Split(pattern: &Regex, input: text) -> List<text> uses unsafe
 
 `input` split on every match.
 
+## std.save
+
+### error `Corrupt`
+
+```wolang
+offer error Corrupt
+```
+
+The bytes are not a save of this class: they end early, name a class the
+program does not have, or are not a save at all.
+
+### struct `Shape`
+
+```wolang
+offer struct Shape<T>
+```
+
+What the compiler knows about `T` that the runtime needs: a description of
+its saved fields, and the numbers only the tier running the program can
+give, such as where a field sits.
+
+#### field `schema`
+
+```wolang
+var schema: text
+```
+
+#### field `offsets`
+
+```wolang
+var offsets: u64
+```
+
+### function `ShapeOf`
+
+```wolang
+offer fun ShapeOf<T>() -> Shape<T>
+```
+
+The shape of `T`. Answered by the compiler, so it has no body.
+
+### function `HandleOf`
+
+```wolang
+offer fun HandleOf<T>(value: T) -> u64
+```
+
+An object as the word the runtime takes. Answered by the compiler.
+
+### function `FromHandle`
+
+```wolang
+offer fun FromHandle<T>(word: u64) -> T
+```
+
+The object a word the runtime gave back stands for, with one reference for
+the caller. Answered by the compiler.
+
+### function `Save`
+
+```wolang
+offer fun Save<T>(value: T) -> []mut u8 uses unsafe
+```
+
+The saved fields of `value` and of every object they reach, as bytes. Give
+them back with `Free` when done. Empty when `T` cannot be saved.
+
+### function `Load`
+
+```wolang
+offer fun Load<T>(data: []u8) -> T!Corrupt uses unsafe
+```
+
+The object `data` holds, with every object it reached.
+
 ## std.set
 
 ### class `Set`
@@ -3677,6 +3850,69 @@ Not a `task` itself, and that is a limitation rather than a design: a
 computed (`E0305`), so joining is done by running the scheduler rather
 than by suspending. Inside a task, prefer `wait` on something in your
 own module and keep `Join` for the top level.
+
+### function `Wait`
+
+```wolang
+offer task fun Wait(seconds: f64)
+```
+
+Suspends for `seconds` of the caller's clock, which moves only when the
+caller calls `Tick`: pausing is not ticking and slow motion is a smaller
+step, so a game needs no hook for its own time (D267). A wait of nothing
+finishes at once. Like `Yield` it has no body, and for the same reason: the
+compiler writes its machine, so `wait Wait(2.0)` works from any module.
+
+### function `Tick`
+
+```wolang
+offer fun Tick(dt: f64) -> s64 uses unsafe
+```
+
+Hands the scheduler `dt` seconds of the caller's clock and gives every task
+that was ready one step. A task that is not finished comes back next tick
+and one spawned during this tick starts on the next. Returns how many steps
+were taken.
+
+### function `Now`
+
+```wolang
+offer fun Now() -> f64 uses unsafe
+```
+
+The sum of every `dt` given to `Tick`.
+
+### class `Event`
+
+```wolang
+offer class Event
+```
+
+Something a task can wait for. A task waits on one by looking at it each
+turn, `while !event.raised { wait Yield() }`, which keeps the waiting in
+the module that knows what the event means.
+
+#### field `raised`
+
+```wolang
+var raised: bool = false
+```
+
+#### method `Raise`
+
+```wolang
+fun Raise()
+```
+
+Lets whoever is waiting go on.
+
+#### method `Clear`
+
+```wolang
+fun Clear()
+```
+
+Makes it something to wait for again.
 
 ## std.text
 

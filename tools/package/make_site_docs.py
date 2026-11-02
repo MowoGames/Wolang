@@ -48,7 +48,7 @@ GUIDES = [
     ("docs/decisions.md", "decisions", "Design decisions"),
     ("CHANGELOG.md", "changelog", "Changelog"),
 ]
-PACKAGES = ["std", "core", "game", "http", "db", "gfx", "image", "tls", "math"]
+PACKAGES = ["std", "core", "game", "http", "db", "gfx", "image", "tls", "math", "font", "ui", "audio", "gpu", "app"]
 FENCES = {"sh": "bash", "bat": "powershell", "cmd": "powershell"}
 CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
 

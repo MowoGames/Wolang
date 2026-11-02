@@ -13,6 +13,11 @@ wolang doc lib/gfx   -o docs/api/gfx.md
 wolang doc lib/image -o docs/api/image.md
 wolang doc lib/tls   -o docs/api/tls.md
 wolang doc lib/math  -o docs/api/math.md
+wolang doc lib/font  -o docs/api/font.md
+wolang doc lib/ui    -o docs/api/ui.md
+wolang doc lib/audio -o docs/api/audio.md
+wolang doc lib/gpu   -o docs/api/gpu.md
+wolang doc lib/app   -o docs/api/app.md
 ```
 
 A package's page holds the modules that package offers and none of its
@@ -31,3 +36,8 @@ reading in a checkout.
 | [image](image.md) | Decoding and encoding images |
 | [tls](tls.md) | TLS for the sockets |
 | [math](math.md) | Vectors, matrices and quaternions with operators |
+| [font](font.md) | TrueType fonts: glyphs, layout and an atlas |
+| [ui](ui.md) | An immediate-mode toolkit with a software renderer |
+| [audio](audio.md) | A mixer, WAV, and Ogg headers |
+| [gpu](gpu.md) | A backend-neutral device with a null and an OpenGL 3.3 backend |
+| [app](app.md) | The application shell: a fixed-timestep loop over window, gpu and sound |
