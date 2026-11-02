@@ -988,6 +988,72 @@ fun main() uses io, unsafe {
 | `DrawText(image, font, text, size, x, y, colour)`, `DrawGlyph` | blend text into an `image.Image` in software |
 | `AtlasNew(width, height)`, `Atlas.Get(font, glyph, size)` | a shelf-packed coverage bitmap; a `Slot` per glyph and size, `null` when full |
 
+## The `ui` package
+
+An immediate-mode toolkit (D277): the program describes the interface again on
+every frame, and each widget call answers what happened to it. There is no
+widget tree to keep in step with the program's state and no callbacks; a button
+is `if ui.Button("Play") { ... }`. What a frame produces is a **draw list**, a
+list of `DrawCommand`s (a filled rectangle or a run of text, each with a
+position and a colour). The list is data, so layout and hit testing are tested
+with no window, and any renderer can draw it. `Render(image, ui)` draws it in
+software into an `image.Image`, which is how the tests check a frame against a
+stored picture, and how a program with no GPU gets its interface.
+
+A frame runs `Begin`, the widgets, then `End`. `Place(x, y, width)` or
+`Panel(x, y, width, height)` says where the next widgets go; each takes one row
+below the last. Input comes from `ui.input`: `input.Feed(event)` takes a `gfx`
+event as it is, and `MoveTo`, `Press`, `Release`, `Type` and `Key` set the same
+state by hand. A widget's identity is the order it is called in, so call the
+same widgets in the same order each frame; `Panel`, `Label` and `Spacer` take no
+part in it.
+
+```wolang
+need font.{SampleFont}
+need image.{ImageNew}
+need std.io.{Print}
+need ui.{Render, StyleDefault, UiNew}
+
+fun main() uses io, unsafe {
+  match SampleFont() {
+    Ok(font) => {
+      const ui = UiNew(font, StyleDefault())
+      ui.Begin()
+      ui.Place(4, 4, 80)
+      ui.Label("SCORE 7")
+      const pressed = ui.Button("RESET")
+      ui.End()
+      Print("{ui.commands.Len()} {pressed}")
+      match ImageNew(96, 80) {
+        Ok(picture) => {
+          Render(picture, ui)
+          Print("{picture.width}")
+        },
+        _ => Print("no image"),
+      }
+    },
+    _ => Print("no font"),
+  }
+}
+```
+
+| Function | What |
+|---|---|
+| `UiNew(font, style)`, `StyleDefault()` | a context, and the default colours, sizes and spacing |
+| `Begin()`, `End()` | start a frame (clears the draw list), and finish it (clears the one-frame input) |
+| `Place(x, y, width)`, `Panel(x, y, w, h)`, `Spacer(pixels)` | where the next row goes; a background plus a `Place` inside it |
+| `Label(text)` | a line of text |
+| `Button(text)` | `true` on the frame the mouse is released over a button it was pressed on |
+| `Checkbox(text, value)` | the value after this frame: it flips when clicked |
+| `Slider(value, low, high)` | the value after this frame: it follows the mouse while held, clamped to the range |
+| `TextField(edit)` | `true` when the text changed; `TextEdit` keeps the text and the cursor (`TextEditNew`, `Value`, `Insert`, `Backspace`, `Delete`, `Left`, `Right`) |
+| `ListBox(items, selected)` | the selected row after this frame |
+| `Render(image, ui)`, `FillRect(...)` | draw the list into an image, blending colours with alpha |
+
+Text is measured and drawn with a `font` (D276). The labels of a frame are kept
+in one builder that the context owns, and each command points into it, so a
+label can be built on the spot (`"score {n}"`).
+
 ## How this compares
 
 Go's standard library is bigger — net/http with HTTP/2, crypto/tls,

@@ -32,6 +32,7 @@ gfx = {{ path = "{root}/lib/gfx" }}
 image = {{ path = "{root}/lib/image" }}
 math = {{ path = "{root}/lib/math" }}
 font = {{ path = "{root}/lib/font" }}
+ui = {{ path = "{root}/lib/ui" }}
 game = {{ path = "{root}/lib/game" }}
 """
 

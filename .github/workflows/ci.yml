@@ -131,6 +131,7 @@ jobs:
           $W test lib/image
           $W test lib/math
           $W test lib/font
+          $W test lib/ui
 
       # The differential fuzzer: the same program through every tier, and
       # any disagreement is a miscompilation. The one test that has found
@@ -153,7 +154,7 @@ jobs:
         run: |
           W=build/${{ matrix.preset }}/tools/wolang/wolang
           $W check examples/server examples/systems examples/package
-          $W check examples/embed/script examples/window
+          $W check examples/embed/script examples/window examples/text
           $W run examples/hello.wo
 
       # `errors.wo` and `recovery.wo` do not parse, on purpose.
@@ -247,6 +248,7 @@ jobs:
           $W test lib/image
           $W test lib/math
           $W test lib/font
+          $W test lib/ui
       - name: Fuzz the tiers against each other
         shell: bash
         run: |
@@ -264,7 +266,7 @@ jobs:
           W=build/windows/tools/wolang/wolang.exe
           $W run examples/hello.wo
           $W check examples/server examples/systems examples/package
-          $W check examples/embed/script examples/window
+          $W check examples/embed/script examples/window examples/text
       - name: Formatting, includes and documentation
         shell: bash
         run: |

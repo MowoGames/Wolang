@@ -1,0 +1,9 @@
+[package]
+name = "text"
+source = "src"
+
+[dependencies]
+std = { path = "../../lib/std" }
+image = { path = "../../lib/image" }
+font = { path = "../../lib/font" }
+ui = { path = "../../lib/ui" }
