@@ -27,6 +27,9 @@ constexpr std::string_view kVersionMismatch = "E0053";
 
 namespace fs = std::filesystem;
 
+// The made-up directory of a package a host holds as data (D293).
+constexpr std::string_view kMemoryScheme = "memory:";
+
 // How a path or a revision goes into a command line. `cmd.exe` takes only
 // double quotes and has no /dev/null, which is why a fetch never got past
 // the first `git` on Windows (D286).
@@ -112,7 +115,8 @@ class Loader {
     for (size_t i = 0; i < database_->package_count(); ++i) {
       const Package* package =
           database_->GetPackage(PackageId{static_cast<uint32_t>(i)});
-      if (package == nullptr || package->directory.empty()) {
+      if (package == nullptr || package->directory.empty() ||
+          package->directory.starts_with(kMemoryScheme)) {
         continue;
       }
       std::error_code failed;
@@ -133,6 +137,10 @@ class Loader {
   const fs::path& root() const { return root_; }
 
   bool Load(const fs::path& directory, bool is_root);
+
+  bool LoadMemory(std::string_view name,
+                  const std::string* manifest_text,
+                  const std::vector<MemoryFile>& files);
 
   // The version in the manifest of the package loaded from |directory|, or
   // empty when there is none.
@@ -449,7 +457,184 @@ bool Loader::Load(const fs::path& directory, bool is_root) {
   return true;
 }
 
+// A package a host holds as data (D293). Its name is the host's, not the
+// manifest's, so a manifest that disagrees is refused rather than trusted.
+bool Loader::LoadMemory(std::string_view name,
+                        const std::string* manifest_text,
+                        const std::vector<MemoryFile>& files) {
+  const std::string package_name(name);
+  if (package_name.empty() || package_name == "host") {
+    Report(kUnreadablePackage,
+           "`" + package_name + "` cannot name a package held in memory");
+    return false;
+  }
+
+  for (size_t i = 0; i < database_->package_count(); ++i) {
+    const Package* held =
+        database_->GetPackage(PackageId{static_cast<uint32_t>(i)});
+    if (held != nullptr && held->name == package_name) {
+      Report(kUnreadablePackage,
+             "a package named `" + package_name + "` is already loaded");
+      return false;
+    }
+  }
+
+  const size_t errors_before = diagnostics_->error_count();
+  const std::string directory = std::string(kMemoryScheme) + package_name;
+  Manifest manifest;
+  if (manifest_text != nullptr) {
+    const FileId manifest_file = database_->AddFile(
+        directory + "/" + options_.manifest_name, *manifest_text,
+        FileRole::kAuxiliary);
+    manifest =
+        ParseManifest(database_->sources(), manifest_file, diagnostics_);
+    if (!manifest.name.empty() && manifest.name != package_name) {
+      Report(kUnreadablePackage,
+             "the manifest names `" + manifest.name + "`, but the package is `" +
+                 package_name + "`");
+      return false;
+    }
+    manifest.name = package_name;
+
+    for (const ManifestDependency& dependency : manifest.dependencies) {
+      const Package* found = nullptr;
+      for (size_t i = 0; i < database_->package_count(); ++i) {
+        const Package* held =
+            database_->GetPackage(PackageId{static_cast<uint32_t>(i)});
+        if (held != nullptr && held->name == dependency.name) {
+          found = held;
+        }
+      }
+      if (found == nullptr) {
+        Report(kUnreadablePackage, "`" + package_name + "` needs `" +
+                                       dependency.name +
+                                       "`, which is not loaded");
+        return false;
+      }
+      if (!dependency.version_req.empty() &&
+          !VersionSatisfies(dependency.version_req, found->manifest.version)) {
+        Report(kVersionMismatch,
+               "`" + package_name + "` needs `" + dependency.name + "` " +
+                   dependency.version_req + ", but the copy found is " +
+                   (found->manifest.version.empty()
+                        ? std::string("unversioned")
+                        : found->manifest.version));
+      }
+    }
+  } else {
+    manifest.name = package_name;
+    manifest.version = "0.0.0";
+    for (size_t i = 0; i < database_->package_count(); ++i) {
+      const Package* held =
+          database_->GetPackage(PackageId{static_cast<uint32_t>(i)});
+      if (held == nullptr) {
+        continue;
+      }
+      ManifestDependency dependency;
+      dependency.name = held->name;
+      dependency.path = held->directory;
+      manifest.dependencies.push_back(std::move(dependency));
+    }
+  }
+
+  std::string prefix = manifest.source_directory.empty()
+                           ? std::string("src")
+                           : manifest.source_directory;
+  prefix.push_back('/');
+
+  std::vector<std::pair<std::string, const MemoryFile*>> sorted;
+  for (const MemoryFile& file : files) {
+    std::string path = file.path;
+    std::replace(path.begin(), path.end(), '\\', '/');
+    if (!path.starts_with(prefix) || !path.ends_with(options_.extension) ||
+        path.size() == prefix.size() + options_.extension.size()) {
+      Report(kUnreadablePackage, "`" + file.path + "` is not a `" +
+                                     options_.extension + "` file under `" +
+                                     prefix + "`");
+      return false;
+    }
+
+    // `src/../x.wo` or `src//a.wo` would name a module with no directory.
+    bool plain = true;
+    size_t at = prefix.size();
+    while (at <= path.size()) {
+      size_t stop = path.find('/', at);
+      if (stop == std::string::npos) {
+        stop = path.size();
+      }
+      const std::string_view part =
+          std::string_view(path).substr(at, stop - at);
+      plain = plain && !part.empty() && part != "." && part != "..";
+      at = stop + 1;
+    }
+    if (!plain) {
+      Report(kUnreadablePackage, "`" + file.path +
+                                     "` is not a plain path under `" + prefix +
+                                     "`");
+      return false;
+    }
+    sorted.emplace_back(std::move(path), &file);
+  }
+  std::sort(sorted.begin(), sorted.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+  for (size_t i = 1; i < sorted.size(); ++i) {
+    if (sorted[i].first == sorted[i - 1].first) {
+      Report(kUnreadablePackage, "`" + sorted[i].first + "` is given twice");
+      return false;
+    }
+  }
+
+  // A manifest that did not parse or a dependency that does not fit must not
+  // leave the name taken, or the host's corrected retry is refused (D293).
+  if (diagnostics_->error_count() != errors_before) {
+    return false;
+  }
+
+  const PackageId package =
+      database_->AddPackage(package_name, directory, std::move(manifest));
+
+  std::vector<std::pair<std::string, std::vector<FileId>>> modules;
+  for (const auto& entry : sorted) {
+    const std::string below = entry.first.substr(prefix.size());
+    std::string module_name = package_name;
+    const size_t slash = below.find_last_of('/');
+    if (slash != std::string::npos) {
+      std::string parts = below.substr(0, slash);
+      std::replace(parts.begin(), parts.end(), '/', '.');
+      module_name.push_back('.');
+      module_name.append(parts);
+    }
+
+    const FileId id =
+        database_->AddFile(directory + "/" + entry.first, entry.second->text);
+    auto found = std::find_if(
+        modules.begin(), modules.end(),
+        [&](const auto& held) { return held.first == module_name; });
+    if (found == modules.end()) {
+      modules.emplace_back(module_name, std::vector<FileId>());
+      found = modules.end() - 1;
+    }
+    found->second.push_back(id);
+  }
+
+  for (auto& entry : modules) {
+    const ModuleId module =
+        database_->AddModule(entry.first, directory + "/" + prefix, package);
+    database_->SetModuleFiles(module, std::move(entry.second));
+  }
+  return true;
+}
+
 }  // namespace
+
+bool LoadPackageFromMemory(Database* database,
+                           std::string_view name,
+                           const std::string* manifest_text,
+                           const std::vector<MemoryFile>& files,
+                           DiagnosticEngine* diagnostics) {
+  Loader loader(database, diagnostics, WorkspaceOptions());
+  return loader.LoadMemory(name, manifest_text, files);
+}
 
 bool IsPackageDirectory(std::string_view directory,
                         const WorkspaceOptions& options) {

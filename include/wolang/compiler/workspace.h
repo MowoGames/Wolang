@@ -6,6 +6,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "wolang/base/diagnostic.h"
 #include "wolang/compiler/database.h"
@@ -56,6 +57,31 @@ bool FetchDependencies(Database* database,
                        std::string_view directory,
                        DiagnosticEngine* diagnostics,
                        const WorkspaceOptions& options = {});
+
+// One source file of a package that exists only in memory: its path below the
+// package root (`src/ui/button.wo`) and its text.
+struct MemoryFile {
+  std::string path;
+  std::string text;
+};
+
+// Loads a package a host holds as data. It is named |name|, lives in a made-up
+// directory `memory:<name>`, and its modules are named from the paths of
+// |files| as they would be on disk: `src/ui/button.wo` is in `<name>.ui`.
+//
+// |manifest_text| is a manifest, trusted like an on-disk package's (`unsafe`
+// and `[link]` allowed); its dependencies are found by name among the packages
+// already loaded, so a path in one is only a placeholder. A null manifest means
+// the package depends on everything loaded, as `host` does (D293).
+//
+// Returns false, with a diagnostic, when the package was refused: the manifest
+// names another package, the name is `host` or already loaded, a dependency is
+// not loaded, or a path is not a source file under the source directory.
+bool LoadPackageFromMemory(Database* database,
+                           std::string_view name,
+                           const std::string* manifest_text,
+                           const std::vector<MemoryFile>& files,
+                           DiagnosticEngine* diagnostics);
 
 // True when |directory| holds a package manifest.
 bool IsPackageDirectory(std::string_view directory,

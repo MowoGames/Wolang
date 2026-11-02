@@ -4,6 +4,29 @@ What changed in each release, newest first. The decision behind a change
 is cited as `(D<n>)` and written up in [docs/decisions.md](docs/decisions.md);
 how a release is made is in [docs/releasing.md](docs/releasing.md).
 
+## 1.4.0
+
+1.4.0 is the embedding fixes a game engine found while moving its scripts onto
+Wolang.
+
+### Added
+
+- `wolang_vm_load_package_source` (C API 1.7, D293) loads a package the host
+  holds as data under the name its scripts `need`, so a host can ship `mowo`
+  and `std` inside its program. A reload loads it again.
+- `wolang_vm_save` and `wolang_vm_load_save` (C API 1.6, D292) write and read an
+  object graph with the bytes `std.save` writes.
+
+### Fixed
+
+- An effect declared in a sibling file, or imported, can be named in `uses`
+  (`E0701`).
+- A name the host gives, as in `wolang_vm_expect_struct`, finds the program's
+  type and not a dependency's helper of the same name (D291).
+- The formatter keeps the parentheses of a cast that ends the left side of `<`
+  (`(stop as float) < y1`), which it used to drop and so wrote code the parser
+  rejects, and never breaks a line inside the `{}` of a string (D290).
+
 ## 1.3.0
 
 1.3.0 finishes what an engine needed from the language in 1.2.0, brings
@@ -14,7 +37,7 @@ Wolang. Very little in it breaks a 1.2.0 program.
 
 - `@Save` and `std.save` (D266). A field marked `@Save` is written by name and
   read back, with shared references and cycles kept, tolerant of a field added
-  or removed since the save. C API calls save and load an object graph.
+  or removed since the save. (The C API calls for it came in 1.4.0, D292.)
 - Tasks run on the caller's clock (D267). `Tick(dt)` advances every ready
   `task fun`, `Wait(seconds)` finishes after that much ticked time, `Event` is a
   flag a task looks at, and `wolang_vm_tick` and `wolang_vm_tasks_pending` do

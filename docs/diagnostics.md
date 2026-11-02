@@ -129,7 +129,7 @@ already produced one, so each broken spot yields one diagnostic.
 | `E0057` | name declared more than once in a module | two files declaring `fun Fire` |
 | `E0058` | a needed name is not offered | needing a declaration without `offer` |
 | `E0059` | cyclic package dependencies | two packages depending on each other |
-| `E0060` | package cannot be read | no manifest, no source directory, unreadable file |
+| `E0060` | package cannot be read | no manifest, no source directory, unreadable file, a bad memory package (D293) |
 
 A manifest problem never stops the load: the manifest keeps whatever was
 understood, so one bad line does not hide the rest of a project. A file
