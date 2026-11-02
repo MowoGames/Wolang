@@ -2056,6 +2056,21 @@ class Interpreter {
     if (left.kind() == Value::Kind::kFloat) {
       return FloatArithmetic(inst, left, right);
     }
+    // An or-pattern joins its alternatives' tests with `or`, and a test is a
+    // bool; the compiled tiers took that, the reference tier trapped (D287).
+    if (left.kind() == Value::Kind::kBool &&
+        right.kind() == Value::Kind::kBool) {
+      switch (inst.opcode) {
+        case ir::Opcode::kBitOr:
+          return Value::Bool(left.boolean() || right.boolean());
+        case ir::Opcode::kBitAnd:
+          return Value::Bool(left.boolean() && right.boolean());
+        case ir::Opcode::kBitXor:
+          return Value::Bool(left.boolean() != right.boolean());
+        default:
+          break;
+      }
+    }
     if (left.kind() != Value::Kind::kInt) {
       // A comparison on anything else is structural; nothing else applies.
       if (inst.opcode == ir::Opcode::kEq) {
