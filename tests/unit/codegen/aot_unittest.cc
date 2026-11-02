@@ -517,6 +517,7 @@ WOLANG_TEST(AotTest, TheLinkLineCarriesTheSanitizersTheRuntimeWasBuiltWith) {
   } else {
     WOLANG_EXPECT(command.find(flag) != std::string::npos);
   }
+}
 
 WOLANG_TEST(AotTest, SavesAndLoadsAnObjectGraph) {
   if (!Links()) {

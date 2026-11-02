@@ -823,6 +823,7 @@ fun Same(a: Shape, b: Shape) -> bool {
 }
 )");
   WOLANG_EXPECT(f.Function("Same").find("eq %0, %1") != std::string::npos);
+}
 
 WOLANG_TEST(LowerTest, AClassGivesBackItsTextFieldWhenItGoes) {
   Fixture f(R"(
@@ -898,6 +899,7 @@ fun Replace(n: int) -> int {
 )");
   WOLANG_EXPECT_EQ(f.Problems(), "");
   WOLANG_EXPECT_EQ(FreesIn(f.Function("Replace")), 0u);
+}
 
 static std::string SchemaOf(const ir::Module& module) {
   for (const std::string& text : module.strings) {

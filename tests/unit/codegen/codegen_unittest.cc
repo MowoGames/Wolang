@@ -4532,6 +4532,7 @@ fun Differ(a: int, b: int) -> int {
   WOLANG_EXPECT_EQ(f.Run("Same", {Fixture::Int(0), Fixture::Int(2)}), "0");
   WOLANG_EXPECT_EQ(f.Run("Differ", {Fixture::Int(0), Fixture::Int(2)}), "1");
   WOLANG_EXPECT_EQ(f.Run("Differ", {Fixture::Int(2), Fixture::Int(2)}), "0");
+}
 
 WOLANG_TEST(CodegenTest, AClassWithAnOwnedTextFieldGivesItBack) {
   Fixture f(R"(
@@ -4577,6 +4578,7 @@ fun Balanced() -> int uses unsafe {
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Balanced", {}), "19000");
+}
 
 WOLANG_TEST(CodegenTest, ATaskWaitsOnTheCallersClock) {
   // `Wait` has no body, so the compiler writes its machine: it finishes when
