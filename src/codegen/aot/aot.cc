@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <span>
 #include <cstdlib>
@@ -69,7 +70,95 @@ std::string_view RuntimeSanitizers() {
 #endif
 }
 
+static bool IsDirectory(const std::filesystem::path& path) {
+  std::error_code ignored;
+  return std::filesystem::is_directory(path, ignored);
+}
+
+std::string SysrootDirectory() {
+  if (const char* named = std::getenv("WOLANG_SYSROOT");
+      named != nullptr && IsDirectory(named)) {
+    return named;
+  }
+  const std::string_view archive = RuntimeArchive();
+  if (archive.empty()) {
+    return "";
+  }
+  const std::filesystem::path beside =
+      std::filesystem::path(archive).parent_path() / "wolang" / "sysroot";
+  return IsDirectory(beside) ? beside.string() : "";
+}
+
+bool HasSystemCompiler() {
+#if defined(_WIN32)
+  const char separator = ';';
+  const char* names[] = {"clang-cl.exe"};
+#else
+  const char separator = ':';
+  const char* names[] = {"c++", "cc"};
+#endif
+  const char* path = std::getenv("PATH");
+  if (path == nullptr) {
+    return false;
+  }
+  const std::string_view all = path;
+  size_t from = 0;
+  while (from <= all.size()) {
+    size_t to = all.find(separator, from);
+    if (to == std::string_view::npos) {
+      to = all.size();
+    }
+    const std::filesystem::path directory(all.substr(from, to - from));
+    for (const char* name : names) {
+      std::error_code ignored;
+      if (!directory.empty() &&
+          std::filesystem::exists(directory / name, ignored)) {
+        return true;
+      }
+    }
+    from = to + 1;
+  }
+  return false;
+}
+
+std::string BundledLinkCommand(std::string_view object,
+                               std::string_view binary,
+                               std::string_view sysroot,
+                               std::string_view linker) {
+  const std::string lib = std::string(sysroot) + "/lib";
+  std::string command;
+  command.append("'");
+  command.append(linker);
+  command.append("' --build-id=none -static -o '");
+  command.append(binary);
+  command.append("' '");
+  command.append(lib);
+  command.append("/crt1.o' '");
+  command.append(lib);
+  command.append("/crti.o' '");
+  command.append(object);
+  command.append("' '");
+  command.append(lib);
+  command.append("/libwolang_runtime.a' -L'");
+  command.append(lib);
+  command.append("' --start-group -lc++ -lc++abi -lunwind -lc --end-group '");
+  command.append(lib);
+  command.append("/crtn.o'");
+  return command;
+}
+
 std::string LinkCommand(std::string_view object, std::string_view binary) {
+#if !defined(_WIN32) && !defined(__APPLE__)
+  const char* wanted = std::getenv("WOLANG_LINKER");
+  const std::string_view choice = wanted != nullptr ? wanted : "";
+  if (choice != "system") {
+    const std::string sysroot = SysrootDirectory();
+    if (!sysroot.empty() && (choice == "bundled" || !HasSystemCompiler())) {
+      const std::string bundled = sysroot + "/bin/ld.lld";
+      return BundledLinkCommand(object, binary, sysroot, IsDirectory(sysroot + "/bin") ? bundled : "ld.lld");
+    }
+  }
+#endif
   std::string command;
 #if defined(_WIN32)
 #ifdef WOLANG_RUNTIME_CRT

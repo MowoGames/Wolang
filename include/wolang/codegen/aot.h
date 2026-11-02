@@ -81,6 +81,23 @@ std::string_view RuntimeSanitizers();
 // What a package adds goes after it, in that linker's own spelling (D208).
 std::string LinkCommand(std::string_view object, std::string_view binary);
 
+// Where a bundled sysroot is: WOLANG_SYSROOT when it names a directory,
+// otherwise `wolang/sysroot` beside the runtime archive of an installed
+// compiler. Empty when there is none (D272).
+std::string SysrootDirectory();
+
+// True when `c++` or `cc` is on PATH, which is what the system link needs.
+bool HasSystemCompiler();
+
+// The command that links |object| into a static |binary| against the
+// musl sysroot at |sysroot| with |linker| (an `ld.lld`), no C compiler
+// needed. The same object and flags give the same bytes: no build id, no
+// timestamps (D272).
+std::string BundledLinkCommand(std::string_view object,
+                               std::string_view binary,
+                               std::string_view sysroot,
+                               std::string_view linker);
+
 // What the linker on this system calls a library search path and a
 // library, for the `[link]` table of a manifest.
 std::string LinkPathFlag(std::string_view path);

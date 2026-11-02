@@ -403,6 +403,73 @@ fun main() uses unsafe {
   WOLANG_EXPECT_EQ(program.Output(), "exit 40");
 }
 
+static std::string ObjectBytes(std::string_view code, std::string_view tag) {
+  Database database;
+  const FileId file = database.AddFile("<test>", std::string(code));
+  const LoweredFile* lowered = database.Lowered(file);
+  const CheckedFile* checked = database.Checked(file);
+  if (lowered == nullptr || checked == nullptr) {
+    return "<not lowered>";
+  }
+
+  const FileCode files[1] = {FileCode{&checked->resolution, &lowered->module}};
+  AotOptions options;
+  options.object_path = (std::filesystem::temp_directory_path() / ("wolang-repro-" + std::string(tag) + ".o")).string();
+  options.optimization = 2;
+  const AotResult result = EmitObject(database.interner(), database.types(), files, options);
+  if (!result.error.empty()) {
+    return "<backend: " + result.error + ">";
+  }
+
+  std::string bytes;
+  if (FILE* held = std::fopen(options.object_path.c_str(), "rb"); held != nullptr) {
+    char chunk[4096];
+    size_t got = 0;
+    while ((got = std::fread(chunk, 1, sizeof(chunk), held)) > 0) {
+      bytes.append(chunk, got);
+    }
+    std::fclose(held);
+  }
+  std::remove(options.object_path.c_str());
+  return bytes;
+}
+
+WOLANG_TEST(AotTest, TheSameSourceMakesTheSameObjectBytes) {
+  const std::string_view code = R"(
+class Cell { var n: int }
+
+fun Bump(c: Cell, by: int) -> int {
+  c.n = c.n + by
+  return c.n
+}
+
+fun main() uses unsafe {
+  const c = Cell(1)
+  var total = 0
+  for i in 0..10 {
+    total += Bump(c, i)
+  }
+  exit(total as s32)
+}
+)";
+  const std::string first = ObjectBytes(code, "a");
+  const std::string second = ObjectBytes(code, "b");
+  WOLANG_EXPECT(first.size() > 0u && first[0] != '<');
+  WOLANG_EXPECT(first == second);
+}
+
+WOLANG_TEST(AotTest, TheBundledLinkNeedsNoCCompiler) {
+  const std::string command = BundledLinkCommand("program.o", "program", "/opt/wolang/sysroot", "/opt/wolang/sysroot/bin/ld.lld");
+  WOLANG_EXPECT(command.find("c++") == std::string::npos || command.find("-lc++") != std::string::npos);
+  WOLANG_EXPECT(command.find("--build-id=none") != std::string::npos);
+  WOLANG_EXPECT(command.find("-static") != std::string::npos);
+  WOLANG_EXPECT(command.find("'/opt/wolang/sysroot/bin/ld.lld'") == 0u);
+  WOLANG_EXPECT(command.find("crt1.o") < command.find("program.o"));
+  WOLANG_EXPECT(command.find("program.o") < command.find("libwolang_runtime.a"));
+  WOLANG_EXPECT(command.find("libwolang_runtime.a") < command.find("--start-group"));
+  WOLANG_EXPECT(command.find("--end-group") < command.find("crtn.o"));
+}
+
 WOLANG_TEST(AotTest, TheLinkLineCarriesTheSanitizersTheRuntimeWasBuiltWith) {
   const std::string command = LinkCommand("program.o", "program");
   const std::string flag = "-fsanitize=" + std::string(RuntimeSanitizers());
