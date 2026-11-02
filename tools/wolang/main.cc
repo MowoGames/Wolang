@@ -102,6 +102,9 @@ struct Options {
   // bug, which is otherwise the hardest thing to tell apart.
   bool interpret = false;
   bool show_trivia = false;
+  // `tokens` only: one `Kind offset length flags` line per token, which the
+  // Wolang lexer is compared against (D283).
+  bool stable_tokens = false;
   // `fmt` only: read the file from standard input and write the result to
   // standard output, which is what an editor that formats a buffer it has
   // not saved needs.
@@ -241,6 +244,7 @@ void PrintUsage() {
       "  -O<n>           `build`: how hard the back end optimizes, 0 to 3\n"
       "  --no-color      never emit ANSI colors\n"
       "  --trivia        include comments in `tokens` output\n"
+      "  --stable        `tokens`: one `Kind offset length flags` line per token\n"
       "  --spans         annotate `ast` output with positions\n"
       "  --check         `fmt` only: fail if a file is not formatted\n"
       "  --write         `fmt` and `fix`: change the files in place\n"
@@ -338,6 +342,13 @@ bool CollectInputs(Database* database,
     }
   }
   return true;
+}
+
+void PrintStableTokens(const SourceManager& sources, const TokenStream& stream) {
+  std::fprintf(stdout, "# %s\n", std::string(sources.Path(stream.file)).c_str());
+  for (const Token& token : stream.tokens) {
+    std::fprintf(stdout, "%s %u %u %u\n", std::string(TokenKindName(token.kind)).c_str(), token.offset, token.length, static_cast<unsigned>(token.flags));
+  }
 }
 
 void PrintTokens(const SourceManager& sources,
@@ -466,7 +477,9 @@ int RunSyntaxCommand(const Options& options) {
   for (FileId file : files) {
     if (options.command == "tokens") {
       const TokenizedFile* tokens = database.Tokens(file);
-      if (tokens != nullptr) {
+      if (tokens != nullptr && options.stable_tokens) {
+        PrintStableTokens(database.sources(), tokens->tokens);
+      } else if (tokens != nullptr) {
         PrintTokens(database.sources(), database.interner(), tokens->tokens,
                     options.show_trivia);
       }
@@ -3144,6 +3157,8 @@ int Run(int argc, char** argv) {
       options.color = false;
     } else if (argument == "--trivia") {
       options.show_trivia = true;
+    } else if (argument == "--stable") {
+      options.stable_tokens = true;
     } else if (argument == "--spans") {
       options.show_spans = true;
     } else if (argument == "--check") {
