@@ -1,0 +1,958 @@
+need std.encoding.{FromBase64}
+need std.list.{List, ListNew}
+need std.mem.{ArrayNew, Free, Prefix}
+need std.text.{Bytes}
+
+offer error Malformed
+
+offer error Unsupported
+
+offer error TooLarge
+
+offer const kMaxFontBytes: int = 67108864
+
+offer const kMaxPoints: int = 16384
+
+fun Has(data: []u8, at: int, count: int) -> bool {
+  return at >= 0 && count >= 0 && at <= data.len && count <= data.len - at
+}
+
+fun Be16(data: []u8, at: int) -> int {
+  return data[at] as int * 256 + data[at + 1] as int
+}
+
+fun Be16s(data: []u8, at: int) -> int {
+  const value = Be16(data, at)
+  if value >= 32768 {
+    return value - 65536
+  }
+  return value
+}
+
+fun Be32(data: []u8, at: int) -> int {
+  if data[at] >= 128 {
+    return 2147483647
+  }
+  return data[at] as int * 16777216 + data[at + 1] as int * 65536 + data[at + 2] as int * 256 + data[at + 3] as int
+}
+
+fun Tag(data: []u8, at: int, a: int, b: int, c: int, d: int) -> bool {
+  return data[at] as int == a && data[at + 1] as int == b && data[at + 2] as int == c && data[at + 3] as int == d
+}
+
+offer struct Affine {
+  var a: float
+  var b: float
+  var c: float
+  var d: float
+  var e: float
+  var f: float
+
+  fun Then(child: Affine) -> Affine {
+    return Affine(a * child.a + c * child.b, b * child.a + d * child.b, a * child.c + c * child.d, b * child.c + d * child.d, a * child.e + c * child.f + e, b * child.e + d * child.f + f)
+  }
+}
+
+offer fun AffineIdentity() -> Affine {
+  return Affine(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+}
+
+offer class Outline {
+  var xs: List<float>
+  var ys: List<float>
+  var on: List<bool>
+  var ends: List<int>
+
+  fun Contours() -> int {
+    return ends.Len()
+  }
+
+  fun Points() -> int {
+    return xs.Len()
+  }
+}
+
+offer fun OutlineNew() -> Outline uses unsafe {
+  return Outline(ListNew<float>(), ListNew<float>(), ListNew<bool>(), ListNew<int>())
+}
+
+offer class Font {
+  var data: []mut u8
+  var units: int = 0
+  var glyphs: int = 0
+  var long_loca: bool = false
+  var ascent: int = 0
+  var descent: int = 0
+  var gap: int = 0
+  var metrics: int = 0
+  var hmtx: int = 0
+  var loca: int = 0
+  var glyf: int = 0
+  var glyf_len: int = 0
+  var cmap: int = 0
+  var cmap_format: int = 0
+  var kern: int = 0
+  var kern_pairs: int = 0
+
+  deinit  {
+    Free(data)
+  }
+
+  fun UnitsPerEm() -> int {
+    return units
+  }
+
+  fun GlyphCount() -> int {
+    return glyphs
+  }
+
+  fun Ascent() -> int {
+    return ascent
+  }
+
+  fun Descent() -> int {
+    return descent
+  }
+
+  fun LineGap() -> int {
+    return gap
+  }
+
+  fun Scale(size: float) -> float {
+    return size / units as float
+  }
+
+  fun Advance(glyph: int) -> int {
+    if glyph < 0 || glyph >= glyphs {
+      return 0
+    }
+    var index = glyph
+    if index >= metrics {
+      index = metrics - 1
+    }
+    return Be16(data, hmtx + index * 4)
+  }
+
+  fun LeftBearing(glyph: int) -> int {
+    if glyph < 0 || glyph >= glyphs {
+      return 0
+    }
+    if glyph < metrics {
+      return Be16s(data, hmtx + glyph * 4 + 2)
+    }
+    return Be16s(data, hmtx + metrics * 4 + (glyph - metrics) * 2)
+  }
+
+  fun GlyphIndex(code: int) -> int {
+    var found = 0
+    if cmap_format == 4 {
+      found = LookupFormat4(code)
+    } else if cmap_format == 12 {
+      found = LookupFormat12(code)
+    }
+    if found < 0 || found >= glyphs {
+      return 0
+    }
+    return found
+  }
+
+  fun LookupFormat4(code: int) -> int {
+    if code < 0 || code > 65535 {
+      return 0
+    }
+    const count = Be16(data, cmap + 6) / 2
+    const ends = cmap + 14
+    const starts = ends + count * 2 + 2
+    const deltas = starts + count * 2
+    const offsets = deltas + count * 2
+    var low = 0
+    var high = count - 1
+    while low <= high {
+      const mid = (low + high) / 2
+      if Be16(data, ends + mid * 2) < code {
+        low = mid + 1
+      } else {
+        high = mid - 1
+      }
+    }
+    if low >= count {
+      return 0
+    }
+    const start = Be16(data, starts + low * 2)
+    if start > code {
+      return 0
+    }
+    const delta = Be16(data, deltas + low * 2)
+    const range = Be16(data, offsets + low * 2)
+    if range == 0 {
+      return (code + delta) % 65536
+    }
+    const at = offsets + low * 2 + range + (code - start) * 2
+    if !Has(data, at, 2) {
+      return 0
+    }
+    const raw = Be16(data, at)
+    if raw == 0 {
+      return 0
+    }
+    return (raw + delta) % 65536
+  }
+
+  fun LookupFormat12(code: int) -> int {
+    if code < 0 {
+      return 0
+    }
+    const groups = Be32(data, cmap + 12)
+    var low = 0
+    var high = groups - 1
+    while low <= high {
+      const mid = (low + high) / 2
+      const at = cmap + 16 + mid * 12
+      if Be32(data, at + 4) < code {
+        low = mid + 1
+      } else {
+        high = mid - 1
+      }
+    }
+    if low >= groups {
+      return 0
+    }
+    const at = cmap + 16 + low * 12
+    const start = Be32(data, at)
+    if start > code {
+      return 0
+    }
+    return Be32(data, at + 8) + (code - start)
+  }
+
+  fun Kerning(left: int, right: int) -> int {
+    if kern_pairs == 0 {
+      return 0
+    }
+    const key = left * 65536 + right
+    var low = 0
+    var high = kern_pairs - 1
+    while low <= high {
+      const mid = (low + high) / 2
+      const at = kern + mid * 6
+      const found = Be16(data, at) * 65536 + Be16(data, at + 2)
+      if found == key {
+        return Be16s(data, at + 4)
+      }
+      if found < key {
+        low = mid + 1
+      } else {
+        high = mid - 1
+      }
+    }
+    return 0
+  }
+
+  fun GlyphStart(glyph: int) -> int {
+    if glyph < 0 || glyph >= glyphs {
+      return -1
+    }
+    if long_loca {
+      return Be32(data, loca + glyph * 4)
+    }
+    return Be16(data, loca + glyph * 2) * 2
+  }
+
+  fun GlyphEnd(glyph: int) -> int {
+    if glyph < 0 || glyph >= glyphs {
+      return -1
+    }
+    if long_loca {
+      return Be32(data, loca + glyph * 4 + 4)
+    }
+    return Be16(data, loca + glyph * 2 + 2) * 2
+  }
+
+  fun GlyphOutline(glyph: int) -> Outline!(Malformed) uses unsafe {
+    var out = OutlineNew()
+    if !Collect(glyph, 0, AffineIdentity(), out) {
+      return Malformed
+    }
+    return out
+  }
+
+  fun Collect(glyph: int, depth: int, t: Affine, out: Outline) -> bool uses unsafe {
+    if glyph < 0 || glyph >= glyphs || depth > 6 {
+      return false
+    }
+    const start = GlyphStart(glyph)
+    const end = GlyphEnd(glyph)
+    if start < 0 || end < start || end > glyf_len {
+      return false
+    }
+    if start == end {
+      return true
+    }
+    if end - start < 10 {
+      return false
+    }
+    const at = glyf + start
+    const limit = glyf + end
+    const contours = Be16s(data, at)
+    if contours >= 0 {
+      return CollectSimple(at, limit, contours, t, out)
+    }
+    return CollectComposite(at + 10, limit, depth, t, out)
+  }
+
+  fun CollectSimple(at: int, limit: int, contours: int, t: Affine, out: Outline) -> bool uses unsafe {
+    if contours == 0 {
+      return true
+    }
+    var p = at + 10
+    if p + contours * 2 + 2 > limit {
+      return false
+    }
+    var last = -1
+    var i = 0
+    while i < contours {
+      const finish = Be16(data, p + i * 2)
+      if finish <= last {
+        return false
+      }
+      last = finish
+      i = i + 1
+    }
+    const count = last + 1
+    if count > kMaxPoints || out.Points() + count > kMaxPoints * 4 {
+      return false
+    }
+    p = p + contours * 2
+    const skip = Be16(data, p)
+    p = p + 2 + skip
+    if p > limit {
+      return false
+    }
+    var flags = ListNew<int>()
+    while flags.Len() < count {
+      if p >= limit {
+        return false
+      }
+      const flag = data[p] as int
+      p = p + 1
+      flags.Push(flag)
+      if (flag & 8) != 0 {
+        if p >= limit {
+          return false
+        }
+        var repeat = data[p] as int
+        p = p + 1
+        while repeat > 0 && flags.Len() < count {
+          flags.Push(flag)
+          repeat = repeat - 1
+        }
+      }
+    }
+    var xs = ListNew<int>()
+    var x = 0
+    i = 0
+    while i < count {
+      const flag = flags.At(i)
+      if (flag & 2) != 0 {
+        if p >= limit {
+          return false
+        }
+        const step = data[p] as int
+        p = p + 1
+        if (flag & 16) != 0 {
+          x = x + step
+        } else {
+          x = x - step
+        }
+      } else if (flag & 16) == 0 {
+        if p + 2 > limit {
+          return false
+        }
+        x = x + Be16s(data, p)
+        p = p + 2
+      }
+      xs.Push(x)
+      i = i + 1
+    }
+    var y = 0
+    const base = out.Points()
+    i = 0
+    while i < count {
+      const flag = flags.At(i)
+      if (flag & 4) != 0 {
+        if p >= limit {
+          return false
+        }
+        const step = data[p] as int
+        p = p + 1
+        if (flag & 32) != 0 {
+          y = y + step
+        } else {
+          y = y - step
+        }
+      } else if (flag & 32) == 0 {
+        if p + 2 > limit {
+          return false
+        }
+        y = y + Be16s(data, p)
+        p = p + 2
+      }
+      const fx = xs.At(i) as float
+      const fy = y as float
+      out.xs.Push(t.a * fx + t.c * fy + t.e)
+      out.ys.Push(t.b * fx + t.d * fy + t.f)
+      out.on.Push((flag & 1) != 0)
+      i = i + 1
+    }
+    i = 0
+    while i < contours {
+      out.ends.Push(base + Be16(data, at + 10 + i * 2))
+      i = i + 1
+    }
+    return true
+  }
+
+  fun CollectComposite(first: int, limit: int, depth: int, t: Affine, out: Outline) -> bool uses unsafe {
+    var p = first
+    var more = true
+    var parts = 0
+    while more {
+      if p + 4 > limit || parts >= 64 {
+        return false
+      }
+      const flags = Be16(data, p)
+      const child = Be16(data, p + 2)
+      p = p + 4
+      var dx = 0
+      var dy = 0
+      if (flags & 2) == 0 {
+        return false
+      }
+      if (flags & 1) != 0 {
+        if p + 4 > limit {
+          return false
+        }
+        dx = Be16s(data, p)
+        dy = Be16s(data, p + 2)
+        p = p + 4
+      } else {
+        if p + 2 > limit {
+          return false
+        }
+        dx = data[p] as int
+        dy = data[p + 1] as int
+        if dx >= 128 {
+          dx = dx - 256
+        }
+        if dy >= 128 {
+          dy = dy - 256
+        }
+        p = p + 2
+      }
+      var a = 1.0
+      var b = 0.0
+      var c = 0.0
+      var d = 1.0
+      if (flags & 8) != 0 {
+        if p + 2 > limit {
+          return false
+        }
+        a = Be16s(data, p) as float / 16384.0
+        d = a
+        p = p + 2
+      } else if (flags & 64) != 0 {
+        if p + 4 > limit {
+          return false
+        }
+        a = Be16s(data, p) as float / 16384.0
+        d = Be16s(data, p + 2) as float / 16384.0
+        p = p + 4
+      } else if (flags & 128) != 0 {
+        if p + 8 > limit {
+          return false
+        }
+        a = Be16s(data, p) as float / 16384.0
+        b = Be16s(data, p + 2) as float / 16384.0
+        c = Be16s(data, p + 4) as float / 16384.0
+        d = Be16s(data, p + 6) as float / 16384.0
+        p = p + 8
+      }
+      const local = Affine(a, b, c, d, dx as float, dy as float)
+      if !Collect(child, depth + 1, t.Then(local), out) {
+        return false
+      }
+      more = (flags & 32) != 0
+      parts = parts + 1
+    }
+    return true
+  }
+}
+
+fun FindTable(data: []u8, count: int, a: int, b: int, c: int, d: int) -> int {
+  var i = 0
+  while i < count {
+    const at = 12 + i * 16
+    if Tag(data, at, a, b, c, d) {
+      return at
+    }
+    i = i + 1
+  }
+  return -1
+}
+
+offer fun FontLoad(bytes: []u8) -> Font!(Malformed, TooLarge, Unsupported) uses unsafe {
+  if bytes.len > kMaxFontBytes {
+    return TooLarge
+  }
+  if !Has(bytes, 0, 12) {
+    return Malformed
+  }
+  if Tag(bytes, 0, 79, 84, 84, 79) {
+    return Unsupported
+  }
+  const known = Be32(bytes, 0) == 65536 || Tag(bytes, 0, 116, 114, 117, 101)
+  if !known {
+    return Malformed
+  }
+  const count = Be16(bytes, 4)
+  if count < 1 || count > 256 || !Has(bytes, 12, count * 16) {
+    return Malformed
+  }
+  var copy = ArrayNew<u8>(bytes.len)
+  var i = 0
+  while i < bytes.len {
+    copy[i] = bytes[i]
+    i = i + 1
+  }
+  var font = Font(copy, 0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+  const head = TableAt(copy, count, 104, 101, 97, 100)
+  const maxp = TableAt(copy, count, 109, 97, 120, 112)
+  const hhea = TableAt(copy, count, 104, 104, 101, 97)
+  const hmtx = TableAt(copy, count, 104, 109, 116, 120)
+  const cmap = TableAt(copy, count, 99, 109, 97, 112)
+  const loca = TableAt(copy, count, 108, 111, 99, 97)
+  const glyf = TableAt(copy, count, 103, 108, 121, 102)
+  if head < 0 || maxp < 0 || hhea < 0 || hmtx < 0 || cmap < 0 || loca < 0 || glyf < 0 {
+    return Malformed
+  }
+  if TableLength(copy, head) < 54 || TableLength(copy, maxp) < 6 || TableLength(copy, hhea) < 36 {
+    return Malformed
+  }
+  const head_at = TableOffset(copy, head)
+  const maxp_at = TableOffset(copy, maxp)
+  const hhea_at = TableOffset(copy, hhea)
+  if Be32(copy, head_at + 12) != 1594834165 {
+    return Malformed
+  }
+  font.units = Be16(copy, head_at + 18)
+  if font.units < 16 || font.units > 16384 {
+    return Malformed
+  }
+  const format = Be16s(copy, head_at + 50)
+  if format != 0 && format != 1 {
+    return Malformed
+  }
+  font.long_loca = format == 1
+  font.glyphs = Be16(copy, maxp_at + 4)
+  if font.glyphs < 1 {
+    return Malformed
+  }
+  font.ascent = Be16s(copy, hhea_at + 4)
+  font.descent = Be16s(copy, hhea_at + 6)
+  font.gap = Be16s(copy, hhea_at + 8)
+  font.metrics = Be16(copy, hhea_at + 34)
+  if font.metrics < 1 || font.metrics > font.glyphs {
+    return Malformed
+  }
+  font.hmtx = TableOffset(copy, hmtx)
+  if TableLength(copy, hmtx) < font.metrics * 4 + (font.glyphs - font.metrics) * 2 {
+    return Malformed
+  }
+  font.loca = TableOffset(copy, loca)
+  var entry = 2
+  if font.long_loca {
+    entry = 4
+  }
+  if TableLength(copy, loca) < (font.glyphs + 1) * entry {
+    return Malformed
+  }
+  font.glyf = TableOffset(copy, glyf)
+  font.glyf_len = TableLength(copy, glyf)
+  if !ChooseCmap(copy, TableOffset(copy, cmap), TableLength(copy, cmap), font) {
+    return Malformed
+  }
+  const kern = TableAt(copy, count, 107, 101, 114, 110)
+  if kern >= 0 {
+    LoadKern(copy, TableOffset(copy, kern), TableLength(copy, kern), font)
+  }
+  return font
+}
+
+fun TableAt(data: []u8, count: int, a: int, b: int, c: int, d: int) -> int {
+  const at = FindTable(data, count, a, b, c, d)
+  if at < 0 {
+    return -1
+  }
+  const offset = Be32(data, at + 8)
+  const length = Be32(data, at + 12)
+  if !Has(data, offset, length) {
+    return -1
+  }
+  return at
+}
+
+fun TableOffset(data: []u8, record: int) -> int {
+  return Be32(data, record + 8)
+}
+
+fun TableLength(data: []u8, record: int) -> int {
+  return Be32(data, record + 12)
+}
+
+fun ChooseCmap(data: []u8, table: int, length: int, font: Font) -> bool {
+  if length < 4 {
+    return false
+  }
+  const records = Be16(data, table + 2)
+  if length < 4 + records * 8 {
+    return false
+  }
+  var best = 0
+  var i = 0
+  while i < records {
+    const at = table + 4 + i * 8
+    const platform = Be16(data, at)
+    const encoding = Be16(data, at + 2)
+    const offset = Be32(data, at + 4)
+    if offset >= 0 && offset + 4 <= length {
+      const sub = table + offset
+      const format = Be16(data, sub)
+      var score = 0
+      if format == 12 && ValidFormat12(data, sub, length - offset) {
+        score = 2
+        if platform == 3 && encoding == 10 {
+          score = 4
+        } else if platform == 0 {
+          score = 3
+        }
+      } else if format == 4 && ValidFormat4(data, sub, length - offset) {
+        score = 1
+        if platform == 3 && encoding == 1 {
+          score = 2
+        }
+      }
+      if score > best {
+        best = score
+        font.cmap = sub
+        font.cmap_format = format
+      }
+    }
+    i = i + 1
+  }
+  return best > 0
+}
+
+fun ValidFormat4(data: []u8, sub: int, room: int) -> bool {
+  if room < 16 {
+    return false
+  }
+  const doubled = Be16(data, sub + 6)
+  if doubled < 2 || doubled % 2 != 0 {
+    return false
+  }
+  return 16 + doubled * 4 <= room
+}
+
+fun ValidFormat12(data: []u8, sub: int, room: int) -> bool {
+  if room < 16 {
+    return false
+  }
+  const groups = Be32(data, sub + 12)
+  if groups < 0 || groups > 1048576 {
+    return false
+  }
+  return 16 + groups * 12 <= room
+}
+
+fun LoadKern(data: []u8, table: int, length: int, font: Font) {
+  if length < 4 || Be16(data, table) != 0 {
+    return
+  }
+  const tables = Be16(data, table + 2)
+  var at = table + 4
+  var i = 0
+  while i < tables && at + 14 <= table + length {
+    const size = Be16(data, at + 2)
+    const coverage = Be16(data, at + 4)
+    if (coverage / 256) == 0 && (coverage & 1) != 0 {
+      const pairs = Be16(data, at + 6)
+      if at + 14 + pairs * 6 <= table + length {
+        font.kern = at + 14
+        font.kern_pairs = pairs
+        return
+      }
+    }
+    if size < 14 {
+      return
+    }
+    at = at + size
+    i = i + 1
+  }
+}
+
+fun Copy(source: []u8) -> []mut u8 uses unsafe {
+  var out = ArrayNew<u8>(source.len)
+  var i = 0
+  while i < source.len {
+    out[i] = source[i]
+    i = i + 1
+  }
+  return out
+}
+
+fun Decode(encoded: text) -> []mut u8 uses unsafe {
+  const raw = FromBase64(encoded) ?? ""
+  return Copy(Bytes(raw))
+}
+
+fun Fixture(which: int) -> Font? uses unsafe {
+  var bytes = Decode(TinyFontABase64())
+  if which == 1 {
+    Free(bytes)
+    bytes = Decode(TinyFontBBase64())
+  }
+  const loaded = FontLoad(bytes)
+  Free(bytes)
+  match loaded {
+    Ok(font) => { return font },
+    Malformed => { return null },
+    TooLarge => { return null },
+    Unsupported => { return null },
+  }
+}
+
+fun Outcome(bytes: []u8) -> int uses unsafe {
+  match FontLoad(bytes) {
+    Ok(_font) => { return 0 },
+    Malformed => { return 1 },
+    TooLarge => { return 2 },
+    Unsupported => { return 3 },
+  }
+}
+
+fun FixtureBytes(which: int) -> []mut u8 uses unsafe {
+  if which == 1 {
+    return Decode(TinyFontBBase64())
+  }
+  return Decode(TinyFontABase64())
+}
+
+fun TableRecord(bytes: []u8, a: int, b: int, c: int, d: int) -> int {
+  return FindTable(bytes, Be16(bytes, 4), a, b, c, d)
+}
+
+@Test
+fun ReadsTheMetricsOfAFont() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    return font.UnitsPerEm() == 1000 && font.GlyphCount() == 4 && font.Ascent() == 800 && font.Descent() == -200 && font.LineGap() == 100
+  }
+  return false
+}
+
+@Test
+fun MapsCharactersThroughFormat4() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    return font.GlyphIndex(65) == 2 && font.GlyphIndex(66) == 3 && font.GlyphIndex(32) == 1 && font.GlyphIndex(67) == 0 && font.GlyphIndex(-1) == 0 && font.GlyphIndex(70000) == 0
+  }
+  return false
+}
+
+@Test
+fun MapsCharactersThroughFormat12() -> bool uses unsafe {
+  if const font = Fixture(1) {
+    return font.GlyphIndex(128512) == 1 && font.GlyphIndex(46) == 2 && font.GlyphIndex(47) == 0 && font.GlyphIndex(65) == 0
+  }
+  return false
+}
+
+@Test
+fun ReadsAdvancesAndBearings() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    if const shared = Fixture(1) {
+      return font.Advance(0) == 600 && font.Advance(2) == 600 && font.Advance(3) == 800 && font.Advance(99) == 0 && font.LeftBearing(0) == 100 && font.LeftBearing(99) == 0 && shared.Advance(2) == 500 && shared.LeftBearing(2) == 0 && shared.LeftBearing(0) == 100
+    }
+  }
+  return false
+}
+
+@Test
+fun ReadsKerningPairs() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    if const plain = Fixture(1) {
+      return font.Kerning(2, 3) == -50 && font.Kerning(3, 2) == 0 && font.Kerning(2, 2) == 0 && plain.Kerning(1, 2) == 0
+    }
+  }
+  return false
+}
+
+@Test
+fun ScalesFontUnitsToPixels() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    return font.Scale(1000.0) == 1.0 && font.Scale(500.0) == 0.5
+  }
+  return false
+}
+
+@Test
+fun ReadsASimpleOutline() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    match font.GlyphOutline(2) {
+      Ok(outline) => { return outline.Contours() == 1 && outline.Points() == 3 && outline.on.At(0) && !outline.on.At(1) && outline.on.At(2) && outline.xs.At(1) == 250.0 && outline.ys.At(1) == 800.0 && outline.ends.At(0) == 2 },
+      Malformed => { return false },
+    }
+  }
+  return false
+}
+
+@Test
+fun ReadsACompositeOutline() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    match font.GlyphOutline(3) {
+      Ok(outline) => { return outline.Contours() == 2 && outline.Points() == 6 && outline.xs.At(0) == 0.0 && outline.xs.At(3) == 300.0 && outline.xs.At(4) == 425.0 && outline.ys.At(4) == 400.0 && outline.xs.At(5) == 550.0 && outline.ends.At(1) == 5 },
+      Malformed => { return false },
+    }
+  }
+  return false
+}
+
+@Test
+fun AnEmptyGlyphHasNoOutline() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    match font.GlyphOutline(1) {
+      Ok(outline) => { return outline.Contours() == 0 && outline.Points() == 0 },
+      Malformed => { return false },
+    }
+  }
+  return false
+}
+
+@Test
+fun ReadsAnOutlineWithAHole() -> bool uses unsafe {
+  if const font = Fixture(1) {
+    match font.GlyphOutline(1) {
+      Ok(outline) => { return outline.Contours() == 2 && outline.Points() == 8 && outline.ends.At(0) == 3 },
+      Malformed => { return false },
+    }
+  }
+  return false
+}
+
+@Test
+fun RefusesAGlyphOutOfRange() -> bool uses unsafe {
+  if const font = Fixture(0) {
+    match font.GlyphOutline(99) {
+      Ok(_outline) => { return false },
+      Malformed => { return true },
+    }
+  }
+  return false
+}
+
+@Test
+fun LoadsAFontAndRefusesBytesThatAreNotOne() -> bool uses unsafe {
+  var good = FixtureBytes(0)
+  const loads = Outcome(good) == 0
+  Free(good)
+  return loads && Outcome(Bytes("not a font at all")) == 1 && Outcome(Bytes("")) == 1
+}
+
+@Test
+fun RefusesATruncatedFont() -> bool uses unsafe {
+  var good = FixtureBytes(0)
+  const refused = Outcome(Prefix(good, 40)) == 1 && Outcome(Prefix(good, 200)) == 1
+  const loads = Outcome(good) == 0
+  Free(good)
+  return refused && loads
+}
+
+@Test
+fun RefusesAnOpenTypeFontWithCffOutlines() -> bool uses unsafe {
+  var bytes = ArrayNew<u8>(256)
+  var i = 0
+  while i < 256 {
+    bytes[i] = 0
+    i = i + 1
+  }
+  bytes[0] = 79
+  bytes[1] = 84
+  bytes[2] = 84
+  bytes[3] = 79
+  const refused = Outcome(bytes) == 3
+  bytes[0] = 0
+  const other = Outcome(bytes) == 1
+  Free(bytes)
+  return refused && other
+}
+
+@Test
+fun RefusesATableOutsideTheFile() -> bool uses unsafe {
+  var bytes = FixtureBytes(0)
+  const at = TableRecord(bytes, 103, 108, 121, 102)
+  bytes[at + 12] = 127
+  const refused = Outcome(bytes) == 1
+  Free(bytes)
+  return at >= 0 && refused
+}
+
+@Test
+fun RefusesAHeadWithoutTheMagicNumber() -> bool uses unsafe {
+  var bytes = FixtureBytes(0)
+  const at = Be32(bytes, TableRecord(bytes, 104, 101, 97, 100) + 8)
+  const before = Outcome(bytes) == 0
+  bytes[at + 12] = 1
+  const refused = Outcome(bytes) == 1
+  Free(bytes)
+  return before && refused
+}
+
+@Test
+fun RefusesAFontWithoutAGlyphTable() -> bool uses unsafe {
+  var bytes = FixtureBytes(0)
+  const at = TableRecord(bytes, 103, 108, 121, 102)
+  bytes[at] = 120
+  const refused = Outcome(bytes) == 1
+  Free(bytes)
+  return refused
+}
+
+@Test
+fun RefusesATooSmallEmSquare() -> bool uses unsafe {
+  var bytes = FixtureBytes(0)
+  const at = Be32(bytes, TableRecord(bytes, 104, 101, 97, 100) + 8)
+  bytes[at + 18] = 0
+  bytes[at + 19] = 4
+  const refused = Outcome(bytes) == 1
+  Free(bytes)
+  return refused
+}
+
+@Test
+fun ACompositeThatNamesItselfIsRefused() -> bool uses unsafe {
+  var bytes = FixtureBytes(0)
+  const glyf = Be32(bytes, TableRecord(bytes, 103, 108, 121, 102) + 8)
+  const loca = Be32(bytes, TableRecord(bytes, 108, 111, 99, 97) + 8)
+  const start = Be16(bytes, loca + 6) * 2
+  bytes[glyf + start + 13] = 3
+  var outcome = false
+  match FontLoad(bytes) {
+    Ok(font) => {
+      match font.GlyphOutline(3) {
+        Ok(_outline) => { outcome = false },
+        Malformed => { outcome = true },
+      }
+    },
+    _ => { outcome = false },
+  }
+  Free(bytes)
+  return outcome
+}

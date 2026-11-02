@@ -1,0 +1,142 @@
+need std.fs.{Home, IsFile, ReadAll, Remove, SizeOf, TempName, WriteAll, WriteText}
+need std.list.{List, ListNew}
+need std.mem.{Free}
+need std.text.{Lower}
+
+offer error Missing
+
+fun SystemFontFolders() -> List<text> uses io, unsafe {
+  var folders = ListNew<text>()
+  folders.Push("C:/Windows/Fonts")
+  folders.Push("/usr/share/fonts/truetype/dejavu")
+  folders.Push("/usr/share/fonts/truetype/liberation")
+  folders.Push("/usr/share/fonts/truetype")
+  folders.Push("/usr/share/fonts/TTF")
+  folders.Push("/usr/share/fonts")
+  folders.Push("/usr/local/share/fonts")
+  folders.Push("/System/Library/Fonts")
+  folders.Push("/System/Library/Fonts/Supplemental")
+  folders.Push("/Library/Fonts")
+  folders.Push("{Home()}/Library/Fonts")
+  folders.Push("{Home()}/.fonts")
+  folders.Push("{Home()}/.local/share/fonts")
+  return folders
+}
+
+offer fun SystemFontFile(name: text) -> text? uses io, unsafe {
+  const folders = SystemFontFolders()
+  const lower = Lower(name)
+  var i = 0
+  while i < folders.Len() {
+    const folder = folders.At(i)
+    if IsFile("{folder}/{name}.ttf") {
+      return "{folder}/{name}.ttf"
+    }
+    if IsFile("{folder}/{lower}.ttf") {
+      return "{folder}/{lower}.ttf"
+    }
+    if IsFile("{folder}/{name}") {
+      return "{folder}/{name}"
+    }
+    i = i + 1
+  }
+  return null
+}
+
+offer fun Available() -> bool uses io, unsafe {
+  return SystemFontFile("arial") != null || SystemFontFile("DejaVuSans") != null || SystemFontFile("Helvetica") != null
+}
+
+offer fun FontLoadFile(path: text) -> Font!(Malformed, TooLarge, Unsupported, Missing) uses io, unsafe {
+  if !IsFile(path) {
+    return Missing
+  }
+  const size = SizeOf(path)
+  if size < 0 || size > kMaxFontBytes {
+    return TooLarge
+  }
+  const bytes = ReadAll(path, size)
+  const loaded = FontLoad(bytes)
+  Free(bytes)
+  return loaded?
+}
+
+offer fun SampleFont() -> Font!(Malformed, TooLarge, Unsupported) uses unsafe {
+  var bytes = Decode(SampleFontBase64())
+  const loaded = FontLoad(bytes)
+  Free(bytes)
+  return loaded
+}
+
+fun SampleOf() -> Font? uses unsafe {
+  match SampleFont() {
+    Ok(font) => { return font },
+    Malformed => { return null },
+    TooLarge => { return null },
+    Unsupported => { return null },
+  }
+}
+
+fun LoadCode(path: text) -> int uses io, unsafe {
+  match FontLoadFile(path) {
+    Ok(_font) => { return 0 },
+    Malformed => { return 1 },
+    TooLarge => { return 2 },
+    Unsupported => { return 3 },
+    Missing => { return 4 },
+  }
+}
+
+@Test
+fun AnUnknownSystemFontIsNull() -> bool uses io, unsafe {
+  return SystemFontFile("no-such-font-9f3a1c") == null
+}
+
+@Test
+fun AvailableAgreesWithTheFontSearch() -> bool uses io, unsafe {
+  if Available() {
+    return SystemFontFile("arial") != null || SystemFontFile("DejaVuSans") != null || SystemFontFile("Helvetica") != null
+  }
+  return SystemFontFile("arial") == null && SystemFontFile("DejaVuSans") == null && SystemFontFile("Helvetica") == null
+}
+
+@Test
+fun LoadsAFontFromAFileAndRefusesOthers() -> bool uses io, unsafe {
+  const missing = LoadCode("no/such/file.ttf") == 4
+  const path = TempName("fonttest")
+  var bytes = FixtureBytes(0)
+  const wrote = WriteAll(path, bytes)
+  Free(bytes)
+  const loads = LoadCode(path) == 0
+  const wrote_text = WriteText(path, "this is not a font file")
+  const refused = LoadCode(path) == 1
+  Remove(path)
+  return missing && wrote && loads && wrote_text && refused
+}
+
+@Test
+fun TheSampleFontHasLettersDigitsAndPunctuation() -> bool uses unsafe {
+  if const font = SampleOf() {
+    return font.UnitsPerEm() == 16 && font.GlyphIndex(65) != 0 && font.GlyphIndex(97) == font.GlyphIndex(65) && font.GlyphIndex(48) != 0 && font.GlyphIndex(33) != 0 && font.GlyphIndex(32) != 0 && font.GlyphIndex(126) == 0 && font.GlyphIndex(19999) == 0
+  }
+  return false
+}
+
+@Test
+fun TheSampleFontMeasuresInWholePixels() -> bool uses unsafe {
+  if const font = SampleOf() {
+    return Near(Measure(font, "HELLO", 16.0), 60.0, 0.01) && Near(Measure(font, "A B", 16.0), 32.0, 0.01) && Near(LineHeight(font, 16.0), 18.0, 0.01)
+  }
+  return false
+}
+
+@Test
+fun TheSampleFontDrawsAnExactPixelPattern() -> bool uses unsafe {
+  if const font = SampleOf() {
+    match Rasterize(font, font.GlyphIndex(84), 16.0) {
+      Ok(glyph) => { return glyph.At(1, 1) == 255 && glyph.At(10, 1) == 255 && glyph.At(11, 1) == 0 && glyph.At(1, 3) == 0 && glyph.At(5, 3) == 255 && glyph.At(6, 3) == 255 && glyph.At(7, 3) == 0 },
+      _ => { return false },
+    }
+  }
+  return false
+}
