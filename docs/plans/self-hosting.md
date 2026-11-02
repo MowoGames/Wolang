@@ -54,9 +54,9 @@ to be confirmed by a benchmark before it is fixed.
 
 | Need | What exists | Missing or slow |
 |---|---|---|
-| Fast `Map` | `std.map.Map<K, V>`: open addressing, linear probing, half load, backward-shift removal. `IntMapNew` and `TextMapNew` (1.2.0) choose the hashing. `std.hash` has FNV-style text hashing. | Slot finding is `hash % size` with a 64-bit divide on every probe start; a power-of-two table and a mask would not divide. `Get` takes a fallback rather than answering an optional, so a lookup of a class value needs a sentinel. The walk gives keys only, so values cost a second probe each. `Reserve` rehashes through `Put`, which hashes every key again; the hash is not stored. No `Entry` type. |
-| Arenas | The language `arena { }` block frees what was taken inside it at block end. | No arena a compiler can hold across calls and free as one: the IR, the AST and the type store each want their own lifetime. `Builder.Release` says "nothing frees the bytes yet", so text built by a compiler is never freed outside an `arena`. A `[]T` bump allocator with `Reset` is the missing piece. |
-| Text building | `std.text.Builder`: `Append`, `AppendByte`, `AppendLine` (1.2.0), `Text`, `Release`, `Clear`. `std.fmt` for numbers. | `Append` copies byte by byte; there is no bulk copy intrinsic, so a large append is a loop. `std.fmt` imports `std.text`, so `Builder` has no `AppendInt` without a cycle. No `Builder.Insert` or `Truncate`. |
+| Fast `Map` | `std.map.Map<K, V>`: open addressing, linear probing, half load, backward-shift removal. `IntMapNew` and `TextMapNew` (1.2.0) choose the hashing. `std.hash` has FNV-style text hashing. | Slot finding was `hash % size`, a 64-bit divide on every probe start; the table is always a power of two, so it is a mask now (D284). `Get` takes a fallback rather than answering an optional, so a lookup of a class value needs a sentinel. The walk gives keys only, so values cost a second probe each. `Reserve` rehashes through `Put`, which hashes every key again; the hash is not stored. No `Entry` type. |
+| Arenas | The language `arena { }` block frees what was taken inside it at block end. | `std.arena` (D285) is the bump allocator a compiler can hold across calls: `Take`, `Reset`, drop. `Builder.Release` still says "nothing frees the bytes yet", so text built by a compiler is never freed outside an `arena`; the arena hands out bytes, not text, and a typed view of them is `ViewFromRaw`. |
+| Text building | `std.text.Builder`: `Append`, `AppendByte`, `AppendLine` (1.2.0), `Text`, `Release`, `Clear`. `std.fmt` for numbers. | `Append` and `Reserve` copy with `std.mem.Copy` now (one call, D284), and `fs.ReadText` views the buffer it read instead of copying it. `std.fmt` imports `std.text`, so `Builder` has no `AppendInt` without a cycle. No `Builder.Insert` or `Truncate`. |
 | Text scanning | `Bytes`, `IndexOf`, `Substring`, `StartsWith`, `Trim`, `Split`, `ParseInt`, `ParseFloat`, `std.utf8`. | `Substring` is a view of the same bytes, not a copy, so token text is free; a lexer indexes `Bytes(source)` directly. No character classes (`IsDigit`, `IsAlpha`): each lexer writes its own. |
 | Lists and sorting | `List<T>`, `Heap<T>`, `Sort`, `SortBy<T: Ord>`, `LowerBound`, `Deque`, `Set`. | `List` has `Push`, `Pop`, `At`, `Set`, `Items`; no `Insert`, `RemoveAt` or `Last`. `Sort` is a quicksort with an insertion cutoff and is not stable; a compiler that prints diagnostics in source order needs a stable sort. |
 | Files | `std.fs`: `ReadAll`, `ReadText`, `WriteAll`, `WriteText`, `Append`, `Exists`, `List`, `Walk`, `Copy`, `RemoveTree`, `TempName`. `std.path`: `Join`, `Normalize`, `Parent`, `Name`, `Extension`. | `List` and `Walk` answer one `text` with separators, so a directory walk is a split. `ReadAll` takes a byte limit. No file timestamps beyond `ChangedAt`, no symlink question. |
@@ -103,6 +103,49 @@ writing it ran into; the first run will add more.
 9. **Tables.** `Map<text, int>` answers a keyword lookup. `Get` with a fallback
    was enough here; a parser's symbol tables will want an optional-returning
    lookup.
+
+## Stage 1 measurements
+
+`tools/selfhost/bench` (`wolang run tools/selfhost/bench`) times what a compiler
+leans on. Windows x86-64, dev tier, while seven other builds ran on the same
+machine, so read the figures as orders of magnitude; the first column is before
+D284 and D285, the second after.
+
+| What | Before | After |
+|---|---|---|
+| `Map<int, int>`, 300,000 puts and gets | 73 ms | 56-85 ms |
+| `Map<text, int>`, 100,000 distinct keys | 66 ms | 67-78 ms |
+| `Builder`, 2,000,000 small appends | 130 ms | 60-65 ms |
+| `fs.ReadText` of a 4.4 MB file | 95 ms | 6-7 ms |
+| `ArrayNew` and `Free`, 500,000 blocks of 512 bytes | 281 ms | 273-293 ms |
+| `Arena.Take` of the same blocks, reset every thousand | n/a | 8-10 ms |
+
+- The mask in `Map.Slot` did not show above the noise; the divide it removes is
+  a few nanoseconds per lookup. The text map is dominated by hashing a `text`,
+  which is a byte loop; a hash that reads a word at a time is the next thing.
+- `ReadText` was slow because `ReadAll` allocated and zeroed the whole `limit`
+  (128 MB in this run) every time, and then copied byte by byte. It sizes the
+  buffer to the file and views it now.
+- `ArrayNew` and `Free` cost about half a microsecond a pair, which the arena
+  takes to about twenty nanoseconds.
+
+## Gaps stage 1 found
+
+1. **The dev tier does not compare two enum values.** `a == Kind.File` is "compares
+   two aggregates", and a function the dev tier refuses takes every caller into
+   the interpreter, which has a step limit. `std.fs` reads the tag with `match`
+   now; the emitters should compare the tag word of a payload-free enum.
+2. **No `u64` to float conversion in the dev tier.** The lexer converts through
+   two `u32` halves (`U64ToFloat`). The same refusal hides in any code that
+   turns a 64-bit count into a float.
+3. **`after`, `before` and `arena` are keywords everywhere**, so they cannot be
+   variable names; a lexer wants to call a variable `after`. A contextual
+   keyword would cost nothing here (they are only keywords in a system's
+   header and a block).
+4. **An array literal exists** (`[false, false]`), unlike what the throwaway
+   lexer's gap list said; what is missing is a `List` literal.
+5. **`Text` of a built string cannot be freed**, so a compiler's memory grows
+   with every text it makes; the arena holds bytes and does not fix that.
 
 ## Layout
 
