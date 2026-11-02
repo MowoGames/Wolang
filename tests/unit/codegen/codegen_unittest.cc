@@ -4582,10 +4582,13 @@ WOLANG_TEST(CodegenTest, ATaskWaitsOnTheCallersClock) {
   // `Wait` has no body, so the compiler writes its machine: it finishes when
   // the scheduler's clock has passed the moment it began plus the seconds
   // asked for, and the clock moves only when the caller ticks (D267). The
-  // interpreter and the JIT run the same machine, so they must agree.
+  // interpreter and the JIT run the same machine, so they must agree. Each
+  // function runs its tasks to the end before it returns: the scheduler is
+  // shared, and a task left behind would write to an object that is gone.
   Fixture f(R"(
 extern "C" fun wolang_sched_tick(dt: f64) -> s64
 extern "C" fun wolang_sched_now() -> f64
+extern "C" fun wolang_sched_pending() -> s32
 
 task fun Wait(seconds: f64)
 
@@ -4613,7 +4616,11 @@ fun Drive(ticks: int) -> int uses unsafe {
     const _steps = wolang_sched_tick(0.5)
     i = i + 1
   }
-  return counter.n
+  const answer = counter.n
+  while wolang_sched_pending() > 0 {
+    const _more = wolang_sched_tick(100.0)
+  }
+  return answer
 }
 
 fun Slow(ticks: int) -> int uses unsafe {
@@ -4624,14 +4631,22 @@ fun Slow(ticks: int) -> int uses unsafe {
     const _steps = wolang_sched_tick(0.25)
     i = i + 1
   }
-  return counter.n
+  const answer = counter.n
+  while wolang_sched_pending() > 0 {
+    const _more = wolang_sched_tick(100.0)
+  }
+  return answer
 }
 
 fun Nothing() -> int uses unsafe {
   const counter = Counter()
   const _handle = spawn Instant(counter)
   const _steps = wolang_sched_tick(0.0)
-  return counter.n
+  const answer = counter.n
+  while wolang_sched_pending() > 0 {
+    const _more = wolang_sched_tick(100.0)
+  }
+  return answer
 }
 )");
   WOLANG_EXPECT_EQ(f.Run("Drive", {Fixture::Int(0)}), "0");
