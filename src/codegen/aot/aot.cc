@@ -61,6 +61,14 @@ std::string_view RuntimeArchive() {
 #endif
 }
 
+std::string_view RuntimeSanitizers() {
+#ifdef WOLANG_RUNTIME_SANITIZERS
+  return WOLANG_RUNTIME_SANITIZERS;
+#else
+  return {};
+#endif
+}
+
 std::string LinkCommand(std::string_view object, std::string_view binary) {
   std::string command;
 #if defined(_WIN32)
@@ -71,6 +79,11 @@ std::string LinkCommand(std::string_view object, std::string_view binary) {
 #endif
   command.append("clang-cl /nologo ");
   command.append(crt);
+  if (!RuntimeSanitizers().empty()) {
+    command.append(" -fsanitize=");
+    command.append(RuntimeSanitizers());
+  }
+
   command.append(" \"");
   command.append(object);
   command.append("\" \"");
@@ -79,7 +92,13 @@ std::string LinkCommand(std::string_view object, std::string_view binary) {
   command.append(binary);
   command.append("\" /link ws2_32.lib bcrypt.lib secur32.lib");
 #else
-  command.append("c++ -o '");
+  command.append("c++ ");
+  if (!RuntimeSanitizers().empty()) {
+    command.append("-fsanitize=");
+    command.append(RuntimeSanitizers());
+    command.append(" ");
+  }
+  command.append("-o '");
   command.append(binary);
   command.append("' '");
   command.append(object);

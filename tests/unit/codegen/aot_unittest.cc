@@ -403,6 +403,16 @@ fun main() uses unsafe {
   WOLANG_EXPECT_EQ(program.Output(), "exit 40");
 }
 
+WOLANG_TEST(AotTest, TheLinkLineCarriesTheSanitizersTheRuntimeWasBuiltWith) {
+  const std::string command = LinkCommand("program.o", "program");
+  const std::string flag = "-fsanitize=" + std::string(RuntimeSanitizers());
+  if (RuntimeSanitizers().empty()) {
+    WOLANG_EXPECT(command.find("-fsanitize=") == std::string::npos);
+  } else {
+    WOLANG_EXPECT(command.find(flag) != std::string::npos);
+  }
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

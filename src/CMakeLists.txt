@@ -83,6 +83,9 @@ add_dependencies(wolang_aot wolang_runtime)
 target_compile_definitions(wolang_aot PRIVATE
     WOLANG_RUNTIME_ARCHIVE="$<TARGET_FILE:wolang_runtime>"
     WOLANG_RUNTIME_CRT="$<IF:$<CONFIG:Debug>,/MDd,/MD>")
+if(WOLANG_ENABLE_SANITIZERS)
+    target_compile_definitions(wolang_aot PRIVATE WOLANG_RUNTIME_SANITIZERS="${WOLANG_SANITIZER_LIST}")
+endif()
 if(WOLANG_WITH_LLVM)
     target_compile_definitions(wolang_aot PRIVATE WOLANG_WITH_LLVM=1)
     target_include_directories(wolang_aot SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})

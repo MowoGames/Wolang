@@ -71,6 +71,11 @@ struct AotResult {
 // True when this build has the backend at all.
 bool HasAotBackend();
 
+// The sanitizers the runtime archive was built with, as `-fsanitize=` takes
+// them, or empty. A binary linked with such an archive needs the same ones
+// on its link line (D272).
+std::string_view RuntimeSanitizers();
+
 // The command that links |object| and the runtime into |binary| with the
 // system's own linker: `c++` where there is one, `clang-cl` on Windows.
 // What a package adds goes after it, in that linker's own spelling (D208).
