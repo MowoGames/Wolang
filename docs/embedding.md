@@ -87,6 +87,7 @@ and pointing `CMAKE_PREFIX_PATH` at it is enough.
 | **Contain** | `wolang_vm_set_budget` stops a call after so many ticks in either tier, for scripts the host did not write (D265). `wolang_vm_set_step_limit` counts interpreter instructions and keeps calls on the interpreter. |
 | **Debug** | `wolang_vm_debug_listen` opens a port an editor attaches to with the Debug Adapter Protocol; breakpoints stop the host's call where it is. See [debugging](debugging.md). A trap that ends a call leaves `wolang_vm_errors` (and the reporter) the kind, the source line and the script's call stack, one `in Function (file:line:column)` per frame, innermost first; the compiled tier gives function names without lines (D269). |
 | **Reload** | `wolang_vm_reload` loads everything again and keeps the program's state; `wolang_vm_file_count`/`_name` say which files to watch. |
+| **Tick** | `wolang_vm_tick` gives the program's `task`s a step and `dt` seconds of the host's clock, so `wait Wait(2.0)` means two seconds of the game's time (D267). |
 
 ## What crosses the boundary
 
@@ -320,6 +321,17 @@ and `wolang_vm_class_attribute_count`/`_name` list the program's classes, the
 stored fields of each and the attributes written on it (`Replicated` for
 `@Replicated`), so a host need not scan the source.
 
+What the program says should be replicated is reported the same way (D268).
+`wolang_vm_class_field_replication(vm, "Pawn", i, &flags)` answers
+`kWolangReplicated` for a field marked `@Replicated`, with
+`WOLANG_REPLICATION_OWNER` in `flags` for `@Replicated(owner)`; the methods are
+listed by `wolang_vm_class_method_count`/`_name`, and
+`wolang_vm_class_method_replication` answers `kWolangServer`, `kWolangClient` or
+`kWolangMulticast` for an RPC, with `WOLANG_REPLICATION_UNRELIABLE` for
+`(unreliable)`. `wolang_vm_class_method_param_count`/`_param_kind` give the
+parameters, which are always kinds a host can read. Wolang sends nothing: the
+host maps these to its own replication and RPC policy.
+
 Each vm has its own bindings, host classes and writers (D257). Two vms in one
 process may bind the same symbol to different functions and print to different
 places; a lookup asks the vm whose call it is, then the process.
@@ -356,6 +368,45 @@ the two tiers draw the line between "back" and "forward" a block or so apart.
 Together they are what a mod sandbox is. Memory a
 mod allocates is not bounded, and a host that runs mods from strangers
 should still give them a vm of their own.
+
+## Tasks on the host's clock
+
+A script writes code that waits as a `task`, and the host decides what time is:
+
+```wolang
+task fun Wait(seconds: f64)
+
+class Door {
+  var open: bool = false
+}
+
+var door: Door = Door()
+
+task fun OpenLater(target: Door) {
+  wait Wait(2.0)
+  target.open = true
+}
+
+offer fun Start() {
+  const _handle = spawn OpenLater(door)
+}
+```
+
+```c
+wolang_vm_call(vm, "Start", NULL, 0, &ignored);   // starts the task
+for (;;) {
+  wolang_vm_tick(vm, frame_seconds, &steps);      // one step each, clock moved on
+}
+```
+
+`wolang_vm_tick` (ABI 1.5, D267) moves the vm's clock by `dt` and gives every
+task that was ready one step. A task that is not finished comes back on the next
+tick, and one that was started during a tick starts on the next. Not calling it
+is a pause and a smaller `dt` is slow motion, so the engine needs no hook for its
+clock. `wolang_vm_tasks_pending` says how many are still going. Each vm has its
+own tasks and its own clock. A host starts a task by calling a script function
+that `spawn`s one, and the tasks of a vm must all be declared in one of the
+host's files.
 
 ## Threads
 

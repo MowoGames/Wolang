@@ -1704,6 +1704,126 @@ const char* wolang_vm_class_attribute_name(const WolangVm* vm, const char* class
   return Kept(mutable_vm, std::string(mutable_vm->database.interner().Text(info->Parsed->ast.Get(attributes[static_cast<size_t>(index)]).name)));
 }
 
+static int32_t ReplicationFlags(const wolang::Member& member) {
+  return (member.owner_only ? WOLANG_REPLICATION_OWNER : 0) | (member.unreliable ? WOLANG_REPLICATION_UNRELIABLE : 0);
+}
+
+int32_t wolang_vm_class_field_replication(const WolangVm* vm, const char* class_name, int32_t index, int32_t* flags) {
+  const VmTurn turn(vm);
+  if (flags != nullptr) {
+    *flags = 0;
+  }
+  if (vm == nullptr || class_name == nullptr) {
+    return kWolangNotReplicated;
+  }
+  TypeId type;
+  bool header = false;
+  const std::vector<const wolang::Member*> stored = FieldsOfClass(const_cast<WolangVm*>(vm), class_name, &type, &header);
+  if (index < 0 || static_cast<size_t>(index) >= stored.size()) {
+    return kWolangNotReplicated;
+  }
+  const wolang::Member& member = *stored[static_cast<size_t>(index)];
+  if (flags != nullptr) {
+    *flags = ReplicationFlags(member);
+  }
+
+  return static_cast<int32_t>(member.replication);
+}
+
+// The methods of a class and then of the classes it derives from, in
+// declaration order: what a host routes an RPC by (D268).
+static std::vector<const wolang::Member*> MethodsOfClass(WolangVm* vm, const std::string& class_name) {
+  std::vector<const wolang::Member*> methods;
+  TypeId type;
+  bool header = false;
+  FieldsOfClass(vm, class_name, &type, &header);
+  if (!type.is_valid()) {
+    return methods;
+  }
+
+  const CheckedFile* checked = vm->database.Checked(FileId{vm->database.types().Get(type).declaring_file});
+  if (checked == nullptr) {
+    return methods;
+  }
+  for (TypeId current = type; current.is_valid(); current = checked->resolution.BaseOf(current)) {
+    for (const wolang::Member& member : checked->resolution.MembersOf(current)) {
+      if (member.kind == wolang::MemberKind::kMethod) {
+        methods.push_back(&member);
+      }
+    }
+  }
+
+  return methods;
+}
+
+int32_t wolang_vm_class_method_count(const WolangVm* vm, const char* class_name) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || class_name == nullptr) {
+    return 0;
+  }
+
+  return static_cast<int32_t>(MethodsOfClass(const_cast<WolangVm*>(vm), class_name).size());
+}
+
+const char* wolang_vm_class_method_name(const WolangVm* vm, const char* class_name, int32_t index) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || class_name == nullptr) {
+    return "";
+  }
+  WolangVm* mutable_vm = const_cast<WolangVm*>(vm);
+  const std::vector<const wolang::Member*> methods = MethodsOfClass(mutable_vm, class_name);
+
+  return index < 0 || static_cast<size_t>(index) >= methods.size() ? "" : Kept(mutable_vm, std::string(mutable_vm->database.interner().Text(methods[static_cast<size_t>(index)]->name)));
+}
+
+int32_t wolang_vm_class_method_replication(const WolangVm* vm, const char* class_name, int32_t index, int32_t* flags) {
+  const VmTurn turn(vm);
+  if (flags != nullptr) {
+    *flags = 0;
+  }
+  if (vm == nullptr || class_name == nullptr) {
+    return kWolangNotReplicated;
+  }
+  const std::vector<const wolang::Member*> methods = MethodsOfClass(const_cast<WolangVm*>(vm), class_name);
+  if (index < 0 || static_cast<size_t>(index) >= methods.size()) {
+    return kWolangNotReplicated;
+  }
+  if (flags != nullptr) {
+    *flags = ReplicationFlags(*methods[static_cast<size_t>(index)]);
+  }
+
+  return static_cast<int32_t>(methods[static_cast<size_t>(index)]->replication);
+}
+
+int32_t wolang_vm_class_method_param_count(const WolangVm* vm, const char* class_name, int32_t index) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || class_name == nullptr) {
+    return 0;
+  }
+  WolangVm* mutable_vm = const_cast<WolangVm*>(vm);
+  const std::vector<const wolang::Member*> methods = MethodsOfClass(mutable_vm, class_name);
+  if (index < 0 || static_cast<size_t>(index) >= methods.size()) {
+    return 0;
+  }
+
+  return static_cast<int32_t>(mutable_vm->database.types().ArgumentsOf(methods[static_cast<size_t>(index)]->type).size());
+}
+
+WolangKind wolang_vm_class_method_param_kind(const WolangVm* vm, const char* class_name, int32_t index, int32_t param) {
+  const VmTurn turn(vm);
+  if (vm == nullptr || class_name == nullptr) {
+    return kWolangVoid;
+  }
+  WolangVm* mutable_vm = const_cast<WolangVm*>(vm);
+  const std::vector<const wolang::Member*> methods = MethodsOfClass(mutable_vm, class_name);
+  if (index < 0 || static_cast<size_t>(index) >= methods.size()) {
+    return kWolangVoid;
+  }
+  const std::vector<TypeId> parameters = mutable_vm->database.types().ArgumentsOf(methods[static_cast<size_t>(index)]->type);
+
+  return param < 0 || static_cast<size_t>(param) >= parameters.size() ? kWolangVoid : KindOf(mutable_vm->database.types(), parameters[static_cast<size_t>(param)]);
+}
+
 WolangFunction* wolang_vm_function(WolangVm* vm, const char* name) {
   const VmTurn turn(vm);
   if (Find(vm, name) == nullptr) {
@@ -2167,6 +2287,105 @@ void wolang_vm_set_remap(WolangVm* vm, WolangRemap remap, void* user) {
   const VmTurn turn(vm);
   vm->remap = remap;
   vm->remap_user = user;
+}
+
+// -------------------------------------------------------------- tasks ---
+
+// What the scheduler resumes a task through while a vm ticks: the one entry
+// point the compiler writes for the file's tasks, on whichever tier the vm
+// is running (D267).
+struct TickHost {
+  WolangVm* vm = nullptr;
+  FileId file;
+  const wolang::ir::Module* module = nullptr;
+  Symbol dispatch;
+};
+
+static bool ResumeForVm(void* context, int32_t kind, void* frame) {
+  auto* host = static_cast<TickHost*>(context);
+  WolangVm* vm = host->vm;
+  if (vm->allow_compiled && vm->steps == 0 && vm->compiled != nullptr && vm->compiled->Contains(host->dispatch)) {
+    bool faulted = false;
+    const bool finished = vm->compiled->ResumeTask(host->dispatch, kind, frame, &faulted);
+    if (faulted) {
+      vm->errors = "wolang: a task faulted\n";
+    }
+
+    return finished;
+  }
+
+  static const wolang::FileResolution kNothing;
+  const CheckedFile* checked = vm->database.Checked(host->file);
+  wolang::abi::LayoutStore layouts(vm->database.types(), checked != nullptr ? checked->resolution : kNothing);
+  vm->database.ShareMembers(&layouts);
+
+  std::vector<wolang::interp::Value> arguments;
+  arguments.push_back(wolang::interp::Value::Int(static_cast<uint64_t>(kind), wolang::IntWidth::k32, true));
+  arguments.push_back(wolang::interp::Value::Int(reinterpret_cast<uint64_t>(frame), wolang::IntWidth::k64, false));
+
+  wolang::interp::Limits limits;
+  limits.keep_globals = true;
+  wolang::interp::Output printed;
+  const wolang::interp::Outcome outcome = wolang::interp::RunNamed(vm->database.interner(), vm->database.types(), *host->module, host->dispatch, arguments, limits, &printed, vm->foreign.get(), &layouts, vm->linked);
+  if (!printed.text.empty()) {
+    Written(vm, printed.text);
+  }
+  if (!outcome.ok()) {
+    vm->errors = std::string("wolang: a task trapped: ") + std::string(wolang::interp::TrapKindName(outcome.trap)) + " at " + outcome.where + "\n";
+
+    return true;
+  }
+
+  return outcome.value.kind() == wolang::interp::Value::Kind::kBool && outcome.value.boolean();
+}
+
+WolangStatus wolang_vm_tick(WolangVm* vm, double dt, int32_t* steps) {
+  if (vm == nullptr || !vm->ok) {
+    return kWolangError;
+  }
+  const VmTurn turn(vm);
+
+  TickHost host;
+  host.vm = vm;
+  host.dispatch = vm->database.interner().Intern("wolang$dispatch");
+  int homes = 0;
+  for (FileId file : vm->own) {
+    const LoweredFile* lowered = vm->database.Lowered(file);
+    if (lowered == nullptr) {
+      continue;
+    }
+    for (const wolang::ir::Function& function : lowered->module.functions) {
+      if (function.name == host.dispatch && !function.is_declaration()) {
+        host.file = file;
+        host.module = &lowered->module;
+        ++homes;
+        break;
+      }
+    }
+  }
+  if (homes > 1) {
+    vm->errors = "wolang: tasks in more than one file cannot be ticked together\n";
+
+    return kWolangError;
+  }
+
+  wolang::runtime::InstallResume(host.module != nullptr ? &ResumeForVm : nullptr, host.module != nullptr ? &host : nullptr);
+  const int64_t taken = wolang::runtime::wolang_sched_tick(dt);
+  wolang::runtime::InstallResume(nullptr, nullptr);
+  if (steps != nullptr) {
+    *steps = static_cast<int32_t>(taken);
+  }
+
+  return kWolangOk;
+}
+
+int32_t wolang_vm_tasks_pending(WolangVm* vm) {
+  if (vm == nullptr) {
+    return 0;
+  }
+  const VmTurn turn(vm);
+
+  return wolang::runtime::wolang_sched_pending();
 }
 
 // -------------------------------------------------------------- limits ---

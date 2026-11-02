@@ -30,7 +30,7 @@ extern "C" {
 // the low. A host compares it with `wolang_abi_version()` at load, since
 // the library it links may not be the one it compiled against (D241). A
 // different major is a different ABI; a larger minor only adds.
-#define WOLANG_ABI_VERSION ((1u << 16) | 4u)
+#define WOLANG_ABI_VERSION ((1u << 16) | 5u)
 
 uint32_t wolang_abi_version(void);
 
@@ -239,6 +239,33 @@ WolangKind wolang_vm_class_field_kind(const WolangVm* vm, const char* class_name
 int32_t wolang_vm_class_attribute_count(const WolangVm* vm, const char* class_name);
 const char* wolang_vm_class_attribute_name(const WolangVm* vm, const char* class_name, int32_t index);
 
+// What the program says about replication (D268). Wolang does no networking:
+// `@Replicated` on a field of a script class, and `@Server`, `@Client` and
+// `@Multicast` on its methods, are facts the checker validated and these report,
+// and the host maps them to its own policy. The flags of a field or a method
+// are `WOLANG_REPLICATION_OWNER` for `(owner)` and
+// `WOLANG_REPLICATION_UNRELIABLE` for `(unreliable)`. A field's index counts
+// its stored fields as `wolang_vm_class_field_name` does. The methods are the
+// class's own and then those of the classes it derives from, in declaration
+// order; an RPC returns nothing and its parameters are the kinds a host can read.
+// Added in ABI 1.5.
+typedef enum WolangReplication {
+  kWolangNotReplicated = 0,
+  kWolangReplicated = 1,
+  kWolangServer = 2,
+  kWolangClient = 3,
+  kWolangMulticast = 4,
+} WolangReplication;
+#define WOLANG_REPLICATION_OWNER 1
+#define WOLANG_REPLICATION_UNRELIABLE 2
+
+int32_t wolang_vm_class_field_replication(const WolangVm* vm, const char* class_name, int32_t index, int32_t* flags);
+int32_t wolang_vm_class_method_count(const WolangVm* vm, const char* class_name);
+const char* wolang_vm_class_method_name(const WolangVm* vm, const char* class_name, int32_t index);
+int32_t wolang_vm_class_method_replication(const WolangVm* vm, const char* class_name, int32_t index, int32_t* flags);
+int32_t wolang_vm_class_method_param_count(const WolangVm* vm, const char* class_name, int32_t index);
+WolangKind wolang_vm_class_method_param_kind(const WolangVm* vm, const char* class_name, int32_t index, int32_t param);
+
 typedef void (*WolangHostRetain)(void* object, void* user);
 typedef void (*WolangHostRelease)(void* object, void* user);
 typedef int32_t (*WolangHostAlive)(void* object, void* user);
@@ -418,6 +445,25 @@ const char* wolang_vm_notes(const WolangVm* vm);
 // null |remap| to go back to refusing. Added in ABI 1.4.
 typedef void (*WolangRemap)(WolangVm* vm, WolangValue old_object, WolangValue new_object, void* user);
 void wolang_vm_set_remap(WolangVm* vm, WolangRemap remap, void* user);
+
+// ----------------------------------------------------------------- tasks ---
+
+// Routines on the host's clock (D267). A `task` the program starts with
+// `spawn` -- from any function the host calls -- is advanced by this and by
+// nothing else: it gives every task that was ready one step, with the vm's
+// clock moved on by |dt| seconds first. A task that is not finished comes back
+// on the next tick, and one spawned during a tick starts on the next. The
+// clock is the host's: pausing is not calling this, and slow motion is a
+// smaller |dt|. `wait Wait(2.0)` in a task finishes when two seconds of |dt|
+// have gone by; `wait Yield()` finishes on the next tick.
+//
+// |steps|, when not null, gets how many steps were taken. Each vm has its own
+// tasks and its own clock. The tasks must all be declared in one of the host's
+// files; a program whose tasks are in several is refused, and says so in
+// `wolang_vm_errors`. Added in ABI 1.5.
+WolangStatus wolang_vm_tick(WolangVm* vm, double dt, int32_t* steps);
+// How many tasks the vm's program has started that have not finished.
+int32_t wolang_vm_tasks_pending(WolangVm* vm);
 
 // What was loaded, so a host can watch it for changes: the files of the
 // program, in load order.
