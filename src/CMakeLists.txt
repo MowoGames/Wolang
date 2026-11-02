@@ -82,7 +82,7 @@ add_dependencies(wolang_aot wolang_runtime)
 # against, which a binary linked with it on Windows has to use as well.
 target_compile_definitions(wolang_aot PRIVATE
     WOLANG_RUNTIME_ARCHIVE="$<TARGET_FILE:wolang_runtime>"
-    WOLANG_RUNTIME_CRT="$<IF:$<CONFIG:Debug>,/MDd,/MD>")
+    WOLANG_RUNTIME_CRT="$<IF:$<AND:$<CONFIG:Debug>,$<NOT:$<BOOL:${WOLANG_ENABLE_SANITIZERS}>>>,/MDd,/MD>")
 if(WOLANG_ENABLE_SANITIZERS)
     target_compile_definitions(wolang_aot PRIVATE WOLANG_RUNTIME_SANITIZERS="${WOLANG_SANITIZER_LIST}")
 endif()
