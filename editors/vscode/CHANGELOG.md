@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0
+
+Versioned with the compiler; no changes to the extension itself.
+
 ## 1.1.0
 
 Versioned with the compiler from here on (D248); no changes to the

@@ -59,7 +59,9 @@ closed, the embedding API grows what an engine needs, and `math` arrives.
   `Quat` as `x, y, z, w`, and checks `MowoWolangAlive` before it touches an
   object (D262).
 - `wolang ir --typed` prints the IR in a form `ir::Reader` reads back
-  (D264). `tools/selfhost/lexer` is a throwaway lexer for Wolang in Wolang.
+  (D264). `tools/selfhost/lexer` is a throwaway lexer for Wolang in Wolang;
+  the compiler will be self-hosted in stages after 1.2.0, the C++ one kept
+  as the bootstrap (D250, `docs/plans/self-hosting.md`).
 
 ### Changed
 
