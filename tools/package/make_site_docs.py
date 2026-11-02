@@ -88,12 +88,14 @@ def escape_text(segment):
 
 
 def convert_text(chunk, here):
-    """A run of prose lines: code spans stay as written, even across a line break."""
+    """A run of prose lines: code spans stay as written, but a line break inside one
+    becomes a space, which is what Markdown shows anyway, because MDX reads a
+    `{` that starts the next line as an expression."""
     out = []
     last = 0
     for span in CODE_SPAN.finditer(chunk):
         out.append(convert_prose(chunk[last:span.start()], here))
-        out.append(span.group(0))
+        out.append(span.group(0).replace("\n", " "))
         last = span.end()
     out.append(convert_prose(chunk[last:], here))
     return "".join(out)
@@ -281,6 +283,9 @@ def validate(site):
             problems.append("{}: a code fence is never closed".format(name))
             continue
         prose = re.sub(r"^```.*?^```[^\n]*$", "", body, flags=re.MULTILINE | re.DOTALL)
+        for span in CODE_SPAN.finditer(prose):
+            if re.search(r"\n\s*[{<]", span.group(2)):
+                problems.append("{}: a code span wraps onto a line that starts with '{{' or '<': {}".format(name, span.group(0)[:60].replace("\n", " ")))
         prose = CODE_SPAN.sub("", prose)
         for number, line in enumerate(prose.split("\n"), start=1):
             bare = line.replace("\\{", "").replace("\\}", "")
