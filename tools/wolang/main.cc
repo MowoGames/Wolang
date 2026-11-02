@@ -21,6 +21,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -2980,6 +2981,12 @@ int RunDoc(const Options& options) {
 
   // The package the directory names, not its dependencies: a package's
   // documentation is what *it* offers, and `std` has its own page.
+  // The paths are compared as paths: on Windows `lib/math` and
+  // `D:\x\lib\math` name one directory but share no substring, and a
+  // package that matched nothing documented every module (D116).
+  std::error_code path_error;
+  const std::filesystem::path asked = std::filesystem::weakly_canonical(
+      std::filesystem::path(options.inputs.front()), path_error);
   PackageId wanted;
   for (size_t i = 0; i < database.package_count(); ++i) {
     const PackageId id{static_cast<uint32_t>(i)};
@@ -2987,11 +2994,26 @@ int RunDoc(const Options& options) {
     if (package == nullptr) {
       continue;
     }
-    if (package->directory.find(options.inputs.front()) !=
-            std::string::npos ||
-        options.inputs.front().find(package->directory) !=
-            std::string::npos) {
+    std::error_code held_error;
+    const std::filesystem::path held = std::filesystem::weakly_canonical(
+        std::filesystem::path(package->directory), held_error);
+    if (!path_error && !held_error && held == asked) {
       wanted = id;
+    }
+  }
+  if (!wanted.is_valid()) {
+    for (size_t i = 0; i < database.package_count(); ++i) {
+      const PackageId id{static_cast<uint32_t>(i)};
+      const Package* package = database.GetPackage(id);
+      if (package == nullptr) {
+        continue;
+      }
+      if (package->directory.find(options.inputs.front()) !=
+              std::string::npos ||
+          options.inputs.front().find(package->directory) !=
+              std::string::npos) {
+        wanted = id;
+      }
     }
   }
 
