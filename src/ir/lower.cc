@@ -3268,6 +3268,20 @@ class Lowerer {
     return index;
   }
 
+  // An enum with variants, none of which carries anything.
+  bool IsTagOnlyEnum(TypeId type) {
+    const std::vector<std::vector<TypeId>> variants = VariantPayloads(type);
+    if (variants.empty()) {
+      return false;
+    }
+    for (const std::vector<TypeId>& carried : variants) {
+      if (!carried.empty()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   // What each variant of an enum carries, in declaration order; empty for
   // anything that is not an enum.
   std::vector<std::vector<TypeId>> VariantPayloads(TypeId owner) {
@@ -4524,6 +4538,16 @@ class Lowerer {
       // no meaning for (D173).
       const TypeId both = ValueType(left).is_valid() ? ValueType(left)
                                                      : ValueType(right);
+      // An enum that carries nothing is its tag, so `==` compares tags, as
+      // `match` reads them. The dev tier does not compare two aggregates, and
+      // one function it refuses takes every caller of it into the
+      // interpreter with it (D287).
+      if ((opcode == Opcode::kEq || opcode == Opcode::kNe) &&
+          both.is_valid() && IsTagOnlyEnum(Erase(both))) {
+        return builder_->Add(opcode, types_->bool_type(),
+                             {builder_->Extract(types_->u32(), AsType(left, both), 0),
+                              builder_->Extract(types_->u32(), AsType(right, both), 0)});
+      }
       return builder_->Add(opcode, types_->bool_type(),
                            {AsType(left, both), AsType(right, both)});
     }

@@ -4367,6 +4367,99 @@ fun Generic() -> int {
   WOLANG_EXPECT_EQ(f.Run("Generic", {}), "494");
 }
 
+WOLANG_TEST(CodegenTest, AnOrPatternAgreesInEveryTier) {
+  // An or-pattern joins its tests with `or` on bools. The compiled tiers took
+  // that and the reference interpreter trapped "undefined value ... or on
+  // false", so the self-hosted parser, which matches on a token kind in nearly
+  // every function, could not run there (D287).
+  Fixture f(R"(
+enum Color {
+  Red
+  Green
+  Blue
+  Black
+}
+
+fun OnInts(n: int) -> int {
+  return match n {
+    1 | 2 => 10
+    7 | 8 | 9 => 20
+    _ => 0
+  }
+}
+
+fun OnColors(color: Color) -> int {
+  return match color {
+    Color.Red | Color.Green => 1
+    Color.Blue => 2
+    _ => 0
+  }
+}
+
+fun Pick(n: int) -> int {
+  if n == 0 {
+    return OnColors(Color.Red)
+  }
+  if n == 1 {
+    return OnColors(Color.Green)
+  }
+  if n == 2 {
+    return OnColors(Color.Blue)
+  }
+  return OnColors(Color.Black)
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("OnInts", {Fixture::Int(1)}), "10");
+  WOLANG_EXPECT_EQ(f.Run("OnInts", {Fixture::Int(2)}), "10");
+  WOLANG_EXPECT_EQ(f.Run("OnInts", {Fixture::Int(8)}), "20");
+  WOLANG_EXPECT_EQ(f.Run("OnInts", {Fixture::Int(3)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(0)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(1)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(2)}), "2");
+  WOLANG_EXPECT_EQ(f.Run("Pick", {Fixture::Int(3)}), "0");
+}
+
+WOLANG_TEST(CodegenTest, TwoEnumsOfTagsAreComparedByTheirTags) {
+  // `==` on an enum that carries nothing compares tags: the dev tier would
+  // not compare two aggregates, and a function it refused took every caller
+  // of it into the interpreter (D287).
+  Fixture f(R"(
+enum Color {
+  Red
+  Green
+  Blue
+}
+
+fun Make(n: int) -> Color {
+  if n == 0 {
+    return Color.Red
+  }
+  if n == 1 {
+    return Color.Green
+  }
+  return Color.Blue
+}
+
+fun Same(a: int, b: int) -> int {
+  if Make(a) == Make(b) {
+    return 1
+  }
+  return 0
+}
+
+fun Differ(a: int, b: int) -> int {
+  if Make(a) != Make(b) {
+    return 1
+  }
+  return 0
+}
+)");
+  WOLANG_EXPECT_EQ(f.Run("Same", {Fixture::Int(1), Fixture::Int(1)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Same", {Fixture::Int(0), Fixture::Int(2)}), "0");
+  WOLANG_EXPECT_EQ(f.Run("Differ", {Fixture::Int(0), Fixture::Int(2)}), "1");
+  WOLANG_EXPECT_EQ(f.Run("Differ", {Fixture::Int(2), Fixture::Int(2)}), "0");
+}
+
 }  // namespace
 }  // namespace codegen
 }  // namespace wolang

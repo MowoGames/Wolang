@@ -794,5 +794,36 @@ fun B() -> int! {
   WOLANG_EXPECT(f.Function("A").find(std::to_string(ErrorTag("Missing"))) == std::string::npos);
 }
 
+WOLANG_TEST(LowerTest, AnEnumThatCarriesNothingIsComparedByItsTag) {
+  Fixture f(R"(
+enum Color {
+  Red
+  Green
+}
+
+fun Same(a: Color, b: Color) -> bool {
+  return a == b
+}
+)");
+  const std::string ir = f.Function("Same");
+  WOLANG_EXPECT(ir.find("extract 0, %0") != std::string::npos);
+  WOLANG_EXPECT(ir.find("extract 0, %1") != std::string::npos);
+  WOLANG_EXPECT(ir.find("eq %0, %1") == std::string::npos);
+}
+
+WOLANG_TEST(LowerTest, AnEnumThatCarriesDataIsStillComparedWhole) {
+  Fixture f(R"(
+enum Shape {
+  Circle(radius: int)
+  Dot
+}
+
+fun Same(a: Shape, b: Shape) -> bool {
+  return a == b
+}
+)");
+  WOLANG_EXPECT(f.Function("Same").find("eq %0, %1") != std::string::npos);
+}
+
 }  // namespace
 }  // namespace wolang
