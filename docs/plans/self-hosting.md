@@ -66,8 +66,8 @@ to be confirmed by a benchmark before it is fixed.
 
 ## The throwaway lexer
 
-`tools/selfhost/lexer` is a Wolang lexer for Wolang (package `wolexer`, tests with
-`wl wo test tools/selfhost/lexer`): identifiers, keywords and reserved words,
+The first lexer, `tools/selfhost/lexer` (package `wolexer`), was replaced by the real one
+in `tools/selfhost/syntax` and is gone; this is what it was and what it found: identifiers, keywords and reserved words,
 numbers with suffixes and ranges, strings with interpolation, raw strings,
 character literals, nested block comments, doc comments, `starts_line` and line
 numbers, and the longest operator. It is not the stage 2 lexer: it does not
@@ -103,6 +103,54 @@ writing it ran into; the first run will add more.
 9. **Tables.** `Map<text, int>` answers a keyword lookup. `Get` with a fallback
    was enough here; a parser's symbol tables will want an optional-returning
    lookup.
+
+## The lexer and the parser
+
+`tools/selfhost/syntax` (package `wosyntax`, D283) is the stage 2 front end in Wolang:
+
+    wolang run tools/selfhost/syntax -- tokens <files>    # Kind offset length flags per token
+    wolang run tools/selfhost/syntax -- ast <files>       # the dump `wolang ast` writes
+
+The lexer (`lexer.wo`) is a port of `src/syntax/lexer.cc`. Its token kinds are generated
+from `token_kind.inc` (`tools/selfhost/gen_kinds.py`), and each token carries the payload
+the parser reads: the value of a number with its suffix and unit, the decoded parts of a
+string with the spans of its interpolations, the code point of a character. The parser
+(`parser.wo`) is a port of `src/syntax/parser.cc` for programs that are valid, the tree
+(`ast.wo`) has the shape of `src/syntax/ast.h`, and `printer.wo` prints it the way
+`ast_printer.cc` does.
+
+Both are checked against the C++ ones, not by eye:
+
+- `tools/selfhost/diff_tokens.py` runs `wolang tokens --stable` and the Wolang lexer over
+  every tracked `.wo` file and every `wolang` block in the guides. 200 files, 141,313
+  tokens, no difference, error flags included.
+- `tools/selfhost/diff_ast.py` does the same with `wolang ast`. 186 files compare
+  and all 186 are identical, `lib/`, `examples/`, `tools/` and the guides' snippets
+  among them. 22 are left out because the C++ parser itself rejects them: they are
+  fragments of a program (statements with no function around them), not programs.
+- `fixtures/expressions.wo` and `fixtures/declarations.wo` hold the constructs the corpus
+  uses least (every operator, ranges, closures, `?.` and `?`, struct patterns, or-patterns,
+  generics with `where`, machines, systems, units, `extern`), with the C++ dump beside
+  them; `@Test`s in the package compare them in both tiers.
+
+What the Wolang parser does not do, because it reads valid programs:
+
+1. **No recovery and no diagnostics.** A construct it does not expect stops the parse
+   with `(failed ...)` and the token where it stopped, where the C++ parser reports an
+   error with a code and carries on. Matching those is a stage 2 task of its own.
+2. **No depth limit** (`E0041`): a deeply nested expression runs until the stack ends.
+3. **Unicode letters are approximated** (D283): a short list of ranges that are not
+   letters decides an identifier outside ASCII, and NFC is not checked.
+4. **A float is printed by its own `%g`** (six digits from repeated scaling), not by
+   `printf`. It agrees on every literal in the corpus; a literal at a rounding edge of
+   six digits could differ in the last place.
+5. **Fuzz programs are not compared yet.** The plan asks for the same dump on every fuzz
+   program; the generator writes programs only inside the C++ tests, so the corpus here is
+   the repository and the guides. A `wolang fuzz --emit` that writes them to a directory
+   would let `diff_ast.py` take them.
+6. **Speed is unmeasured.** `wolang asm tools/selfhost/syntax` shows the dev tier takes
+   every function of the package, which is what lets the corpus run without the
+   interpreter's step limit; no benchmark of the parser itself has been made.
 
 ## Stage 1 measurements
 
@@ -157,10 +205,12 @@ runs the program directly, with no shell.
 
 ## Gaps stage 1 found
 
-1. **The dev tier does not compare two enum values.** `a == Kind.File` is "compares
+1. **The dev tier did not compare two enum values.** `a == Kind.File` was "compares
    two aggregates", and a function the dev tier refuses takes every caller into
-   the interpreter, which has a step limit. `std.fs` reads the tag with `match`
-   now; the emitters should compare the tag word of a payload-free enum.
+   the interpreter, which has a step limit. Lowering compares the tags of an enum
+   that carries nothing now (D287), which is what `match` already read, so a parser
+   that tests `kind == Kind.X` in every function is compiled. An enum with data is
+   still compared whole, and the dev tier still refuses that.
 2. **No `u64` to float conversion in the dev tier.** The lexer converts through
    two `u32` halves (`U64ToFloat`). The same refusal hides in any code that
    turns a 64-bit count into a float.
@@ -172,6 +222,21 @@ runs the program directly, with no shell.
    lexer's gap list said; what is missing is a `List` literal.
 5. **`Text` of a built string cannot be freed**, so a compiler's memory grows
    with every text it makes; the arena holds bytes and does not fix that.
+6. **The reference interpreter trapped on `or` of two bools**, which an or-pattern
+   (`1 | 2 =>`, `Color.Red | Color.Green =>`) lowers to; the dev tier took it, so the
+   tiers disagreed on every match with alternatives. Fixed (D287) with a test in
+   `CodegenTest`. A parser matches on alternatives constantly, which is how it was found.
+7. **`Class()` with no arguments ignores the field initializers.** `class Counter {
+   var base: int = Seven() }` gives `Counter().base == 0`, and a class-typed field
+   (`var items: List<int> = ListNew<int>()`) is a null handle, so `Push` ends in an
+   access violation in both tiers, not a trap. The spec says "no arguments asks for the
+   default value", which reads as the type's zero; if that is the intent, a field
+   initializer that is never run should be refused, and a null handle should trap. Not
+   fixed; it wants a decision.
+8. **More words that cannot be names**: `type` at the start of a line is a type alias,
+   `package` and `where` are reserved, and `before` and `after` are keywords. A tree
+   with a `type` field and a `package` of dependencies runs into all of them, so the
+   Wolang tree calls them `ty` and `held`.
 
 ## Layout
 
