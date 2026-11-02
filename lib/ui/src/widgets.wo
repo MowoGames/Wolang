@@ -1,0 +1,492 @@
+need font.{Font, LineHeight, Measure}
+need gfx.{kKeyBackspace, kKeyDelete, kKeyLeft, kKeyRight}
+need std.list.{List, ListNew}
+need std.text.{Builder, BuilderNew, Substring}
+
+offer const kDrawFill: int = 0
+
+offer const kDrawText: int = 1
+
+offer class DrawCommand {
+  var kind: int
+  var x: int
+  var y: int
+  var width: int
+  var height: int
+  var colour: u32
+  var start: int
+  var length: int
+  var size: float
+}
+
+offer class Ui {
+  var font: Font
+  var style: Style
+  var input: Input
+  var commands: List<DrawCommand>
+  var labels: Builder
+  var next_id: int = 0
+  var hot: int = 0
+  var active: int = 0
+  var focus: int = 0
+  var left: int = 0
+  var cursor: int = 0
+  var width: int = 0
+  var frames: int = 0
+
+  fun Begin() {
+    commands.Clear()
+    labels.Clear()
+    next_id = 0
+    hot = 0
+    cursor = 0
+    frames = frames + 1
+  }
+
+  fun End() {
+    if !input.down {
+      active = 0
+    }
+    input.EndFrame()
+  }
+
+  fun Place(x: int, y: int, w: int) {
+    left = x
+    cursor = y
+    width = w
+  }
+
+  fun RowHeight() -> int uses unsafe {
+    return LineHeight(font, style.size) as int + 1 + style.padding * 2
+  }
+
+  fun Fill(x: int, y: int, w: int, h: int, colour: u32) uses unsafe {
+    commands.Push(DrawCommand(kDrawFill, x, y, w, h, colour, 0, 0, 0.0))
+  }
+
+  fun Write(x: int, y: int, label: text, colour: u32) uses unsafe {
+    const start = labels.Len()
+    labels.Append(label)
+    commands.Push(DrawCommand(kDrawText, x, y, 0, 0, colour, start, labels.Len() - start, style.size))
+  }
+
+  fun Panel(x: int, y: int, w: int, h: int) uses unsafe {
+    Fill(x, y, w, h, style.panel)
+    Place(x + style.padding, y + style.padding, w - style.padding * 2)
+  }
+
+  fun LabelOf(command: DrawCommand) -> text uses unsafe {
+    return Substring(labels.Text(), command.start, command.start + command.length)
+  }
+
+  fun Spacer(pixels: int) {
+    cursor = cursor + pixels
+  }
+
+  fun NextRect() -> Rect uses unsafe {
+    const height = RowHeight()
+    const rect = Rect(left, cursor, width, height)
+    cursor = cursor + height + style.spacing
+    return rect
+  }
+
+  fun Behave(id: int, rect: Rect) -> bool {
+    const inside = rect.Contains(input.mouse_x, input.mouse_y)
+    if inside {
+      hot = id
+    }
+    var clicked = false
+    if inside && input.pressed && active == 0 {
+      active = id
+    }
+    if active == id && input.released {
+      if inside {
+        clicked = true
+      }
+      active = 0
+    }
+    return clicked
+  }
+
+  fun Shade(id: int, rect: Rect) -> u32 {
+    if active == id {
+      return style.active
+    }
+    if rect.Contains(input.mouse_x, input.mouse_y) {
+      return style.hover
+    }
+    return style.button
+  }
+
+  fun Label(label: text) uses unsafe {
+    const rect = NextRect()
+    Write(rect.x, rect.y + style.padding, label, style.text)
+  }
+
+  fun Button(label: text) -> bool uses unsafe {
+    next_id = next_id + 1
+    const id = next_id
+    const rect = NextRect()
+    const clicked = Behave(id, rect)
+    Fill(rect.x, rect.y, rect.width, rect.height, Shade(id, rect))
+    Write(rect.x + style.padding, rect.y + style.padding, label, style.text)
+    return clicked
+  }
+
+  fun Checkbox(label: text, value: bool) -> bool uses unsafe {
+    next_id = next_id + 1
+    const id = next_id
+    const rect = NextRect()
+    const clicked = Behave(id, rect)
+    const side = rect.height - style.padding * 2
+    Fill(rect.x, rect.y + style.padding, side, side, Shade(id, rect))
+    var now = value
+    if clicked {
+      now = !value
+    }
+    if now {
+      Fill(rect.x + 3, rect.y + style.padding + 3, side - 6, side - 6, style.accent)
+    }
+    Write(rect.x + side + style.padding, rect.y + style.padding, label, style.text)
+    return now
+  }
+
+  fun Slider(value: float, low: float, high: float) -> float uses unsafe {
+    next_id = next_id + 1
+    const id = next_id
+    const rect = NextRect()
+    Behave(id, rect)
+    var now = value
+    if active == id && input.down && high > low && rect.width > 0 {
+      var fraction = (input.mouse_x - rect.x) as float / rect.width as float
+      if fraction < 0.0 {
+        fraction = 0.0
+      }
+      if fraction > 1.0 {
+        fraction = 1.0
+      }
+      now = low + fraction * (high - low)
+    }
+    var shown = 0.0
+    if high > low {
+      shown = (now - low) / (high - low)
+    }
+    if shown < 0.0 {
+      shown = 0.0
+    }
+    if shown > 1.0 {
+      shown = 1.0
+    }
+    Fill(rect.x, rect.y, rect.width, rect.height, style.track)
+    Fill(rect.x, rect.y, (shown * rect.width as float) as int, rect.height, style.accent)
+    return now
+  }
+
+  fun TextField(edit: TextEdit) -> bool uses unsafe {
+    next_id = next_id + 1
+    const id = next_id
+    const rect = NextRect()
+    const inside = rect.Contains(input.mouse_x, input.mouse_y)
+    Behave(id, rect)
+    if input.pressed {
+      if inside {
+        focus = id
+      } else if focus == id {
+        focus = 0
+      }
+    }
+    var changed = false
+    if focus == id {
+      var i = 0
+      while i < input.typed.Len() {
+        const before = edit.Len()
+        edit.Insert(input.typed.At(i))
+        if edit.Len() != before {
+          changed = true
+        }
+        i = i + 1
+      }
+      if input.KeyPressed(kKeyBackspace as int) {
+        const before = edit.Len()
+        edit.Backspace()
+        if edit.Len() != before {
+          changed = true
+        }
+      }
+      if input.KeyPressed(kKeyDelete as int) {
+        const before = edit.Len()
+        edit.Delete()
+        if edit.Len() != before {
+          changed = true
+        }
+      }
+      if input.KeyPressed(kKeyLeft as int) {
+        edit.Left()
+      }
+      if input.KeyPressed(kKeyRight as int) {
+        edit.Right()
+      }
+    }
+    Fill(rect.x, rect.y, rect.width, rect.height, style.track)
+    Write(rect.x + style.padding, rect.y + style.padding, edit.Value(), style.text)
+    if focus == id {
+      const caret = rect.x + style.padding + Measure(font, edit.Before(), style.size) as int
+      Fill(caret, rect.y + style.padding, 1, rect.height - style.padding * 2, style.accent)
+    }
+    return changed
+  }
+
+  fun ListBox(items: List<text>, selected: int) -> int uses unsafe {
+    var now = selected
+    var i = 0
+    while i < items.Len() {
+      next_id = next_id + 1
+      const id = next_id
+      const rect = NextRect()
+      if Behave(id, rect) {
+        now = i
+      }
+      if i == selected {
+        Fill(rect.x, rect.y, rect.width, rect.height, style.accent)
+      } else {
+        Fill(rect.x, rect.y, rect.width, rect.height, Shade(id, rect))
+      }
+      Write(rect.x + style.padding, rect.y + style.padding, items.At(i), style.text)
+      i = i + 1
+    }
+    return now
+  }
+}
+
+offer fun UiNew(font: Font, style: Style) -> Ui uses unsafe {
+  return Ui(font, style, InputNew(), ListNew<DrawCommand>(), BuilderNew(), 0, 0, 0, 0, 0, 0, 0, 0)
+}
+
+fun Frame(ui: Ui) uses unsafe {
+  ui.Begin()
+  ui.Place(0, 0, 100)
+}
+
+@Test
+fun ALabelIsDrawnAtTheCursorAndMovesIt() -> bool uses unsafe {
+  if const ui = Rig() {
+    ui.Begin()
+    ui.Place(10, 20, 200)
+    const row = ui.RowHeight() + ui.style.spacing
+    ui.Label("Hi")
+    ui.Label("There")
+    const first = ui.commands.At(0)
+    const second = ui.commands.At(1)
+    return ui.commands.Len() == 2 && first.kind == kDrawText && first.x == 10 && first.y == 24 && second.y == 24 + row && ui.cursor == 20 + row * 2
+  }
+  return false
+}
+
+@Test
+fun AButtonClicksWhenReleasedOverIt() -> bool uses unsafe {
+  if const ui = Rig() {
+    Frame(ui)
+    ui.input.MoveTo(5, 5)
+    ui.input.Press()
+    const during = ui.Button("Go")
+    ui.End()
+    Frame(ui)
+    ui.input.Release()
+    const after = ui.Button("Go")
+    ui.End()
+    return !during && after && ui.active == 0
+  }
+  return false
+}
+
+@Test
+fun AButtonDoesNotClickWhenReleasedElsewhere() -> bool uses unsafe {
+  if const ui = Rig() {
+    Frame(ui)
+    ui.input.MoveTo(5, 5)
+    ui.input.Press()
+    ui.Button("Go")
+    ui.End()
+    Frame(ui)
+    ui.input.MoveTo(90, 300)
+    ui.input.Release()
+    const after = ui.Button("Go")
+    ui.End()
+    return !after && ui.active == 0
+  }
+  return false
+}
+
+@Test
+fun AButtonIsShadedByTheMouse() -> bool uses unsafe {
+  if const ui = Rig() {
+    Frame(ui)
+    ui.input.MoveTo(500, 500)
+    ui.Button("Go")
+    const idle = ui.commands.At(0).colour
+    ui.End()
+    Frame(ui)
+    ui.input.MoveTo(5, 5)
+    ui.Button("Go")
+    const hovered = ui.commands.At(0).colour
+    ui.End()
+    Frame(ui)
+    ui.input.MoveTo(5, 5)
+    ui.input.Press()
+    ui.Button("Go")
+    const held = ui.commands.At(0).colour
+    ui.End()
+    return idle == ui.style.button && hovered == ui.style.hover && held == ui.style.active
+  }
+  return false
+}
+
+@Test
+fun ACheckboxFlipsWhenClicked() -> bool uses unsafe {
+  if const ui = Rig() {
+    Frame(ui)
+    ui.input.MoveTo(5, 5)
+    ui.input.Press()
+    const pressing = ui.Checkbox("Sound", false)
+    ui.End()
+    Frame(ui)
+    ui.input.Release()
+    const on = ui.Checkbox("Sound", false)
+    ui.End()
+    Frame(ui)
+    ui.input.MoveTo(5, 5)
+    ui.input.Press()
+    ui.Checkbox("Sound", true)
+    ui.End()
+    Frame(ui)
+    ui.input.Release()
+    const off = ui.Checkbox("Sound", true)
+    ui.End()
+    return !pressing && on && !off
+  }
+  return false
+}
+
+@Test
+fun ASliderFollowsTheMouseAndStaysInRange() -> bool uses unsafe {
+  if const ui = Rig() {
+    Frame(ui)
+    ui.input.MoveTo(50, 5)
+    ui.input.Press()
+    const middle = ui.Slider(0.0, 0.0, 10.0)
+    ui.End()
+    Frame(ui)
+    ui.input.MoveTo(400, 5)
+    const far = ui.Slider(middle, 0.0, 10.0)
+    ui.End()
+    Frame(ui)
+    ui.input.MoveTo(-300, 5)
+    const near = ui.Slider(far, 0.0, 10.0)
+    ui.End()
+    Frame(ui)
+    ui.input.Release()
+    const kept = ui.Slider(near, 0.0, 10.0)
+    ui.End()
+    return middle > 4.9 && middle < 5.1 && far == 10.0 && near == 0.0 && kept == 0.0
+  }
+  return false
+}
+
+@Test
+fun ASliderDoesNotMoveWithoutAPress() -> bool uses unsafe {
+  if const ui = Rig() {
+    Frame(ui)
+    ui.input.MoveTo(50, 5)
+    const same = ui.Slider(3.0, 0.0, 10.0)
+    ui.End()
+    return same == 3.0
+  }
+  return false
+}
+
+@Test
+fun ATextFieldTakesTypingOnlyWhenFocused() -> bool uses unsafe {
+  if const ui = Rig() {
+    const edit = TextEditNew("")
+    Frame(ui)
+    ui.input.Type(97)
+    const ignored = ui.TextField(edit)
+    ui.End()
+    Frame(ui)
+    ui.input.MoveTo(5, 5)
+    ui.input.Press()
+    ui.TextField(edit)
+    ui.End()
+    Frame(ui)
+    ui.input.Type(98)
+    ui.input.Type(99)
+    const typed = ui.TextField(edit)
+    ui.End()
+    Frame(ui)
+    ui.input.Key(kKeyBackspace as int)
+    const erased = ui.TextField(edit)
+    ui.End()
+    Frame(ui)
+    ui.input.MoveTo(5, 500)
+    ui.input.Press()
+    ui.TextField(edit)
+    ui.End()
+    Frame(ui)
+    ui.input.Type(100)
+    const after = ui.TextField(edit)
+    ui.End()
+    return !ignored && typed && erased && !after && edit.Len() == 1 && ui.focus == 0
+  }
+  return false
+}
+
+@Test
+fun AListBoxSelectsTheRowThatWasClicked() -> bool uses unsafe {
+  if const ui = Rig() {
+    var items = ListNew<text>()
+    items.Push("One")
+    items.Push("Two")
+    items.Push("Three")
+    const row = ui.RowHeight() + ui.style.spacing
+    Frame(ui)
+    ui.input.MoveTo(5, row + 3)
+    ui.input.Press()
+    ui.ListBox(items, 0)
+    ui.End()
+    Frame(ui)
+    ui.input.Release()
+    const picked = ui.ListBox(items, 0)
+    ui.End()
+    Frame(ui)
+    const kept = ui.ListBox(items, 2)
+    return picked == 1 && kept == 2 && ui.commands.Len() == 6
+  }
+  return false
+}
+
+@Test
+fun APanelPlacesItsChildrenInside() -> bool uses unsafe {
+  if const ui = Rig() {
+    ui.Begin()
+    ui.Panel(10, 10, 100, 80)
+    ui.Label("In")
+    const back = ui.commands.At(0)
+    const label = ui.commands.At(1)
+    return back.kind == kDrawFill && back.x == 10 && back.width == 100 && back.height == 80 && back.colour == ui.style.panel && label.x == 14 && label.y == 14 + ui.style.padding && ui.width == 92
+  }
+  return false
+}
+
+@Test
+fun BeginForgetsTheLastFrameButKeepsFocus() -> bool uses unsafe {
+  if const ui = Rig() {
+    ui.Begin()
+    ui.Place(0, 0, 100)
+    ui.Label("x")
+    ui.focus = 3
+    const drawn = ui.commands.Len()
+    ui.Begin()
+    return drawn == 1 && ui.commands.Len() == 0 && ui.focus == 3 && ui.cursor == 0 && ui.frames == 2
+  }
+  return false
+}

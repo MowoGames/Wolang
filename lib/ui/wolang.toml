@@ -1,0 +1,10 @@
+[package]
+name = "ui"
+version = "0.1.0"
+source = "src"
+
+[dependencies]
+std = { path = "../std" }
+image = { path = "../image" }
+font = { path = "../font" }
+gfx = { path = "../gfx" }
