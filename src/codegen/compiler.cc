@@ -32,7 +32,13 @@ namespace wolang {
 namespace codegen {
 
 bool IsSupportedTarget() {
+#if defined(_WIN32) && (defined(__aarch64__) || defined(_M_ARM64))
+  // A trap out of generated code dies with STATUS_BAD_FUNCTION_TABLE here, and
+  // nobody has run it on the hardware to say why (D184).
+  return false;
+#else
   return HasBackend(HostTarget());
+#endif
 }
 
 static void SkipUnwinding(jmp_buf* landing) {

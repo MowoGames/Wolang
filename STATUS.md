@@ -28,9 +28,14 @@ that they do.
 
 ## Done since 1.2.0: 1.3.0 (D265–D289)
 
-Verified on Windows x86-64 only: 1032 unit tests, the library tests of every
+Verified on Windows x86-64: 1032 unit tests, the library tests of every
 package, the docs check, `wl fuzz 200` on seeds 16586 and 4242, and `wl ci`.
-Nothing has run on Linux, macOS or Windows on ARM64 yet; see
+The pull request's CI also passes on Linux x86-64 (plain, release, ubsan) and
+Linux arm64. Windows on ARM64 builds and passes 52 of its 55 unit suites; the
+other three (`CodegenTest`, `EmbedTest`, `FuzzTest`) crash with
+`STATUS_BAD_FUNCTION_TABLE` where generated code traps, so that job leaves
+them out until someone with the hardware fixes the JIT's trap exit. macOS has
+not run. See
 [docs/plans/1.3.0-status.md](docs/plans/1.3.0-status.md) for what was and was
 not checked.
 
