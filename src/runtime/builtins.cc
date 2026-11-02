@@ -293,6 +293,8 @@ void* LookupSymbol(std::string_view name) {
        reinterpret_cast<void*>(&wolang_text_from_bool)},
       {"wolang_text_concat",
        reinterpret_cast<void*>(&wolang_text_concat)},
+      {"wolang_memory_copy",
+       reinterpret_cast<void*>(&wolang_memory_copy)},
       {"wolang_text_free",
        reinterpret_cast<void*>(&wolang_text_free)},
       {"wolang_text_equal",

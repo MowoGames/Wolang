@@ -119,6 +119,12 @@ Text* wolang_text_concat(const uint8_t* left,
   return text;
 }
 
+void wolang_memory_copy(uint8_t* to, const uint8_t* from, uint64_t count) {
+  if (count != 0 && to != nullptr && from != nullptr) {
+    std::memcpy(to, from, count);
+  }
+}
+
 void wolang_text_free(const uint8_t* data) {
   if (data == nullptr) {
     return;

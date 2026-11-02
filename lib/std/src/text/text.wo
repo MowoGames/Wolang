@@ -5,7 +5,7 @@
 // responsibility -- so what builds one is a `Builder`, which owns its
 // bytes and gives them back in `deinit` (D91).
 
-need std.mem.{ArrayNew, BytesFromRaw, Free}
+need std.mem.{ArrayNew, BytesFromRaw, Copy, Free}
 need std.iter.{Iterable, Iterator}
 
 /// How many bytes a piece of text is. Not how many characters: UTF-8 is
@@ -137,11 +137,7 @@ offer class Builder {
   fun Append(value: text) uses unsafe {
     const source = Bytes(value)
     Reserve(count + source.len)
-    var i = 0
-    while i < source.len {
-      bytes[count + i] = source[i]
-      i = i + 1
-    }
+    Copy(bytes, count, source, source.len)
     count = count + source.len
   }
 
@@ -169,11 +165,7 @@ offer class Builder {
       capacity = 16
     }
     const grown = ArrayNew<u8>(capacity)
-    var i = 0
-    while i < count {
-      grown[i] = bytes[i]
-      i = i + 1
-    }
+    Copy(grown, 0, bytes, count)
     Free(bytes)
     bytes = grown
   }

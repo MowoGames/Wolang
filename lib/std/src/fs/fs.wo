@@ -72,14 +72,21 @@ offer fun Create(path: text) -> File uses io, unsafe {
 /// what a `[]u8` is: a view of bytes that are somewhere, and here the
 /// somewhere is an allocation.
 offer fun ReadAll(path: text, limit: int) -> []u8 uses io, unsafe {
+  var room = limit
+  if IsFile(path) {
+    const size = SizeOf(path)
+    if size >= 0 && size < limit {
+      room = size
+    }
+  }
   var file = Open(path)
-  var buffer = ArrayNew<u8>(limit)
+  var buffer = ArrayNew<u8>(room)
   if !file.IsOpen() {
     return BytesOf(buffer, 0)
   }
   var filled = 0
-  while filled < limit {
-    const window = BytesOf(buffer, limit)
+  while filled < room {
+    const window = BytesOf(buffer, room)
     const got = file.Read(window)
     if got <= 0 {
       break
@@ -192,16 +199,28 @@ offer fun KindOf(path: text) -> Kind uses io, unsafe {
 }
 
 /// Whether there is anything at `path`.
+// These read the tag with `match` and not with `==`: the dev tier does not
+// compare two enum values, and one function it refuses takes every caller
+// of it into the interpreter with it (D284).
 offer fun Exists(path: text) -> bool uses io, unsafe {
-  return KindOf(path) != Kind.Missing
+  return match KindOf(path) {
+    Kind.Missing => false
+    _ => true
+  }
 }
 
 offer fun IsFile(path: text) -> bool uses io, unsafe {
-  return KindOf(path) == Kind.File
+  return match KindOf(path) {
+    Kind.File => true
+    _ => false
+  }
 }
 
 offer fun IsDirectory(path: text) -> bool uses io, unsafe {
-  return KindOf(path) == Kind.Directory
+  return match KindOf(path) {
+    Kind.Directory => true
+    _ => false
+  }
 }
 
 /// How many bytes the file holds, or -1.
@@ -524,14 +543,7 @@ offer fun Append(path: text, value: text) -> bool uses io, unsafe {
 /// The whole of a text file.
 offer fun ReadText(path: text, limit: int) -> text uses io, unsafe {
   const bytes = ReadAll(path, limit)
-  var builder = BuilderNew()
-  var i = 0
-  while i < bytes.len {
-    builder.AppendByte(bytes[i])
-    i = i + 1
-  }
-  Free(bytes)
-  return builder.Release()
+  return TextFromRaw(bytes.data, bytes.len)
 }
 
 /// Writes text to a file, replacing what was there.

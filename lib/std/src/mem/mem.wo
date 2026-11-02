@@ -63,6 +63,35 @@ offer unsafe fun Prefix<T>(items: []T, count: int) -> []T
 /// (D251). The same instruction: only what the caller is promised differs.
 offer unsafe fun PrefixMut<T>(items: []mut T, count: int) -> []mut T
 
+extern "C" fun wolang_memory_copy(to: *mut u8, from: *u8, count: u64)
+
+/// Copies the first `count` bytes of `from` into `to`, starting at `at`.
+///
+/// One call where a loop would make one per byte: a builder that appends
+/// a text, or a buffer that grows, is a copy and nothing else (D284). The
+/// runs must not overlap, and `to` must have room, which `unsafe` is for.
+offer unsafe fun Copy(to: []mut u8, at: int, from: []u8, count: int) {
+  if count > 0 {
+    wolang_memory_copy(to[at..].data, from.data, count as u64)
+  }
+}
+
+@Test
+fun CopiesARunOfBytesIntoTheMiddleOfAnother() -> bool uses unsafe {
+  var source = ArrayNew<u8>(4)
+  var target = ArrayNew<u8>(8)
+  var i = 0
+  while i < 4 {
+    source[i] = (10 + i) as u8
+    i = i + 1
+  }
+  Copy(target, 2, source, 3)
+  const answer = target[0] == 0 && target[2] == 10 && target[4] == 12 && target[5] == 0
+  Free(source)
+  Free(target)
+  return answer
+}
+
 /// How many bytes a value of `value`'s type takes.
 ///
 /// The value is not read -- what is wanted is its type, which is why this
